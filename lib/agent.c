@@ -205,7 +205,15 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 	const char *finish_reason = NULL;
 	int r;
 
-	turn->parsed = resp && resp->body ? json_tokener_parse(resp->body) : NULL;
+	if (resp && resp->status_code != 200) {
+		char buf[256];
+		(void)snprintf(buf, sizeof(buf), "HTTP %d", resp->status_code);
+		free(resp->error_msg);
+		resp->error_msg = strdup(buf);
+		turn->parsed = NULL;
+	} else {
+		turn->parsed = resp && resp->body ? json_tokener_parse(resp->body) : NULL;
+	}
 	if (resp)
 		clm_http_response_free(resp);
 
