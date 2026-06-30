@@ -54,12 +54,10 @@ cb_state(enum clm_agent_state state, void *user)
 static void
 cb_turn_done(int status, void *user)
 {
+	(void)status;
 	(void)user;
-	if (status == 0) {
-		printf("\n\n");
-	} else {
-		fprintf(stderr, "error: turn failed with status %d\n", status);
-	}
+	printf("user> ");
+	fflush(stdout);
 }
 
 static const struct clm_callbacks cli_callbacks = {
