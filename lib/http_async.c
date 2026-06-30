@@ -77,7 +77,9 @@ done:
 	/* Call completion callback */
 	if (req->state == CLM_HTTP_DONE) {
 		struct clm_http_response resp = {0};
-		resp.status_code = 200;
+		long status_code = 200;
+		curl_easy_getinfo(req->easy_handle, CURLINFO_RESPONSE_CODE, &status_code);
+		resp.status_code = (int)status_code;
 		resp.body = req->response_buf.data;
 		req->response_buf.data = NULL;
 		req->success_cb(&resp, req->user);
