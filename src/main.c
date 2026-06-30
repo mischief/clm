@@ -54,8 +54,10 @@ cb_state(enum clm_agent_state state, void *user)
 static void
 cb_turn_done(int status, void *user)
 {
-	(void)status;
-	(void)user;
+	struct cli_state *state = (struct cli_state *)user;
+	if (status != 0) {
+		fprintf(stderr, "error: %s\n", clm_agent_get_last_error(state->agent));
+	}
 	printf("user> ");
 	fflush(stdout);
 }
