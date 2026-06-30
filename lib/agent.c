@@ -176,6 +176,7 @@ struct clm_async_turn {
 	struct json_object *messages;
 	struct json_object *tools;
 	struct json_object *parsed;
+	char *body;
 };
 
 static void
@@ -188,6 +189,8 @@ clm_async_turn_free(struct clm_async_turn *turn)
 			json_object_put(turn->tools);
 		if (turn->parsed)
 			json_object_put(turn->parsed);
+		if (turn->body)
+			free(turn->body);
 		free(turn);
 	}
 }
@@ -329,7 +332,8 @@ clm_agent_start_turn(struct clm_agent *agent)
 	json_cleanup struct json_object *jmodel = NULL;
 	json_cleanup struct json_object *jstream = NULL;
 	struct clm_async_turn *turn;
-	const char *body;
+	const char *body_str;
+	char *body;
 
 	messages = clm_history_to_json(&agent->history);
 	tools = clm_tools_build_schema(agent);
@@ -382,7 +386,18 @@ clm_agent_start_turn(struct clm_agent *agent)
 
 	json_object_object_add(req, "tools", json_object_get(tools));
 
-	body = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
+	body_str = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
+	if (body_str == NULL) {
+		clm_agent_set_error(agent, "out of memory");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		return;
+	}
+
+	body = strdup(body_str);
 	if (body == NULL) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
@@ -410,9 +425,11 @@ clm_agent_start_turn(struct clm_agent *agent)
 	turn->tools = tools;
 	tools = NULL;
 	turn->parsed = NULL;
+	turn->body = body;
+	body = NULL;
 
 	clm_http_async_post(agent->uv, agent->llm->base_url, agent->llm->api_key,
-			    body, clm_http_success_cb_wrapper, clm_http_error_cb_wrapper, turn);
+			    turn->body, clm_http_success_cb_wrapper, clm_http_error_cb_wrapper, turn);
 }
 
 /*
