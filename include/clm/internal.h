@@ -25,6 +25,15 @@ struct clm_agent {
 	size_t tool_count;
 	size_t max_iterations;
 	size_t iteration;
+
+	/* Event callbacks */
+	void (*cb_on_assistant_text)(const char *, void *);
+	void (*cb_on_reasoning)(const char *, void *);
+	void (*cb_on_tool_begin)(const char *, const char *, void *);
+	void (*cb_on_tool_result)(const char *, const char *, void *);
+	void (*cb_on_state)(enum clm_agent_state, void *);
+	void (*cb_on_turn_done)(int, void *);
+	void *cb_user;
 };
 
 /* Set agent->last_error to a copy of msg (replacing any previous error). */

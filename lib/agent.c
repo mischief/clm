@@ -51,7 +51,7 @@ clm_tool_register(struct clm_agent *agent, enum clm_tool_type type, const char *
 }
 
 int
-clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, struct clm_agent **out)
+clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbacks *cb, void *user, struct clm_agent **out)
 {
 	struct clm_agent *agent;
 	int r;
@@ -70,6 +70,16 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, struct clm_agent **out)
 	agent->state = CLM_STATE_IDLE;
 	agent->max_iterations = cfg->max_iterations ? cfg->max_iterations : CLM_DEFAULT_MAX_ITERATIONS;
 	clm_history_init(&agent->history);
+
+	if (cb != NULL) {
+		agent->cb_on_assistant_text = cb->on_assistant_text;
+		agent->cb_on_reasoning = cb->on_reasoning;
+		agent->cb_on_tool_begin = cb->on_tool_begin;
+		agent->cb_on_tool_result = cb->on_tool_result;
+		agent->cb_on_state = cb->on_state;
+		agent->cb_on_turn_done = cb->on_turn_done;
+	}
+	agent->cb_user = user;
 
 	r = clm_llm_new(&agent->llm, cfg->provider, cfg->api_key, cfg->base_url,
 	    cfg->model ? cfg->model : "local-model");

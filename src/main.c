@@ -22,6 +22,45 @@ struct cli_state {
 };
 
 static void
+cb_assistant_text(const char *text, void *user)
+{
+}
+
+static void
+cb_reasoning(const char *text, void *user)
+{
+}
+
+static void
+cb_tool_begin(const char *name, const char *args, void *user)
+{
+}
+
+static void
+cb_tool_result(const char *name, const char *content, void *user)
+{
+}
+
+static void
+cb_state(enum clm_agent_state state, void *user)
+{
+}
+
+static void
+cb_turn_done(int status, void *user)
+{
+}
+
+static const struct clm_callbacks cli_callbacks = {
+	.on_assistant_text = cb_assistant_text,
+	.on_reasoning = cb_reasoning,
+	.on_tool_begin = cb_tool_begin,
+	.on_tool_result = cb_tool_result,
+	.on_state = cb_state,
+	.on_turn_done = cb_turn_done,
+};
+
+static void
 on_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 {
 	buf->base = malloc(suggested_size);
@@ -125,7 +164,7 @@ main(int argc, char *argv[])
 	loop = uv_default_loop();
 	state.loop = loop;
 
-	r = clm_agent_new(&cfg, loop, &state.agent);
+	r = clm_agent_new(&cfg, loop, &cli_callbacks, &state, &state.agent);
 	if (r < 0) {
 		fprintf(stderr, "error: failed to create agent (%d)\n", r);
 		return 1;
