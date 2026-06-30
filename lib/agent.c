@@ -142,6 +142,8 @@ clm_agent_get_last_error(const struct clm_agent *agent)
 	return agent->last_error;
 }
 
+static void clm_agent_start_turn(struct clm_agent *agent);
+
 int
 clm_agent_submit(struct clm_agent *agent, const char *prompt)
 {
@@ -164,7 +166,227 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
 
+	clm_agent_start_turn(agent);
+
 	return 0;
+}
+
+struct clm_async_turn {
+	struct clm_agent *agent;
+	struct json_object *messages;
+	struct json_object *tools;
+	struct json_object *parsed;
+};
+
+static void
+clm_async_turn_free(struct clm_async_turn *turn)
+{
+	if (turn) {
+		free(turn);
+	}
+}
+
+static int handle_tool_calls(struct clm_agent *agent, struct json_object *tool_calls);
+static struct json_object *response_message(struct json_object *parsed);
+
+static void
+clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
+{
+	struct clm_async_turn *turn = (struct clm_async_turn *)user;
+	struct clm_agent *agent = turn->agent;
+	struct json_object *message, *content = NULL, *tool_calls = NULL;
+	struct json_object *finish_reason_obj = NULL;
+	const char *finish_reason = NULL;
+	int r;
+
+	turn->parsed = resp && resp->body ? json_tokener_parse(resp->body) : NULL;
+	if (resp)
+		clm_http_response_free(resp);
+
+	if (turn->parsed == NULL) {
+		clm_agent_set_error(agent, "could not parse llm response");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		clm_async_turn_free(turn);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-EIO, agent->cb_user);
+		return;
+	}
+
+	message = response_message(turn->parsed);
+	if (message == NULL) {
+		clm_agent_set_error(agent, "could not extract message from llm response");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		clm_async_turn_free(turn);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-EIO, agent->cb_user);
+		return;
+	}
+
+	json_object_object_get_ex(message, "content", &content);
+	json_object_object_get_ex(message, "finish_reason", &finish_reason_obj);
+	if (finish_reason_obj)
+		finish_reason = json_object_get_string(finish_reason_obj);
+
+	if (finish_reason && strcmp(finish_reason, "tool_calls") == 0) {
+		json_object_object_get_ex(message, "tool_calls", &tool_calls);
+		if (tool_calls) {
+			agent->state = CLM_STATE_CALLING_TOOL;
+			if (agent->cb_on_state)
+				agent->cb_on_state(agent->state, agent->cb_user);
+
+			r = handle_tool_calls(agent, tool_calls);
+			if (r < 0) {
+				clm_agent_set_error(agent, "tool execution failed");
+				agent->state = CLM_STATE_ERROR;
+				if (agent->cb_on_state)
+					agent->cb_on_state(agent->state, agent->cb_user);
+				clm_async_turn_free(turn);
+				if (agent->cb_on_turn_done)
+					agent->cb_on_turn_done(r, agent->cb_user);
+				return;
+			}
+
+			agent->state = CLM_STATE_THINKING;
+			if (agent->cb_on_state)
+				agent->cb_on_state(agent->state, agent->cb_user);
+
+			clm_agent_start_turn(agent);
+		} else {
+			clm_agent_set_error(agent, "tool_calls not found in response");
+			agent->state = CLM_STATE_ERROR;
+			if (agent->cb_on_state)
+				agent->cb_on_state(agent->state, agent->cb_user);
+			clm_async_turn_free(turn);
+			if (agent->cb_on_turn_done)
+				agent->cb_on_turn_done(-EIO, agent->cb_user);
+		}
+	} else {
+		if (content) {
+			const char *text = json_object_get_string(content);
+			if (agent->cb_on_assistant_text)
+				agent->cb_on_assistant_text(text, agent->cb_user);
+		}
+
+		agent->state = CLM_STATE_COMPLETE;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+
+		clm_async_turn_free(turn);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(0, agent->cb_user);
+	}
+}
+
+static void
+clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
+{
+	struct clm_async_turn *turn = (struct clm_async_turn *)user;
+	struct clm_agent *agent = turn->agent;
+
+	clm_agent_set_error(agent, error_msg ? error_msg : "http request failed");
+	agent->state = CLM_STATE_ERROR;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	clm_async_turn_free(turn);
+	if (agent->cb_on_turn_done)
+		agent->cb_on_turn_done(error_code, agent->cb_user);
+}
+
+static void
+clm_agent_start_turn(struct clm_agent *agent)
+{
+	json_cleanup struct json_object *req = NULL;
+	json_cleanup struct json_object *messages = NULL;
+	json_cleanup struct json_object *tools = NULL;
+	json_cleanup struct json_object *jmodel = NULL;
+	json_cleanup struct json_object *jstream = NULL;
+	struct clm_async_turn *turn;
+	const char *body;
+
+	messages = clm_history_to_json(&agent->history);
+	tools = clm_tools_build_schema(agent);
+	if (messages == NULL || tools == NULL) {
+		clm_agent_set_error(agent, "out of memory");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		return;
+	}
+
+	req = json_object_new_object();
+	if (req == NULL) {
+		clm_agent_set_error(agent, "out of memory");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		return;
+	}
+
+	jmodel = json_object_new_string(agent->llm->model);
+	if (jmodel == NULL) {
+		clm_agent_set_error(agent, "out of memory");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		return;
+	}
+	json_object_object_add(req, "model", jmodel);
+
+	json_object_object_add(req, "messages", json_object_get(messages));
+
+	jstream = json_object_new_boolean(0);
+	if (jstream == NULL) {
+		clm_agent_set_error(agent, "out of memory");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		return;
+	}
+	json_object_object_add(req, "stream", jstream);
+
+	json_object_object_add(req, "tools", json_object_get(tools));
+
+	body = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
+	if (body == NULL) {
+		clm_agent_set_error(agent, "out of memory");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		return;
+	}
+
+	turn = malloc(sizeof(struct clm_async_turn));
+	if (turn == NULL) {
+		clm_agent_set_error(agent, "out of memory");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		return;
+	}
+
+	turn->agent = agent;
+	turn->messages = messages;
+	turn->tools = tools;
+	turn->parsed = NULL;
+
+	clm_http_async_post(agent->uv, agent->llm->base_url, agent->llm->api_key,
+			    body, clm_http_success_cb_wrapper, clm_http_error_cb_wrapper, turn);
 }
 
 /*
