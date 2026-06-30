@@ -8,6 +8,7 @@
 
 #include "clm/agent.h"
 #include "clm/http.h"
+#include "clm/http_async.h"
 #include "clm/llm.h"
 #include "clm/tools.h"
 #include "clm/history.h"
@@ -139,6 +140,31 @@ clm_agent_get_last_error(const struct clm_agent *agent)
 	if (agent == NULL || agent->last_error == NULL)
 		return "";
 	return agent->last_error;
+}
+
+int
+clm_agent_submit(struct clm_agent *agent, const char *prompt)
+{
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(prompt != NULL, -EINVAL);
+
+	if (agent->state != CLM_STATE_IDLE && agent->state != CLM_STATE_COMPLETE) {
+		clm_agent_set_error(agent, "turn already in progress");
+		return -EBUSY;
+	}
+
+	if (clm_history_add_user(&agent->history, prompt) == NULL) {
+		clm_agent_set_error(agent, "out of memory");
+		agent->state = CLM_STATE_ERROR;
+		return -ENOMEM;
+	}
+
+	agent->state = CLM_STATE_THINKING;
+
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+
+	return 0;
 }
 
 /*

@@ -24,6 +24,9 @@ struct cli_state {
 static void
 cb_assistant_text(const char *text, void *user)
 {
+	(void)user;
+	printf("assistant> %s", text);
+	fflush(stdout);
 }
 
 static void
@@ -34,6 +37,8 @@ cb_reasoning(const char *text, void *user)
 static void
 cb_tool_begin(const char *name, const char *args, void *user)
 {
+	printf("[tool: %s %s]\n", name, args ? args : "");
+	fflush(stdout);
 }
 
 static void
@@ -49,6 +54,12 @@ cb_state(enum clm_agent_state state, void *user)
 static void
 cb_turn_done(int status, void *user)
 {
+	(void)user;
+	if (status == 0) {
+		printf("\n\n");
+	} else {
+		fprintf(stderr, "error: turn failed with status %d\n", status);
+	}
 }
 
 static const struct clm_callbacks cli_callbacks = {
@@ -72,6 +83,13 @@ on_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 }
 
 static void
+on_stdin_close(uv_handle_t *handle)
+{
+	struct cli_state *state = (struct cli_state *)handle->data;
+	uv_stop(state->loop);
+}
+
+static void
 on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 {
 	struct cli_state *state = (struct cli_state *)stream->data;
@@ -79,9 +97,13 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 	if (n_read < 0) {
 		if (n_read == UV_ENOBUFS)
 			return;
-		if (n_read != UV_EOF)
-			fprintf(stderr, "read error: %s\n", uv_err_name(n_read));
-		uv_close((uv_handle_t *)stream, NULL);
+		if (n_read == UV_EOF) {
+			free(buf->base);
+			uv_close((uv_handle_t *)stream, on_stdin_close);
+			return;
+		}
+		fprintf(stderr, "read error: %s\n", uv_err_name(n_read));
+		uv_close((uv_handle_t *)stream, on_stdin_close);
 		return;
 	}
 
@@ -104,17 +126,13 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 			if (state->prompt_len > 0) {
 				if (strcmp(state->prompt_line, "quit") == 0 || strcmp(state->prompt_line, "exit") == 0) {
 					free(buf->base);
-					uv_close((uv_handle_t *)stream, NULL);
+					uv_close((uv_handle_t *)stream, on_stdin_close);
 					return;
 				}
 
-				char *result = NULL;
-				int r = clm_agent_run(state->agent, state->prompt_line, &result);
+				int r = clm_agent_submit(state->agent, state->prompt_line);
 				if (r < 0) {
 					fprintf(stderr, "error: %s\n", clm_agent_get_last_error(state->agent));
-				} else {
-					printf("assistant> %s\n\n", result);
-					free(result);
 				}
 			}
 

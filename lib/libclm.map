@@ -4,6 +4,7 @@
 		clm_agent_free;
 		clm_agent_free_ptr;
 		clm_agent_run;
+		clm_agent_submit;
 		clm_agent_get_state;
 		clm_agent_get_last_error;
 		clm_tool_register;
