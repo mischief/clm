@@ -3,6 +3,7 @@ clm_lib_src = files('agent.c', 'http.c', 'llm.c', 'tools.c', 'history.c')
 clm_lib_deps = [
   dependency('libcurl'),
   dependency('json-c'),
+  dependency('libuv'),
 ]
 
 # Lib sources find "clm/..." via ../include, and "useful.h"/"banned.h" via

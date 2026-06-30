@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <uv.h>
+
 #include "clm/clm_export.h"
 
 struct clm_agent;
