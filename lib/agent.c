@@ -182,6 +182,12 @@ static void
 clm_async_turn_free(struct clm_async_turn *turn)
 {
 	if (turn) {
+		if (turn->messages)
+			json_object_put(turn->messages);
+		if (turn->tools)
+			json_object_put(turn->tools);
+		if (turn->parsed)
+			json_object_put(turn->parsed);
 		free(turn);
 	}
 }
@@ -392,7 +398,9 @@ clm_agent_start_turn(struct clm_agent *agent)
 
 	turn->agent = agent;
 	turn->messages = messages;
+	messages = NULL;
 	turn->tools = tools;
+	tools = NULL;
 	turn->parsed = NULL;
 
 	clm_http_async_post(agent->uv, agent->llm->base_url, agent->llm->api_key,
