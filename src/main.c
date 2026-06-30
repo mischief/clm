@@ -25,6 +25,10 @@ static void
 on_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 {
 	buf->base = malloc(suggested_size);
+	if (buf->base == NULL) {
+		buf->len = 0;
+		return;
+	}
 	buf->len = suggested_size;
 }
 
@@ -34,6 +38,8 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 	struct cli_state *state = (struct cli_state *)stream->data;
 
 	if (n_read < 0) {
+		if (n_read == UV_ENOBUFS)
+			return;
 		if (n_read != UV_EOF)
 			fprintf(stderr, "read error: %s\n", uv_err_name(n_read));
 		uv_close((uv_handle_t *)stream, NULL);
