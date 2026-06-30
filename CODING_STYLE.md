@@ -77,7 +77,7 @@ Single-statement bodies may omit braces, but always add them when the body
 spans multiple lines or when mixing with an `else`:
 
 ```c
-if (p == NULL)
+if (!p)
         return -EINVAL;
 
 if (condition) {
@@ -405,16 +405,16 @@ Section order within a source file:
   ```
 
   ```c
-  int
-  example(void)
-  {
-          autofree char *buf = NULL;
+   int
+   example(void)
+   {
+           autofree char *buf = NULL;
 
-          buf = malloc(256);
-          if(buf == NULL)
-                  return -ENOMEM;
+           buf = malloc(256);
+           if (!buf)
+                   return -ENOMEM;
 
-          /* buf is freed automatically on all return paths */
+           /* buf is freed automatically on all return paths */
           return fill(buf, 256);
   }
   ```
