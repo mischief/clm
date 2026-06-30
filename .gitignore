@@ -1,0 +1,7 @@
+build/
+build-*/
+.*.swp
+core.*
+fuzz/out_*
+vgcore.*
+*.txt

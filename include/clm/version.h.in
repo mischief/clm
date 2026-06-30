@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: ISC
+#ifndef CLM_VERSION_H
+#define CLM_VERSION_H
+
+#define CLM_VERSION "@VERSION@"
+
+#endif

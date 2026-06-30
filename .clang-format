@@ -1,0 +1,45 @@
+# BSD KNF (Kernel Normal Form) — see style(9)
+BasedOnStyle: LLVM
+Language: C
+
+# Indentation: 8-character hard tabs
+IndentWidth:            8
+TabWidth:               8
+UseTab:                 ForIndentation
+ContinuationIndentWidth: 4
+
+ColumnLimit:            80
+
+# Braces: control structures on same line, function body on new line
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterControlStatement:  Never
+  AfterEnum:              false
+  AfterFunction:          true
+  AfterStruct:            false
+  AfterUnion:             false
+  BeforeElse:             false
+  IndentBraces:           false
+
+# Return type on its own line for definitions, same line for prototypes
+BreakAfterReturnType:   AllDefinitions
+
+# * binds to the name: char *p
+PointerAlignment:       Right
+
+# Space after control keywords (if, while, for, switch), not after function names
+SpaceBeforeParens:      ControlStatements
+
+# case at same indentation level as switch
+IndentCaseLabels:       false
+
+# No space inside parentheses
+SpacesInParens:         Never
+
+# Includes: preserve existing order
+SortIncludes:           Never
+
+# KNF tab-aligns * and names across declaration blocks, but clang-format uses
+# spaces for mid-line alignment so it cannot reproduce this correctly.
+# Do it by hand or omit it; do not enable this.
+AlignConsecutiveDeclarations: false

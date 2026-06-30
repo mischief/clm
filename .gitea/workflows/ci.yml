@@ -1,0 +1,50 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: openbsd
+    steps:
+      - name: checkout
+        run: git clone --branch ${{ github.ref_name }} --depth 1 ${{ github.server_url }}/${{ github.repository }} src
+
+      - name: setup
+        run: CC=clang-21 meson setup build src
+
+      - name: compile
+        run: meson compile -C build
+
+      - name: test
+        run: meson test -C build
+
+      - name: clang-format
+        run: ninja -C build clang-format-check
+
+      - name: clang-tidy
+        run: ninja -C build clang-tidy
+
+      - name: cppcheck
+        run: ninja -C build cppcheck
+
+  sanitizers:
+    runs-on: openbsd
+    # ASan is unsupported on OpenBSD. UBSan runtime library is not shipped in
+    # base or ports clang. Use trap-based UBSan: violations crash with SIGILL,
+    # which fails the test suite. -Wl,--no-execute-only opts out of W^X for
+    # this development-only build.
+    steps:
+      - name: checkout
+        run: git clone --branch ${{ github.ref_name }} --depth 1 ${{ github.server_url }}/${{ github.repository }} src
+
+      - name: setup
+        run: >
+          CC=clang-21 meson setup build-ubsan src
+          -Dc_args="-fsanitize=undefined -fsanitize-trap=undefined"
+          -Dc_link_args="-Wl,--no-execute-only"
+
+      - name: compile
+        run: meson compile -C build-ubsan
+
+      - name: test
+        run: meson test -C build-ubsan
