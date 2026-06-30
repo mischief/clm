@@ -200,6 +200,8 @@ main(int argc, char *argv[])
 
 	printf("clm agent. api: %s\n", api_url);
 	printf("type 'quit' or 'exit' to stop.\n\n");
+	printf("user> ");
+	fflush(stdout);
 
 	uv_pipe_init(loop, &state.stdin_pipe, 0);
 	uv_pipe_open(&state.stdin_pipe, fileno(stdin));
