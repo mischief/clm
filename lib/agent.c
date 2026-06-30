@@ -267,6 +267,16 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 	} else {
 		if (content) {
 			const char *text = json_object_get_string(content);
+			if (clm_history_add_assistant_text(&agent->history, text) == NULL) {
+				clm_agent_set_error(agent, "out of memory");
+				agent->state = CLM_STATE_ERROR;
+				if (agent->cb_on_state)
+					agent->cb_on_state(agent->state, agent->cb_user);
+				clm_async_turn_free(turn);
+				if (agent->cb_on_turn_done)
+					agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+				return;
+			}
 			if (agent->cb_on_assistant_text)
 				agent->cb_on_assistant_text(text, agent->cb_user);
 		}
