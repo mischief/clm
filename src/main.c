@@ -122,7 +122,10 @@ main(int argc, char *argv[])
 	cfg.model = model;
 	cfg.max_iterations = 25;
 
-	r = clm_agent_new(&cfg, &state.agent);
+	loop = uv_default_loop();
+	state.loop = loop;
+
+	r = clm_agent_new(&cfg, loop, &state.agent);
 	if (r < 0) {
 		fprintf(stderr, "error: failed to create agent (%d)\n", r);
 		return 1;
@@ -139,10 +142,6 @@ main(int argc, char *argv[])
 		free(result);
 		return 0;
 	}
-
-	loop = uv_default_loop();
-	state.loop = loop;
-	state.agent = state.agent;
 
 	printf("clm agent. api: %s\n", api_url);
 	printf("type 'quit' or 'exit' to stop.\n\n");

@@ -51,7 +51,7 @@ clm_tool_register(struct clm_agent *agent, enum clm_tool_type type, const char *
 }
 
 int
-clm_agent_new(const struct clm_cfg *cfg, struct clm_agent **out)
+clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, struct clm_agent **out)
 {
 	struct clm_agent *agent;
 	int r;
@@ -60,11 +60,13 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_agent **out)
 	ASSERT_RETURN(cfg != NULL, -EINVAL);
 	ASSERT_RETURN(cfg->api_key != NULL, -EINVAL);
 	ASSERT_RETURN(cfg->base_url != NULL, -EINVAL);
+	ASSERT_RETURN(uv != NULL, -EINVAL);
 
 	agent = calloc(1, sizeof(*agent));
 	if (agent == NULL)
 		return -ENOMEM;
 
+	agent->uv = uv;
 	agent->state = CLM_STATE_IDLE;
 	agent->max_iterations = cfg->max_iterations ? cfg->max_iterations : CLM_DEFAULT_MAX_ITERATIONS;
 	clm_history_init(&agent->history);

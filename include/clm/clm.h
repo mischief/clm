@@ -47,7 +47,7 @@ struct clm_cfg {
 	size_t max_iterations;
 };
 
-CLM_API int clm_agent_new(const struct clm_cfg *cfg, struct clm_agent **out);
+CLM_API int clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, struct clm_agent **out);
 CLM_API void clm_agent_free(struct clm_agent *agent);
 CLM_API int clm_agent_run(struct clm_agent *agent, const char *prompt, char **result);
 CLM_API enum clm_agent_state clm_agent_get_state(const struct clm_agent *agent);

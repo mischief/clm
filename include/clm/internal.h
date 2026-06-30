@@ -17,6 +17,7 @@
 
 struct clm_agent {
 	struct clm_llm *llm;
+	uv_loop_t *uv;
 	enum clm_agent_state state;
 	char *last_error;
 	struct clm_history history;
