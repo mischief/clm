@@ -12,7 +12,14 @@
 #include "clm/log.h"
 #include "clm/cleanup.h"
 #include "useful.h"
+#include "version.h"
 #include "banned.h"
+
+/* Base User-Agent: product token, version, and a homepage comment. Kept
+ * minimal (no OS/arch/stack leakage) by design; an optional per-request
+ * "(tool: <name>)" comment is appended for tool/plugin attribution. */
+#define CLM_HOMEPAGE "https://github.com/mischief/clm"
+#define CLM_UA_BASE "clm/" CLM_VERSION " (+" CLM_HOMEPAGE ")"
 
 static size_t
 http_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
@@ -152,7 +159,8 @@ http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void 
 int
 clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
     const char *json_body, clm_http_success_cb success_cb, clm_http_error_cb error_cb,
-    clm_http_data_cb data_cb, void *user, struct clm_http_request **out_req)
+    clm_http_data_cb data_cb, const char *client_suffix, void *user,
+    struct clm_http_request **out_req)
 {
 	struct clm_http_request *req;
 	char auth_header[512];
@@ -224,6 +232,16 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	curl_easy_setopt(req->easy_handle, CURLOPT_WRITEFUNCTION, http_write_callback);
 	curl_easy_setopt(req->easy_handle, CURLOPT_WRITEDATA, req);
 	curl_easy_setopt(req->easy_handle, CURLOPT_HTTPHEADER, req->headers);
+
+	/* Minimal, deliberate User-Agent; append a tool/plugin comment if given. */
+	if (client_suffix != NULL && client_suffix[0] != '\0') {
+		char ua[256];
+		(void)snprintf(ua, sizeof(ua), "%s (tool: %s)", CLM_UA_BASE,
+		    client_suffix);
+		curl_easy_setopt(req->easy_handle, CURLOPT_USERAGENT, ua);
+	} else {
+		curl_easy_setopt(req->easy_handle, CURLOPT_USERAGENT, CLM_UA_BASE);
+	}
 	curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 120L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, req);
 

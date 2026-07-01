@@ -565,7 +565,7 @@ clm_agent_compact(struct clm_agent *agent)
 
 	r = clm_http_async_post(agent->uv, agent->llm->base_url,
 	    agent->llm->api_key, body, compact_success_cb, compact_error_cb,
-	    NULL, agent, &agent->inflight);
+	    NULL, NULL, agent, &agent->inflight);
 	if (r < 0) {
 		free(agent->compact_body);
 		agent->compact_body = NULL;
@@ -1031,7 +1031,7 @@ clm_agent_fetch_props(struct clm_agent *agent)
 		return;
 	(void)clm_http_async_post(agent->uv, agent->props_url,
 	    agent->llm->api_key, NULL, props_success_cb, props_error_cb, NULL,
-	    agent, NULL);
+	    NULL, agent, NULL);
 }
 
 /* Health probe completed (GET /v1/models): 2xx is online, anything else is
@@ -1085,7 +1085,7 @@ clm_agent_check_connection(struct clm_agent *agent)
 	 * out_req is NULL so this probe is not tracked for cancellation. */
 	return clm_http_async_post(agent->uv, agent->models_url,
 	    agent->llm->api_key, NULL, health_success_cb, health_error_cb, NULL,
-	    agent, NULL);
+	    NULL, agent, NULL);
 }
 
 int
@@ -1227,8 +1227,8 @@ clm_agent_start_turn(struct clm_agent *agent)
 
 	clm_http_async_post(agent->uv, agent->llm->base_url, agent->llm->api_key,
 			    turn->body, clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
-			    agent->stream ? clm_http_data_cb_wrapper : NULL, turn,
-			    &agent->inflight);
+			    agent->stream ? clm_http_data_cb_wrapper : NULL, NULL,
+			    turn, &agent->inflight);
 }
 
 /*
