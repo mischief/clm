@@ -1781,6 +1781,29 @@ on_health(uv_timer_t *t)
 	clm_agent_check_connection(u->agent);
 }
 
+#ifdef CLM_LUA
+static char *
+xdg_config_path(const char *suffix)
+{
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	const char *home = getenv("HOME");
+	char *out = NULL;
+
+	if (xdg != NULL && xdg[0] != '\0') {
+		size_t n = strlen(xdg) + 1 + strlen(suffix) + 1;
+		out = malloc(n);
+		if (out != NULL)
+			(void)snprintf(out, n, "%s/%s", xdg, suffix);
+	} else if (home != NULL && home[0] != '\0') {
+		size_t n = strlen(home) + sizeof("/.config/") + strlen(suffix);
+		out = malloc(n);
+		if (out != NULL)
+			(void)snprintf(out, n, "%s/.config/%s", home, suffix);
+	}
+	return out;
+}
+#endif
+
 int
 tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
 {
@@ -1815,36 +1838,23 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
 #ifdef CLM_LUA
 	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
 		{
-			const char *xdg = getenv("XDG_CONFIG_HOME");
-			const char *home = getenv("HOME");
-			char cbuf[512];
-			char *cfg_json = NULL;
-			if (xdg != NULL && xdg[0] != '\0')
-				(void)snprintf(cbuf, sizeof(cbuf), "%s/clm/config.lua", xdg);
-			else if (home != NULL && home[0] != '\0')
-				(void)snprintf(cbuf, sizeof(cbuf), "%s/.config/clm/config.lua", home);
-			else
-				cbuf[0] = '\0';
-			if (cbuf[0] != '\0') {
-				cfg_json = clm_lua_load_config(cbuf);
+			char *cpath = xdg_config_path("clm/config.lua");
+			if (cpath != NULL) {
+				char *cfg_json = clm_lua_load_config(cpath);
 				if (cfg_json != NULL) {
 					clm_lua_env_set_config(u->lua_env, cfg_json);
 					free(cfg_json);
 				}
+				free(cpath);
 			}
 		}
 		if (plugin_dir != NULL) {
 			clm_lua_load_plugins(u->lua_env, plugin_dir);
 		} else {
-			const char *xdg = getenv("XDG_CONFIG_HOME");
-			const char *home = getenv("HOME");
-			char pbuf[512];
-			if (xdg != NULL && xdg[0] != '\0') {
-				(void)snprintf(pbuf, sizeof(pbuf), "%s/clm/plugins", xdg);
-				clm_lua_load_plugins(u->lua_env, pbuf);
-			} else if (home != NULL && home[0] != '\0') {
-				(void)snprintf(pbuf, sizeof(pbuf), "%s/.config/clm/plugins", home);
-				clm_lua_load_plugins(u->lua_env, pbuf);
+			char *ppath = xdg_config_path("clm/plugins");
+			if (ppath != NULL) {
+				clm_lua_load_plugins(u->lua_env, ppath);
+				free(ppath);
 			}
 		}
 	}
