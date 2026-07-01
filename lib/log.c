@@ -23,7 +23,7 @@ clm_debug(const char *fmt, ...)
 
 		path = getenv("CLM_DEBUG_LOG");
 		if (path == NULL)
-			path = "/tmp/clm.log";
+			return; /* logging disabled unless explicitly enabled */
 
 		out = fopen(path, "ae");
 		if (out == NULL)

@@ -986,12 +986,12 @@ clm_lua_load_config(const char *path)
 	/* Extract the "tools" subtable. */
 	lua_getfield(L, -1, "tools");
 	if (!lua_istable(L, -1)) {
-		clm_debug("config: no 'tools' table in %s", path);
+		/* No tools section is fine — not an error. */
 		lua_close(L);
 		return NULL;
 	}
 
-	/* Serialize the tools table to JSON using lua_table_to_json. */
+	/* Serialize the tools table to JSON. */
 	out = lua_table_to_json(L, -1);
 	lua_close(L);
 	return out;
