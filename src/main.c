@@ -36,7 +36,8 @@ usage(const char *prog)
 	    "  -h, --help            show this help\n"
 	    "\n"
 	    "  With no options it runs the interactive ncurses UI on a "
-	    "terminal.\n");
+	    "terminal.\n"
+	    "  Set CLM_API_KEY in the environment to send a bearer token.\n");
 }
 
 struct cli_state {
@@ -299,7 +300,13 @@ main(int argc, char *argv[])
 	snprintf(endpoint, sizeof(endpoint), "%.*s/v1/chat/completions",
 	    (int)baselen, api_base);
 
-	cfg.api_key = "sk-no-key-required";
+	/* API key from the environment (kept out of argv, which leaks via ps and
+	 * shell history). Falls back to a placeholder for local no-auth servers. */
+	{
+		const char *key = getenv("CLM_API_KEY");
+		cfg.api_key = (key != NULL && key[0] != '\0') ? key
+		                                              : "sk-no-key-required";
+	}
 	cfg.base_url = endpoint;
 	cfg.provider = CLM_PROVIDER_OPENAI;
 	cfg.model = model;
