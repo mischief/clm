@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -610,6 +611,63 @@ lua_clm_tool_register(lua_State *L)
 /* Sandbox setup                                                       */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Filesystem primitives for plugins                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * clm.read_file(path) -> string or nil, err
+ */
+static int
+lua_clm_read_file(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	FILE *fp = fopen(path, "re");
+	if (fp == NULL) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+
+	luaL_Buffer B;
+	luaL_buffinit(L, &B);
+	char *buf = luaL_prepbuffer(&B);
+	size_t n;
+	while ((n = fread(buf, 1, LUAL_BUFFERSIZE, fp)) > 0) {
+		luaL_addsize(&B, n);
+		buf = luaL_prepbuffer(&B);
+	}
+	fclose(fp);
+	luaL_pushresult(&B);
+	return 1;
+}
+
+/*
+ * clm.write_file(path, content) -> true or nil, err
+ */
+static int
+lua_clm_write_file(lua_State *L)
+{
+	const char *path = luaL_checkstring(L, 1);
+	size_t len;
+	const char *content = luaL_checklstring(L, 2, &len);
+	FILE *fp = fopen(path, "we");
+	if (fp == NULL) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	if (fwrite(content, 1, len, fp) != len) {
+		fclose(fp);
+		lua_pushnil(L);
+		lua_pushstring(L, "write failed");
+		return 2;
+	}
+	fclose(fp);
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static void
 sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 {
@@ -640,6 +698,10 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 	lua_pushlightuserdata(L, plugin);
 	lua_pushcclosure(L, lua_clm_tool_register, 1);
 	lua_setfield(L, -2, "tool_register");
+	lua_pushcfunction(L, lua_clm_read_file);
+	lua_setfield(L, -2, "read_file");
+	lua_pushcfunction(L, lua_clm_write_file);
+	lua_setfield(L, -2, "write_file");
 	lua_setglobal(L, "clm");
 
 	/* Register ctx metatable. */
