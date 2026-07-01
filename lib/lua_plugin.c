@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/queue.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -62,6 +63,7 @@ struct clm_lua_budget {
 
 /* Per-plugin state. */
 struct clm_lua_plugin {
+	TAILQ_ENTRY(clm_lua_plugin) entry;
 	lua_State *L;
 	struct clm_agent *agent;
 	size_t mem_used;
@@ -74,12 +76,12 @@ struct clm_lua_plugin {
 	struct clm_lua_budget budget;
 };
 
+TAILQ_HEAD(clm_lua_plugin_list, clm_lua_plugin);
+
 /* Top-level environment holding all plugins. */
 struct clm_lua_env {
 	struct clm_agent *agent;
-	struct clm_lua_plugin *plugins;
-	size_t count;
-	size_t cap;
+	struct clm_lua_plugin_list plugins;
 	uint64_t exec_timeout_ms; /* global execution timeout */
 	/* Global budget defaults. */
 	size_t http_max_inflight;
@@ -732,32 +734,25 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	struct clm_lua_plugin *plugin;
 	lua_State *L;
 
-	/* Grow the plugins array. */
-	if (env->count >= env->cap) {
-		size_t ncap = env->cap ? env->cap * 2 : 4;
-		struct clm_lua_plugin *np;
-		np = realloc(env->plugins, ncap * sizeof(*np));
-		if (np == NULL)
-			return -ENOMEM;
-		env->plugins = np;
-		env->cap = ncap;
-	}
-
-	plugin = &env->plugins[env->count];
-	memset(plugin, 0, sizeof(*plugin));
+	plugin = calloc(1, sizeof(*plugin));
+	if (plugin == NULL)
+		return -ENOMEM;
 	plugin->agent = env->agent;
 	plugin->mem_limit = CLM_LUA_MEM_LIMIT;
 	plugin->budget.http_max_inflight = env->http_max_inflight;
 	plugin->budget.http_max_per_call = env->http_max_per_call;
 	plugin->budget.json_decode_max = env->json_decode_max;
 	plugin->path = strdup(path);
-	if (plugin->path == NULL)
+	if (plugin->path == NULL) {
+		free(plugin);
 		return -ENOMEM;
+	}
 
 	/* Create a state with a capped allocator. */
 	L = lua_newstate(lua_capped_alloc, plugin);
 	if (L == NULL) {
 		free(plugin->path);
+		free(plugin);
 		return -ENOMEM;
 	}
 	plugin->L = L;
@@ -806,6 +801,7 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 		clm_debug("lua: failed to load %s: %s", path, err ? err : "?");
 		lua_close(L);
 		free(plugin->path);
+		free(plugin);
 		return -EINVAL;
 	}
 	/*
@@ -827,10 +823,11 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 		clm_debug("lua: error executing %s: %s", path, err ? err : "?");
 		lua_close(L);
 		free(plugin->path);
+		free(plugin);
 		return -EINVAL;
 	}
 
-	env->count++;
+	TAILQ_INSERT_TAIL(&env->plugins, plugin, entry);
 	clm_debug("lua: loaded plugin %s", path);
 	return 0;
 }
@@ -851,6 +848,7 @@ clm_lua_env_new(struct clm_agent *agent, struct clm_lua_env **out)
 	if (env == NULL)
 		return -ENOMEM;
 	env->agent = agent;
+	TAILQ_INIT(&env->plugins);
 	env->exec_timeout_ms = CLM_LUA_EXEC_TIMEOUT_MS;
 	env->http_max_inflight = CLM_LUA_HTTP_MAX_INFLIGHT;
 	env->http_max_per_call = CLM_LUA_HTTP_MAX_PER_CALL;
@@ -959,10 +957,13 @@ clm_lua_load_plugins(struct clm_lua_env *env, const char *dir)
 CLM_API void
 clm_lua_env_free(struct clm_lua_env *env)
 {
+	struct clm_lua_plugin *p, *tmp;
+
 	if (env == NULL)
 		return;
-	for (size_t i = 0; i < env->count; i++) {
-		struct clm_lua_plugin *p = &env->plugins[i];
+	p = TAILQ_FIRST(&env->plugins);
+	while (p != NULL) {
+		tmp = TAILQ_NEXT(p, entry);
 		/* Free tool user structs and unref invoke functions. */
 		for (size_t j = 0; j < p->tool_user_count; j++) {
 			luaL_unref(p->L, LUA_REGISTRYINDEX,
@@ -973,8 +974,9 @@ clm_lua_env_free(struct clm_lua_env *env)
 		if (p->L != NULL)
 			lua_close(p->L);
 		free(p->path);
+		free(p);
+		p = tmp;
 	}
-	free(env->plugins);
 	if (env->tool_config != NULL)
 		json_object_put(env->tool_config);
 	free(env);
