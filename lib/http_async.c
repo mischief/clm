@@ -274,6 +274,8 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 		curl_easy_setopt(req->easy_handle, CURLOPT_USERAGENT, CLM_UA_BASE);
 	}
 	curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 120L);
+	curl_easy_setopt(req->easy_handle, CURLOPT_FOLLOWLOCATION, 1L);
+	curl_easy_setopt(req->easy_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
 	curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, req);
 
 	curl_multi_setopt(req->multi_handle, CURLMOPT_SOCKETFUNCTION, http_socket_callback);
