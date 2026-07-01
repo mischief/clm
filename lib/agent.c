@@ -1053,11 +1053,13 @@ health_success_cb(struct clm_http_response *resp, void *user)
 	int status = resp ? resp->status_code : -1;
 
 	if (agent->cb_on_connection) {
-		if (status >= 200 && status < 300) {
+		if (status >= 200 && status < 500) {
+			/* 2xx = healthy; 4xx = server is reachable but the
+			 * models endpoint is missing or auth-gated. Either
+			 * way, the server is up. */
 			agent->cb_on_connection(CLM_CONN_ONLINE, NULL,
 			    agent->cb_user);
-			/* Learn the context window once, now that it's up. */
-			if (agent->ctx_max == 0)
+			if (agent->ctx_max == 0 && status >= 200 && status < 300)
 				clm_agent_fetch_props(agent);
 		} else {
 			char detail[64];
