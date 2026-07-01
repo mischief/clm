@@ -614,10 +614,22 @@ inv_compute_limits(struct clm_tool_invocation *inv)
 	inv->timeout_ms = to;
 }
 
-/* Actually invoke the resolved tool (past the permission gate). */
+/*
+ * Actually invoke the resolved tool (past the permission gate). The timeout
+ * clock starts here, not at dispatch: it bounds the tool's execution, not the
+ * time a user spends deciding at the permission prompt.
+ */
 static void
 run_invoke(struct clm_tool_invocation *inv)
 {
+	struct clm_agent *agent = inv->batch->agent;
+
+	if (inv->timeout_ms > 0 && !inv->timer_init) {
+		uv_timer_init(agent->uv, &inv->timer);
+		inv->timer.data = inv;
+		inv->timer_init = true;
+		uv_timer_start(&inv->timer, on_timeout, inv->timeout_ms, 0);
+	}
 	inv->def->invoke(inv, inv->def->user);
 }
 
@@ -629,13 +641,6 @@ dispatch_one(struct clm_tool_invocation *inv)
 
 	if (agent->cb_on_tool_begin)
 		agent->cb_on_tool_begin(inv->name, inv->args, agent->cb_user);
-
-	if (inv->timeout_ms > 0) {
-		uv_timer_init(agent->uv, &inv->timer);
-		inv->timer.data = inv;
-		inv->timer_init = true;
-		uv_timer_start(&inv->timer, on_timeout, inv->timeout_ms, 0);
-	}
 
 	if (t == NULL) {
 		clm_tool_fail(inv, "unknown tool");
