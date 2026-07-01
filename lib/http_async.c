@@ -176,7 +176,8 @@ http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void 
 
 int
 clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
-    const char *json_body, clm_http_success_cb success_cb, clm_http_error_cb error_cb,
+    const char *json_body, struct curl_slist *extra_headers,
+    clm_http_success_cb success_cb, clm_http_error_cb error_cb,
     clm_http_data_cb data_cb, const char *client_suffix, void *user,
     struct clm_http_request **out_req)
 {
@@ -190,7 +191,6 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 
 	ASSERT_RETURN(loop != NULL, -EINVAL);
 	ASSERT_RETURN(url != NULL, -EINVAL);
-	ASSERT_RETURN(api_key != NULL, -EINVAL);
 	/* json_body == NULL performs a GET (used for the health check). */
 	ASSERT_RETURN(success_cb != NULL, -EINVAL);
 	ASSERT_RETURN(error_cb != NULL, -EINVAL);
@@ -228,17 +228,28 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	}
 	clm_debug("curl_easy_init success");
 
-	if (strlen(api_key) + sizeof("Authorization: Bearer ") >= sizeof(auth_header)) {
-		clm_debug("auth_header too long");
-		curl_easy_cleanup(req->easy_handle);
-		curl_multi_cleanup(req->multi_handle);
-		free(req);
-		return -EINVAL;
+	if (api_key != NULL && api_key[0] != '\0') {
+		if (strlen(api_key) + sizeof("Authorization: Bearer ") >= sizeof(auth_header)) {
+			clm_debug("auth_header too long");
+			curl_easy_cleanup(req->easy_handle);
+			curl_multi_cleanup(req->multi_handle);
+			free(req);
+			return -EINVAL;
+		}
+		(void)snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", api_key);
+		req->headers = curl_slist_append(NULL, "Content-Type: application/json");
+		req->headers = curl_slist_append(req->headers, auth_header);
+	} else {
+		req->headers = NULL;
 	}
-	(void)snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", api_key);
 
-	req->headers = curl_slist_append(NULL, "Content-Type: application/json");
-	req->headers = curl_slist_append(req->headers, auth_header);
+	/* Append any caller-provided extra headers. */
+	if (extra_headers != NULL) {
+		struct curl_slist *h;
+		for (h = extra_headers; h != NULL; h = h->next)
+			req->headers = curl_slist_append(req->headers, h->data);
+		curl_slist_free_all(extra_headers);
+	}
 
 	curl_easy_setopt(req->easy_handle, CURLOPT_URL, url);
 	if (json_body != NULL) {
@@ -249,7 +260,8 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	}
 	curl_easy_setopt(req->easy_handle, CURLOPT_WRITEFUNCTION, http_write_callback);
 	curl_easy_setopt(req->easy_handle, CURLOPT_WRITEDATA, req);
-	curl_easy_setopt(req->easy_handle, CURLOPT_HTTPHEADER, req->headers);
+	if (req->headers != NULL)
+		curl_easy_setopt(req->easy_handle, CURLOPT_HTTPHEADER, req->headers);
 
 	/* Minimal, deliberate User-Agent; append a tool/plugin comment if given. */
 	if (client_suffix != NULL && client_suffix[0] != '\0') {

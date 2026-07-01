@@ -78,6 +78,9 @@ struct clm_http_request {
 /*
  * Initiate an async HTTP POST request.
  *
+ * api_key: if non-NULL and non-empty, adds an Authorization: Bearer header.
+ * extra_headers: optional curl_slist of additional headers (request takes
+ *   ownership and frees them on completion). Pass NULL for none.
  * client_suffix, when non-NULL, is appended to the User-Agent as a comment
  * "(tool: <suffix>)" so the server can attribute the request to a specific
  * tool/plugin. Pass NULL for the base User-Agent only.
@@ -86,7 +89,8 @@ struct clm_http_request {
  * On completion, either success_cb or error_cb will be called.
  */
 int clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
-    const char *json_body, clm_http_success_cb success_cb, clm_http_error_cb error_cb,
+    const char *json_body, struct curl_slist *extra_headers,
+    clm_http_success_cb success_cb, clm_http_error_cb error_cb,
     clm_http_data_cb data_cb, const char *client_suffix, void *user,
     struct clm_http_request **out_req);
 

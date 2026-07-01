@@ -572,8 +572,8 @@ clm_agent_compact(struct clm_agent *agent)
 	agent->compact_body = body;
 
 	r = clm_http_async_post(agent->uv, agent->llm->base_url,
-	    agent->llm->api_key, body, compact_success_cb, compact_error_cb,
-	    NULL, NULL, agent, &agent->inflight);
+	    agent->llm->api_key, body, NULL, compact_success_cb,
+	    compact_error_cb, NULL, NULL, agent, &agent->inflight);
 	if (r < 0) {
 		free(agent->compact_body);
 		agent->compact_body = NULL;
@@ -1040,8 +1040,8 @@ clm_agent_fetch_props(struct clm_agent *agent)
 	    agent->backend != CLM_BACKEND_LLAMACPP)
 		return;
 	(void)clm_http_async_post(agent->uv, agent->props_url,
-	    agent->llm->api_key, NULL, props_success_cb, props_error_cb, NULL,
-	    NULL, agent, NULL);
+	    agent->llm->api_key, NULL, NULL, props_success_cb, props_error_cb,
+	    NULL, NULL, agent, NULL);
 }
 
 /* Health probe completed (GET /v1/models): 2xx is online, anything else is
@@ -1094,8 +1094,8 @@ clm_agent_check_connection(struct clm_agent *agent)
 	/* NULL body => GET. user is the agent, distinct from turn requests;
 	 * out_req is NULL so this probe is not tracked for cancellation. */
 	return clm_http_async_post(agent->uv, agent->models_url,
-	    agent->llm->api_key, NULL, health_success_cb, health_error_cb, NULL,
-	    NULL, agent, NULL);
+	    agent->llm->api_key, NULL, NULL, health_success_cb,
+	    health_error_cb, NULL, NULL, agent, NULL);
 }
 
 int
@@ -1240,7 +1240,8 @@ clm_agent_start_turn(struct clm_agent *agent)
 	clm_debug("posting body: %s", turn->body);
 
 	clm_http_async_post(agent->uv, agent->llm->base_url, agent->llm->api_key,
-			    turn->body, clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
+			    turn->body, NULL, clm_http_success_cb_wrapper,
+			    clm_http_error_cb_wrapper,
 			    agent->stream ? clm_http_data_cb_wrapper : NULL, NULL,
 			    turn, &agent->inflight);
 }

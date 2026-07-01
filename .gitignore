@@ -7,3 +7,5 @@ vgcore.*
 *.txt
 __pycache__/
 *.chat
+lua-plugin-review.md
+plugin-trust-model.md
