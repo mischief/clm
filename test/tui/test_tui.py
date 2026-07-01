@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from driver import (Tui, CTRL_A, CTRL_K, CTRL_U, CTRL_Y, PGUP, PGDN)
+from driver import (Tui, CTRL_A, CTRL_K, CTRL_U, CTRL_Y, PGUP, PGDN, UP, DOWN)
 from mock_server import MockServer
 
 BIN = os.environ.get("CLM_BIN", "clm")
@@ -147,6 +147,28 @@ def test_cancel(url):
         check("hello again" in t.text(), "cancel: input works after cancel")
 
 
+def test_history(url):
+    with Tui(BIN, url, rows=12, cols=60) as t:
+        t.wait_for("online", timeout=8)
+        # Submit two prompts, then walk back through them with Up.
+        t.send(b"alpha one\r")
+        t.pump(0.3)
+        t.send(b"bravo two\r")
+        t.pump(0.3)
+        t.send(UP)          # most recent
+        t.pump(0.3)
+        check("bravo two" in t.lines()[-1],
+              "history: Up recalls the most recent prompt")
+        t.send(UP)          # older
+        t.pump(0.3)
+        check("alpha one" in t.lines()[-1],
+              "history: Up again recalls the older prompt")
+        t.send(DOWN)        # back toward newest
+        t.pump(0.3)
+        check("bravo two" in t.lines()[-1],
+              "history: Down returns toward the newer prompt")
+
+
 def main():
     with MockServer() as srv:
         test_connection_online(srv.url)
@@ -155,6 +177,7 @@ def main():
         test_scrollback(srv.url)
         test_resize(srv.url)
         test_editing(srv.url)
+        test_history(srv.url)
         test_commands(srv.url)
         test_queueing(srv.url)
         test_cancel(srv.url)

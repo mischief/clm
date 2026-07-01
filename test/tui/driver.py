@@ -31,6 +31,11 @@ PGUP = b"\x1b[5~"
 PGDN = b"\x1b[6~"
 LEFT = b"\x1b[D"
 RIGHT = b"\x1b[C"
+# Cursor up/down in keypad application mode (SS3), which is what an app that
+# called keypad(TRUE) puts the terminal into. Plain CSI (\x1b[A) is NOT what
+# ncurses expects in that mode, so use these for arrow-key tests.
+UP = b"\x1bOA"
+DOWN = b"\x1bOB"
 
 
 class Tui:

@@ -118,6 +118,16 @@ struct ui {
 	char **queue;
 	size_t nqueue, cap_queue;
 
+	/*
+	 * Submitted-prompt history for Up/Down recall. hist_pos == nhist means
+	 * "the live line"; browsing up saves the live line in hist_saved so
+	 * Down past the newest entry restores it (readline-style).
+	 */
+	char **hist;
+	size_t nhist, cap_hist;
+	size_t hist_pos;
+	char hist_saved[1024];
+
 	bool dirty;       /* repaint requested */
 	bool full_redraw; /* force an artifact-free repaint (resize / ^L) */
 	bool quit;
@@ -1077,12 +1087,91 @@ run_command(struct ui *u, const char *line)
 #undef CMD
 }
 
+/*
+ * Record a submitted line in the recall history. Skips empties and immediate
+ * duplicates of the most recent entry. The browse cursor is reset to the live
+ * line by the caller after submit.
+ */
+static void
+hist_add(struct ui *u, const char *line)
+{
+	char *dup;
+
+	if (line[0] == '\0')
+		return;
+	if (u->nhist > 0 && strcmp(u->hist[u->nhist - 1], line) == 0)
+		return;
+
+	if (u->nhist == u->cap_hist) {
+		size_t ncap = u->cap_hist ? u->cap_hist * 2 : 16;
+		char **h = realloc(u->hist, ncap * sizeof(*h));
+		if (h == NULL)
+			return; /* history is best-effort */
+		u->hist = h;
+		u->cap_hist = ncap;
+	}
+	dup = strdup(line);
+	if (dup == NULL)
+		return;
+	u->hist[u->nhist++] = dup;
+}
+
+/* Load a history entry (or a saved live line) into the input buffer. */
+static void
+hist_load(struct ui *u, const char *text)
+{
+	size_t n = strlen(text);
+
+	if (n >= sizeof(u->input))
+		n = sizeof(u->input) - 1;
+	memcpy(u->input, text, n);
+	u->input[n] = '\0';
+	u->input_len = n;
+	u->input_pos = n;
+	u->dirty = true;
+}
+
+/*
+ * Move through the prompt history. dir < 0 goes to older entries, dir > 0 to
+ * newer. Stepping up from the live line stashes it so stepping back down
+ * restores it; stepping down past the newest entry returns to that live line.
+ */
+static void
+hist_recall(struct ui *u, int dir)
+{
+	if (u->nhist == 0)
+		return;
+
+	if (dir < 0) { /* older */
+		if (u->hist_pos == 0)
+			return; /* already at the oldest */
+		if (u->hist_pos == u->nhist) {
+			/* Leaving the live line: save it for the trip back. */
+			u->input[u->input_len] = '\0';
+			(void)snprintf(u->hist_saved, sizeof(u->hist_saved),
+			    "%s", u->input);
+		}
+		u->hist_pos--;
+		hist_load(u, u->hist[u->hist_pos]);
+	} else { /* newer */
+		if (u->hist_pos >= u->nhist)
+			return; /* already at the live line */
+		u->hist_pos++;
+		if (u->hist_pos == u->nhist)
+			hist_load(u, u->hist_saved); /* back to the live line */
+		else
+			hist_load(u, u->hist[u->hist_pos]);
+	}
+}
+
 static void
 submit_line(struct ui *u)
 {
 	u->input[u->input_len] = '\0';
 	if (u->input_len == 0)
 		return;
+
+	hist_add(u, u->input);
 
 	if (u->input[0] == '/')
 		run_command(u, u->input);
@@ -1095,6 +1184,8 @@ submit_line(struct ui *u)
 
 	u->input_len = 0;
 	u->input_pos = 0;
+	u->hist_pos = u->nhist; /* reset recall to the live line */
+	u->hist_saved[0] = '\0';
 	u->dirty = true;
 }
 
@@ -1211,6 +1302,12 @@ handle_keys(struct ui *u)
 				u->input_pos = next_boundary(
 				    u->input, u->input_pos, u->input_len);
 				u->dirty = true;
+				break;
+			case KEY_UP: /* recall an older prompt */
+				hist_recall(u, -1);
+				break;
+			case KEY_DOWN: /* recall a newer prompt */
+				hist_recall(u, +1);
 				break;
 			case KEY_HOME:
 				u->input_pos = 0;
@@ -1496,6 +1593,9 @@ tui_run(const struct clm_cfg *cfg)
 	for (size_t i = 0; i < u->nqueue; i++)
 		free(u->queue[i]);
 	free(u->queue);
+	for (size_t i = 0; i < u->nhist; i++)
+		free(u->hist[i]);
+	free(u->hist);
 	free(u);
 
 	return 0;
