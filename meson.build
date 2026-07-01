@@ -1,5 +1,5 @@
 project('clm', 'c',
-  version: '0.1',
+  version: '0.1.1',
   license: 'ISC',
   meson_version: '>=1.1',
   default_options: [
@@ -55,7 +55,7 @@ endforeach
 
 clm_inc = include_directories('.')
 
-configure_file(
+version_h = configure_file(
   input: 'include/clm/version.h.in',
   output: 'version.h',
   configuration: {'VERSION': meson.project_version()},

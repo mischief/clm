@@ -30,10 +30,10 @@ md_render_lib = static_library('md_render',
 # ncurses' own macros (NCURSES_CAST) trip -Wuseless-cast; not our code.
 curses_warn = cc.get_supported_arguments('-Wno-useless-cast')
 
-clm_exe = executable('clm', clm_src + files('tui.c'),
+clm_exe = executable('clm', clm_src + files('tui.c') + [version_h],
   link_with: [clm_lib, md_render_lib],
   dependencies: clm_bin_deps + [curses_dep, jsonc_dep],
-  include_directories: [clm_bin_inc, md_render_inc],
+  include_directories: [clm_bin_inc, md_render_inc, clm_inc],
   c_args: curses_warn,
   install: true,
 )

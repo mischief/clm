@@ -8,6 +8,7 @@
 
 #include "clm/clm.h"
 #include "frontend.h"
+#include "version.h"
 
 #ifdef CLM_LUA
 #include "clm/lua_plugin.h"
@@ -18,7 +19,8 @@ usage(const char *prog)
 {
 	fprintf(stderr,
 	    "usage: %s [-o|--oneshot PROMPT] [-H|--headless] [-u|--url BASE] "
-	    "[-m|--model NAME] [-p|--plugins DIR] [-S|--no-stream] [-h|--help]\n",
+	    "[-m|--model NAME] [-p|--plugins DIR] [-S|--no-stream] "
+	    "[-V|--version] [-h|--help]\n",
 	    prog);
 	fprintf(stderr,
 	    "  -o, --oneshot PROMPT  run one prompt headless and exit\n"
@@ -30,6 +32,7 @@ usage(const char *prog)
 	    "  -p, --plugins DIR     plugin directory "
 	    "(default $XDG_CONFIG_HOME/clm/plugins)\n"
 	    "  -S, --no-stream       disable streamed (SSE) responses\n"
+	    "  -V, --version         print version and exit\n"
 	    "  -h, --help            show this help\n"
 	    "\n"
 	    "  With no options it runs the interactive ncurses UI on a "
@@ -269,17 +272,19 @@ main(int argc, char *argv[])
 		{"plugins", required_argument, NULL, 'p'},
 		{"headless", no_argument, NULL, 'H'},
 		{"no-stream", no_argument, NULL, 'S'},
+		{"version", no_argument, NULL, 'V'},
 		{"help", no_argument, NULL, 'h'},
 		{NULL, 0, NULL, 0},
 	};
 
-	while ((opt = getopt_long(argc, argv, "o:u:m:p:HSh", opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "o:u:m:p:HSVh", opts, NULL)) != -1) {
 		switch (opt) {
 		case 'o': oneshot = optarg; break;
 		case 'u': api_base = optarg; break;
 		case 'm': model = optarg; break;
 		case 'p': plugin_dir = optarg; break;
 		case 'H': headless = 1; break;
+		case 'V': printf("clm %s\n", CLM_VERSION); return 0;
 		case 'S': stream = 0; break;
 		case 'h': usage(argv[0]); return 0;
 		default: usage(argv[0]); return 1;

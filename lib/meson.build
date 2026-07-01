@@ -17,13 +17,14 @@ endif
 # ../include and the project root.
 clm_lib_inc = include_directories('.', '..', '../include')
 
-clm_lib = shared_library('clm', clm_lib_src,
-  version: '0.1.0',
+clm_lib = shared_library('clm', clm_lib_src + [version_h],
+  version: meson.project_version(),
+  # ABI version: bump only on ABI breaks, independent of the release version.
   soversion: '0',
   c_args: ['-DCLM_BUILDING'],
   gnu_symbol_visibility: 'hidden',
   dependencies: clm_lib_deps,
-  include_directories: clm_lib_inc,
+  include_directories: [clm_lib_inc, clm_inc],
   install: true,
   install_dir: get_option('libdir'),
   link_args: ['-Wl,--version-script=' + meson.current_source_dir() / 'libclm.map'],
