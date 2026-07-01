@@ -94,6 +94,34 @@ arg_string(struct json_object *args, const char *key)
 	return strdup(json_object_get_string(v));
 }
 
+/*
+ * Expand a leading "~/" to "$HOME/". Always returns a new allocation
+ * (caller frees). Returns strdup(path) if no expansion needed.
+ */
+static char *
+expand_tilde(const char *path)
+{
+	const char *home;
+	size_t hlen, plen;
+	char *out;
+
+	if (path == NULL)
+		return NULL;
+	if (path[0] != '~' || path[1] != '/') 
+		return strdup(path);
+	home = getenv("HOME");
+	if (home == NULL || home[0] == '\0')
+		return strdup(path);
+	hlen = strlen(home);
+	plen = strlen(path + 1); /* includes the '/' */
+	out = malloc(hlen + plen + 1);
+	if (out == NULL)
+		return strdup(path);
+	memcpy(out, home, hlen);
+	memcpy(out + hlen, path + 1, plen + 1); /* copy '/' + rest + NUL */
+	return out;
+}
+
 static int
 arg_int(struct json_object *args, const char *key, int dflt)
 {
@@ -851,6 +879,13 @@ tool_file_read(struct clm_tool_invocation *inv, void *user)
 		clm_tool_fail(inv, "missing required string argument 'path'");
 		return;
 	}
+	{
+		char *ep = expand_tilde(path);
+		if (ep != NULL) {
+			free(path);
+			path = ep;
+		}
+	}
 
 	offset = arg_int(args, "offset", 1);
 	limit = arg_int(args, "limit", CLM_READ_DEFAULT_LIMIT);
@@ -943,6 +978,13 @@ tool_file_write(struct clm_tool_invocation *inv, void *user)
 	if (path == NULL || content == NULL) {
 		clm_tool_fail(inv, "write_file requires 'path' and 'content' strings");
 		return;
+	}
+	{
+		char *ep = expand_tilde(path);
+		if (ep != NULL) {
+			free(path);
+			path = ep;
+		}
 	}
 
 	fp = fopen(path, "we");
