@@ -41,6 +41,9 @@ struct tstate {
 	enum clm_finish_reason finish;
 	int got_usage;
 	struct clm_usage usage;
+	/* Permission-gate testing. */
+	int perm_prompts;                     /* times on_permission fired */
+	enum clm_permission_decision perm_decision; /* what to answer */
 };
 
 static void
@@ -136,9 +139,18 @@ on_turn_done(int status, void *user)
 	st->turn_status = status;
 }
 
+static void
+on_permission(const struct clm_permission_req *req, void *user)
+{
+	struct tstate *st = user;
+	st->perm_prompts++;
+	clm_tool_permission_respond(st->agent, req, st->perm_decision);
+}
+
 static const struct clm_callbacks callbacks = {
 	.on_assistant_text = on_assistant_text,
 	.on_reasoning = on_reasoning,
+	.on_permission = on_permission,
 	.on_tool_result = on_tool_result,
 	.on_finish_reason = on_finish_reason,
 	.on_usage = on_usage,
@@ -631,6 +643,189 @@ test_history_compact(void)
 	clm_history_free(&h);
 }
 
+/* A NO_PROMPT variant of the echo tool, to check the gate is bypassed. */
+static void
+echo_ok(struct clm_tool_invocation *inv, void *user)
+{
+	(void)user;
+	clm_tool_complete(inv, "ok");
+}
+
+/* (k) Denying a gated tool completes it as failed, and the prompt fired. */
+static void
+test_perm_deny(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+
+	st.loop = loop;
+	st.perm_decision = CLM_PERM_DENY_ONCE;
+	srv = canned_start(loop);
+	canned_tool_call(srv, "echo_hello", "{}");
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+
+	def.name = "echo_hello";
+	def.description = "echo";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_hello;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "perm: add tool");
+	CHECK(clm_agent_submit(st.agent, "use it") == 0, "perm: submit");
+	run_until_done(&st);
+
+	CHECK(st.perm_prompts == 1, "perm: prompt fired once");
+	CHECK(st.last_outcome == CLM_TOOL_FAILED, "perm: deny -> failed");
+	teardown(&st, srv);
+}
+
+/* (l) A NO_PROMPT tool runs without ever firing the permission prompt. */
+static void
+test_perm_no_prompt(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+
+	st.loop = loop;
+	st.perm_decision = CLM_PERM_DENY_ONCE; /* would deny if asked */
+	srv = canned_start(loop);
+	canned_tool_call(srv, "echo_ok", "{}");
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+
+	def.name = "echo_ok";
+	def.description = "echo";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_ok;
+	def.flags = CLM_TOOL_NO_PROMPT;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "perm: add NO_PROMPT tool");
+	CHECK(clm_agent_submit(st.agent, "use it") == 0, "perm: submit");
+	run_until_done(&st);
+
+	CHECK(st.perm_prompts == 0, "perm: NO_PROMPT never prompts");
+	CHECK(st.last_outcome == CLM_TOOL_OK, "perm: NO_PROMPT ran");
+	teardown(&st, srv);
+}
+
+/* (m) ALLOW_ALWAYS is remembered: a second call of the same tool in the
+ * session does not prompt again. */
+static void
+test_perm_remember(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+
+	st.loop = loop;
+	st.perm_decision = CLM_PERM_ALLOW_ALWAYS;
+	srv = canned_start(loop);
+	/* Two separate turns, each invoking the tool once. */
+	canned_tool_call(srv, "echo_hello", "{}");
+	canned_reply(srv, final_reply);
+	canned_tool_call(srv, "echo_hello", "{}");
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+
+	def.name = "echo_hello";
+	def.description = "echo";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_hello;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "perm: add tool");
+
+	CHECK(clm_agent_submit(st.agent, "first") == 0, "perm: submit 1");
+	run_until_done(&st);
+	st.turn_done = 0;
+	CHECK(clm_agent_submit(st.agent, "second") == 0, "perm: submit 2");
+	run_until_done(&st);
+
+	CHECK(st.perm_prompts == 1, "perm: ALWAYS remembered (prompted once)");
+	teardown(&st, srv);
+}
+
+/* (n) With no on_permission handler, gated tools are denied (default-deny),
+ * but a NO_PROMPT tool still runs. */
+static void
+test_perm_no_handler(uv_loop_t *loop)
+{
+	static const struct clm_callbacks no_perm_cb = {
+		.on_assistant_text = on_assistant_text,
+		.on_tool_result = on_tool_result,
+		.on_turn_done = on_turn_done,
+	};
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_cfg cfg = {0};
+	struct clm_tool_def def = {0};
+	char url[128];
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	canned_tool_call(srv, "echo_hello", "{}");
+	canned_reply(srv, final_reply);
+
+	(void)snprintf(url, sizeof(url),
+	    "http://127.0.0.1:%d/v1/chat/completions", canned_port(srv));
+	cfg.api_key = "test";
+	cfg.base_url = url;
+	cfg.provider = CLM_PROVIDER_OPENAI;
+	cfg.model = "test-model";
+	CHECK(clm_agent_new(&cfg, loop, &no_perm_cb, &st, &st.agent) == 0,
+	    "perm: agent with no handler");
+
+	def.name = "echo_hello";
+	def.description = "echo";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_hello;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "perm: add tool");
+	CHECK(clm_agent_submit(st.agent, "use it") == 0, "perm: submit");
+	run_until_done(&st);
+
+	CHECK(st.last_outcome == CLM_TOOL_FAILED,
+	    "perm: no handler -> denied");
+	clm_agent_free(st.agent);
+	canned_stop(srv);
+	uv_run(loop, UV_RUN_DEFAULT);
+}
+
+/* (o) A HIDDEN tool is not advertised to the model, but a visible one is. */
+static void
+test_hidden_tool(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def vis = {0}, hid = {0};
+	const char *req;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	canned_reply(srv, final_reply); /* plain answer; we inspect the request */
+	st.agent = make_agent(&st, canned_port(srv));
+
+	vis.name = "visible_tool";
+	vis.description = "seen";
+	vis.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	vis.invoke = echo_ok;
+	CHECK(clm_tool_add(st.agent, &vis) == 0, "hidden: add visible");
+
+	hid.name = "secret_tool";
+	hid.description = "unseen";
+	hid.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	hid.invoke = echo_ok;
+	hid.flags = CLM_TOOL_HIDDEN;
+	CHECK(clm_tool_add(st.agent, &hid) == 0, "hidden: add hidden");
+
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "hidden: submit");
+	run_until_done(&st);
+
+	req = canned_last_request(srv);
+	CHECK(req != NULL && strstr(req, "visible_tool") != NULL,
+	    "hidden: visible tool advertised");
+	CHECK(req != NULL && strstr(req, "secret_tool") == NULL,
+	    "hidden: hidden tool NOT advertised");
+	teardown(&st, srv);
+}
+
 int
 main(void)
 {
@@ -647,6 +842,11 @@ main(void)
 	test_recover_after_error(&loop);
 	test_parse_props();
 	test_history_compact();
+	test_perm_deny(&loop);
+	test_perm_no_prompt(&loop);
+	test_perm_remember(&loop);
+	test_perm_no_handler(&loop);
+	test_hidden_tool(&loop);
 	uv_loop_close(&loop);
 
 	if (failures > 0) {

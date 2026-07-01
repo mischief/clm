@@ -21,6 +21,10 @@ struct clm_tool {
 	size_t output_cap;
 	uint64_t timeout_ms;
 	unsigned flags;
+
+	/* Session memory of an _ALWAYS permission decision for this tool. */
+	bool remembered;      /* a decision has been made */
+	bool remember_allow;  /* true=always allow, false=always deny */
 };
 
 /* Register the three built-in tools (read_file, write_file, shell_exec). */

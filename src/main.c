@@ -146,10 +146,23 @@ cb_turn_done(int status, void *user)
 	fflush(stdout);
 }
 
+/*
+ * Auto-allow permission handler: preserves the CLI's pre-gate behaviour under
+ * the library's default-deny. A future refinement could gate this behind an
+ * explicit --yes/--allow flag for unattended runs.
+ */
+static void
+cb_permission(const struct clm_permission_req *req, void *user)
+{
+	struct cli_state *state = (struct cli_state *)user;
+	clm_tool_permission_respond(state->agent, req, CLM_PERM_ALLOW_ONCE);
+}
+
 static const struct clm_callbacks cli_callbacks = {
 	.on_assistant_text = cb_assistant_text,
 	.on_reasoning = cb_reasoning,
 	.on_tool_begin = cb_tool_begin,
+	.on_permission = cb_permission,
 	.on_tool_result = cb_tool_result,
 	.on_tool_batch = cb_tool_batch,
 	.on_finish_reason = cb_finish_reason,

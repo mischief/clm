@@ -444,10 +444,23 @@ cb_turn_done(int status, void *user)
 	drain_queue(u); /* start the next queued prompt, if any */
 }
 
+/*
+ * Permission handler. For now this auto-allows, preserving the pre-gate
+ * behaviour; the interactive y/n/a/d prompt is a later change. Without this,
+ * the library's default-deny would block every gated tool.
+ */
+static void
+cb_permission(const struct clm_permission_req *req, void *user)
+{
+	struct ui *u = user;
+	clm_tool_permission_respond(u->agent, req, CLM_PERM_ALLOW_ONCE);
+}
+
 static const struct clm_callbacks tui_callbacks = {
     .on_assistant_text = cb_assistant_text,
     .on_reasoning = cb_reasoning,
     .on_tool_begin = cb_tool_begin,
+    .on_permission = cb_permission,
     .on_tool_result = cb_tool_result,
     .on_tool_batch = cb_tool_batch,
     .on_finish_reason = cb_finish_reason,

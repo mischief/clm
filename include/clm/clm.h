@@ -41,6 +41,30 @@ enum clm_tool_outcome {
 	CLM_TOOL_TIMEDOUT,
 };
 
+/*
+ * A frontend's answer to a permission request. The _ALWAYS variants are
+ * remembered for the rest of the session (per tool), so that tool is not
+ * prompted again; the _ONCE variants apply only to this invocation.
+ */
+enum clm_permission_decision {
+	CLM_PERM_ALLOW_ONCE,
+	CLM_PERM_ALLOW_ALWAYS,
+	CLM_PERM_DENY_ONCE,
+	CLM_PERM_DENY_ALWAYS,
+};
+
+/*
+ * An opaque authorization request handed to the on_permission callback. It
+ * references a parked tool invocation and is valid only until answered with
+ * clm_tool_permission_respond. Read its fields with the accessors below.
+ */
+struct clm_permission_req;
+
+/* The tool name being authorized. */
+CLM_API const char *clm_permission_req_name(const struct clm_permission_req *req);
+/* The raw JSON arguments of the call (for the frontend to display). */
+CLM_API const char *clm_permission_req_args(const struct clm_permission_req *req);
+
 /* Result of a server connectivity probe (see clm_agent_check_connection). */
 enum clm_conn_status {
 	CLM_CONN_CHECKING, /* a probe is in flight */
@@ -71,6 +95,15 @@ enum clm_tool_flags {
 	 * set per invocation, overriding the tool's defaults. */
 	CLM_TOOL_TIMEOUT_OVERRIDABLE = 1 << 0,
 	CLM_TOOL_OUTPUT_CAP_OVERRIDABLE = 1 << 1,
+
+	/* Skip the permission gate: the tool is safe enough to run unprompted
+	 * (e.g. read-only). Without this, a tool is gated (default-deny). */
+	CLM_TOOL_NO_PROMPT = 1 << 2,
+
+	/* Do not advertise this tool to the model. It stays in the registry and
+	 * is invocable internally (e.g. by plugins), but is filtered out of the
+	 * schema sent to the model. */
+	CLM_TOOL_HIDDEN = 1 << 3,
 };
 
 /*
@@ -165,6 +198,17 @@ struct clm_callbacks {
 	/* The agent is about to execute a tool. args is the raw JSON arguments. */
 	void (*on_tool_begin)(const char *name, const char *args, void *user);
 
+	/*
+	 * A gated tool needs authorization before it runs. The frontend renders
+	 * a prompt however it likes and MUST eventually call
+	 * clm_tool_permission_respond(agent, req, decision) -- possibly much
+	 * later. Until then the invocation is parked and the turn waits. If this
+	 * callback is NULL, gated tools are DENIED (secure default: a frontend
+	 * that wires no policy runs no gated tools). req is valid only until it
+	 * is responded to.
+	 */
+	void (*on_permission)(const struct clm_permission_req *req, void *user);
+
 	/* A tool finished; content is its (possibly truncated) output, outcome
 	 * tells the frontend whether it succeeded, failed, or timed out. */
 	void (*on_tool_result)(const char *name, const char *content,
@@ -243,6 +287,16 @@ CLM_API int clm_agent_cancel(struct clm_agent *agent);
  * on_turn_done when finished. Manual only; there is no auto-compaction.
  */
 CLM_API int clm_agent_compact(struct clm_agent *agent);
+
+/*
+ * Answer a permission request from the on_permission callback. Resumes the
+ * parked tool invocation: an ALLOW decision runs it, a DENY completes it with
+ * a "denied" result the model can see. The _ALWAYS variants also remember the
+ * choice for this tool for the rest of the session. May be called from within
+ * on_permission (synchronous) or later (async). Returns 0, or negative errno.
+ */
+CLM_API int clm_tool_permission_respond(struct clm_agent *agent,
+    const struct clm_permission_req *req, enum clm_permission_decision decision);
 
 /*
  * Register a tool. The agent copies def and its strings. The same name may

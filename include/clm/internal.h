@@ -45,6 +45,7 @@ struct clm_agent {
 	void (*cb_on_assistant_text)(const char *, void *);
 	void (*cb_on_reasoning)(const char *, void *);
 	void (*cb_on_tool_begin)(const char *, const char *, void *);
+	void (*cb_on_permission)(const struct clm_permission_req *, void *);
 	void (*cb_on_tool_result)(const char *, const char *, enum clm_tool_outcome, void *);
 	void (*cb_on_tool_batch)(size_t, size_t, void *);
 	void (*cb_on_finish_reason)(enum clm_finish_reason, void *);

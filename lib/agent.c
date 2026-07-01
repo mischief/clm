@@ -178,6 +178,7 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 		agent->cb_on_assistant_text = cb->on_assistant_text;
 		agent->cb_on_reasoning = cb->on_reasoning;
 		agent->cb_on_tool_begin = cb->on_tool_begin;
+		agent->cb_on_permission = cb->on_permission;
 		agent->cb_on_tool_result = cb->on_tool_result;
 		agent->cb_on_tool_batch = cb->on_tool_batch;
 		agent->cb_on_finish_reason = cb->on_finish_reason;

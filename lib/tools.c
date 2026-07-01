@@ -29,6 +29,15 @@
  * clm_tool_complete/clm_tool_fail (or the timeout path), which records a tool
  * result into history and decrements the batch's pending count.
  */
+struct clm_tool_invocation;
+
+/* Opaque to the frontend; references the parked invocation it authorizes. */
+struct clm_permission_req {
+	struct clm_tool_invocation *inv;
+};
+
+static void run_invoke(struct clm_tool_invocation *inv);
+
 struct clm_tool_invocation {
 	struct clm_tool_batch *batch;
 	const struct clm_tool *def;   /* resolved tool, or NULL if unknown */
@@ -46,6 +55,12 @@ struct clm_tool_invocation {
 
 	void (*cancel)(struct clm_tool_invocation *, void *);
 	void *cancel_user;
+
+	/* Permission gate: while awaiting a decision the invocation is parked
+	 * (on_permission fired, invoke deferred). perm_req is the opaque handle
+	 * the frontend answers against; it points back to this invocation. */
+	bool awaiting_perm;
+	struct clm_permission_req perm_req;
 };
 
 /* A batch of tool calls dispatched together for one assistant message. */
@@ -264,9 +279,14 @@ clm_tools_build_schema(const struct clm_agent *agent)
 	if (arr == NULL)
 		return NULL;
 
-	/* json_object_array_add steals the reference; do not put afterwards. */
-	for (i = 0; i < agent->tool_count; i++)
+	/* json_object_array_add steals the reference; do not put afterwards.
+	 * HIDDEN tools stay in the registry (invocable internally) but are not
+	 * advertised to the model. */
+	for (i = 0; i < agent->tool_count; i++) {
+		if (agent->tools[i].flags & CLM_TOOL_HIDDEN)
+			continue;
 		json_object_array_add(arr, tool_schema(&agent->tools[i]));
+	}
 
 	return arr;
 }
@@ -291,6 +311,64 @@ uv_loop_t *
 clm_tool_invocation_loop(const struct clm_tool_invocation *inv)
 {
 	return inv ? inv->batch->agent->uv : NULL;
+}
+
+const char *
+clm_permission_req_name(const struct clm_permission_req *req)
+{
+	return (req && req->inv) ? req->inv->name : NULL;
+}
+
+const char *
+clm_permission_req_args(const struct clm_permission_req *req)
+{
+	return (req && req->inv) ? req->inv->args : NULL;
+}
+
+/* Mutable lookup of a registered tool by name (for recording decisions). */
+static struct clm_tool *
+find_tool_mut(struct clm_agent *agent, const char *name)
+{
+	size_t i;
+	for (i = 0; i < agent->tool_count; i++)
+		if (strcmp(agent->tools[i].name, name) == 0)
+			return &agent->tools[i];
+	return NULL;
+}
+
+int
+clm_tool_permission_respond(struct clm_agent *agent,
+    const struct clm_permission_req *req, enum clm_permission_decision decision)
+{
+	struct clm_tool_invocation *inv;
+	bool allow;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(req != NULL && req->inv != NULL, -EINVAL);
+
+	inv = req->inv;
+	if (!inv->awaiting_perm)
+		return -EINVAL; /* already answered, or not parked */
+	inv->awaiting_perm = false;
+
+	allow = (decision == CLM_PERM_ALLOW_ONCE ||
+	    decision == CLM_PERM_ALLOW_ALWAYS);
+
+	/* Remember _ALWAYS decisions for the rest of the session, per tool. */
+	if (decision == CLM_PERM_ALLOW_ALWAYS ||
+	    decision == CLM_PERM_DENY_ALWAYS) {
+		struct clm_tool *t = find_tool_mut(agent, inv->name);
+		if (t != NULL) {
+			t->remembered = true;
+			t->remember_allow = allow;
+		}
+	}
+
+	if (allow)
+		run_invoke(inv);
+	else
+		clm_tool_fail(inv, "denied by user");
+	return 0;
 }
 
 size_t
@@ -536,10 +614,18 @@ inv_compute_limits(struct clm_tool_invocation *inv)
 	inv->timeout_ms = to;
 }
 
+/* Actually invoke the resolved tool (past the permission gate). */
+static void
+run_invoke(struct clm_tool_invocation *inv)
+{
+	inv->def->invoke(inv, inv->def->user);
+}
+
 static void
 dispatch_one(struct clm_tool_invocation *inv)
 {
 	struct clm_agent *agent = inv->batch->agent;
+	const struct clm_tool *t = inv->def;
 
 	if (agent->cb_on_tool_begin)
 		agent->cb_on_tool_begin(inv->name, inv->args, agent->cb_user);
@@ -551,11 +637,37 @@ dispatch_one(struct clm_tool_invocation *inv)
 		uv_timer_start(&inv->timer, on_timeout, inv->timeout_ms, 0);
 	}
 
-	if (inv->def == NULL) {
+	if (t == NULL) {
 		clm_tool_fail(inv, "unknown tool");
 		return;
 	}
-	inv->def->invoke(inv, inv->def->user);
+
+	/*
+	 * Permission gate (default-deny). NO_PROMPT tools run unconditionally.
+	 * A remembered _ALWAYS decision short-circuits. Otherwise, if a handler
+	 * is registered, park the invocation and ask; with no handler, deny --
+	 * a frontend that wires no policy runs no gated tools.
+	 */
+	if (t->flags & CLM_TOOL_NO_PROMPT) {
+		run_invoke(inv);
+		return;
+	}
+	if (t->remembered) {
+		if (t->remember_allow)
+			run_invoke(inv);
+		else
+			clm_tool_fail(inv, "denied by user (remembered)");
+		return;
+	}
+	if (agent->cb_on_permission == NULL) {
+		clm_tool_fail(inv, "denied: no permission policy");
+		return;
+	}
+	inv->awaiting_perm = true;
+	inv->perm_req.inv = inv;
+	agent->cb_on_permission(&inv->perm_req, agent->cb_user);
+	/* Parked: clm_tool_permission_respond resumes it (allow -> run, deny ->
+	 * fail). The batch's pending count still holds this invocation. */
 }
 
 int
@@ -1062,6 +1174,7 @@ clm_tools_register_builtins(struct clm_agent *agent)
 		    "\"limit\":{\"type\":\"integer\",\"description\":\"max lines to return (default 200)\"}},"
 		    "\"required\":[\"path\"]}",
 		.invoke = tool_file_read,
+		.flags = CLM_TOOL_NO_PROMPT, /* read-only: safe to run unprompted */
 	};
 	const struct clm_tool_def write_def = {
 		.name = "write_file",
