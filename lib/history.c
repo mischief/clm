@@ -75,6 +75,90 @@ clm_message_create(enum clm_role role)
 	return m;
 }
 
+/*
+ * Replace old conversation turns with a single summary message, keeping the
+ * leading system message(s) and the most recent whole user turns verbatim.
+ *
+ * The cut always lands on a user-message boundary walked back from the tail:
+ * a tool exchange (assistant tool_calls -> tool results) lives entirely within
+ * one user turn, so cutting only at user messages never orphans a tool result
+ * from its call. keep_recent is the number of trailing user turns to preserve;
+ * the summary is injected as a framed user message right after the system
+ * prologue (the chat template forbids a non-leading system message).
+ *
+ * Returns 0 on success (including the no-op case where there is nothing old
+ * enough to compact), or a negative errno.
+ */
+int
+clm_history_compact(struct clm_history *h, const char *summary, size_t keep_recent)
+{
+	struct clm_message *m, *cut = NULL, *sys_last = NULL, *summ;
+	struct clm_message *first_nonsys;
+	size_t users_seen = 0;
+
+	if (h == NULL || summary == NULL)
+		return -EINVAL;
+
+	/* Find the end of the leading system prologue (kept as-is). */
+	TAILQ_FOREACH(m, h, entries) {
+		if (m->role != CLM_ROLE_SYSTEM)
+			break;
+		sys_last = m;
+	}
+	first_nonsys = m; /* first message we might summarize, or NULL */
+	if (first_nonsys == NULL)
+		return 0; /* nothing but system messages */
+
+	/*
+	 * Walk backward from the tail, counting user messages. The cut is the
+	 * keep_recent-th user message from the end -- the oldest turn we keep.
+	 * Everything strictly before it (and after the system prologue) is
+	 * summarized. Cutting at a user message keeps whole turns, so tool pairs
+	 * stay intact.
+	 */
+	if (keep_recent == 0)
+		return -EINVAL;
+	for (m = TAILQ_LAST(h, clm_history); m != NULL;
+	    m = TAILQ_PREV(m, clm_history, entries)) {
+		if (m == sys_last)
+			break;
+		if (m->role == CLM_ROLE_USER) {
+			users_seen++;
+			if (users_seen == keep_recent) {
+				cut = m;
+				break;
+			}
+		}
+	}
+
+	/* Nothing old enough to compact: <= keep_recent user turns present. */
+	if (cut == NULL || cut == first_nonsys)
+		return 0;
+
+	/* Build the summary message before mutating, so a failure is a no-op. */
+	summ = clm_message_create(CLM_ROLE_USER);
+	if (summ == NULL)
+		return -ENOMEM;
+	summ->content = strdup(summary);
+	if (summ->content == NULL) {
+		clm_message_free(summ);
+		return -ENOMEM;
+	}
+
+	/* Remove [first_nonsys .. cut) and free them. */
+	m = first_nonsys;
+	while (m != NULL && m != cut) {
+		struct clm_message *next = TAILQ_NEXT(m, entries);
+		TAILQ_REMOVE(h, m, entries);
+		clm_message_free(m);
+		m = next;
+	}
+
+	/* Insert the summary where the old turns were: before the kept tail. */
+	TAILQ_INSERT_BEFORE(cut, summ, entries);
+	return 0;
+}
+
 struct clm_message *
 clm_history_add_system(struct clm_history *h, const char *content)
 {

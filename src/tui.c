@@ -1095,6 +1095,7 @@ run_command(struct ui *u, const char *line)
 		    "  /clear             clear the transcript\n"
 		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
 		    "  /output [full|short] tool output detail (^O)\n"
+		    "  /compact           summarize old turns to reclaim context\n"
 		    "  /quit              exit\n"
 		    "keys: ^R reasoning  ^O output  ^L redraw  "
 		    "PgUp/PgDn scroll\n");
@@ -1124,6 +1125,16 @@ run_command(struct ui *u, const char *line)
 		ui_push(u, ST_META,
 		        u->expand_output ? "\n[output: full]\n"
 		                         : "\n[output: short]\n");
+	} else if (CMD("compact")) {
+		int rc = clm_agent_compact(u->agent);
+		if (rc == 0) {
+			u->busy = true;
+			ui_push(u, ST_META, "\n[compacting the conversation...]\n");
+		} else if (rc == -EBUSY) {
+			ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+		} else {
+			ui_push(u, ST_ERROR, "\ncompaction failed to start\n");
+		}
 	} else if (CMD("quit") || CMD("exit") || CMD("q")) {
 		u->quit = true;
 	} else {

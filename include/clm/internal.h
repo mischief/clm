@@ -33,6 +33,7 @@ struct clm_agent {
 	enum clm_backend backend; /* server impl, for gating quirks like /props */
 	int64_t ctx_max;          /* per-conversation context tokens, 0 = unknown */
 	char *props_url;          /* llama.cpp GET /props, or NULL */
+	char *compact_body;       /* POST body for an in-flight /compact, freed on done */
 	time_t last_time_stamp; /* wall clock of the last injected time context */
 	struct clm_tool_batch *active_batch;
 

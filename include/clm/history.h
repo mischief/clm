@@ -87,6 +87,15 @@ struct clm_tool_call *clm_message_add_tool_call(struct clm_message *m,
     const char *id, const char *name, const char *args);
 
 /*
+ * Replace old turns with a single summary message, keeping the leading system
+ * prologue and the last keep_recent user turns verbatim. Cuts only at user
+ * boundaries so tool-call/result pairs are never split. No-op (returns 0) if
+ * there is nothing old enough. Negative errno on allocation failure.
+ */
+int clm_history_compact(struct clm_history *h, const char *summary,
+    size_t keep_recent);
+
+/*
  * Serialize the entire history into a json-c array suitable for the
  * "messages" field of a chat/completions request. Caller owns the returned
  * object (json_object_put). Returns NULL on failure.

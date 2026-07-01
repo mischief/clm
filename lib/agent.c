@@ -231,6 +231,7 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->last_error);
 	free(agent->models_url);
 	free(agent->props_url);
+	free(agent->compact_body);
 	clm_tools_free_registry(agent->tools, agent->tool_count);
 	free(agent);
 }
@@ -396,6 +397,182 @@ sb_append(char **buf, size_t *len, size_t *cap, const char *data, size_t n)
 }
 
 static struct json_object *response_message(struct json_object *parsed);
+static void agent_fail(struct clm_agent *agent, const char *msg, int err);
+
+/* Turns to keep verbatim when compacting; older ones fold into the summary. */
+#define CLM_COMPACT_KEEP_RECENT 4
+
+/* Instruction appended to drive the summarization call. */
+static const char *compact_prompt =
+    "Summarize the conversation so far into a compact briefing that lets you "
+    "continue seamlessly. Preserve: decisions made, file paths touched, "
+    "commands run and their outcomes, and any open tasks or unresolved "
+    "problems. Be terse and factual. Output only the summary.";
+
+/*
+ * Extract choices[0].message.content from a parsed completion into a malloc'd
+ * string, or NULL. Borrowed parse; caller frees the returned copy.
+ */
+static char *
+extract_message_content(struct json_object *parsed)
+{
+	struct json_object *message, *content;
+
+	message = response_message(parsed);
+	if (message == NULL)
+		return NULL;
+	if (!json_object_object_get_ex(message, "content", &content))
+		return NULL;
+	if (json_object_get_type(content) != json_type_string)
+		return NULL;
+	return strdup(json_object_get_string(content));
+}
+
+static void
+compact_success_cb(struct clm_http_response *resp, void *user)
+{
+	struct clm_agent *agent = user;
+	json_cleanup struct json_object *parsed = NULL;
+	autofree char *summary = NULL;
+	int status = resp ? resp->status_code : -1;
+
+	agent->inflight = NULL;
+	free(agent->compact_body);
+	agent->compact_body = NULL;
+
+	if (status != 200 || resp->body == NULL) {
+		if (resp)
+			clm_http_response_free(resp);
+		agent_fail(agent, "compaction request failed", -EIO);
+		return;
+	}
+	parsed = json_tokener_parse(resp->body);
+	clm_http_response_free(resp);
+
+	summary = parsed ? extract_message_content(parsed) : NULL;
+	if (summary == NULL || summary[0] == '\0') {
+		agent_fail(agent, "compaction produced no summary", -EIO);
+		return;
+	}
+
+	if (clm_history_compact(&agent->history, summary,
+	    CLM_COMPACT_KEEP_RECENT) < 0) {
+		agent_fail(agent, "compaction failed", -ENOMEM);
+		return;
+	}
+
+	agent->state = CLM_STATE_COMPLETE;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	if (agent->cb_on_turn_done)
+		agent->cb_on_turn_done(0, agent->cb_user);
+}
+
+static void
+compact_error_cb(int error_code, const char *error_msg, void *user)
+{
+	struct clm_agent *agent = user;
+
+	agent->inflight = NULL;
+	free(agent->compact_body);
+	agent->compact_body = NULL;
+	if (error_code == -ECANCELED)
+		agent->state = CLM_STATE_COMPLETE;
+	else {
+		clm_agent_set_error(agent,
+		    error_msg ? error_msg : "compaction request failed");
+		agent->state = CLM_STATE_ERROR;
+	}
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	if (agent->cb_on_turn_done)
+		agent->cb_on_turn_done(error_code, agent->cb_user);
+}
+
+/*
+ * Ask the model to summarize the conversation, then fold old turns into that
+ * summary (see clm_history_compact). Manual only -- there is no auto-trigger.
+ * The summarization request is the current history plus a one-off instruction;
+ * it is not recorded in history, so only the compaction result persists.
+ *
+ * Note: compaction rewrites the prompt prefix, so the next turn cannot reuse
+ * the server's prefix cache and pays a full prefill. That is acceptable for a
+ * rare, user-invoked operation whose whole point is to shrink an oversized
+ * context.
+ */
+int
+clm_agent_compact(struct clm_agent *agent)
+{
+	json_cleanup struct json_object *req = NULL;
+	struct json_object *messages, *msg, *jmodel, *jstream;
+	const char *body_str;
+	char *body;
+	int r;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+
+	if (agent->state == CLM_STATE_THINKING ||
+	    agent->state == CLM_STATE_CALLING_TOOL) {
+		clm_agent_set_error(agent, "turn already in progress");
+		return -EBUSY;
+	}
+
+	messages = clm_history_to_json(&agent->history);
+	req = json_object_new_object();
+	if (messages == NULL || req == NULL) {
+		json_object_put(messages);
+		return -ENOMEM;
+	}
+
+	/* Append the summarization instruction as a trailing user message. */
+	msg = json_object_new_object();
+	if (msg == NULL) {
+		json_object_put(messages);
+		return -ENOMEM;
+	}
+	json_object_object_add(msg, "role", json_object_new_string("user"));
+	json_object_object_add(msg, "content", json_object_new_string(compact_prompt));
+	json_object_array_add(messages, msg);
+
+	jmodel = json_object_new_string(agent->llm->model);
+	jstream = json_object_new_boolean(0); /* summary is a one-shot, no stream */
+	if (jmodel == NULL || jstream == NULL) {
+		json_object_put(messages);
+		json_object_put(jmodel);
+		json_object_put(jstream);
+		return -ENOMEM;
+	}
+	json_object_object_add(req, "model", jmodel);
+	json_object_object_add(req, "messages", messages);
+	json_object_object_add(req, "stream", jstream);
+
+	body_str = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
+	if (body_str == NULL)
+		return -ENOMEM;
+	body = strdup(body_str);
+	if (body == NULL)
+		return -ENOMEM;
+
+	agent->state = CLM_STATE_THINKING;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+
+	/* curl borrows the POST body (CURLOPT_POSTFIELDS), so it must outlive the
+	 * request; stash it and free it when the request completes. */
+	free(agent->compact_body);
+	agent->compact_body = body;
+
+	r = clm_http_async_post(agent->uv, agent->llm->base_url,
+	    agent->llm->api_key, body, compact_success_cb, compact_error_cb,
+	    NULL, agent, &agent->inflight);
+	if (r < 0) {
+		free(agent->compact_body);
+		agent->compact_body = NULL;
+		agent->state = CLM_STATE_ERROR;
+		return r;
+	}
+	return 0;
+}
 
 static void
 agent_fail(struct clm_agent *agent, const char *msg, int err)

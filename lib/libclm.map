@@ -9,6 +9,7 @@
 		clm_agent_get_last_error;
 		clm_agent_check_connection;
 		clm_agent_cancel;
+		clm_agent_compact;
 		clm_tool_add;
 		clm_tool_complete;
 		clm_tool_fail;

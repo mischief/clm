@@ -238,6 +238,13 @@ CLM_API int clm_agent_check_connection(struct clm_agent *agent);
 CLM_API int clm_agent_cancel(struct clm_agent *agent);
 
 /*
+ * Summarize the conversation and fold old turns into that summary, keeping the
+ * system prologue and recent turns. Asynchronous (one model round-trip): fires
+ * on_turn_done when finished. Manual only; there is no auto-compaction.
+ */
+CLM_API int clm_agent_compact(struct clm_agent *agent);
+
+/*
  * Register a tool. The agent copies def and its strings. The same name may
  * not be registered twice. Returns 0, or negative errno (-EEXIST on a
  * duplicate name, -EINVAL on a malformed def).

@@ -9,6 +9,7 @@
 
 #include "clm/clm.h"
 #include "clm/internal.h"
+#include "clm/history.h"
 #include "canned.h"
 
 static int failures;
@@ -535,6 +536,101 @@ test_parse_props(void)
 	CHECK(clm_parse_props(NULL, &ctx) < 0, "props: NULL rejected");
 }
 
+/* Count messages of a given role in a history. */
+static int
+count_role(struct clm_history *h, enum clm_role role)
+{
+	struct clm_message *m;
+	int n = 0;
+	TAILQ_FOREACH(m, h, entries)
+		if (m->role == role)
+			n++;
+	return n;
+}
+
+/*
+ * (j) clm_history_compact: collapse old turns into one summary while keeping
+ * the system prologue and recent user turns, without splitting a tool
+ * exchange. Pure history surgery, no server.
+ */
+static void
+test_history_compact(void)
+{
+	struct clm_history h;
+	struct clm_message *m;
+	struct clm_tool_call *tc;
+
+	clm_history_init(&h);
+
+	/* system + 4 user turns; turn 2 includes a tool call/result pair. */
+	clm_history_add_system(&h, "SYSPROMPT");
+
+	clm_history_add_user(&h, "turn1");
+	clm_history_add_assistant_text(&h, "reply1");
+
+	clm_history_add_user(&h, "turn2");
+	m = clm_history_add_assistant_tool_calls(&h);
+	tc = clm_message_add_tool_call(m, "call1", "shell_exec", "{}");
+	CHECK(tc != NULL, "compact: seed tool call");
+	clm_history_add_tool_result(&h, "call1", "tool output");
+	clm_history_add_assistant_text(&h, "reply2");
+
+	clm_history_add_user(&h, "turn3");
+	clm_history_add_assistant_text(&h, "reply3");
+
+	clm_history_add_user(&h, "turn4");
+	clm_history_add_assistant_text(&h, "reply4");
+
+	/* Keep the last 2 user turns; summarize turns 1-2 (incl. the tool pair). */
+	CHECK(clm_history_compact(&h, "SUMMARY", 2) == 0, "compact: ok");
+
+	/* System message preserved exactly once, still first and unchanged. */
+	m = TAILQ_FIRST(&h);
+	CHECK(m != NULL && m->role == CLM_ROLE_SYSTEM &&
+	    strcmp(m->content, "SYSPROMPT") == 0, "compact: system preserved");
+	CHECK(count_role(&h, CLM_ROLE_SYSTEM) == 1, "compact: one system msg");
+
+	/* The summary replaced the old turns: it sits right after system. */
+	m = TAILQ_NEXT(m, entries);
+	CHECK(m != NULL && m->role == CLM_ROLE_USER &&
+	    strcmp(m->content, "SUMMARY") == 0, "compact: summary after system");
+
+	/* Recent turns kept verbatim; old ones (turn1/turn2 + tool pair) gone. */
+	CHECK(count_role(&h, CLM_ROLE_TOOL) == 0,
+	    "compact: old tool result removed (not orphaned)");
+	{
+		int found_turn3 = 0, found_turn4 = 0, found_old = 0;
+		TAILQ_FOREACH(m, &h, entries) {
+			if (m->content == NULL)
+				continue;
+			if (strcmp(m->content, "turn3") == 0) found_turn3 = 1;
+			if (strcmp(m->content, "turn4") == 0) found_turn4 = 1;
+			if (strcmp(m->content, "turn1") == 0 ||
+			    strcmp(m->content, "turn2") == 0) found_old = 1;
+		}
+		CHECK(found_turn3 && found_turn4, "compact: recent turns kept");
+		CHECK(!found_old, "compact: old turns dropped");
+	}
+
+	/* Not enough turns to compact => no-op. */
+	{
+		struct clm_history h2;
+		clm_history_init(&h2);
+		clm_history_add_system(&h2, "S");
+		clm_history_add_user(&h2, "only");
+		clm_history_add_assistant_text(&h2, "r");
+		CHECK(clm_history_compact(&h2, "SUMMARY", 2) == 0,
+		    "compact: too-short is ok");
+		{
+			int users = count_role(&h2, CLM_ROLE_USER);
+			CHECK(users == 1, "compact: too-short unchanged (no summary)");
+		}
+		clm_history_free(&h2);
+	}
+
+	clm_history_free(&h);
+}
+
 int
 main(void)
 {
@@ -550,6 +646,7 @@ main(void)
 	test_stream_meta(&loop);
 	test_recover_after_error(&loop);
 	test_parse_props();
+	test_history_compact();
 	uv_loop_close(&loop);
 
 	if (failures > 0) {
