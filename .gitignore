@@ -6,3 +6,4 @@ fuzz/out_*
 vgcore.*
 *.txt
 __pycache__/
+*.chat
