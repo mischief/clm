@@ -26,8 +26,8 @@ usage(const char *prog)
 	    "  -o, --oneshot PROMPT  run one prompt headless and exit\n"
 	    "  -H, --headless        force the plain stdio REPL\n"
 	    "  -u, --url BASE        base API endpoint "
-	    "(default http://127.0.0.1:8081);\n"
-	    "                        \"/v1/chat/completions\" is appended\n"
+	    "(default http://127.0.0.1:8081/v1);\n"
+	    "                        \"/chat/completions\" is appended\n"
 	    "  -m, --model NAME      model name to request\n"
 	    "  -p, --plugins DIR     plugin directory "
 	    "(default $XDG_CONFIG_HOME/clm/plugins)\n"
@@ -278,7 +278,7 @@ xdg_config_path(const char *suffix)
 int
 main(int argc, char *argv[])
 {
-	const char *api_base = "http://127.0.0.1:8081";
+	const char *api_base = "http://127.0.0.1:8081/v1";
 	const char *model = "local-model";
 	const char *plugin_dir = NULL;
 	char *oneshot = NULL;
@@ -317,12 +317,12 @@ main(int argc, char *argv[])
 		}
 	}
 
-	/* -u takes the base endpoint; build the chat-completions URL from it,
-	 * tolerating a trailing slash on the base. */
+	/* -u takes the base endpoint; /chat/completions is appended.
+	 * Tolerates a trailing slash on the base. */
 	baselen = strlen(api_base);
 	while (baselen > 0 && api_base[baselen - 1] == '/')
 		baselen--;
-	snprintf(endpoint, sizeof(endpoint), "%.*s/v1/chat/completions",
+	snprintf(endpoint, sizeof(endpoint), "%.*s/chat/completions",
 	    (int)baselen, api_base);
 
 	/* API key from the environment (kept out of argv, which leaks via ps and
