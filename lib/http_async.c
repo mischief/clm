@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
 #include <errno.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,6 +56,39 @@ static void http_request_teardown(struct clm_http_request *req);
 static void http_timer_callback(CURLM *multi, long timeout_ms, void *userp);
 static void http_timer_expired(uv_timer_t *handle);
 
+/*
+ * Drain curl's message queue after a socket_action. If a transfer finished,
+ * record its outcome on req and return true so the caller tears down. Both the
+ * socket-poll and timer paths must call this: a transfer can complete off the
+ * timer (e.g. TLS/handshake progress or a fast response driven by a 0ms
+ * timeout), and if only the poll path reaps CURLMSG_DONE the timer keeps
+ * re-arming at 0ms and the loop spins at 100% CPU.
+ */
+static bool
+http_reap_done(struct clm_http_request *req)
+{
+	int msgs_left;
+	CURLMsg *msg;
+
+	while ((msg = curl_multi_info_read(req->multi_handle, &msgs_left)) != NULL) {
+		if (msg->msg != CURLMSG_DONE)
+			continue;
+		CURLcode curl_err = msg->data.result;
+		if (curl_err == CURLE_OK) {
+			req->state = CLM_HTTP_DONE;
+			clm_debug("CURLMSG_DONE, CURLE_OK");
+		} else {
+			req->state = CLM_HTTP_ERROR;
+			req->error_code = curl_err;
+			snprintf(req->error_msg, sizeof(req->error_msg),
+			    "curl error: %s", curl_easy_strerror(curl_err));
+			clm_debug("CURLMSG_DONE, curl_err=%d", curl_err);
+		}
+		return true;
+	}
+	return false;
+}
+
 static void
 http_poll_callback(uv_poll_t *handle, int status, int events)
 {
@@ -82,24 +116,8 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 	curl_multi_socket_action(req->multi_handle, ctx->sockfd, curl_action, &req->events_pending);
 	clm_debug("curl_multi_socket_action completed");
 
-	/* Check for completed transfers */
-	int msgs_left;
-	CURLMsg *msg;
-	while ((msg = curl_multi_info_read(req->multi_handle, &msgs_left))) {
-		if (msg->msg == CURLMSG_DONE) {
-			CURLcode curl_err = msg->data.result;
-			if (curl_err == CURLE_OK) {
-				req->state = CLM_HTTP_DONE;
-				clm_debug("CURLMSG_DONE, CURLE_OK");
-			} else {
-				req->state = CLM_HTTP_ERROR;
-				req->error_code = curl_err;
-				snprintf(req->error_msg, sizeof(req->error_msg), "curl error: %s", curl_easy_strerror(curl_err));
-				clm_debug("CURLMSG_DONE, curl_err=%d", curl_err);
-			}
-			goto done;
-		}
-	}
+	if (http_reap_done(req))
+		goto done;
 
 	return;
 
@@ -369,6 +387,13 @@ http_timer_expired(uv_timer_t *handle)
 	clm_debug("calling curl_multi_socket_action");
 	curl_multi_socket_action(req->multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
 	clm_debug("curl_multi_socket_action completed, running=%d", running);
+
+	/*
+	 * A transfer can finish on the timer path. Reap it here too, else a
+	 * curl-requested 0ms timeout re-arms forever and the loop spins.
+	 */
+	if (http_reap_done(req))
+		http_request_teardown(req);
 }
 
 void
