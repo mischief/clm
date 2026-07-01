@@ -32,6 +32,12 @@ void clm_lua_http_done(struct clm_lua_plugin *plugin);
 int clm_lua_http_start(struct clm_lua_plugin *plugin);
 void clm_lua_budget_report(struct clm_lua_plugin *plugin, const char *name);
 
+/* Invocation-thread guard (lua_plugin.c): the async HTTP model requires that
+ * http.get/post run directly on the invocation coroutine so their lua_yield
+ * unwinds to clm's C-level lua_resume. */
+int clm_lua_is_invocation_thread(lua_State *L);
+void clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on);
+
 /* State for one in-flight Lua HTTP request. */
 struct lua_http_req {
 	lua_State *co;              /* the yielded coroutine */
@@ -83,6 +89,7 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 
 	/* If the coroutine finished (rc == LUA_OK), unref it. */
 	if (rc == LUA_OK) {
+		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
 	}
@@ -115,6 +122,7 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 	}
 
 	if (rc == LUA_OK) {
+		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
 	}
@@ -139,6 +147,16 @@ lua_ctx_http_get(lua_State *L)
 	struct lua_http_req *lr;
 	uv_loop_t *loop;
 	int r;
+
+	/* Must run directly on the invocation coroutine: a nested coroutine or a
+	 * load-time (main-thread) call would yield to the wrong lua_resume and
+	 * desync completion tracking. Reject it before starting any request. */
+	if (!clm_lua_is_invocation_thread(L)) {
+		clm_debug("lua http: http.get rejected — not called from a tool "
+		    "invocation coroutine (nested coroutine or load time)");
+		return luaL_error(L, "http.get may only be called directly from a "
+		    "tool invocation, not from a nested coroutine or at load time");
+	}
 
 	/* Retrieve the agent from the registry (set during http module open). */
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_agent");
@@ -221,6 +239,14 @@ lua_ctx_http_post(lua_State *L)
 	struct lua_http_req *lr;
 	uv_loop_t *loop;
 	int r;
+
+	/* See lua_ctx_http_get: must run on the invocation coroutine. */
+	if (!clm_lua_is_invocation_thread(L)) {
+		clm_debug("lua http: http.post rejected — not called from a tool "
+		    "invocation coroutine (nested coroutine or load time)");
+		return luaL_error(L, "http.post may only be called directly from a "
+		    "tool invocation, not from a nested coroutine or at load time");
+	}
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_agent");
 	struct clm_agent *agent = lua_touserdata(L, -1);

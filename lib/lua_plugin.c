@@ -24,8 +24,13 @@ int clm_lua_json_open(lua_State *L);
 void clm_lua_push_json_value(lua_State *L, struct json_object *obj);
 int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
 
+/* Invocation-thread guard, consulted by the http bindings (lua_http.c). */
+void clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on);
+int clm_lua_is_invocation_thread(lua_State *L);
+
 #define CLM_LUA_MEM_LIMIT (8 * 1024 * 1024) /* 8 MiB per plugin */
 #define CLM_LUA_EXEC_TIMEOUT_MS 30000u     /* default: 30s CPU timeout */
+#define CLM_LUA_LOAD_TIMEOUT_MS 500u       /* plugin load must be quick */
 #define CLM_LUA_HOOK_INTERVAL 10000        /* check deadline every N instructions */
 #define CLM_LUA_HTTP_MAX_INFLIGHT 8        /* max concurrent HTTP requests */
 #define CLM_LUA_HTTP_MAX_PER_CALL 32       /* max total HTTP requests per tool call */
@@ -245,6 +250,38 @@ lua_exec_hook(lua_State *L, lua_Debug *ar)
 }
 
 /*
+ * Mark (on != 0) or clear (on == 0) `co` as a live tool-invocation coroutine,
+ * keyed by its thread pointer in the registry. clm's async HTTP model requires
+ * that http.get/post run directly on this coroutine, so their lua_yield unwinds
+ * to clm's C-level lua_resume; the http bindings consult this marker to reject
+ * calls from a nested coroutine or from load time (the main thread), which would
+ * otherwise drive completion tracking out of band. Keyed per-thread, so
+ * concurrent invocations of one plugin do not alias one another.
+ */
+void
+clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on)
+{
+	lua_pushlightuserdata(L, co);
+	if (on)
+		lua_pushboolean(L, 1);
+	else
+		lua_pushnil(L);
+	lua_settable(L, LUA_REGISTRYINDEX);
+}
+
+/* True if the running state L is a live tool-invocation coroutine. */
+int
+clm_lua_is_invocation_thread(lua_State *L)
+{
+	int ok;
+	lua_pushlightuserdata(L, L);
+	lua_gettable(L, LUA_REGISTRYINDEX);
+	ok = lua_toboolean(L, -1);
+	lua_pop(L, 1);
+	return ok;
+}
+
+/*
  * Log resource peaks for this plugin after a tool call completes.
  */
 void
@@ -337,6 +374,12 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	 * it once the tool completes (synchronously or after resume). */
 	int co_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
+	/* Mark this coroutine as the live invocation thread so http.get/post can
+	 * verify they run directly on it (not a nested coroutine). Cleared on
+	 * every terminal path below, but left set across a yield so the resumed
+	 * coroutine may issue further http calls. */
+	clm_lua_mark_invocation_thread(L, co, 1);
+
 	/* Push the invoke function onto the coroutine stack. */
 	lua_rawgeti(co, LUA_REGISTRYINDEX, tu->invoke_ref);
 
@@ -346,6 +389,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	struct json_object *args_obj = json_tokener_parse(args_str ? args_str : "{}");
 	if (args_obj == NULL) {
 		clm_tool_fail(inv, "invalid tool arguments (malformed JSON)");
+		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 		return;
 	}
@@ -388,6 +432,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		if (!ctx->completed)
 			clm_tool_fail(inv, "plugin returned without calling ctx:complete/ctx:fail");
 		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
+		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 	} else if (rc == LUA_YIELD) {
 		/* Coroutine yielded (waiting for async op like HTTP).
@@ -404,6 +449,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		if (!ctx->completed)
 			clm_tool_fail(inv, err ? err : "Lua runtime error");
 		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
+		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 	}
 }
@@ -658,7 +704,21 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 		free(plugin->path);
 		return -EINVAL;
 	}
-	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+	/*
+	 * Bound the load phase the same way tool calls are bounded: install the
+	 * count hook and a wall-clock deadline around the top-level script so a
+	 * plugin that spins (e.g. `while true do end` at file scope) cannot wedge
+	 * the loop at startup. Memory and the global sandbox are already in force
+	 * (capped allocator at lua_newstate; sandbox_state before loadfile). Load
+	 * is meant to be quick (register tools, build schemas), so it gets a much
+	 * tighter deadline than a tool call.
+	 */
+	plugin->deadline_ns = clock_ns() + CLM_LUA_LOAD_TIMEOUT_MS * 1000000ULL;
+	lua_sethook(L, lua_exec_hook, LUA_MASKCOUNT, CLM_LUA_HOOK_INTERVAL);
+	int prc = lua_pcall(L, 0, 0, 0);
+	plugin->deadline_ns = 0;
+	lua_sethook(L, NULL, 0, 0);
+	if (prc != LUA_OK) {
 		const char *err = lua_tostring(L, -1);
 		clm_debug("lua: error executing %s: %s", path, err ? err : "?");
 		lua_close(L);
