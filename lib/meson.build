@@ -1,4 +1,4 @@
-clm_lib_src = files('agent.c', 'http_async.c', 'llm.c', 'log.c', 'tools.c', 'history.c')
+clm_lib_src = files('agent.c', 'http_async.c', 'llm.c', 'log.c', 'tools.c', 'history.c', 'props.c')
 
 clm_lib_deps = [
   dependency('libcurl'),

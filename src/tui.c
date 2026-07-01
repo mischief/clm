@@ -99,6 +99,7 @@ struct ui {
 	enum clm_conn_status conn;
 	char conn_detail[64];
 	char usage[96];
+	long ctx_used; /* tokens carried forward, for the context gauge */
 	char batch[64];
 	int spinner;
 	bool busy;           /* a turn is in flight */
@@ -387,13 +388,16 @@ static void
 cb_usage(const struct clm_usage *usage, void *user)
 {
 	struct ui *u = user;
+
+	/* Tokens carried into the next turn's prompt; drives the context gauge
+	 * drawn in the status bar. */
+	u->ctx_used = (long)usage->prompt_tokens + usage->completion_tokens;
+
 	if (usage->tokens_per_sec > 0)
-		snprintf(u->usage, sizeof(u->usage), "%d+%d tok, %.1f tok/s",
-		         usage->prompt_tokens, usage->completion_tokens,
+		snprintf(u->usage, sizeof(u->usage), "%.0f tok/s",
 		         usage->tokens_per_sec);
 	else
-		snprintf(u->usage, sizeof(u->usage), "%d+%d tok",
-		         usage->prompt_tokens, usage->completion_tokens);
+		u->usage[0] = '\0';
 	u->dirty = true;
 }
 
@@ -494,6 +498,39 @@ state_label(enum clm_agent_state st)
 	return "?";
 }
 
+/*
+ * Fill a buffer with a block-glyph context gauge like "[████░░░░] 40%" from
+ * the tokens carried forward vs the backend's context window. Writes an empty
+ * string when the window is unknown (non-llama.cpp, or /props not yet seen).
+ * GAUGE_CELLS filled/empty cells use U+2588 / U+2591.
+ */
+#define GAUGE_CELLS 10
+static void
+fmt_ctx_gauge(struct ui *u, char *buf, size_t len)
+{
+	long ctx_max = clm_agent_get_ctx_max(u->agent);
+	int filled, pct;
+	size_t off = 0;
+
+	if (buf == NULL || len == 0)
+		return;
+	buf[0] = '\0';
+	if (ctx_max <= 0 || u->ctx_used <= 0)
+		return;
+
+	pct = (int)((u->ctx_used * 100) / ctx_max);
+	if (pct > 100)
+		pct = 100;
+	filled = (pct * GAUGE_CELLS) / 100;
+
+	off += (size_t)snprintf(buf + off, len - off, "[");
+	for (int i = 0; i < GAUGE_CELLS && off < len; i++)
+		off += (size_t)snprintf(buf + off, len - off, "%s",
+		    i < filled ? "\u2588" : "\u2591");
+	if (off < len)
+		(void)snprintf(buf + off, len - off, "] %d%%", pct);
+}
+
 static void
 draw_status(struct ui *u)
 {
@@ -534,6 +571,14 @@ draw_status(struct ui *u)
 	}
 
 	wprintw(u->stat, "  %c %s ", sp, info);
+
+	/* Context-window gauge, when the backend reports a window size. */
+	{
+		char gauge[64];
+		fmt_ctx_gauge(u, gauge, sizeof(gauge));
+		if (gauge[0] != '\0')
+			wprintw(u->stat, " %s ", gauge);
+	}
 
 	/* Right-aligned key hints, shown only when they fit without colliding
 	 * with the live status on the left. */

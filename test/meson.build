@@ -1,7 +1,7 @@
 test_agent = executable('test_agent',
-  files('test_agent.c', 'canned.c'),
+  files('test_agent.c', 'canned.c', '../lib/props.c'),
   dependencies: [clm_dep],
-  include_directories: include_directories('.'),
+  include_directories: [include_directories('.'), clm_inc, include_directories('../include')],
 )
 test('agent', test_agent)
 

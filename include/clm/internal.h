@@ -29,6 +29,9 @@ struct clm_agent {
 	size_t max_iterations;
 	size_t iteration;
 	bool stream;
+	enum clm_backend backend; /* server impl, for gating quirks like /props */
+	long ctx_max;             /* per-conversation context tokens, 0 = unknown */
+	char *props_url;          /* llama.cpp GET /props, or NULL */
 	time_t last_time_stamp; /* wall clock of the last injected time context */
 	struct clm_tool_batch *active_batch;
 
@@ -61,5 +64,12 @@ void clm_agent_set_error(struct clm_agent *agent, const char *msg);
  * advances the turn (next model call); negative errno ends the turn in error.
  */
 void clm_agent_tools_done(struct clm_agent *agent, int status);
+
+/*
+ * Parse a llama.cpp GET /props body. Sets *ctx_out to the per-conversation
+ * context budget and returns 0; returns -1 for a non-llama.cpp or malformed
+ * body. Declared here so it is unit-testable without a live server.
+ */
+int clm_parse_props(const char *body, long *ctx_out);
 
 #endif /* CLM_INTERNAL_H */

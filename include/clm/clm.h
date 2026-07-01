@@ -20,6 +20,20 @@ enum clm_provider {
 	CLM_PROVIDER_ANTHROPIC,
 };
 
+/*
+ * The server implementation behind the API, orthogonal to clm_provider (which
+ * is the wire dialect). This gates implementation-specific behaviour: e.g.
+ * llama.cpp exposes GET /props with n_ctx and slot counts. GENERIC assumes
+ * nothing beyond the dialect. Auto-detected at connect when possible.
+ *
+ * As backend-specific quirks accumulate, this enum is the seam to grow into a
+ * per-backend ops vtable; keep new quirks gated on it rather than scattered.
+ */
+enum clm_backend {
+	CLM_BACKEND_GENERIC = 0,
+	CLM_BACKEND_LLAMACPP,
+};
+
 /* Outcome of a tool call, reported to on_tool_result. */
 enum clm_tool_outcome {
 	CLM_TOOL_OK,
@@ -106,6 +120,7 @@ struct clm_cfg {
 	const char *api_key;
 	const char *base_url;
 	enum clm_provider provider;
+	enum clm_backend backend;  /* server impl; GENERIC (0) auto-detects */
 	const char *model;
 	size_t max_iterations;
 	bool stream;              /* request streamed (SSE) responses */
@@ -203,6 +218,7 @@ CLM_API void clm_agent_free(struct clm_agent *agent);
 CLM_API int clm_agent_submit(struct clm_agent *agent, const char *prompt);
 
 CLM_API enum clm_agent_state clm_agent_get_state(const struct clm_agent *agent);
+CLM_API long clm_agent_get_ctx_max(const struct clm_agent *agent);
 CLM_API const char *clm_agent_get_last_error(const struct clm_agent *agent);
 
 /*

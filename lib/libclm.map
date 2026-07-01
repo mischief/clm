@@ -5,6 +5,7 @@
 		clm_agent_free_ptr;
 		clm_agent_submit;
 		clm_agent_get_state;
+		clm_agent_get_ctx_max;
 		clm_agent_get_last_error;
 		clm_agent_check_connection;
 		clm_agent_cancel;

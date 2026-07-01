@@ -120,6 +120,36 @@ clm_derive_models_url(const char *base_url)
 	return out;
 }
 
+/*
+ * llama.cpp serves GET /props at the server root, not beside the chat
+ * endpoint, so this cuts base_url back to scheme://authority and appends
+ * "/props". Returns a malloc'd string, or NULL if the authority can't be
+ * located (e.g. no "//").
+ */
+static char *
+clm_derive_props_url(const char *base_url)
+{
+	static const char props[] = "/props";
+	const char *authority, *slash;
+	size_t prefix;
+	char *out;
+
+	authority = strstr(base_url, "//");
+	if (authority == NULL)
+		return NULL;
+	authority += 2; /* past "//" */
+
+	slash = strchr(authority, '/');
+	prefix = slash ? (size_t)(slash - base_url) : strlen(base_url);
+
+	out = malloc(prefix + sizeof(props));
+	if (out == NULL)
+		return NULL;
+	memcpy(out, base_url, prefix);
+	memcpy(out + prefix, props, sizeof(props));
+	return out;
+}
+
 
 int
 clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbacks *cb, void *user, struct clm_agent **out)
@@ -140,6 +170,7 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 	agent->uv = uv;
 	agent->state = CLM_STATE_IDLE;
 	agent->stream = cfg->stream;
+	agent->backend = cfg->backend;
 	agent->max_iterations = cfg->max_iterations ? cfg->max_iterations : CLM_DEFAULT_MAX_ITERATIONS;
 	clm_history_init(&agent->history);
 
@@ -158,6 +189,7 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 	agent->cb_user = user;
 
 	agent->models_url = clm_derive_models_url(cfg->base_url);
+	agent->props_url = clm_derive_props_url(cfg->base_url);
 
 	r = clm_llm_new(&agent->llm, cfg->provider, cfg->api_key, cfg->base_url,
 	    cfg->model ? cfg->model : "local-model");
@@ -198,6 +230,7 @@ clm_agent_free(struct clm_agent *agent)
 	clm_history_free(&agent->history);
 	free(agent->last_error);
 	free(agent->models_url);
+	free(agent->props_url);
 	clm_tools_free_registry(agent->tools, agent->tool_count);
 	free(agent);
 }
@@ -215,6 +248,14 @@ enum clm_agent_state
 clm_agent_get_state(const struct clm_agent *agent)
 {
 	return agent ? agent->state : CLM_STATE_ERROR;
+}
+
+/* Per-conversation context budget in tokens, or 0 if unknown (non-llama.cpp
+ * backend, or /props not yet fetched). */
+long
+clm_agent_get_ctx_max(const struct clm_agent *agent)
+{
+	return agent ? agent->ctx_max : 0;
 }
 
 const char *
@@ -772,6 +813,49 @@ clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 		agent->cb_on_turn_done(error_code, agent->cb_user);
 }
 
+/* GET /props completed: parse llama.cpp context info; ignore failures (the
+ * feature is best-effort and only meaningful for llama.cpp backends). */
+static void
+props_success_cb(struct clm_http_response *resp, void *user)
+{
+	struct clm_agent *agent = user;
+	long ctx = 0;
+
+	if (resp != NULL && resp->status_code >= 200 && resp->status_code < 300 &&
+	    resp->body != NULL && clm_parse_props(resp->body, &ctx) == 0) {
+		agent->backend = CLM_BACKEND_LLAMACPP; /* /props => llama.cpp */
+		agent->ctx_max = ctx;
+	}
+	if (resp)
+		clm_http_response_free(resp);
+}
+
+static void
+props_error_cb(int error_code, const char *error_msg, void *user)
+{
+	(void)error_code;
+	(void)error_msg;
+	(void)user; /* no /props (not llama.cpp, or old build): leave ctx unknown */
+}
+
+/*
+ * Probe GET /props to learn the context window and confirm a llama.cpp
+ * backend. Skipped when the caller pinned a non-llama.cpp backend, or when the
+ * url could not be derived.
+ */
+static void
+clm_agent_fetch_props(struct clm_agent *agent)
+{
+	if (agent->props_url == NULL)
+		return;
+	if (agent->backend != CLM_BACKEND_GENERIC &&
+	    agent->backend != CLM_BACKEND_LLAMACPP)
+		return;
+	(void)clm_http_async_post(agent->uv, agent->props_url,
+	    agent->llm->api_key, NULL, props_success_cb, props_error_cb, NULL,
+	    agent, NULL);
+}
+
 /* Health probe completed (GET /v1/models): 2xx is online, anything else is
  * offline. user is the agent (not a turn). */
 static void
@@ -784,6 +868,9 @@ health_success_cb(struct clm_http_response *resp, void *user)
 		if (status >= 200 && status < 300) {
 			agent->cb_on_connection(CLM_CONN_ONLINE, NULL,
 			    agent->cb_user);
+			/* Learn the context window once, now that it's up. */
+			if (agent->ctx_max == 0)
+				clm_agent_fetch_props(agent);
 		} else {
 			char detail[64];
 			(void)snprintf(detail, sizeof(detail), "HTTP %d",

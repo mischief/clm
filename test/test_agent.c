@@ -8,6 +8,7 @@
 #include <uv.h>
 
 #include "clm/clm.h"
+#include "clm/internal.h"
 #include "canned.h"
 
 static int failures;
@@ -494,6 +495,46 @@ test_recover_after_error(uv_loop_t *loop)
 	uv_run(loop, UV_RUN_DEFAULT); /* drain pending closes */
 }
 
+/*
+ * (i) clm_parse_props: derive the per-conversation context budget from a
+ * llama.cpp /props body, divide across slots, and reject non-llama.cpp or
+ * malformed bodies. Pure function, no server needed.
+ */
+static void
+test_parse_props(void)
+{
+	long ctx = 0;
+
+	/* Single slot: ctx is the full n_ctx. */
+	ctx = 0;
+	CHECK(clm_parse_props(
+	    "{\"build_info\":\"b1\",\"total_slots\":1,"
+	    "\"default_generation_settings\":{\"n_ctx\":262144}}", &ctx) == 0,
+	    "props: parses n_ctx");
+	CHECK(ctx == 262144, "props: single-slot ctx is full n_ctx");
+
+	/* Multiple slots: context is shared, so the budget is divided. */
+	ctx = 0;
+	CHECK(clm_parse_props(
+	    "{\"build_info\":\"b1\",\"total_slots\":4,"
+	    "\"default_generation_settings\":{\"n_ctx\":262144}}", &ctx) == 0,
+	    "props: parses with slots");
+	CHECK(ctx == 65536, "props: ctx divided across slots");
+
+	/* No build_info => not llama.cpp => rejected. */
+	ctx = -1;
+	CHECK(clm_parse_props(
+	    "{\"default_generation_settings\":{\"n_ctx\":262144}}", &ctx) < 0,
+	    "props: no build_info rejected");
+	CHECK(ctx == -1, "props: ctx untouched on reject");
+
+	/* Missing n_ctx and outright garbage are rejected. */
+	CHECK(clm_parse_props("{\"build_info\":\"b1\"}", &ctx) < 0,
+	    "props: missing n_ctx rejected");
+	CHECK(clm_parse_props("not json", &ctx) < 0, "props: garbage rejected");
+	CHECK(clm_parse_props(NULL, &ctx) < 0, "props: NULL rejected");
+}
+
 int
 main(void)
 {
@@ -508,6 +549,7 @@ main(void)
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
 	test_recover_after_error(&loop);
+	test_parse_props();
 	uv_loop_close(&loop);
 
 	if (failures > 0) {
