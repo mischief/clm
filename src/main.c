@@ -9,6 +9,10 @@
 #include "clm/clm.h"
 #include "frontend.h"
 
+#ifdef CLM_LUA
+#include "clm/lua_plugin.h"
+#endif
+
 static void
 usage(const char *prog)
 {
@@ -303,6 +307,15 @@ main(int argc, char *argv[])
 		free(state);
 		return 1;
 	}
+
+#ifdef CLM_LUA
+	{
+		struct clm_lua_env *lua_env = NULL;
+		if (clm_lua_env_new(state->agent, &lua_env) == 0) {
+			clm_lua_load_plugins(lua_env, "plugins");
+		}
+	}
+#endif
 
 	if (oneshot != NULL) {
 		r = clm_agent_submit(state->agent, oneshot);

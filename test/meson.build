@@ -5,6 +5,14 @@ test_agent = executable('test_agent',
 )
 test('agent', test_agent)
 
+# Lua plugin test: loads plugins from ../plugins/ and verifies tool dispatch.
+test_lua = executable('test_lua_plugin',
+  files('test_lua_plugin.c'),
+  dependencies: [clm_dep],
+  include_directories: [clm_inc, include_directories('../include')],
+)
+test('lua_plugin', test_lua, workdir: meson.project_source_root())
+
 # md_render unit test: pure, links only the internal md_render static library
 # (no ncurses, no libclm), so the markdown-to-runs logic is tested in isolation.
 test_md = executable('test_md',

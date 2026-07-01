@@ -1,2 +1,4 @@
 option('tests', type: 'boolean', value: true,
   description: 'Build test suite and fuzz targets')
+option('lua', type: 'feature', value: 'auto',
+  description: 'Lua 5.4 plugin support')

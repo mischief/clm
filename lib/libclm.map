@@ -1,24 +1,6 @@
 {
 	global:
-		clm_agent_new;
-		clm_agent_free;
-		clm_agent_free_ptr;
-		clm_agent_submit;
-		clm_agent_get_state;
-		clm_agent_get_ctx_max;
-		clm_agent_get_last_error;
-		clm_agent_check_connection;
-		clm_agent_cancel;
-		clm_agent_compact;
-		clm_tool_add;
-		clm_tool_complete;
-		clm_tool_fail;
-		clm_tool_invocation_name;
-		clm_tool_invocation_args;
-		clm_tool_invocation_loop;
-		clm_tool_invocation_output_cap;
-		clm_tool_invocation_timeout_ms;
-		clm_tool_invocation_set_cancel;
+		clm_*;
 	local:
 		*;
 };

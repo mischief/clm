@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: ISC
+/*
+ * Lua HTTP bindings: http.get(url) and http.post(url, body)
+ * These yield the calling coroutine and resume it with the response
+ * when the async HTTP request completes.
+ */
+#include <errno.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <lua5.4/lua.h>
+#include <lua5.4/lauxlib.h>
+#include <lua5.4/lualib.h>
+
+#include <uv.h>
+
+#include "clm/clm.h"
+#include "clm/internal.h"
+#include "clm/http_async.h"
+#include "clm/http.h"
+#include "clm/log.h"
+#include "useful.h"
+#include "banned.h"
+
+/* Prototype — called from lua_plugin.c. */
+int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
+
+/* State for one in-flight Lua HTTP request. */
+struct lua_http_req {
+	lua_State *co;              /* the yielded coroutine */
+	lua_State *main_L;          /* plugin's main state */
+	struct clm_agent *agent;
+	struct clm_http_request *req; /* the underlying async request */
+};
+
+/* ------------------------------------------------------------------ */
+/* HTTP completion callbacks                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Resume the Lua coroutine with a response table:
+ *   { status = 200, body = "..." }
+ */
+static void
+lua_http_on_success(struct clm_http_response *resp, void *user)
+{
+	struct lua_http_req *lr = user;
+	lua_State *co = lr->co;
+	lua_State *L = lr->main_L;
+	int nres, rc;
+
+	/* Push result table onto coroutine stack. */
+	lua_newtable(co);
+	lua_pushinteger(co, resp->status_code);
+	lua_setfield(co, -2, "status");
+	if (resp->body != NULL) {
+		lua_pushstring(co, resp->body);
+		lua_setfield(co, -2, "body");
+	}
+
+	/* Free the response body (we've copied it to Lua). */
+	free(resp->body);
+	resp->body = NULL;
+
+	/* Resume the coroutine with one result (the table). */
+	nres = 0;
+	rc = lua_resume(co, L, 1, &nres);
+	if (rc != LUA_OK && rc != LUA_YIELD) {
+		const char *err = lua_tostring(co, -1);
+		clm_debug("lua http: coroutine error on resume: %s",
+		    err ? err : "(unknown)");
+	}
+
+	/* If the coroutine finished (rc == LUA_OK), unref it. */
+	if (rc == LUA_OK) {
+		lua_pushlightuserdata(L, co);
+		lua_gettable(L, LUA_REGISTRYINDEX);
+		int co_ref = (int)lua_tointeger(L, -1);
+		lua_pop(L, 1);
+		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
+		/* Remove the mapping. */
+		lua_pushlightuserdata(L, co);
+		lua_pushnil(L);
+		lua_settable(L, LUA_REGISTRYINDEX);
+	}
+
+	free(lr);
+}
+
+/*
+ * Resume the Lua coroutine with nil, error_message.
+ */
+static void
+lua_http_on_error(int error_code, const char *error_msg, void *user)
+{
+	struct lua_http_req *lr = user;
+	lua_State *co = lr->co;
+	lua_State *L = lr->main_L;
+	int nres, rc;
+
+	/* Push nil + error string. */
+	lua_pushnil(co);
+	lua_pushstring(co, error_msg ? error_msg : "unknown HTTP error");
+
+	nres = 0;
+	rc = lua_resume(co, L, 2, &nres);
+	if (rc != LUA_OK && rc != LUA_YIELD) {
+		const char *err = lua_tostring(co, -1);
+		clm_debug("lua http: coroutine error on error resume: %s",
+		    err ? err : "(unknown)");
+	}
+
+	if (rc == LUA_OK) {
+		lua_pushlightuserdata(L, co);
+		lua_gettable(L, LUA_REGISTRYINDEX);
+		int co_ref = (int)lua_tointeger(L, -1);
+		lua_pop(L, 1);
+		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
+		lua_pushlightuserdata(L, co);
+		lua_pushnil(L);
+		lua_settable(L, LUA_REGISTRYINDEX);
+	}
+
+	(void)error_code;
+	free(lr);
+}
+
+/* ------------------------------------------------------------------ */
+/* Lua-callable HTTP functions (yield the coroutine)                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ctx:http_get(url [, headers_table])
+ * Yields. On resume returns: response_table or nil, err.
+ */
+static int
+lua_ctx_http_get(lua_State *L)
+{
+	const char *url = luaL_checkstring(L, 1);
+	struct lua_http_req *lr;
+	uv_loop_t *loop;
+	int r;
+
+	/* Retrieve the agent from the registry (set during http module open). */
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_agent");
+	struct clm_agent *agent = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	if (agent == NULL)
+		return luaL_error(L, "http_get: no agent context");
+
+	loop = clm_tool_invocation_loop(NULL); /* We need the loop from agent */
+	/* Actually get the loop from the agent's uv field directly. */
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_uv_loop");
+	loop = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	if (loop == NULL)
+		return luaL_error(L, "http_get: no event loop");
+
+	lr = calloc(1, sizeof(*lr));
+	if (lr == NULL)
+		return luaL_error(L, "http_get: out of memory");
+
+	lr->co = L;
+	lr->agent = agent;
+
+	/* Get the main state from registry. */
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_main_L");
+	lr->main_L = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	/* clm_http_async_post with NULL body = GET. We pass empty api_key for
+	 * external requests (no auth header needed for arbitrary URLs). */
+	r = clm_http_async_post(loop, url, "", NULL,
+	    lua_http_on_success, lua_http_on_error, NULL, lr, &lr->req);
+	if (r < 0) {
+		free(lr);
+		return luaL_error(L, "http_get: failed to start request: %s",
+		    strerror(-r));
+	}
+
+	/* Yield the coroutine. The HTTP callbacks will resume it. */
+	return lua_yield(L, 0);
+}
+
+/*
+ * ctx:http_post(url, body [, content_type])
+ * Yields. On resume returns: response_table or nil, err.
+ */
+static int
+lua_ctx_http_post(lua_State *L)
+{
+	const char *url = luaL_checkstring(L, 1);
+	const char *body = luaL_checkstring(L, 2);
+	struct lua_http_req *lr;
+	uv_loop_t *loop;
+	int r;
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_agent");
+	struct clm_agent *agent = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	if (agent == NULL)
+		return luaL_error(L, "http_post: no agent context");
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_uv_loop");
+	loop = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	if (loop == NULL)
+		return luaL_error(L, "http_post: no event loop");
+
+	lr = calloc(1, sizeof(*lr));
+	if (lr == NULL)
+		return luaL_error(L, "http_post: out of memory");
+
+	lr->co = L;
+	lr->agent = agent;
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_main_L");
+	lr->main_L = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	r = clm_http_async_post(loop, url, "", body,
+	    lua_http_on_success, lua_http_on_error, NULL, lr, &lr->req);
+	if (r < 0) {
+		free(lr);
+		return luaL_error(L, "http_post: failed to start request: %s",
+		    strerror(-r));
+	}
+
+	return lua_yield(L, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Module registration                                                 */
+/* ------------------------------------------------------------------ */
+
+int
+clm_lua_http_open(lua_State *L, struct clm_agent *agent)
+{
+	/* Store agent pointer and its uv loop in the registry for retrieval
+	 * from within coroutines. */
+	lua_pushlightuserdata(L, agent);
+	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_agent");
+
+	lua_pushlightuserdata(L, agent->uv);
+	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_uv_loop");
+
+	/* Store main L for coroutine resume. */
+	lua_pushlightuserdata(L, L);
+	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_main_L");
+
+	/* Register http functions as globals (callable from coroutines). */
+	lua_newtable(L);
+	lua_pushcfunction(L, lua_ctx_http_get);
+	lua_setfield(L, -2, "get");
+	lua_pushcfunction(L, lua_ctx_http_post);
+	lua_setfield(L, -2, "post");
+	lua_setglobal(L, "http");
+
+	return 0;
+}

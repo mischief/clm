@@ -6,6 +6,13 @@ clm_lib_deps = [
   dependency('libuv'),
 ]
 
+lua_dep = dependency('lua5.4', required: get_option('lua'))
+if lua_dep.found()
+  clm_lib_src += files('lua_plugin.c', 'lua_json.c', 'lua_http.c')
+  clm_lib_deps += lua_dep
+  add_project_arguments('-DCLM_LUA=1', language: 'c')
+endif
+
 # Lib sources find "clm/..." via ../include, and "useful.h"/"banned.h" via
 # ../include and the project root.
 clm_lib_inc = include_directories('.', '..', '../include')

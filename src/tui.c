@@ -29,6 +29,10 @@
 #include "frontend.h"
 #include "md_render.h"
 
+#ifdef CLM_LUA
+#include "clm/lua_plugin.h"
+#endif
+
 /* Style buckets, mapped to curses attributes in seg_attr(). */
 enum ui_style {
 	ST_NORMAL,
@@ -1605,6 +1609,15 @@ tui_run(const struct clm_cfg *cfg)
 		free(u);
 		return 1;
 	}
+
+#ifdef CLM_LUA
+	{
+		struct clm_lua_env *lua_env = NULL;
+		if (clm_lua_env_new(u->agent, &lua_env) == 0) {
+			clm_lua_load_plugins(lua_env, "plugins");
+		}
+	}
+#endif
 
 	initscr();
 	cbreak();
