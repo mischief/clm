@@ -23,6 +23,13 @@ typedef void (*clm_http_success_cb)(struct clm_http_response *resp, void *user);
 /* Callback when HTTP request fails */
 typedef void (*clm_http_error_cb)(int error_code, const char *error_msg, void *user);
 
+/*
+ * Optional callback delivering response body bytes as they arrive. Only
+ * invoked for a 2xx response, so a streaming consumer never sees error bodies.
+ * The full body is still accumulated and handed to success_cb at the end.
+ */
+typedef void (*clm_http_data_cb)(const char *data, size_t len, void *user);
+
 /* Async HTTP request response buffer */
 struct http_buf {
 	char *data;
@@ -45,16 +52,24 @@ struct clm_http_request {
 	uv_poll_t poll_socket;
 	curl_socket_t sockfd;
 	int events_pending;
+	int poll_initialized;
+	
+	/* UV timer handle */
+	uv_timer_t timer_handle;
+	int timer_initialized;
 	
 	/* Callbacks and user data */
 	clm_http_success_cb success_cb;
 	clm_http_error_cb error_cb;
+	clm_http_data_cb data_cb;
 	void *user;
 	
 	/* State */
 	enum clm_http_request_state state;
 	int error_code;
 	char error_msg[256];
+	int closing;
+	int handles_to_close;
 };
 
 /*
@@ -64,7 +79,15 @@ struct clm_http_request {
  * On completion, either success_cb or error_cb will be called.
  */
 int clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
-    const char *json_body, clm_http_success_cb success_cb, clm_http_error_cb error_cb, void *user);
+    const char *json_body, clm_http_success_cb success_cb, clm_http_error_cb error_cb,
+    clm_http_data_cb data_cb, void *user, struct clm_http_request **out_req);
+
+/*
+ * Abort an in-flight request. Tears down its handles and delivers the outcome
+ * to error_cb with -ECANCELED. Safe to call once, before the request has
+ * completed; a no-op if already tearing down.
+ */
+void clm_http_async_cancel(struct clm_http_request *req);
 
 /*
  * Free an async HTTP request and cleanup resources.

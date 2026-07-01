@@ -11,24 +11,42 @@
 
 struct clm_agent;
 
+/* A registered tool: an owned copy of the clm_tool_def the caller provided. */
 struct clm_tool {
-	enum clm_tool_type type;
 	char *name;
+	char *description;   /* owned, may be NULL */
+	char *params_schema; /* owned JSON string, may be NULL */
+	clm_tool_fn invoke;
+	void *user;
+	size_t output_cap;
+	uint64_t timeout_ms;
+	unsigned flags;
 };
 
+/* Register the three built-in tools (read_file, write_file, shell_exec). */
+int clm_tools_register_builtins(struct clm_agent *agent);
+
+/* Free a tool registry array (name/description/params_schema strings). */
+void clm_tools_free_registry(struct clm_tool *tools, size_t count);
+
 /*
- * Build the OpenAI "tools" schema array for the agent's registered tools.
+ * Build the OpenAI "tools" schema array for the agent's registered tools,
+ * injecting the timeout_ms / output_cap parameters for tools that opted in.
  * Caller owns the returned object (json_object_put), or NULL on failure.
  */
 struct json_object *clm_tools_build_schema(const struct clm_agent *agent);
 
 /*
- * Execute the tool named by call->name with call->args (raw JSON string).
- * On success *result is a heap-allocated clm_tool_result (caller frees with
- * clm_tool_result_free). Returns 0 on success, negative errno on failure.
- * Tool-level failures (missing file, bad args) are reported as a successful
- * result whose content is an error message, so the model can recover.
+ * Dispatch a batch of assistant tool calls. Records the assistant tool-call
+ * message and one tool-result message per call into history, firing
+ * on_tool_begin/on_tool_result. Runs asynchronously: returns 0 once the batch
+ * is started (negative errno on setup failure), and calls clm_agent_tools_done
+ * when every call has completed. tool_calls is the borrowed JSON array from
+ * the model response.
  */
-int clm_tool_execute(struct clm_agent *agent, const struct clm_tool_call *call, struct clm_tool_result **result);
+int clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls);
+
+/* Abort an in-flight batch (best effort), used during agent teardown. */
+void clm_tools_cancel(struct clm_agent *agent);
 
 #endif /* CLM_TOOLS_H */

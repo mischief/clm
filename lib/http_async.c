@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
 #include <errno.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 #include <uv.h>
 
 #include "clm/http_async.h"
+#include "clm/log.h"
 #include "clm/cleanup.h"
 #include "useful.h"
 #include "banned.h"
@@ -16,7 +18,8 @@ static size_t
 http_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 {
 	size_t realsize = size * nmemb;
-	struct http_buf *buf = userp;
+	struct clm_http_request *req = userp;
+	struct http_buf *buf = &req->response_buf;
 	char *ptr;
 
 	ptr = realloc(buf->data, buf->len + realsize + 1);
@@ -28,8 +31,22 @@ http_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 	buf->len += realsize;
 	buf->data[buf->len] = '\0';
 
+	/* Forward chunks to a streaming consumer, but only for a 2xx response so
+	 * it never sees an error body. */
+	if (req->data_cb != NULL) {
+		long code = 0;
+		curl_easy_getinfo(req->easy_handle, CURLINFO_RESPONSE_CODE, &code);
+		if (code >= 200 && code < 300)
+			req->data_cb(contents, realsize, req->user);
+	}
+
 	return realsize;
 }
+
+static void http_handle_closed(uv_handle_t *handle);
+static void http_request_teardown(struct clm_http_request *req);
+static void http_timer_callback(CURLM *multi, long timeout_ms, void *userp);
+static void http_timer_expired(uv_timer_t *handle);
 
 static void
 http_poll_callback(uv_poll_t *handle, int status, int events)
@@ -37,10 +54,13 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 	struct clm_http_request *req = handle->data;
 	int curl_action = 0;
 
+	clm_debug("status=%d, events=%d", status, events);
+
 	if (status < 0) {
 		req->state = CLM_HTTP_ERROR;
 		req->error_code = -status;
 		snprintf(req->error_msg, sizeof(req->error_msg), "poll error: %s", uv_err_name(-status));
+		clm_debug("poll error, status=%d", status);
 		goto done;
 	}
 
@@ -49,7 +69,10 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 	if (events & UV_WRITABLE)
 		curl_action |= CURL_POLL_OUT;
 
+	clm_debug("curl_action=%d", curl_action);
+
 	curl_multi_socket_action(req->multi_handle, req->sockfd, curl_action, &req->events_pending);
+	clm_debug("curl_multi_socket_action completed");
 
 	/* Check for completed transfers */
 	int msgs_left;
@@ -59,10 +82,12 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 			CURLcode curl_err = msg->data.result;
 			if (curl_err == CURLE_OK) {
 				req->state = CLM_HTTP_DONE;
+				clm_debug("CURLMSG_DONE, CURLE_OK");
 			} else {
 				req->state = CLM_HTTP_ERROR;
 				req->error_code = curl_err;
 				snprintf(req->error_msg, sizeof(req->error_msg), "curl error: %s", curl_easy_strerror(curl_err));
+				clm_debug("CURLMSG_DONE, curl_err=%d", curl_err);
 			}
 			goto done;
 		}
@@ -71,23 +96,8 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 	return;
 
 done:
-	/* Stop poll */
-	uv_poll_stop(handle);
-
-	/* Call completion callback */
-	if (req->state == CLM_HTTP_DONE) {
-		struct clm_http_response resp = {0};
-		long status_code = 200;
-		curl_easy_getinfo(req->easy_handle, CURLINFO_RESPONSE_CODE, &status_code);
-		resp.status_code = (int)status_code;
-		resp.body = req->response_buf.data;
-		req->response_buf.data = NULL;
-		req->success_cb(&resp, req->user);
-	} else {
-		req->error_cb(req->error_code, req->error_msg, req->user);
-	}
-
-	clm_http_request_free(req);
+	clm_debug("calling http_request_teardown");
+	http_request_teardown(req);
 }
 
 static void
@@ -95,11 +105,15 @@ http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void 
 {
 	struct clm_http_request *req = userp;
 
+	clm_debug("action=%d, s=%d", action, s);
+
 	if (action == CURL_POLL_IN || action == CURL_POLL_OUT || action == CURL_POLL_INOUT) {
 		if (req->sockfd == CURL_SOCKET_BAD) {
 			req->sockfd = s;
 			uv_poll_init_socket(req->uv, &req->poll_socket, s);
 			req->poll_socket.data = req;
+			req->poll_initialized = 1;
+			clm_debug("uv_poll_init_socket success, sockfd=%d", s);
 		}
 
 		int events = 0;
@@ -108,36 +122,52 @@ http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void 
 		if (action & CURL_POLL_OUT)
 			events |= UV_WRITABLE;
 
-		uv_poll_start(&req->poll_socket, events, http_poll_callback);
+		clm_debug("events=%d", events);
+
+		if (req->poll_initialized && !uv_is_closing((uv_handle_t *)&req->poll_socket)) {
+			uv_poll_start(&req->poll_socket, events, http_poll_callback);
+			clm_debug("uv_poll_start completed");
+		}
 	} else if (action == CURL_POLL_REMOVE) {
-		if (req->sockfd != CURL_SOCKET_BAD) {
+		if (req->sockfd != CURL_SOCKET_BAD && !uv_is_closing((uv_handle_t *)&req->poll_socket)) {
 			uv_poll_stop(&req->poll_socket);
 			req->sockfd = CURL_SOCKET_BAD;
+			clm_debug("uv_poll_stop completed");
 		}
 	}
 }
 
 int
 clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
-    const char *json_body, clm_http_success_cb success_cb, clm_http_error_cb error_cb, void *user)
+    const char *json_body, clm_http_success_cb success_cb, clm_http_error_cb error_cb,
+    clm_http_data_cb data_cb, void *user, struct clm_http_request **out_req)
 {
 	struct clm_http_request *req;
 	char auth_header[512];
 
+	clm_debug("starting");
+
+	if (out_req != NULL)
+		*out_req = NULL;
+
 	ASSERT_RETURN(loop != NULL, -EINVAL);
 	ASSERT_RETURN(url != NULL, -EINVAL);
 	ASSERT_RETURN(api_key != NULL, -EINVAL);
-	ASSERT_RETURN(json_body != NULL, -EINVAL);
+	/* json_body == NULL performs a GET (used for the health check). */
 	ASSERT_RETURN(success_cb != NULL, -EINVAL);
 	ASSERT_RETURN(error_cb != NULL, -EINVAL);
 
 	req = calloc(1, sizeof(*req));
-	if (req == NULL)
+	if (req == NULL) {
+		clm_debug("calloc failed");
 		return -ENOMEM;
+	}
+	clm_debug("req allocated");
 
 	req->uv = loop;
 	req->success_cb = success_cb;
 	req->error_cb = error_cb;
+	req->data_cb = data_cb;
 	req->user = user;
 	req->state = CLM_HTTP_PENDING;
 	req->sockfd = CURL_SOCKET_BAD;
@@ -146,18 +176,23 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 
 	req->multi_handle = curl_multi_init();
 	if (req->multi_handle == NULL) {
+		clm_debug("curl_multi_init failed");
 		free(req);
 		return -ENOMEM;
 	}
+	clm_debug("curl_multi_init success");
 
 	req->easy_handle = curl_easy_init();
 	if (req->easy_handle == NULL) {
+		clm_debug("curl_easy_init failed");
 		curl_multi_cleanup(req->multi_handle);
 		free(req);
 		return -ENOMEM;
 	}
+	clm_debug("curl_easy_init success");
 
 	if (strlen(api_key) + sizeof("Authorization: Bearer ") >= sizeof(auth_header)) {
+		clm_debug("auth_header too long");
 		curl_easy_cleanup(req->easy_handle);
 		curl_multi_cleanup(req->multi_handle);
 		free(req);
@@ -169,24 +204,143 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	req->headers = curl_slist_append(req->headers, auth_header);
 
 	curl_easy_setopt(req->easy_handle, CURLOPT_URL, url);
-	curl_easy_setopt(req->easy_handle, CURLOPT_POST, 1L);
-	curl_easy_setopt(req->easy_handle, CURLOPT_POSTFIELDS, json_body);
+	if (json_body != NULL) {
+		curl_easy_setopt(req->easy_handle, CURLOPT_POST, 1L);
+		curl_easy_setopt(req->easy_handle, CURLOPT_POSTFIELDS, json_body);
+	} else {
+		curl_easy_setopt(req->easy_handle, CURLOPT_HTTPGET, 1L);
+	}
 	curl_easy_setopt(req->easy_handle, CURLOPT_WRITEFUNCTION, http_write_callback);
-	curl_easy_setopt(req->easy_handle, CURLOPT_WRITEDATA, &req->response_buf);
+	curl_easy_setopt(req->easy_handle, CURLOPT_WRITEDATA, req);
 	curl_easy_setopt(req->easy_handle, CURLOPT_HTTPHEADER, req->headers);
 	curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 120L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, req);
 
 	curl_multi_setopt(req->multi_handle, CURLMOPT_SOCKETFUNCTION, http_socket_callback);
 	curl_multi_setopt(req->multi_handle, CURLMOPT_SOCKETDATA, req);
+	curl_multi_setopt(req->multi_handle, CURLMOPT_TIMERFUNCTION, http_timer_callback);
+	curl_multi_setopt(req->multi_handle, CURLMOPT_TIMERDATA, req);
 
 	curl_multi_add_handle(req->multi_handle, req->easy_handle);
 	req->state = CLM_HTTP_RUNNING;
+	clm_debug("curl_multi_add_handle success");
+
+	/* Hand the caller a cancellable handle before we start driving it. The
+	 * transfer only completes on a later loop iteration, so this is safe. */
+	if (out_req != NULL)
+		*out_req = req;
 
 	/* Trigger initial socket action */
 	curl_multi_socket_action(req->multi_handle, CURL_SOCKET_TIMEOUT, 0, &req->events_pending);
+	clm_debug("curl_multi_socket_action completed");
 
 	return 0;
+}
+
+void
+clm_http_async_cancel(struct clm_http_request *req)
+{
+	if (req == NULL || req->closing)
+		return;
+	/* Report the abort through the error path, then tear down. */
+	req->state = CLM_HTTP_ERROR;
+	req->error_code = -ECANCELED;
+	(void)snprintf(req->error_msg, sizeof(req->error_msg), "cancelled");
+	http_request_teardown(req);
+}
+
+static void
+http_request_complete(struct clm_http_request *req)
+{
+	if (req->state == CLM_HTTP_DONE) {
+		struct clm_http_response resp = {0};
+		long status_code = 200;
+		curl_easy_getinfo(req->easy_handle, CURLINFO_RESPONSE_CODE, &status_code);
+		resp.status_code = (int)status_code;
+		resp.body = req->response_buf.data;
+		req->response_buf.data = NULL;
+		req->success_cb(&resp, req->user);
+	} else {
+		req->error_cb(req->error_code, req->error_msg, req->user);
+	}
+}
+
+static void
+http_handle_closed(uv_handle_t *handle)
+{
+	struct clm_http_request *req = handle->data;
+	req->handles_to_close--;
+	if (req->handles_to_close == 0) {
+		http_request_complete(req);
+		clm_http_request_free(req);
+	}
+}
+
+static void
+http_request_teardown(struct clm_http_request *req)
+{
+	clm_debug("closing=%d, handles_to_close=%d", req->closing, req->handles_to_close);
+
+	if (req->closing)
+		return;
+	req->closing = 1;
+	req->handles_to_close = 0;
+	if (req->poll_initialized)
+		req->handles_to_close++;
+	if (req->timer_initialized)
+		req->handles_to_close++;
+	clm_debug("handles_to_close=%d", req->handles_to_close);
+
+	if (req->handles_to_close == 0) {
+		clm_debug("no handles to close, calling clm_http_request_free");
+		http_request_complete(req);
+		clm_http_request_free(req);
+		return;
+	}
+	if (req->poll_initialized) {
+		clm_debug("uv_close poll_socket");
+		uv_close((uv_handle_t *)&req->poll_socket, http_handle_closed);
+	}
+	if (req->timer_initialized) {
+		clm_debug("uv_close timer_handle");
+		uv_close((uv_handle_t *)&req->timer_handle, http_handle_closed);
+	}
+}
+
+static void
+http_timer_callback(CURLM *multi, long timeout_ms, void *userp)
+{
+	struct clm_http_request *req = userp;
+
+	clm_debug("timeout_ms=%ld", timeout_ms);
+
+	if (timeout_ms < 0) {
+		if (req->timer_initialized) {
+			uv_timer_stop(&req->timer_handle);
+			clm_debug("uv_timer_stop completed");
+		}
+		return;
+	}
+
+	if (!req->timer_initialized) {
+		uv_timer_init(req->uv, &req->timer_handle);
+		req->timer_handle.data = req;
+		req->timer_initialized = 1;
+		clm_debug("uv_timer_init success");
+	}
+
+	uv_timer_start(&req->timer_handle, http_timer_expired, (uint64_t)timeout_ms, 0);
+	clm_debug("uv_timer_start completed with timeout=%lu", (unsigned long)timeout_ms);
+}
+
+static void
+http_timer_expired(uv_timer_t *handle)
+{
+	struct clm_http_request *req = handle->data;
+	int running;
+	clm_debug("calling curl_multi_socket_action");
+	curl_multi_socket_action(req->multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
+	clm_debug("curl_multi_socket_action completed, running=%d", running);
 }
 
 void
@@ -194,6 +348,10 @@ clm_http_request_free(struct clm_http_request *req)
 {
 	if (req == NULL)
 		return;
+
+	if (req->easy_handle != NULL && req->multi_handle != NULL) {
+		curl_multi_remove_handle(req->multi_handle, req->easy_handle);
+	}
 
 	if (req->easy_handle != NULL) {
 		curl_easy_cleanup(req->easy_handle);
@@ -216,4 +374,16 @@ clm_http_request_free(struct clm_http_request *req)
 	}
 
 	free(req);
+}
+
+void
+clm_http_response_free(struct clm_http_response *resp)
+{
+	if (resp == NULL)
+		return;
+	free(resp->body);
+	free(resp->error_msg);
+	resp->body = NULL;
+	resp->error_msg = NULL;
+	resp->status_code = 0;
 }

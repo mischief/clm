@@ -1,0 +1,1524 @@
+// SPDX-License-Identifier: ISC
+/*
+ * clm-tui -- an ncurses frontend for libclm.
+ *
+ * Design: libclm callbacks fire on the uv loop thread and MUST NOT block or do
+ * heavy work (see the contract in clm/clm.h). So every callback here only
+ * mutates a small UI model -- appending styled text segments to a queue and
+ * updating status fields. A single uv_timer owns ALL drawing: it drains the
+ * segment queue into a scrolling transcript window and repaints the status and
+ * input lines. Terminal input is read through uv_poll on stdin, so ncurses
+ * shares the caller's event loop rather than blocking in getch().
+ */
+#include <errno.h>
+#include <limits.h>
+#include <locale.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/queue.h>
+#include <unistd.h>
+#include <wchar.h>
+
+#include <curses.h>
+#include <json-c/json.h>
+#include <lowdown.h>
+#include <uv.h>
+
+#include "clm/clm.h"
+#include "frontend.h"
+
+/* Style buckets, mapped to curses attributes in seg_attr(). */
+enum ui_style {
+	ST_NORMAL,
+	ST_USER,     /* the user's prompt echo */
+	ST_ASSIST,   /* assistant answer text */
+	ST_REASON,   /* dim "thinking" channel */
+	ST_TOOL,     /* tool invocation summary line */
+	ST_TOOL_OUT, /* tool output body (collapsible) */
+	ST_ERROR,    /* failures */
+	ST_TIMEOUT,  /* timed-out tool */
+	ST_META,     /* dim meta notes */
+};
+
+/* One styled run of transcript source text (queued by a callback). */
+struct seg {
+	enum ui_style style;
+	char *text;
+};
+
+/* One run of rendered text with a resolved curses attribute, ready to draw. */
+struct rseg {
+	int attr;
+	char *text;
+};
+
+struct ui {
+	uv_loop_t *loop;
+	struct clm_agent *agent;
+
+	uv_poll_t stdin_poll;
+	uv_timer_t repaint;
+	uv_timer_t health;
+	uv_signal_t winch;
+
+	WINDOW *txt;  /* scrolling transcript */
+	WINDOW *stat; /* status bar */
+	WINDOW *in;   /* input box (grows upward as text wraps) */
+	int in_h;     /* current input box height in rows */
+
+	/* Transcript source: an accumulating list of styled spans (text may
+	 * contain newlines; ST_ASSIST spans hold raw markdown). */
+	struct seg *segs;
+	size_t nsegs, cap_segs;
+	unsigned gen; /* bumped whenever the source list changes */
+
+	/* Render cache: source resolved to (curses-attr, text) runs -- markdown
+	 * expanded, styles flattened. Rebuilt when gen or width changes, then
+	 * wrapped into the viewport. */
+	struct rseg *rsegs;
+	size_t nrsegs, cap_rsegs;
+	unsigned built_gen;
+	int built_width;
+
+	size_t
+	    scroll; /* wrapped rows scrolled up from the bottom; 0 = follow */
+
+	/* Input line editor (byte buffer, UTF-8; cursor is a byte offset). */
+	char input[1024];
+	size_t input_len;
+	size_t input_pos;
+	char kill[1024];
+	size_t kill_len;
+
+	/* Status model. */
+	const char *model;
+	enum clm_agent_state state;
+	enum clm_conn_status conn;
+	char conn_detail[64];
+	char usage[96];
+	char batch[64];
+	int spinner;
+	bool busy;           /* a turn is in flight */
+	bool started_assist; /* assistant text seen this turn */
+
+	/* Tool-batch tally, for the aggregate summary line. */
+	int n_cmd, n_read, n_write, n_other;
+
+	bool
+	    expand_output; /* show full tool output vs. an ellipsized preview */
+	bool built_expand; /* expand_output value the cache was built with */
+	bool show_reasoning; /* render the dim "thinking" channel */
+	bool
+	    built_reasoning; /* show_reasoning value the cache was built with */
+
+	/* Prompts typed while a turn is in flight, run FIFO on turn-done. */
+	char **queue;
+	size_t nqueue, cap_queue;
+
+	bool dirty;       /* repaint requested */
+	bool full_redraw; /* force an artifact-free repaint (resize / ^L) */
+	bool quit;
+};
+
+/* ---- UI model mutation (called from libclm callbacks; keep cheap) ---- */
+
+static void
+ui_push(struct ui *u, enum ui_style style, const char *text)
+{
+	if (text == NULL || *text == '\0')
+		return;
+
+	/* Coalesce consecutive same-style pushes into one span. This keeps the
+	 * span count small under streaming (many tiny chunks) and, crucially,
+	 * rejoins a multibyte char that was split across two stream chunks. */
+	if (u->nsegs > 0 && u->segs[u->nsegs - 1].style == style) {
+		char *old = u->segs[u->nsegs - 1].text;
+		size_t oldlen = strlen(old);
+		size_t addlen = strlen(text);
+		char *p = realloc(old, oldlen + addlen + 1);
+		if (p == NULL)
+			return;
+		memcpy(p + oldlen, text, addlen + 1);
+		u->segs[u->nsegs - 1].text = p;
+		u->gen++;
+		u->dirty = true;
+		return;
+	}
+
+	if (u->nsegs == u->cap_segs) {
+		size_t ncap = u->cap_segs ? u->cap_segs * 2 : 32;
+		struct seg *p = realloc(u->segs, ncap * sizeof(*p));
+		if (p == NULL)
+			return; /* drop the segment rather than crash */
+		u->segs = p;
+		u->cap_segs = ncap;
+	}
+	char *dup = strdup(text);
+	if (dup == NULL)
+		return;
+	u->segs[u->nsegs].style = style;
+	u->segs[u->nsegs].text = dup;
+	u->nsegs++;
+	u->gen++;
+	u->dirty = true;
+}
+
+static void
+ui_set_state(struct ui *u, enum clm_agent_state st)
+{
+	u->state = st;
+	u->dirty = true;
+}
+
+static void drain_queue(struct ui *u); /* runs the next queued prompt */
+
+/* ---- libclm callbacks ---- */
+
+static void
+cb_assistant_text(const char *text, void *user)
+{
+	struct ui *u = user;
+	if (!u->started_assist) {
+		ui_push(u, ST_META, "\nclm> ");
+		u->started_assist = true;
+	}
+	ui_push(u, ST_ASSIST, text);
+}
+
+static void
+cb_reasoning(const char *text, void *user)
+{
+	ui_push(user, ST_REASON, text);
+}
+
+/* Extract a string field from a JSON args object, or NULL. Caller must not
+ * free the result; it is owned by (and valid for the life of) obj. */
+static const char *
+json_field(struct json_object *obj, const char *key)
+{
+	struct json_object *v;
+
+	if (obj == NULL || !json_object_object_get_ex(obj, key, &v) ||
+	    !json_object_is_type(v, json_type_string))
+		return NULL;
+	return json_object_get_string(v);
+}
+
+/* Push a one-line, human-readable summary of a tool call -- never raw JSON.
+ * The detail is flattened (no newlines/tabs) and clamped so one call is one
+ * row; an over-long detail gets an ellipsis. */
+static void
+push_tool_summary(struct ui *u, const char *verb, const char *detail)
+{
+	char line[200];
+	size_t n = 0;
+	size_t cap = sizeof(line) - 5; /* room for "...\n\0" */
+
+	line[n++] = ' ';
+	line[n++] = ' ';
+	for (const char *p = verb; *p != '\0' && n < cap; p++)
+		line[n++] = *p;
+	if (detail != NULL && *detail != '\0' && n < cap) {
+		const char *p = detail;
+		line[n++] = ':';
+		line[n++] = ' ';
+		while (*p != '\0' && n < cap) {
+			line[n++] = (*p == '\n' || *p == '\t') ? ' ' : *p;
+			p++;
+		}
+		if (*p != '\0') { /* truncated */
+			line[n++] = '.';
+			line[n++] = '.';
+			line[n++] = '.';
+		}
+	}
+	line[n++] = '\n';
+	line[n] = '\0';
+	ui_push(u, ST_TOOL, line);
+}
+
+static void
+cb_tool_begin(const char *name, const char *args, void *user)
+{
+	struct ui *u = user;
+	struct json_object *obj = args ? json_tokener_parse(args) : NULL;
+
+	if (strcmp(name, "shell_exec") == 0) {
+		push_tool_summary(u, "executing shell command",
+		                  json_field(obj, "command"));
+		u->n_cmd++;
+	} else if (strcmp(name, "read_file") == 0) {
+		push_tool_summary(u, "reading file", json_field(obj, "path"));
+		u->n_read++;
+	} else if (strcmp(name, "write_file") == 0) {
+		push_tool_summary(u, "writing file", json_field(obj, "path"));
+		u->n_write++;
+	} else {
+		push_tool_summary(u, "calling tool", name);
+		u->n_other++;
+	}
+	json_object_put(obj);
+}
+
+static void
+cb_tool_result(const char *name, const char *content,
+               enum clm_tool_outcome outcome, void *user)
+{
+	struct ui *u = user;
+	size_t clen;
+	(void)name;
+	switch (outcome) {
+	case CLM_TOOL_OK:
+		ui_push(u, ST_TOOL_OUT, content);
+		/* Ensure exactly one trailing newline (don't double-count). */
+		clen = content ? strlen(content) : 0;
+		if (clen == 0 || content[clen - 1] != '\n')
+			ui_push(u, ST_TOOL_OUT, "\n");
+		break;
+	case CLM_TOOL_FAILED:
+		ui_push(u, ST_ERROR, "[x ");
+		ui_push(u, ST_ERROR, name);
+		ui_push(u, ST_ERROR, "] ");
+		ui_push(u, ST_ERROR, content);
+		ui_push(u, ST_ERROR, "\n");
+		break;
+	case CLM_TOOL_TIMEDOUT:
+		ui_push(u, ST_TIMEOUT, "[timeout ");
+		ui_push(u, ST_TIMEOUT, name);
+		ui_push(u, ST_TIMEOUT, "] ");
+		ui_push(u, ST_TIMEOUT, content);
+		ui_push(u, ST_TIMEOUT, "\n");
+		break;
+	}
+}
+
+/* Emit "ran 2 commands, read 3 files, ..." from the batch tally. */
+static void
+push_batch_summary(struct ui *u)
+{
+	char line[128];
+	size_t n = 0;
+	int parts = 0;
+	const struct {
+		int count;
+		const char *one, *many;
+	} cats[] = {
+	    {u->n_cmd, "ran 1 command", "commands"},
+	    {u->n_read, "read 1 file", "files"},
+	    {u->n_write, "wrote 1 file", "files"},
+	    {u->n_other, "called 1 tool", "tools"},
+	};
+	static const char *verb[] = {"ran", "read", "wrote", "called"};
+
+	n += (size_t)snprintf(line, sizeof(line), "  -- ");
+	for (size_t i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
+		if (cats[i].count == 0)
+			continue;
+		if (parts++ > 0 && n < sizeof(line) - 4)
+			n += (size_t)snprintf(line + n, sizeof(line) - n, ", ");
+		if (cats[i].count == 1)
+			n += (size_t)snprintf(line + n, sizeof(line) - n, "%s",
+			                      cats[i].one);
+		else
+			n += (size_t)snprintf(line + n, sizeof(line) - n,
+			                      "%s %d %s", verb[i],
+			                      cats[i].count, cats[i].many);
+	}
+	if (parts == 0)
+		return;
+	if (n < sizeof(line) - 1)
+		snprintf(line + n, sizeof(line) - n, "\n");
+	ui_push(u, ST_META, line);
+}
+
+static void
+cb_tool_batch(size_t completed, size_t total, void *user)
+{
+	struct ui *u = user;
+
+	if (completed == 0) { /* batch starting: reset the tally */
+		u->n_cmd = u->n_read = u->n_write = u->n_other = 0;
+	}
+	if (completed >= total) { /* batch done: emit the aggregate line */
+		push_batch_summary(u);
+		u->batch[0] = '\0';
+	} else {
+		snprintf(u->batch, sizeof(u->batch), "tools %zu/%zu", completed,
+		         total);
+	}
+	u->dirty = true;
+}
+
+static void
+cb_finish_reason(enum clm_finish_reason reason, void *user)
+{
+	struct ui *u = user;
+	if (reason == CLM_FINISH_LENGTH)
+		ui_push(u, ST_META, "\n[truncated: hit token limit]\n");
+	else if (reason == CLM_FINISH_CONTENT_FILTER)
+		ui_push(u, ST_META, "\n[stopped: content filter]\n");
+}
+
+static void
+cb_usage(const struct clm_usage *usage, void *user)
+{
+	struct ui *u = user;
+	if (usage->tokens_per_sec > 0)
+		snprintf(u->usage, sizeof(u->usage), "%d+%d tok, %.1f tok/s",
+		         usage->prompt_tokens, usage->completion_tokens,
+		         usage->tokens_per_sec);
+	else
+		snprintf(u->usage, sizeof(u->usage), "%d+%d tok",
+		         usage->prompt_tokens, usage->completion_tokens);
+	u->dirty = true;
+}
+
+static void
+cb_state(enum clm_agent_state st, void *user)
+{
+	ui_set_state(user, st);
+}
+
+static void
+cb_connection(enum clm_conn_status status, const char *detail, void *user)
+{
+	struct ui *u = user;
+	u->conn = status;
+	if (detail != NULL)
+		snprintf(u->conn_detail, sizeof(u->conn_detail), "%s", detail);
+	else
+		u->conn_detail[0] = '\0';
+	u->dirty = true;
+}
+
+static void
+cb_turn_done(int status, void *user)
+{
+	struct ui *u = user;
+	/* -ECANCELED is a user Escape; we already showed "[cancelled]". */
+	if (status != 0 && status != -ECANCELED) {
+		ui_push(u, ST_ERROR, "\nerror: ");
+		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->agent));
+		/* A failed turn may mean the server went away; re-probe. */
+		clm_agent_check_connection(u->agent);
+	}
+	ui_push(u, ST_NORMAL, "\n");
+	u->busy = false;
+	u->batch[0] = '\0';
+	u->dirty = true;
+	drain_queue(u); /* start the next queued prompt, if any */
+}
+
+static const struct clm_callbacks tui_callbacks = {
+    .on_assistant_text = cb_assistant_text,
+    .on_reasoning = cb_reasoning,
+    .on_tool_begin = cb_tool_begin,
+    .on_tool_result = cb_tool_result,
+    .on_tool_batch = cb_tool_batch,
+    .on_finish_reason = cb_finish_reason,
+    .on_usage = cb_usage,
+    .on_connection = cb_connection,
+    .on_state = cb_state,
+    .on_turn_done = cb_turn_done,
+};
+
+/* ---- rendering (all drawing happens here, from the repaint timer) ---- */
+
+static int
+seg_attr(enum ui_style style)
+{
+	switch (style) {
+	case ST_USER:
+		return A_BOLD | COLOR_PAIR(1);
+	case ST_ASSIST:
+		return A_NORMAL;
+	case ST_REASON:
+		return A_DIM;
+	case ST_TOOL:
+		return COLOR_PAIR(2);
+	case ST_TOOL_OUT:
+		return A_DIM;
+	case ST_ERROR:
+		return COLOR_PAIR(3);
+	case ST_TIMEOUT:
+		return COLOR_PAIR(4);
+	case ST_META:
+		return A_DIM;
+	case ST_NORMAL:
+		break;
+	}
+	return A_NORMAL;
+}
+
+static const char *
+state_label(enum clm_agent_state st)
+{
+	switch (st) {
+	case CLM_STATE_IDLE:
+		return "idle";
+	case CLM_STATE_THINKING:
+		return "thinking";
+	case CLM_STATE_CALLING_TOOL:
+		return "tool";
+	case CLM_STATE_COMPLETE:
+		return "done";
+	case CLM_STATE_ERROR:
+		return "error";
+	}
+	return "?";
+}
+
+static void
+draw_status(struct ui *u)
+{
+	static const char spin[] = "|/-\\";
+	const char *info;
+	char sp = u->busy ? spin[u->spinner & 3] : ' ';
+
+	werase(u->stat);
+	wbkgd(u->stat, COLOR_PAIR(5));
+	wattron(u->stat, COLOR_PAIR(5));
+
+	/* Live status sits on the left, next to the model, so the eye doesn't
+	 * have to travel across the width of the terminal to read it. */
+	if (u->batch[0] != '\0')
+		info = u->batch;
+	else if (u->usage[0] != '\0')
+		info = u->usage;
+	else
+		info = state_label(u->state);
+
+	mvwprintw(u->stat, 0, 0, " clm");
+	if (u->model != NULL)
+		wprintw(u->stat, " [%s]", u->model);
+
+	switch (u->conn) {
+	case CLM_CONN_CHECKING:
+		wprintw(u->stat, " [connecting]");
+		break;
+	case CLM_CONN_ONLINE:
+		wprintw(u->stat, " [online]");
+		break;
+	case CLM_CONN_OFFLINE:
+		if (u->conn_detail[0] != '\0')
+			wprintw(u->stat, " [offline: %s]", u->conn_detail);
+		else
+			wprintw(u->stat, " [offline]");
+		break;
+	}
+
+	wprintw(u->stat, "  %c %s ", sp, info);
+
+	wattroff(u->stat, COLOR_PAIR(5));
+	wnoutrefresh(u->stat);
+}
+
+/* Display columns occupied by the first n bytes of a UTF-8 string. */
+static int
+disp_width(const char *s, size_t n)
+{
+	mbstate_t ps;
+	size_t i = 0;
+	int cols = 0;
+
+	memset(&ps, 0, sizeof(ps));
+	while (i < n) {
+		wchar_t wc;
+		size_t k = mbrtowc(&wc, s + i, n - i, &ps);
+		if (k == (size_t)-1 || k == (size_t)-2 || k == 0) {
+			i++; /* invalid/incomplete: count as one column */
+			cols++;
+			continue;
+		}
+		int w = wcwidth(wc);
+		cols += (w > 0) ? w : 1;
+		i += k;
+	}
+	return cols;
+}
+
+/* Rows the input box needs to show all its text (plus the trailing cursor). */
+static int
+input_rows(struct ui *u, int w)
+{
+	int total;
+
+	if (w < 1)
+		w = 1;
+	total = 2 + disp_width(u->input, u->input_len); /* "> " + text */
+	return total / w + 1;
+}
+
+static void
+draw_input(struct ui *u)
+{
+	int w = getmaxx(u->in);
+	int h = getmaxy(u->in);
+	int off, cy, cx;
+
+	werase(u->in);
+	wmove(u->in, 0, 0);
+	waddstr(u->in, "> ");
+	/* Let curses wrap the text across the box's rows. */
+	waddnstr(u->in, u->input, (int)u->input_len);
+
+	off = 2 + disp_width(u->input, u->input_pos);
+	cy = off / w;
+	cx = off % w;
+	if (cy > h - 1) { /* box capped and scrolled: pin cursor to last row */
+		cy = h - 1;
+		cx = w - 1;
+	}
+	wmove(u->in, cy, cx);
+	wnoutrefresh(u->in);
+}
+
+/*
+ * Recompute the input box height from its contents and re-tile the screen:
+ * the transcript keeps the top, the status bar sits just above the box, and
+ * the box occupies the bottom, growing upward. Returns true if geometry
+ * changed (so the caller can force a full redraw). force relays out even when
+ * the height is unchanged (used after a terminal resize).
+ */
+static bool
+relayout(struct ui *u, bool force)
+{
+	int h = LINES, w = COLS;
+	int need, maxih, txt_h;
+
+	if (h < 3)
+		h = 3;
+
+	maxih = h / 2;
+	if (maxih < 1)
+		maxih = 1;
+	if (maxih > h - 2)
+		maxih = h - 2;
+	if (maxih < 1)
+		maxih = 1;
+
+	need = input_rows(u, w);
+	if (need > maxih)
+		need = maxih;
+	if (need < 1)
+		need = 1;
+
+	if (!force && need == u->in_h)
+		return false;
+
+	u->in_h = need;
+	txt_h = h - 1 - need;
+	if (txt_h < 1)
+		txt_h = 1;
+
+	/* The transcript window holds scrollback content, so only resize it in
+	 * place (origin stays 0,0). The status/input windows carry no state, so
+	 * recreate them at the new positions -- simpler and always valid. */
+	wresize(u->txt, txt_h, w);
+	delwin(u->stat);
+	delwin(u->in);
+	u->stat = newwin(1, w, txt_h, 0);
+	u->in = newwin(need, w, txt_h + 1, 0);
+	scrollok(u->in, TRUE);
+	keypad(u->in, TRUE);
+	nodelay(u->in, TRUE);
+	return true;
+}
+
+/* Append a rendered run to the cache, copying len bytes of text. */
+static void
+rseg_push(struct ui *u, int attr, const char *text, size_t len)
+{
+	char *dup;
+
+	if (len == 0)
+		return;
+	if (u->nrsegs == u->cap_rsegs) {
+		size_t ncap = u->cap_rsegs ? u->cap_rsegs * 2 : 32;
+		struct rseg *p = realloc(u->rsegs, ncap * sizeof(*p));
+		if (p == NULL)
+			return;
+		u->rsegs = p;
+		u->cap_rsegs = ncap;
+	}
+	dup = malloc(len + 1);
+	if (dup == NULL)
+		return;
+	memcpy(dup, text, len);
+	dup[len] = '\0';
+	u->rsegs[u->nrsegs].attr = attr;
+	u->rsegs[u->nrsegs].text = dup;
+	u->nrsegs++;
+}
+
+/* Fold an SGR parameter list (the digits of an ESC[...m) into a curses attr. */
+static int
+apply_sgr(int attr, const char *s, size_t n)
+{
+	unsigned a = (unsigned)attr;
+	size_t i = 0;
+
+	if (n == 0)
+		return (int)A_NORMAL; /* bare ESC[m == reset */
+	while (i < n) {
+		int v = 0;
+		bool any = false;
+
+		while (i < n && s[i] >= '0' && s[i] <= '9') {
+			v = v * 10 + (s[i] - '0');
+			i++;
+			any = true;
+		}
+		if (any) {
+			switch (v) {
+			case 0:
+				a = (unsigned)A_NORMAL;
+				break;
+			case 1:
+				a |= (unsigned)A_BOLD;
+				break;
+			case 2:
+				a |= (unsigned)A_DIM;
+				break;
+			case 3:
+				a |= (unsigned)A_ITALIC;
+				break;
+			case 4:
+				a |= (unsigned)A_UNDERLINE;
+				break;
+			case 7:
+				a |= (unsigned)A_REVERSE;
+				break;
+			case 22:
+				a &= ~(unsigned)(A_BOLD | A_DIM);
+				break;
+			case 23:
+				a &= ~(unsigned)A_ITALIC;
+				break;
+			case 24:
+				a &= ~(unsigned)A_UNDERLINE;
+				break;
+			case 27:
+				a &= ~(unsigned)A_REVERSE;
+				break;
+			default:
+				break; /* colours ignored (rendered NOCOLOUR) */
+			}
+		}
+		if (i < n && s[i] == ';')
+			i++;
+		else if (!any)
+			i++; /* skip a stray non-digit */
+	}
+	return (int)a;
+}
+
+/*
+ * Split an ANSI (SGR-only) string into rendered runs, translating escapes to
+ * curses attributes. Unknown CSI/OSC escapes are skipped, not printed.
+ */
+static void
+ansi_to_rsegs(struct ui *u, const char *s, size_t n, int base_attr)
+{
+	int attr = A_NORMAL;
+	size_t i = 0, start = 0;
+
+	while (i < n) {
+		if (s[i] != 0x1b) {
+			i++;
+			continue;
+		}
+		if (i > start)
+			rseg_push(u, attr | base_attr, s + start, i - start);
+		i++;
+		if (i < n && s[i] == '[') { /* CSI ... final */
+			size_t p;
+			i++;
+			p = i;
+			while (i < n && !(s[i] >= 0x40 && s[i] <= 0x7e))
+				i++;
+			if (i < n && s[i] == 'm')
+				attr = apply_sgr(attr, s + p, i - p);
+			if (i < n)
+				i++;               /* consume final byte */
+		} else if (i < n && s[i] == ']') { /* OSC ... BEL/ST */
+			i++;
+			while (i < n && s[i] != 0x07 &&
+			       !(s[i] == 0x1b && i + 1 < n && s[i + 1] == '\\'))
+				i++;
+			if (i < n && s[i] == 0x1b)
+				i++;
+			if (i < n)
+				i++;
+		} else if (i < n) {
+			i++; /* skip a lone escape */
+		}
+		start = i;
+	}
+	if (i > start)
+		rseg_push(u, attr | base_attr, s + start, i - start);
+}
+
+/* Render one markdown span to ANSI (attributes only) and split it into rendered
+ * runs, OR-ing base_attr into every run (e.g. A_DIM for the think channel).
+ * Falls back to raw text on any lowdown failure. */
+static void
+render_markdown(struct ui *u, const char *md, int w, int base_attr)
+{
+	struct lowdown_opts o;
+	char *out = NULL;
+	size_t outlen = 0;
+
+	memset(&o, 0, sizeof(o));
+	o.type = LOWDOWN_TERM;
+	o.term.cols = (size_t)w;
+	o.term.width = (size_t)w;
+	o.feat = LOWDOWN_TABLES | LOWDOWN_FENCED | LOWDOWN_AUTOLINK |
+	         LOWDOWN_STRIKE | LOWDOWN_SUPER | LOWDOWN_TASKLIST |
+	         LOWDOWN_DEFLIST;
+	o.oflags = LOWDOWN_TERM_NOCOLOUR; /* keep bold/italic/underline only */
+
+	if (!lowdown_buf(&o, md, strlen(md), &out, &outlen, NULL)) {
+		free(out);
+		rseg_push(u, seg_attr(ST_ASSIST) | base_attr, md, strlen(md));
+		return;
+	}
+	/* Trim lowdown's trailing blank lines so turns don't gap apart. */
+	while (outlen > 0 &&
+	       (out[outlen - 1] == '\n' || out[outlen - 1] == ' '))
+		outlen--;
+	ansi_to_rsegs(u, out, outlen, base_attr);
+	free(out);
+}
+
+/* Number of newline-delimited lines in text (a trailing partial line counts).
+ */
+static int
+count_lines(const char *s, size_t len)
+{
+	int lines = 0;
+
+	for (size_t i = 0; i < len; i++)
+		if (s[i] == '\n')
+			lines++;
+	if (len > 0 && s[len - 1] != '\n')
+		lines++;
+	return lines;
+}
+
+/* Emit a tool-output body: full when expanded, else the first few lines plus a
+ * dim "+N lines" hint the user can toggle open with ^O. */
+static void
+push_tool_output(struct ui *u, const char *text)
+{
+	enum { PREVIEW = 6 };
+	size_t len = strlen(text);
+	int total = count_lines(text, len);
+	size_t cut;
+	int seen;
+	char hint[64];
+
+	if (u->expand_output || total <= PREVIEW) {
+		rseg_push(u, seg_attr(ST_TOOL_OUT), text, len);
+		return;
+	}
+	cut = 0;
+	seen = 0;
+	while (cut < len && seen < PREVIEW) {
+		if (text[cut] == '\n')
+			seen++;
+		cut++;
+	}
+	rseg_push(u, seg_attr(ST_TOOL_OUT), text, cut);
+	snprintf(hint, sizeof(hint), "  ... (+%d lines, ^O to expand)\n",
+	         total - PREVIEW);
+	rseg_push(u, seg_attr(ST_TOOL_OUT), hint, strlen(hint));
+}
+
+/* Resolve the source span list into the rendered run cache for width w. */
+static void
+rebuild_render(struct ui *u, int w)
+{
+	for (size_t i = 0; i < u->nrsegs; i++)
+		free(u->rsegs[i].text);
+	u->nrsegs = 0;
+
+	for (size_t i = 0; i < u->nsegs; i++) {
+		const struct seg *g = &u->segs[i];
+		if (g->style == ST_REASON && !u->show_reasoning)
+			continue; /* think channel hidden */
+		if (g->style == ST_ASSIST && w >= 4)
+			render_markdown(u, g->text, w, A_NORMAL);
+		else if (g->style == ST_REASON && w >= 4)
+			render_markdown(u, g->text, w, A_DIM);
+		else if (g->style == ST_TOOL_OUT)
+			push_tool_output(u, g->text);
+		else
+			rseg_push(u, seg_attr(g->style), g->text,
+			          strlen(g->text));
+	}
+	u->built_gen = u->gen;
+	u->built_width = w;
+	u->built_expand = u->expand_output;
+	u->built_reasoning = u->show_reasoning;
+}
+
+/*
+ * Walk the rendered runs, soft-wrapping every run to width w. Returns the total
+ * number of wrapped rows. When draw is true, cells whose wrapped-row index
+ * falls in [start, start+h) are painted into u->txt at row (index - start).
+ * The single walk is used both to measure (draw=false) and to paint, so the
+ * two passes can never disagree about where lines wrap.
+ */
+static int
+wrap_walk(struct ui *u, int w, int h, int start, bool draw)
+{
+	int row = 0, col = 0;
+
+	if (w < 1)
+		w = 1;
+
+	for (size_t i = 0; i < u->nrsegs; i++) {
+		const char *s = u->rsegs[i].text;
+		size_t len = strlen(s);
+		size_t j = 0;
+		mbstate_t ps;
+
+		if (draw)
+			wattrset(u->txt, u->rsegs[i].attr);
+		memset(&ps, 0, sizeof(ps));
+
+		while (j < len) {
+			wchar_t wc;
+			size_t k = mbrtowc(&wc, s + j, len - j, &ps);
+			int cw;
+
+			if (k == (size_t)-1 || k == (size_t)-2 || k == 0) {
+				k = 1; /* invalid/incomplete byte */
+				wc = 0;
+			}
+			if (wc == L'\n') {
+				row++;
+				col = 0;
+				j += k;
+				continue;
+			}
+			cw = wcwidth(wc);
+			if (cw < 0)
+				cw = 1;
+			if (cw > 0 && col + cw > w) {
+				row++;
+				col = 0;
+			}
+			if (draw && row >= start && row < start + h) {
+				wmove(u->txt, row - start, col);
+				waddnstr(u->txt, s + j, (int)k);
+			}
+			col += cw;
+			j += k;
+		}
+	}
+	if (draw)
+		wattrset(u->txt, A_NORMAL);
+	return row + 1;
+}
+
+static void
+draw_transcript(struct ui *u)
+{
+	int w = getmaxx(u->txt);
+	int h = getmaxy(u->txt);
+	int total, maxscroll, start;
+
+	if (u->gen != u->built_gen || w != u->built_width ||
+	    u->expand_output != u->built_expand ||
+	    u->show_reasoning != u->built_reasoning)
+		rebuild_render(u, w);
+
+	total = wrap_walk(u, w, h, 0, false);
+
+	maxscroll = total - h;
+	if (maxscroll < 0)
+		maxscroll = 0;
+	if (u->scroll > (size_t)maxscroll)
+		u->scroll = (size_t)maxscroll;
+
+	start = total - h - (int)u->scroll;
+	if (start < 0)
+		start = 0;
+
+	werase(u->txt);
+	wrap_walk(u, w, h, start, true);
+	wnoutrefresh(u->txt);
+}
+
+static void handle_keys(struct ui *u); /* defined below; shared with on_stdin */
+
+static void
+on_repaint(uv_timer_t *t)
+{
+	struct ui *u = t->data;
+
+	/* Also drain input here so a lone Escape (held by ncurses waiting for a
+	 * possible escape sequence) is flushed within a tick, even if no further
+	 * keystroke arrives to trigger the stdin poll. */
+	handle_keys(u);
+
+	if (u->busy)
+		u->spinner++;
+
+	if (!u->dirty && !u->busy)
+		return;
+
+	/* Grow/shrink the input box to fit what's typed before drawing. */
+	if (relayout(u, false))
+		u->full_redraw = true;
+
+	if (u->full_redraw) {
+		/* The three windows tile the screen; redrawing them all from
+		 * scratch repaints every cell, clearing resize artifacts. */
+		redrawwin(u->txt);
+		redrawwin(u->stat);
+		redrawwin(u->in);
+		u->full_redraw = false;
+	}
+
+	draw_transcript(u);
+	draw_status(u);
+	draw_input(u);
+	doupdate();
+	u->dirty = false;
+}
+
+/* ---- input ---- */
+
+/* Echo a prompt and hand it to the agent. Returns true if the turn started. */
+static bool
+do_submit(struct ui *u, const char *prompt, bool echo)
+{
+	int r;
+
+	u->scroll = 0; /* snap to the bottom so the reply is visible */
+	if (echo) {
+		ui_push(u, ST_USER, "\nyou> ");
+		ui_push(u, ST_USER, prompt);
+		ui_push(u, ST_USER, "\n");
+	}
+	r = clm_agent_submit(u->agent, prompt);
+	if (r < 0) {
+		ui_push(u, ST_ERROR, "\nerror: ");
+		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->agent));
+		return false;
+	}
+	u->busy = true;
+	u->started_assist = false;
+	u->usage[0] = '\0';
+	return true;
+}
+
+/* Queue a prompt typed while a turn is running; it echoes as "(queued)". */
+static void
+enqueue_prompt(struct ui *u, const char *prompt)
+{
+	char *dup = strdup(prompt);
+	if (dup == NULL)
+		return;
+	if (u->nqueue == u->cap_queue) {
+		size_t ncap = u->cap_queue ? u->cap_queue * 2 : 8;
+		char **p = realloc(u->queue, ncap * sizeof(*p));
+		if (p == NULL) {
+			free(dup);
+			return;
+		}
+		u->queue = p;
+		u->cap_queue = ncap;
+	}
+	u->queue[u->nqueue++] = dup;
+	ui_push(u, ST_USER, "\nyou> ");
+	ui_push(u, ST_USER, prompt);
+	ui_push(u, ST_META, "  (queued)\n");
+}
+
+static void
+drain_queue(struct ui *u)
+{
+	char *prompt;
+
+	if (u->busy || u->nqueue == 0)
+		return;
+	prompt = u->queue[0];
+	memmove(u->queue, u->queue + 1, (u->nqueue - 1) * sizeof(*u->queue));
+	u->nqueue--;
+	do_submit(u, prompt, false); /* already echoed when queued */
+	free(prompt);
+}
+
+/* A '/word ...' line: run a UI command instead of prompting the model. */
+static void
+run_command(struct ui *u, const char *line)
+{
+	const char *arg;
+	size_t wlen;
+
+	line++; /* skip '/' */
+	arg = line;
+	while (*arg != '\0' && *arg != ' ')
+		arg++;
+	wlen = (size_t)(arg - line);
+	while (*arg == ' ')
+		arg++;
+
+#define CMD(s) (wlen == strlen(s) && strncmp(line, s, wlen) == 0)
+	if (CMD("help") || CMD("h") || CMD("?")) {
+		ui_push(
+		    u, ST_META,
+		    "\ncommands:\n"
+		    "  /help              this help\n"
+		    "  /clear             clear the transcript\n"
+		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
+		    "  /output [full|short] tool output detail (^O)\n"
+		    "  /quit              exit\n"
+		    "keys: ^R reasoning  ^O output  ^L redraw  "
+		    "PgUp/PgDn scroll\n");
+	} else if (CMD("clear") || CMD("cls")) {
+		for (size_t i = 0; i < u->nsegs; i++)
+			free(u->segs[i].text);
+		u->nsegs = 0;
+		u->scroll = 0;
+		u->gen++;
+	} else if (CMD("reasoning") || CMD("think")) {
+		if (strcmp(arg, "on") == 0)
+			u->show_reasoning = true;
+		else if (strcmp(arg, "off") == 0)
+			u->show_reasoning = false;
+		else
+			u->show_reasoning = !u->show_reasoning;
+		ui_push(u, ST_META,
+		        u->show_reasoning ? "\n[reasoning shown]\n"
+		                          : "\n[reasoning hidden]\n");
+	} else if (CMD("output")) {
+		if (strcmp(arg, "full") == 0)
+			u->expand_output = true;
+		else if (strcmp(arg, "short") == 0)
+			u->expand_output = false;
+		else
+			u->expand_output = !u->expand_output;
+		ui_push(u, ST_META,
+		        u->expand_output ? "\n[output: full]\n"
+		                         : "\n[output: short]\n");
+	} else if (CMD("quit") || CMD("exit") || CMD("q")) {
+		u->quit = true;
+	} else {
+		ui_push(u, ST_ERROR, "\nunknown command (try /help)\n");
+	}
+#undef CMD
+}
+
+static void
+submit_line(struct ui *u)
+{
+	u->input[u->input_len] = '\0';
+	if (u->input_len == 0)
+		return;
+
+	if (u->input[0] == '/')
+		run_command(u, u->input);
+	else if (strcmp(u->input, "quit") == 0 || strcmp(u->input, "exit") == 0)
+		u->quit = true;
+	else if (u->busy)
+		enqueue_prompt(u, u->input);
+	else
+		do_submit(u, u->input, true);
+
+	u->input_len = 0;
+	u->input_pos = 0;
+	u->dirty = true;
+}
+
+/* Byte offset of the UTF-8 char boundary before/after pos. */
+static size_t
+prev_boundary(const char *s, size_t pos)
+{
+	if (pos == 0)
+		return 0;
+	do {
+		pos--;
+	} while (pos > 0 && (s[pos] & 0xc0) == 0x80);
+	return pos;
+}
+
+static size_t
+next_boundary(const char *s, size_t pos, size_t len)
+{
+	if (pos >= len)
+		return len;
+	do {
+		pos++;
+	} while (pos < len && (s[pos] & 0xc0) == 0x80);
+	return pos;
+}
+
+static void
+input_char(struct ui *u, wint_t wch)
+{
+	char mb[MB_LEN_MAX];
+	int n = wctomb(mb, (wchar_t)wch);
+	if (n <= 0)
+		return;
+	if (u->input_len + (size_t)n >= sizeof(u->input) - 1)
+		return;
+	/* Insert at the cursor, shifting the tail right. */
+	memmove(u->input + u->input_pos + (size_t)n, u->input + u->input_pos,
+	        u->input_len - u->input_pos);
+	memcpy(u->input + u->input_pos, mb, (size_t)n);
+	u->input_len += (size_t)n;
+	u->input_pos += (size_t)n;
+	u->dirty = true;
+}
+
+static void
+input_backspace(struct ui *u)
+{
+	if (u->input_pos == 0)
+		return;
+	size_t start = prev_boundary(u->input, u->input_pos);
+	memmove(u->input + start, u->input + u->input_pos,
+	        u->input_len - u->input_pos);
+	u->input_len -= u->input_pos - start;
+	u->input_pos = start;
+	u->dirty = true;
+}
+
+/* Save [from,to) to the kill buffer and splice it out of the input. */
+static void
+input_kill(struct ui *u, size_t from, size_t to)
+{
+	if (to <= from)
+		return;
+	size_t n = to - from;
+	if (n >= sizeof(u->kill))
+		n = sizeof(u->kill) - 1;
+	memcpy(u->kill, u->input + from, n);
+	u->kill_len = n;
+	memmove(u->input + from, u->input + to, u->input_len - to);
+	u->input_len -= to - from;
+	if (u->input_pos > to)
+		u->input_pos -= to - from;
+	else if (u->input_pos > from)
+		u->input_pos = from;
+	u->dirty = true;
+}
+
+static void
+input_yank(struct ui *u)
+{
+	if (u->kill_len == 0)
+		return;
+	if (u->input_len + u->kill_len >= sizeof(u->input) - 1)
+		return;
+	memmove(u->input + u->input_pos + u->kill_len, u->input + u->input_pos,
+	        u->input_len - u->input_pos);
+	memcpy(u->input + u->input_pos, u->kill, u->kill_len);
+	u->input_len += u->kill_len;
+	u->input_pos += u->kill_len;
+	u->dirty = true;
+}
+
+static void
+handle_keys(struct ui *u)
+{
+	wint_t wch;
+	int r;
+
+	while ((r = wget_wch(u->in, &wch)) != ERR) {
+		if (r == KEY_CODE_YES) {
+			switch (wch) {
+			case KEY_BACKSPACE:
+				input_backspace(u);
+				break;
+			case KEY_ENTER:
+				submit_line(u);
+				break;
+			case KEY_LEFT:
+				u->input_pos =
+				    prev_boundary(u->input, u->input_pos);
+				u->dirty = true;
+				break;
+			case KEY_RIGHT:
+				u->input_pos = next_boundary(
+				    u->input, u->input_pos, u->input_len);
+				u->dirty = true;
+				break;
+			case KEY_HOME:
+				u->input_pos = 0;
+				u->dirty = true;
+				break;
+			case KEY_END:
+				u->input_pos = u->input_len;
+				u->dirty = true;
+				break;
+			case KEY_DC: /* Delete */
+				if (u->input_pos < u->input_len)
+					input_kill(u, u->input_pos,
+					           next_boundary(u->input,
+					                         u->input_pos,
+					                         u->input_len));
+				u->kill_len = 0; /* Delete doesn't feed yank */
+				break;
+			case KEY_PPAGE: { /* PageUp: scroll transcript back */
+				int page = getmaxy(u->txt) - 1;
+				if (page < 1)
+					page = 1;
+				u->scroll += (size_t)page;
+				u->dirty = true;
+				break;
+			}
+			case KEY_NPAGE: { /* PageDown: scroll toward the bottom
+				           */
+				int page = getmaxy(u->txt) - 1;
+				if (page < 1)
+					page = 1;
+				if (u->scroll > (size_t)page)
+					u->scroll -= (size_t)page;
+				else
+					u->scroll = 0;
+				u->dirty = true;
+				break;
+			}
+			case KEY_RESIZE:
+				break; /* handled via SIGWINCH */
+			default:
+				break;
+			}
+			continue;
+		}
+		switch (wch) {
+		case 4: /* Ctrl-D */
+			if (u->input_len == 0)
+				u->quit = true;
+			break;
+		case 3: /* Ctrl-C */
+			u->quit = true;
+			break;
+		case 1: /* Ctrl-A: start of line */
+			u->input_pos = 0;
+			u->dirty = true;
+			break;
+		case 5: /* Ctrl-E: end of line */
+			u->input_pos = u->input_len;
+			u->dirty = true;
+			break;
+		case 2: /* Ctrl-B: back one char */
+			u->input_pos = prev_boundary(u->input, u->input_pos);
+			u->dirty = true;
+			break;
+		case 6: /* Ctrl-F: forward one char */
+			u->input_pos =
+			    next_boundary(u->input, u->input_pos, u->input_len);
+			u->dirty = true;
+			break;
+		case 21: /* Ctrl-U: kill to start of line */
+			input_kill(u, 0, u->input_pos);
+			break;
+		case 11: /* Ctrl-K: kill to end of line */
+			input_kill(u, u->input_pos, u->input_len);
+			break;
+		case 25: /* Ctrl-Y: yank */
+			input_yank(u);
+			break;
+		case 12: /* Ctrl-L: redraw the screen */
+			u->full_redraw = true;
+			u->dirty = true;
+			break;
+		case 15: /* Ctrl-O: toggle full vs. collapsed tool output */
+			u->expand_output = !u->expand_output;
+			u->dirty = true;
+			break;
+		case 18: /* Ctrl-R: toggle the reasoning (think) channel */
+			u->show_reasoning = !u->show_reasoning;
+			u->dirty = true;
+			break;
+		case 27: /* Escape: cancel a running turn, else clear the input */
+			if (clm_agent_cancel(u->agent) == 0) {
+				ui_push(u, ST_META, "\n[cancelled]\n");
+			} else {
+				u->input_len = 0;
+				u->input_pos = 0;
+			}
+			u->dirty = true;
+			break;
+		case 8:
+		case 127: /* Backspace / DEL */
+			input_backspace(u);
+			break;
+		case '\r':
+		case '\n':
+			submit_line(u);
+			break;
+		default:
+			if (wch >= 32)
+				input_char(u, wch);
+			break;
+		}
+	}
+
+	if (u->quit)
+		uv_stop(u->loop);
+}
+
+static void
+on_stdin(uv_poll_t *p, int status, int events)
+{
+	struct ui *u = p->data;
+
+	(void)events;
+	if (status < 0)
+		return;
+	handle_keys(u);
+}
+
+/* ---- window lifecycle ---- */
+
+static void
+make_windows(struct ui *u)
+{
+	int h = LINES, w = COLS;
+	if (h < 3)
+		h = 3;
+	u->txt = newwin(h - 2, w, 0, 0);
+	u->stat = newwin(1, w, h - 2, 0);
+	u->in = newwin(1, w, h - 1, 0);
+	u->in_h = 1;
+	scrollok(u->in, TRUE);
+	keypad(u->in, TRUE);
+	nodelay(u->in, TRUE);
+}
+
+static void
+on_winch(uv_signal_t *s, int signum)
+{
+	struct ui *u = s->data;
+	struct winsize ws;
+	(void)signum;
+
+	/*
+	 * ncurses can't learn the new size on its own here (its own SIGWINCH
+	 * path is bypassed by our uv_signal handler), so query the tty and tell
+	 * it via resizeterm(), which updates LINES/COLS and stdscr. Then re-lay
+	 * out our windows and force a full, artifact-free repaint.
+	 */
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 &&
+	    ws.ws_col > 0)
+		resizeterm(ws.ws_row, ws.ws_col);
+
+	relayout(u, true);
+	u->full_redraw = true;
+	u->dirty = true;
+}
+
+/*
+ * Colour is deliberately confined to the 16-colour ANSI palette: the 8 base
+ * colours plus A_BOLD (bright). No init_color(), no 256/truecolour indices --
+ * this keeps us readable on plain terminals and under any user theme (the -1
+ * background is the terminal default). Markdown is rendered NOCOLOUR, so it
+ * only contributes attributes, never pair colours. Keep it this way.
+ */
+static void
+init_colors(void)
+{
+	if (!has_colors())
+		return;
+	start_color();
+	use_default_colors();
+	init_pair(1, COLOR_GREEN, -1);         /* user */
+	init_pair(2, COLOR_CYAN, -1);          /* tool */
+	init_pair(3, COLOR_RED, -1);           /* error */
+	init_pair(4, COLOR_YELLOW, -1);        /* timeout */
+	init_pair(5, COLOR_BLACK, COLOR_BLUE); /* status bar */
+}
+
+/* Periodic (and startup) connectivity probe. */
+static void
+on_health(uv_timer_t *t)
+{
+	struct ui *u = t->data;
+	clm_agent_check_connection(u->agent);
+}
+
+int
+tui_run(const struct clm_cfg *cfg)
+{
+	struct ui *u;
+	uv_loop_t *loop;
+	int r;
+
+	setlocale(LC_ALL, "");
+
+	u = calloc(1, sizeof(*u)); /* too large for the stack frame limit */
+	if (u == NULL) {
+		fprintf(stderr, "error: out of memory\n");
+		return 1;
+	}
+
+	loop = uv_default_loop();
+	u->loop = loop;
+	u->model = cfg->model;
+	u->state = CLM_STATE_IDLE;
+	u->show_reasoning = true;
+
+	r = clm_agent_new(cfg, loop, &tui_callbacks, u, &u->agent);
+	if (r < 0) {
+		fprintf(stderr, "error: failed to create agent (%d)\n", r);
+		free(u);
+		return 1;
+	}
+
+	initscr();
+	cbreak();
+	noecho();
+	nonl();
+	set_escdelay(25); /* make a lone Escape (cancel) responsive */
+	init_colors();
+	make_windows(u);
+
+	ui_push(u, ST_META,
+	        "clm -- type a prompt, /help for commands, /quit to exit.\n");
+
+	uv_poll_init(loop, &u->stdin_poll, fileno(stdin));
+	u->stdin_poll.data = u;
+	uv_poll_start(&u->stdin_poll, UV_READABLE, on_stdin);
+
+	uv_timer_init(loop, &u->repaint);
+	u->repaint.data = u;
+	uv_timer_start(&u->repaint, on_repaint, 0, 80);
+
+	uv_signal_init(loop, &u->winch);
+	u->winch.data = u;
+	uv_signal_start(&u->winch, on_winch, SIGWINCH);
+
+	/* Probe connectivity now (0ms) and every 20s, so a wrong URL or a down
+	 * server shows in the status bar before the first prompt. */
+	u->conn = CLM_CONN_CHECKING;
+	uv_timer_init(loop, &u->health);
+	u->health.data = u;
+	uv_timer_start(&u->health, on_health, 0, 20000);
+
+	uv_run(loop, UV_RUN_DEFAULT);
+
+	endwin();
+	clm_agent_free(u->agent);
+	for (size_t i = 0; i < u->nsegs; i++)
+		free(u->segs[i].text);
+	free(u->segs);
+	for (size_t i = 0; i < u->nrsegs; i++)
+		free(u->rsegs[i].text);
+	free(u->rsegs);
+	for (size_t i = 0; i < u->nqueue; i++)
+		free(u->queue[i]);
+	free(u->queue);
+	free(u);
+
+	return 0;
+}

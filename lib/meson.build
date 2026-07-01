@@ -1,4 +1,4 @@
-clm_lib_src = files('agent.c', 'http.c', 'http_async.c', 'llm.c', 'tools.c', 'history.c')
+clm_lib_src = files('agent.c', 'http_async.c', 'llm.c', 'log.c', 'tools.c', 'history.c')
 
 clm_lib_deps = [
   dependency('libcurl'),
@@ -20,4 +20,12 @@ clm_lib = shared_library('clm', clm_lib_src,
   install: true,
   install_dir: get_option('libdir'),
   link_args: ['-Wl,--version-script=' + meson.current_source_dir() / 'libclm.map'],
+)
+
+# Dependency for in-tree consumers (tests). Re-exports the lib's own deps so
+# consumers get libuv/json-c include paths transitively.
+clm_dep = declare_dependency(
+  link_with: clm_lib,
+  include_directories: include_directories('..', '../include'),
+  dependencies: clm_lib_deps,
 )

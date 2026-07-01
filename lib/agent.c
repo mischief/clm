@@ -14,12 +14,15 @@
 #include "clm/history.h"
 #include "clm/internal.h"
 #include "clm/cleanup.h"
+#include "clm/log.h"
 #include "useful.h"
 #include "banned.h"
 
-static const char *system_prompt =
-    "You are a coding agent that can read files, write files, and execute shell commands. "
-    "Use the provided tools when you need to act. When you have the answer, reply directly.";
+static const char *default_system_prompt =
+    "You are a helpful assistant. Answer from your own knowledge whenever you can. "
+    "Use the provided tools only when the task requires reading or modifying the "
+    "user's files or running a command on their system. When you already have the "
+    "answer, reply directly without using tools.";
 
 void
 clm_agent_set_error(struct clm_agent *agent, const char *msg)
@@ -29,27 +32,38 @@ clm_agent_set_error(struct clm_agent *agent, const char *msg)
 	agent->last_error = dup;
 }
 
-int
-clm_tool_register(struct clm_agent *agent, enum clm_tool_type type, const char *name)
+/*
+ * Derive the /v1/models URL used for health probes from the chat-completions
+ * base URL. The models endpoint sits beside completions, so replace a trailing
+ * "/chat/completions" with "/models"; otherwise place "/models" next to the
+ * last path segment. Returns a malloc'd string, or NULL on OOM.
+ */
+static char *
+clm_derive_models_url(const char *base_url)
 {
-	struct clm_tool *tools;
+	static const char comp[] = "/chat/completions";
+	static const char models[] = "/models";
+	size_t blen = strlen(base_url);
+	size_t clen = sizeof(comp) - 1;
+	const char *slash;
+	size_t prefix;
+	char *out;
 
-	ASSERT_RETURN(agent != NULL, -EINVAL);
-	ASSERT_RETURN(name != NULL, -EINVAL);
+	if (blen >= clen && strcmp(base_url + blen - clen, comp) == 0)
+		prefix = blen - clen;
+	else if ((slash = strrchr(base_url, '/')) != NULL)
+		prefix = (size_t)(slash - base_url);
+	else
+		return strdup(base_url); /* can't derive; probe as-is */
 
-	tools = realloc(agent->tools, (agent->tool_count + 1) * sizeof(*tools));
-	if (tools == NULL)
-		return -ENOMEM;
-	agent->tools = tools;
-
-	agent->tools[agent->tool_count].type = type;
-	agent->tools[agent->tool_count].name = strdup(name);
-	if (agent->tools[agent->tool_count].name == NULL)
-		return -ENOMEM;
-
-	agent->tool_count++;
-	return 0;
+	out = malloc(prefix + sizeof(models));
+	if (out == NULL)
+		return NULL;
+	memcpy(out, base_url, prefix);
+	memcpy(out + prefix, models, sizeof(models));
+	return out;
 }
+
 
 int
 clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbacks *cb, void *user, struct clm_agent **out)
@@ -69,6 +83,7 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 
 	agent->uv = uv;
 	agent->state = CLM_STATE_IDLE;
+	agent->stream = cfg->stream;
 	agent->max_iterations = cfg->max_iterations ? cfg->max_iterations : CLM_DEFAULT_MAX_ITERATIONS;
 	clm_history_init(&agent->history);
 
@@ -77,10 +92,16 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 		agent->cb_on_reasoning = cb->on_reasoning;
 		agent->cb_on_tool_begin = cb->on_tool_begin;
 		agent->cb_on_tool_result = cb->on_tool_result;
+		agent->cb_on_tool_batch = cb->on_tool_batch;
+		agent->cb_on_finish_reason = cb->on_finish_reason;
+		agent->cb_on_usage = cb->on_usage;
+		agent->cb_on_connection = cb->on_connection;
 		agent->cb_on_state = cb->on_state;
 		agent->cb_on_turn_done = cb->on_turn_done;
 	}
 	agent->cb_user = user;
+
+	agent->models_url = clm_derive_models_url(cfg->base_url);
 
 	r = clm_llm_new(&agent->llm, cfg->provider, cfg->api_key, cfg->base_url,
 	    cfg->model ? cfg->model : "local-model");
@@ -89,14 +110,16 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 		return r;
 	}
 
-	if (clm_history_add_system(&agent->history, system_prompt) == NULL) {
+	if (clm_history_add_system(&agent->history,
+	    cfg->system_prompt ? cfg->system_prompt : default_system_prompt) == NULL) {
 		clm_agent_free(agent);
 		return -ENOMEM;
 	}
 
-	clm_tool_register(agent, CLM_TOOL_FILE_READ, "read_file");
-	clm_tool_register(agent, CLM_TOOL_FILE_WRITE, "write_file");
-	clm_tool_register(agent, CLM_TOOL_SHELL_EXEC, "shell_exec");
+	if (clm_tools_register_builtins(agent) < 0) {
+		clm_agent_free(agent);
+		return -ENOMEM;
+	}
 
 	*out = agent;
 	return 0;
@@ -105,17 +128,15 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 void
 clm_agent_free(struct clm_agent *agent)
 {
-	size_t i;
-
 	if (agent == NULL)
 		return;
 
+	clm_tools_cancel(agent);
 	clm_llm_free(agent->llm);
 	clm_history_free(&agent->history);
 	free(agent->last_error);
-	for (i = 0; i < agent->tool_count; i++)
-		free(agent->tools[i].name);
-	free(agent->tools);
+	free(agent->models_url);
+	clm_tools_free_registry(agent->tools, agent->tool_count);
 	free(agent);
 }
 
@@ -162,6 +183,7 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 	}
 
 	agent->state = CLM_STATE_THINKING;
+	agent->iteration = 0;
 
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
@@ -171,32 +193,232 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 	return 0;
 }
 
+/* One assembled tool call accumulated from streamed deltas. */
+struct stream_call {
+	char *id;
+	char *name;
+	char *args;
+	size_t args_len, args_cap;
+};
+
 struct clm_async_turn {
 	struct clm_agent *agent;
-	struct json_object *messages;
-	struct json_object *tools;
-	struct json_object *parsed;
+	struct json_object *parsed;   /* non-streaming: the whole response */
 	char *body;
+	bool streaming;
+
+	/* SSE assembly state */
+	char *line;                   /* partial line across chunks */
+	size_t line_len, line_cap;
+	char *content;                /* assembled assistant text */
+	size_t content_len, content_cap;
+	struct stream_call *calls;    /* assembled tool calls, by index */
+	size_t ncalls;
+	char *finish_reason;          /* captured from the stream */
+	struct clm_usage usage;
+	bool have_usage;
 };
 
 static void
 clm_async_turn_free(struct clm_async_turn *turn)
 {
-	if (turn) {
-		if (turn->messages)
-			json_object_put(turn->messages);
-		if (turn->tools)
-			json_object_put(turn->tools);
-		if (turn->parsed)
-			json_object_put(turn->parsed);
-		if (turn->body)
-			free(turn->body);
-		free(turn);
+	size_t i;
+	if (turn == NULL)
+		return;
+	if (turn->parsed)
+		json_object_put(turn->parsed);
+	free(turn->body);
+	free(turn->line);
+	free(turn->content);
+	free(turn->finish_reason);
+	for (i = 0; i < turn->ncalls; i++) {
+		free(turn->calls[i].id);
+		free(turn->calls[i].name);
+		free(turn->calls[i].args);
 	}
+	free(turn->calls);
+	free(turn);
 }
 
-static int handle_tool_calls(struct clm_agent *agent, struct json_object *tool_calls);
+/* Append n bytes to a growable, NUL-terminated string buffer. */
+static int
+sb_append(char **buf, size_t *len, size_t *cap, const char *data, size_t n)
+{
+	if (*len + n + 1 > *cap) {
+		size_t nc = *cap ? *cap : 256;
+		char *p;
+		while (nc < *len + n + 1)
+			nc *= 2;
+		p = realloc(*buf, nc);
+		if (p == NULL)
+			return -ENOMEM;
+		*buf = p;
+		*cap = nc;
+	}
+	memcpy(*buf + *len, data, n);
+	*len += n;
+	(*buf)[*len] = '\0';
+	return 0;
+}
+
 static struct json_object *response_message(struct json_object *parsed);
+
+static void
+agent_fail(struct clm_agent *agent, const char *msg, int err)
+{
+	clm_agent_set_error(agent, msg);
+	agent->state = CLM_STATE_ERROR;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	if (agent->cb_on_turn_done)
+		agent->cb_on_turn_done(err, agent->cb_user);
+}
+
+static enum clm_finish_reason
+finish_from_str(const char *s)
+{
+	if (s == NULL)
+		return CLM_FINISH_OTHER;
+	if (strcmp(s, "stop") == 0)
+		return CLM_FINISH_STOP;
+	if (strcmp(s, "length") == 0)
+		return CLM_FINISH_LENGTH;
+	if (strcmp(s, "tool_calls") == 0)
+		return CLM_FINISH_TOOL_CALLS;
+	if (strcmp(s, "content_filter") == 0)
+		return CLM_FINISH_CONTENT_FILTER;
+	return CLM_FINISH_OTHER;
+}
+
+static void
+emit_finish(struct clm_agent *agent, const char *reason)
+{
+	if (reason != NULL && agent->cb_on_finish_reason)
+		agent->cb_on_finish_reason(finish_from_str(reason), agent->cb_user);
+}
+
+/* Read usage/timings from a response object. Returns true if usage present. */
+static bool
+extract_usage(struct json_object *root, struct clm_usage *out)
+{
+	struct json_object *u = NULL, *t = NULL, *v = NULL;
+
+	if (!json_object_object_get_ex(root, "usage", &u) ||
+	    json_object_get_type(u) != json_type_object)
+		return false;
+	memset(out, 0, sizeof(*out));
+	if (json_object_object_get_ex(u, "prompt_tokens", &v))
+		out->prompt_tokens = json_object_get_int(v);
+	if (json_object_object_get_ex(u, "completion_tokens", &v))
+		out->completion_tokens = json_object_get_int(v);
+	if (json_object_object_get_ex(u, "total_tokens", &v))
+		out->total_tokens = json_object_get_int(v);
+	if (json_object_object_get_ex(root, "timings", &t) &&
+	    json_object_get_type(t) == json_type_object &&
+	    json_object_object_get_ex(t, "predicted_per_second", &v))
+		out->tokens_per_sec = json_object_get_double(v);
+	return true;
+}
+
+static void
+emit_usage(struct clm_agent *agent, const struct clm_usage *usage)
+{
+	if (agent->cb_on_usage)
+		agent->cb_on_usage(usage, agent->cb_user);
+}
+
+/*
+ * Finalize a completed model message: dispatch tool calls if present, else
+ * record the assistant text and end the turn. tool_calls is borrowed (the
+ * caller frees it after this returns; dispatch copies what it needs). When
+ * streamed is true, on_assistant_text has already fired per delta, so the
+ * text is recorded without re-firing.
+ */
+static void
+agent_finish(struct clm_agent *agent, struct json_object *tool_calls,
+    const char *content, bool streamed)
+{
+	if (tool_calls != NULL && json_object_get_type(tool_calls) == json_type_array
+	    && json_object_array_length(tool_calls) > 0) {
+		int r;
+		agent->state = CLM_STATE_CALLING_TOOL;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		r = clm_tools_dispatch(agent, tool_calls);
+		if (r < 0)
+			agent_fail(agent, "failed to dispatch tools", r);
+		return;
+	}
+
+	if (content != NULL) {
+		if (clm_history_add_assistant_text(&agent->history, content) == NULL) {
+			agent_fail(agent, "out of memory", -ENOMEM);
+			return;
+		}
+		if (!streamed && agent->cb_on_assistant_text)
+			agent->cb_on_assistant_text(content, agent->cb_user);
+	}
+
+	agent->state = CLM_STATE_COMPLETE;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	if (agent->cb_on_turn_done)
+		agent->cb_on_turn_done(0, agent->cb_user);
+}
+
+/* Build a json tool_calls array from streamed accumulators, or NULL. */
+static struct json_object *
+stream_build_tool_calls(struct clm_async_turn *turn)
+{
+	json_cleanup struct json_object *arr = NULL;
+	struct json_object *ret;
+	size_t i;
+
+	if (turn->ncalls == 0)
+		return NULL;
+	arr = json_object_new_array();
+	if (arr == NULL)
+		return NULL;
+
+	for (i = 0; i < turn->ncalls; i++) {
+		struct json_object *call, *func;
+		if (turn->calls[i].name == NULL)
+			continue;
+		call = json_object_new_object();
+		if (call == NULL)
+			return NULL;
+		json_object_array_add(arr, call);
+		json_object_object_add(call, "id",
+		    json_object_new_string(turn->calls[i].id ? turn->calls[i].id : ""));
+		json_object_object_add(call, "type", json_object_new_string("function"));
+		func = json_object_new_object();
+		if (func == NULL)
+			return NULL;
+		json_object_object_add(call, "function", func);
+		json_object_object_add(func, "name", json_object_new_string(turn->calls[i].name));
+		json_object_object_add(func, "arguments",
+		    json_object_new_string(turn->calls[i].args ? turn->calls[i].args : "{}"));
+	}
+
+	if (json_object_array_length(arr) == 0)
+		return NULL;
+	ret = arr;
+	arr = NULL;
+	return ret;
+}
+
+static void
+stream_finalize(struct clm_async_turn *turn)
+{
+	struct clm_agent *agent = turn->agent;
+	json_cleanup struct json_object *tool_calls = stream_build_tool_calls(turn);
+
+	emit_finish(agent, turn->finish_reason);
+	if (turn->have_usage)
+		emit_usage(agent, &turn->usage);
+	agent_finish(agent, tool_calls, turn->content, true);
+	clm_async_turn_free(turn);
+}
 
 static void
 clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
@@ -204,107 +426,221 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 	struct clm_async_turn *turn = (struct clm_async_turn *)user;
 	struct clm_agent *agent = turn->agent;
 	struct json_object *message, *content = NULL, *tool_calls = NULL;
-	struct json_object *finish_reason_obj = NULL;
-	const char *finish_reason = NULL;
-	int r;
+	int status = resp ? resp->status_code : -1;
 
-	if (resp && resp->status_code != 200) {
+	agent->inflight = NULL; /* request has completed */
+	clm_debug("status=%d streaming=%d", status, turn->streaming);
+
+	if (status != 200) {
 		char buf[256];
-		(void)snprintf(buf, sizeof(buf), "HTTP %d", resp->status_code);
-		free(resp->error_msg);
-		resp->error_msg = strdup(buf);
-		turn->parsed = NULL;
-	} else {
-		turn->parsed = resp && resp->body ? json_tokener_parse(resp->body) : NULL;
+		(void)snprintf(buf, sizeof(buf), "HTTP %d", status);
+		if (resp)
+			clm_http_response_free(resp);
+		clm_async_turn_free(turn);
+		agent_fail(agent, buf, -EIO);
+		return;
 	}
+
+	if (turn->streaming) {
+		if (resp)
+			clm_http_response_free(resp);
+		stream_finalize(turn);
+		return;
+	}
+
+	turn->parsed = resp && resp->body ? json_tokener_parse(resp->body) : NULL;
 	if (resp)
 		clm_http_response_free(resp);
 
 	if (turn->parsed == NULL) {
-		clm_agent_set_error(agent, "could not parse llm response");
-		agent->state = CLM_STATE_ERROR;
-		if (agent->cb_on_state)
-			agent->cb_on_state(agent->state, agent->cb_user);
 		clm_async_turn_free(turn);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-EIO, agent->cb_user);
+		agent_fail(agent, "could not parse llm response", -EIO);
+		return;
+	}
+	message = response_message(turn->parsed);
+	if (message == NULL) {
+		clm_async_turn_free(turn);
+		agent_fail(agent, "could not extract message from llm response", -EIO);
 		return;
 	}
 
-	message = response_message(turn->parsed);
-	if (message == NULL) {
-		clm_agent_set_error(agent, "could not extract message from llm response");
-		agent->state = CLM_STATE_ERROR;
-		if (agent->cb_on_state)
-			agent->cb_on_state(agent->state, agent->cb_user);
-		clm_async_turn_free(turn);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-EIO, agent->cb_user);
-		return;
+	{
+		struct json_object *choices, *choice0, *jfinish = NULL, *jreason = NULL;
+		struct clm_usage usage;
+		if (json_object_object_get_ex(turn->parsed, "choices", &choices) &&
+		    (choice0 = json_object_array_get_idx(choices, 0)) != NULL &&
+		    json_object_object_get_ex(choice0, "finish_reason", &jfinish) &&
+		    json_object_get_type(jfinish) == json_type_string)
+			jreason = jfinish;
+		emit_finish(agent, jreason ? json_object_get_string(jreason) : NULL);
+		if (extract_usage(turn->parsed, &usage))
+			emit_usage(agent, &usage);
+	}
+
+	/* Non-streaming reasoning, if the model exposes a think channel. */
+	{
+		struct json_object *jreason = NULL;
+		if ((json_object_object_get_ex(message, "reasoning_content", &jreason) ||
+		    json_object_object_get_ex(message, "reasoning", &jreason)) &&
+		    json_object_get_type(jreason) == json_type_string &&
+		    agent->cb_on_reasoning)
+			agent->cb_on_reasoning(json_object_get_string(jreason), agent->cb_user);
 	}
 
 	json_object_object_get_ex(message, "content", &content);
-	json_object_object_get_ex(message, "finish_reason", &finish_reason_obj);
-	if (finish_reason_obj)
-		finish_reason = json_object_get_string(finish_reason_obj);
+	json_object_object_get_ex(message, "tool_calls", &tool_calls);
+	agent_finish(agent, tool_calls,
+	    content ? json_object_get_string(content) : NULL, false);
+	clm_async_turn_free(turn);
+}
 
-	if (finish_reason && strcmp(finish_reason, "tool_calls") == 0) {
-		json_object_object_get_ex(message, "tool_calls", &tool_calls);
-		if (tool_calls) {
-			agent->state = CLM_STATE_CALLING_TOOL;
-			if (agent->cb_on_state)
-				agent->cb_on_state(agent->state, agent->cb_user);
+/* ------------------------------------------------------------------ */
+/* SSE streaming parser                                                */
+/* ------------------------------------------------------------------ */
 
-			r = handle_tool_calls(agent, tool_calls);
-			if (r < 0) {
-				clm_agent_set_error(agent, "tool execution failed");
-				agent->state = CLM_STATE_ERROR;
-				if (agent->cb_on_state)
-					agent->cb_on_state(agent->state, agent->cb_user);
-				clm_async_turn_free(turn);
-				if (agent->cb_on_turn_done)
-					agent->cb_on_turn_done(r, agent->cb_user);
-				return;
+static struct stream_call *
+stream_get_call(struct clm_async_turn *turn, size_t index)
+{
+	if (index >= turn->ncalls) {
+		struct stream_call *p = realloc(turn->calls,
+		    (index + 1) * sizeof(*turn->calls));
+		if (p == NULL)
+			return NULL;
+		turn->calls = p;
+		while (turn->ncalls <= index)
+			memset(&turn->calls[turn->ncalls++], 0, sizeof(*turn->calls));
+	}
+	return &turn->calls[index];
+}
+
+static void
+stream_merge_tool_calls(struct clm_async_turn *turn, struct json_object *deltas)
+{
+	size_t i, n = json_object_array_length(deltas);
+
+	for (i = 0; i < n; i++) {
+		struct json_object *d = json_object_array_get_idx(deltas, i);
+		struct json_object *jidx = NULL, *jid = NULL, *func = NULL, *jname = NULL, *jargs = NULL;
+		struct stream_call *call;
+		int index = (int)i;
+
+		if (d == NULL)
+			continue;
+		if (json_object_object_get_ex(d, "index", &jidx))
+			index = json_object_get_int(jidx);
+		if (index < 0)
+			continue;
+		call = stream_get_call(turn, (size_t)index);
+		if (call == NULL)
+			continue;
+
+		if (json_object_object_get_ex(d, "id", &jid) && call->id == NULL)
+			call->id = strdup(json_object_get_string(jid));
+		if (json_object_object_get_ex(d, "function", &func)) {
+			if (json_object_object_get_ex(func, "name", &jname) && call->name == NULL)
+				call->name = strdup(json_object_get_string(jname));
+			if (json_object_object_get_ex(func, "arguments", &jargs)) {
+				const char *frag = json_object_get_string(jargs);
+				(void)sb_append(&call->args, &call->args_len,
+				    &call->args_cap, frag, strlen(frag));
 			}
-
-			agent->state = CLM_STATE_THINKING;
-			if (agent->cb_on_state)
-				agent->cb_on_state(agent->state, agent->cb_user);
-
-			clm_agent_start_turn(agent);
-		} else {
-			clm_agent_set_error(agent, "tool_calls not found in response");
-			agent->state = CLM_STATE_ERROR;
-			if (agent->cb_on_state)
-				agent->cb_on_state(agent->state, agent->cb_user);
-			clm_async_turn_free(turn);
-			if (agent->cb_on_turn_done)
-				agent->cb_on_turn_done(-EIO, agent->cb_user);
 		}
-	} else {
-		if (content) {
-			const char *text = json_object_get_string(content);
-			if (clm_history_add_assistant_text(&agent->history, text) == NULL) {
-				clm_agent_set_error(agent, "out of memory");
-				agent->state = CLM_STATE_ERROR;
-				if (agent->cb_on_state)
-					agent->cb_on_state(agent->state, agent->cb_user);
-				clm_async_turn_free(turn);
-				if (agent->cb_on_turn_done)
-					agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
-				return;
-			}
+	}
+}
+
+/* Process one complete SSE line (NUL-terminated, no newline). */
+static void
+stream_handle_line(struct clm_async_turn *turn)
+{
+	struct clm_agent *agent = turn->agent;
+	json_cleanup struct json_object *obj = NULL;
+	struct json_object *choices, *choice, *delta, *content = NULL, *tcs = NULL;
+	const char *line = turn->line ? turn->line : "";
+	const char *payload;
+
+	if (turn->line_len > 0 && line[turn->line_len - 1] == '\r')
+		turn->line[--turn->line_len] = '\0';
+	if (turn->line_len == 0 || strncmp(line, "data:", 5) != 0)
+		return;
+	payload = line + 5;
+	while (*payload == ' ')
+		payload++;
+	if (strcmp(payload, "[DONE]") == 0)
+		return;
+
+	obj = json_tokener_parse(payload);
+	if (obj == NULL)
+		return;
+
+	/* Usage/timings arrive in a trailing chunk with an empty choices array
+	 * (when stream_options.include_usage is set), so check it first. */
+	if (!turn->have_usage && extract_usage(obj, &turn->usage))
+		turn->have_usage = true;
+
+	if (!json_object_object_get_ex(obj, "choices", &choices) ||
+	    json_object_get_type(choices) != json_type_array)
+		return;
+	choice = json_object_array_get_idx(choices, 0);
+	if (choice == NULL)
+		return;
+
+	{
+		struct json_object *jfinish = NULL;
+		if (json_object_object_get_ex(choice, "finish_reason", &jfinish) &&
+		    json_object_get_type(jfinish) == json_type_string) {
+			free(turn->finish_reason);
+			turn->finish_reason = strdup(json_object_get_string(jfinish));
+		}
+	}
+
+	if (!json_object_object_get_ex(choice, "delta", &delta))
+		return;
+
+	if (json_object_object_get_ex(delta, "content", &content) &&
+	    json_object_get_type(content) == json_type_string) {
+		const char *text = json_object_get_string(content);
+		size_t tlen = strlen(text);
+		if (tlen > 0) {
+			(void)sb_append(&turn->content, &turn->content_len,
+			    &turn->content_cap, text, tlen);
 			if (agent->cb_on_assistant_text)
 				agent->cb_on_assistant_text(text, agent->cb_user);
 		}
+	}
 
-		agent->state = CLM_STATE_COMPLETE;
-		if (agent->cb_on_state)
-			agent->cb_on_state(agent->state, agent->cb_user);
+	/* Reasoning / think channel, for models that emit one. */
+	{
+		struct json_object *jr = NULL;
+		if ((json_object_object_get_ex(delta, "reasoning_content", &jr) ||
+		    json_object_object_get_ex(delta, "reasoning", &jr)) &&
+		    json_object_get_type(jr) == json_type_string) {
+			const char *rt = json_object_get_string(jr);
+			if (rt[0] != '\0' && agent->cb_on_reasoning)
+				agent->cb_on_reasoning(rt, agent->cb_user);
+		}
+	}
 
-		clm_async_turn_free(turn);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(0, agent->cb_user);
+	if (json_object_object_get_ex(delta, "tool_calls", &tcs) &&
+	    json_object_get_type(tcs) == json_type_array)
+		stream_merge_tool_calls(turn, tcs);
+}
+
+static void
+clm_http_data_cb_wrapper(const char *data, size_t len, void *user)
+{
+	struct clm_async_turn *turn = (struct clm_async_turn *)user;
+	size_t i;
+
+	for (i = 0; i < len; i++) {
+		if (data[i] == '\n') {
+			stream_handle_line(turn);
+			turn->line_len = 0;
+			if (turn->line != NULL)
+				turn->line[0] = '\0';
+		} else {
+			(void)sb_append(&turn->line, &turn->line_len,
+			    &turn->line_cap, &data[i], 1);
+		}
 	}
 }
 
@@ -314,6 +650,7 @@ clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 	struct clm_async_turn *turn = (struct clm_async_turn *)user;
 	struct clm_agent *agent = turn->agent;
 
+	agent->inflight = NULL; /* request has completed (or was cancelled) */
 	clm_agent_set_error(agent, error_msg ? error_msg : "http request failed");
 	agent->state = CLM_STATE_ERROR;
 	if (agent->cb_on_state)
@@ -323,14 +660,88 @@ clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 		agent->cb_on_turn_done(error_code, agent->cb_user);
 }
 
+/* Health probe completed (GET /v1/models): 2xx is online, anything else is
+ * offline. user is the agent (not a turn). */
+static void
+health_success_cb(struct clm_http_response *resp, void *user)
+{
+	struct clm_agent *agent = user;
+	int status = resp ? resp->status_code : -1;
+
+	if (agent->cb_on_connection) {
+		if (status >= 200 && status < 300) {
+			agent->cb_on_connection(CLM_CONN_ONLINE, NULL,
+			    agent->cb_user);
+		} else {
+			char detail[64];
+			(void)snprintf(detail, sizeof(detail), "HTTP %d",
+			    status);
+			agent->cb_on_connection(CLM_CONN_OFFLINE, detail,
+			    agent->cb_user);
+		}
+	}
+	if (resp)
+		clm_http_response_free(resp);
+}
+
+static void
+health_error_cb(int error_code, const char *error_msg, void *user)
+{
+	struct clm_agent *agent = user;
+
+	(void)error_code;
+	if (agent->cb_on_connection)
+		agent->cb_on_connection(CLM_CONN_OFFLINE,
+		    error_msg ? error_msg : "unreachable", agent->cb_user);
+}
+
+int
+clm_agent_check_connection(struct clm_agent *agent)
+{
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(agent->models_url != NULL, -EINVAL);
+
+	if (agent->cb_on_connection)
+		agent->cb_on_connection(CLM_CONN_CHECKING, NULL, agent->cb_user);
+
+	/* NULL body => GET. user is the agent, distinct from turn requests;
+	 * out_req is NULL so this probe is not tracked for cancellation. */
+	return clm_http_async_post(agent->uv, agent->models_url,
+	    agent->llm->api_key, NULL, health_success_cb, health_error_cb, NULL,
+	    agent, NULL);
+}
+
+int
+clm_agent_cancel(struct clm_agent *agent)
+{
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+
+	if (agent->inflight != NULL) {
+		/* Waiting on the model: abort the request. Its error callback
+		 * fires on_turn_done(-ECANCELED) and clears inflight. */
+		struct clm_http_request *req = agent->inflight;
+		agent->inflight = NULL;
+		clm_http_async_cancel(req);
+		return 0;
+	}
+	if (agent->active_batch != NULL) {
+		/* Running tools: signal them to abort; when the batch finishes
+		 * unwinding, clm_agent_tools_done ends the turn as cancelled. */
+		agent->cancelling = true;
+		clm_tools_cancel(agent);
+		return 0;
+	}
+	return -EINVAL; /* nothing in flight */
+}
+
 static void
 clm_agent_start_turn(struct clm_agent *agent)
 {
 	json_cleanup struct json_object *req = NULL;
-	json_cleanup struct json_object *messages = NULL;
-	json_cleanup struct json_object *tools = NULL;
-	json_cleanup struct json_object *jmodel = NULL;
-	json_cleanup struct json_object *jstream = NULL;
+	struct json_object *messages = NULL;
+	struct json_object *tools = NULL;
+	struct json_object *jmodel = NULL;
+	struct json_object *jstream = NULL;
 	struct clm_async_turn *turn;
 	const char *body_str;
 	char *body;
@@ -370,9 +781,9 @@ clm_agent_start_turn(struct clm_agent *agent)
 	}
 	json_object_object_add(req, "model", jmodel);
 
-	json_object_object_add(req, "messages", json_object_get(messages));
+	json_object_object_add(req, "messages", messages);
 
-	jstream = json_object_new_boolean(0);
+	jstream = json_object_new_boolean(agent->stream ? 1 : 0);
 	if (jstream == NULL) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
@@ -384,7 +795,18 @@ clm_agent_start_turn(struct clm_agent *agent)
 	}
 	json_object_object_add(req, "stream", jstream);
 
-	json_object_object_add(req, "tools", json_object_get(tools));
+	/* Ask the server to include token usage in the final stream chunk. */
+	if (agent->stream) {
+		struct json_object *so = json_object_new_object();
+		if (so != NULL) {
+			struct json_object *inc = json_object_new_boolean(1);
+			if (inc != NULL)
+				json_object_object_add(so, "include_usage", inc);
+			json_object_object_add(req, "stream_options", so);
+		}
+	}
+
+	json_object_object_add(req, "tools", tools);
 
 	body_str = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
 	if (body_str == NULL) {
@@ -408,7 +830,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		return;
 	}
 
-	turn = malloc(sizeof(struct clm_async_turn));
+	turn = calloc(1, sizeof(struct clm_async_turn));
 	if (turn == NULL) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
@@ -420,16 +842,16 @@ clm_agent_start_turn(struct clm_agent *agent)
 	}
 
 	turn->agent = agent;
-	turn->messages = messages;
-	messages = NULL;
-	turn->tools = tools;
-	tools = NULL;
-	turn->parsed = NULL;
 	turn->body = body;
+	turn->streaming = agent->stream;
 	body = NULL;
 
+	clm_debug("posting body: %s", turn->body);
+
 	clm_http_async_post(agent->uv, agent->llm->base_url, agent->llm->api_key,
-			    turn->body, clm_http_success_cb_wrapper, clm_http_error_cb_wrapper, turn);
+			    turn->body, clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
+			    agent->stream ? clm_http_data_cb_wrapper : NULL, turn,
+			    &agent->inflight);
 }
 
 /*
@@ -453,167 +875,38 @@ response_message(struct json_object *parsed)
 	return message;
 }
 
-/*
- * Record the assistant's tool-call message into history and dispatch each
- * call, appending one tool-result message per call id. Returns the number of
- * tool calls handled, or negative errno.
- */
-static int
-handle_tool_calls(struct clm_agent *agent, struct json_object *tool_calls)
+void
+clm_agent_tools_done(struct clm_agent *agent, int status)
 {
-	struct clm_message *assistant_msg;
-	size_t n, i;
-
-	assistant_msg = clm_history_add_assistant_tool_calls(&agent->history);
-	if (assistant_msg == NULL)
-		return -ENOMEM;
-
-	n = json_object_array_length(tool_calls);
-
-	/* First record every call onto the assistant message. */
-	for (i = 0; i < n; i++) {
-		struct json_object *tc = json_object_array_get_idx(tool_calls, i);
-		struct json_object *id = NULL, *func = NULL, *name = NULL, *args = NULL;
-		const char *args_str;
-
-		if (tc == NULL)
-			continue;
-		json_object_object_get_ex(tc, "id", &id);
-		json_object_object_get_ex(tc, "function", &func);
-		if (func == NULL)
-			continue;
-		json_object_object_get_ex(func, "name", &name);
-		json_object_object_get_ex(func, "arguments", &args);
-		if (name == NULL)
-			continue;
-
-		/* arguments may be a JSON string or an object; normalize to string. */
-		if (args != NULL && json_object_get_type(args) == json_type_string)
-			args_str = json_object_get_string(args);
-		else if (args != NULL)
-			args_str = json_object_to_json_string_ext(args, JSON_C_TO_STRING_PLAIN);
-		else
-			args_str = "{}";
-
-		if (clm_message_add_tool_call(assistant_msg,
-		    id ? json_object_get_string(id) : "",
-		    json_object_get_string(name), args_str) == NULL)
-			return -ENOMEM;
+	if (agent->cancelling) { /* Escape hit while tools were running */
+		agent->cancelling = false;
+		agent_fail(agent, "cancelled", -ECANCELED);
+		return;
 	}
 
-	/* Then execute each recorded call, appending one tool result per id. */
-	{
-		struct clm_tool_call *tc;
-		TAILQ_FOREACH(tc, &assistant_msg->tool_calls, entries) {
-			struct clm_tool_result *res = NULL;
-			int r;
-
-			printf("[tool: %s %s]\n", tc->name, tc->args ? tc->args : "");
-			fflush(stdout);
-
-			r = clm_tool_execute(agent, tc, &res);
-			if (r < 0)
-				return r;
-
-			if (clm_history_add_tool_result(&agent->history, tc->id, res->content) == NULL) {
-				clm_tool_result_free(res);
-				return -ENOMEM;
-			}
-			clm_tool_result_free(res);
-		}
-	}
-
-	return (int)n;
-}
-
-int
-clm_agent_run(struct clm_agent *agent, const char *prompt, char **result)
-{
-	ASSERT_RETURN(agent != NULL, -EINVAL);
-	ASSERT_RETURN(prompt != NULL, -EINVAL);
-	ASSERT_RETURN(result != NULL, -EINVAL);
-
-	*result = NULL;
-	agent->state = CLM_STATE_THINKING;
-
-	if (clm_history_add_user(&agent->history, prompt) == NULL) {
-		clm_agent_set_error(agent, "out of memory");
+	if (status < 0) {
+		clm_agent_set_error(agent, "tool execution failed");
 		agent->state = CLM_STATE_ERROR;
-		return -ENOMEM;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(status, agent->cb_user);
+		return;
 	}
 
-	for (agent->iteration = 0; agent->iteration < agent->max_iterations; agent->iteration++) {
-		struct clm_http_response resp = {0};
-		json_cleanup struct json_object *messages = NULL;
-		json_cleanup struct json_object *tools = NULL;
-		json_cleanup struct json_object *parsed = NULL;
-		struct json_object *message, *content = NULL, *tool_calls = NULL;
-		int r;
-
-		messages = clm_history_to_json(&agent->history);
-		tools = clm_tools_build_schema(agent);
-		if (messages == NULL || tools == NULL) {
-			clm_agent_set_error(agent, "out of memory");
-			agent->state = CLM_STATE_ERROR;
-			return -ENOMEM;
-		}
-
-		r = clm_llm_chat(agent->llm, messages, tools, &resp);
-		if (r < 0) {
-			clm_agent_set_error(agent, resp.error_msg ? resp.error_msg : "llm request failed");
-			clm_http_response_free(&resp);
-			agent->state = CLM_STATE_ERROR;
-			return r;
-		}
-
-		parsed = resp.body ? json_tokener_parse(resp.body) : NULL;
-		clm_http_response_free(&resp);
-		if (parsed == NULL) {
-			clm_agent_set_error(agent, "could not parse llm response");
-			agent->state = CLM_STATE_ERROR;
-			return -EIO;
-		}
-
-		message = response_message(parsed);
-		if (message == NULL) {
-			clm_agent_set_error(agent, "llm response had no message");
-			agent->state = CLM_STATE_ERROR;
-			return -EIO;
-		}
-
-		json_object_object_get_ex(message, "tool_calls", &tool_calls);
-		if (tool_calls != NULL && json_object_get_type(tool_calls) == json_type_array
-		    && json_object_array_length(tool_calls) > 0) {
-			agent->state = CLM_STATE_CALLING_TOOL;
-			r = handle_tool_calls(agent, tool_calls);
-			if (r < 0) {
-				clm_agent_set_error(agent, "out of memory handling tool calls");
-				agent->state = CLM_STATE_ERROR;
-				return r;
-			}
-			continue; /* feed results back to the model */
-		}
-
-		/* No tool calls: this is the final answer. */
-		json_object_object_get_ex(message, "content", &content);
-		{
-			const char *text = content ? json_object_get_string(content) : "";
-			if (clm_history_add_assistant_text(&agent->history, text) == NULL) {
-				clm_agent_set_error(agent, "out of memory");
-				agent->state = CLM_STATE_ERROR;
-				return -ENOMEM;
-			}
-			*result = strdup(text ? text : "");
-			if (*result == NULL) {
-				agent->state = CLM_STATE_ERROR;
-				return -ENOMEM;
-			}
-		}
-		agent->state = CLM_STATE_COMPLETE;
-		return 0;
+	if (++agent->iteration >= agent->max_iterations) {
+		clm_agent_set_error(agent, "max iterations reached");
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-E2BIG, agent->cb_user);
+		return;
 	}
 
-	clm_agent_set_error(agent, "max iterations reached");
-	agent->state = CLM_STATE_ERROR;
-	return -E2BIG;
+	agent->state = CLM_STATE_THINKING;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+
+	clm_agent_start_turn(agent);
 }

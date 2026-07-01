@@ -5,3 +5,4 @@ core.*
 fuzz/out_*
 vgcore.*
 *.txt
+__pycache__/

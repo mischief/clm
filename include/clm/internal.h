@@ -15,6 +15,8 @@
 /* Default maximum agent loop iterations when cfg->max_iterations is 0. */
 #define CLM_DEFAULT_MAX_ITERATIONS 25
 
+struct clm_http_request; /* opaque; see clm/http_async.h */
+
 struct clm_agent {
 	struct clm_llm *llm;
 	uv_loop_t *uv;
@@ -25,18 +27,37 @@ struct clm_agent {
 	size_t tool_count;
 	size_t max_iterations;
 	size_t iteration;
+	bool stream;
+	struct clm_tool_batch *active_batch;
+
+	/* The turn's in-flight HTTP request (for cancellation), else NULL. */
+	struct clm_http_request *inflight;
+	bool cancelling; /* a cancel is unwinding the current turn */
 
 	/* Event callbacks */
 	void (*cb_on_assistant_text)(const char *, void *);
 	void (*cb_on_reasoning)(const char *, void *);
 	void (*cb_on_tool_begin)(const char *, const char *, void *);
-	void (*cb_on_tool_result)(const char *, const char *, void *);
+	void (*cb_on_tool_result)(const char *, const char *, enum clm_tool_outcome, void *);
+	void (*cb_on_tool_batch)(size_t, size_t, void *);
+	void (*cb_on_finish_reason)(enum clm_finish_reason, void *);
+	void (*cb_on_usage)(const struct clm_usage *, void *);
+	void (*cb_on_connection)(enum clm_conn_status, const char *, void *);
 	void (*cb_on_state)(enum clm_agent_state, void *);
 	void (*cb_on_turn_done)(int, void *);
 	void *cb_user;
+
+	/* Derived from base_url: the /v1/models URL used for health probes. */
+	char *models_url;
 };
 
 /* Set agent->last_error to a copy of msg (replacing any previous error). */
 void clm_agent_set_error(struct clm_agent *agent, const char *msg);
+
+/*
+ * Called by the tool framework when a dispatched batch finishes. status 0
+ * advances the turn (next model call); negative errno ends the turn in error.
+ */
+void clm_agent_tools_done(struct clm_agent *agent, int status);
 
 #endif /* CLM_INTERNAL_H */
