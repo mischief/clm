@@ -17,10 +17,12 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-# Small per-chunk delay so a streamed turn takes long enough for tests to
-# observe the "busy" window (e.g. prompt queueing, cancellation). Overridable
-# via CLM_MOCK_DELAY for tests that need a wider window.
-CHUNK_DELAY = float(os.environ.get("CLM_MOCK_DELAY", "0.05"))
+# Per-chunk delay so a streamed turn lasts long enough for tests to observe
+# the "busy" window (prompt queueing, cancellation). At the old 0.05s the whole
+# reply (8 chunks) landed inside the tests' timing windows, so a prompt sent
+# "while busy" often arrived after the turn had already finished. Overridable
+# via CLM_MOCK_DELAY.
+CHUNK_DELAY = float(os.environ.get("CLM_MOCK_DELAY", "0.12"))
 
 # Canned assistant reply. Kept small but covering the interesting markdown.
 REPLY_MD = (

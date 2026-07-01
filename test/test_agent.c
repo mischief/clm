@@ -464,6 +464,36 @@ test_stream_meta(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/*
+ * (h) After a turn ends in the error state (here: a dead endpoint), the agent
+ * must accept a new prompt rather than rejecting it as "turn already in
+ * progress". This regresses a bug where a cancelled/errored turn left the
+ * agent stuck: every later submit returned -EBUSY until restart.
+ */
+static void
+test_recover_after_error(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+
+	st.loop = loop;
+	/* Port 1 has nothing listening, so the turn fails to connect. */
+	st.agent = make_agent(&st, 1);
+
+	CHECK(clm_agent_submit(st.agent, "first") == 0, "first submit accepted");
+	run_until_done(&st);
+	CHECK(st.turn_status != 0, "first turn errored (no server)");
+	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_ERROR, "left in error state");
+
+	/* The real assertion: a second prompt is not wedged by the error. */
+	st.turn_done = 0;
+	CHECK(clm_agent_submit(st.agent, "second") == 0,
+	    "second submit accepted after error (not -EBUSY)");
+	run_until_done(&st);
+
+	clm_agent_free(st.agent);
+	uv_run(loop, UV_RUN_DEFAULT); /* drain pending closes */
+}
+
 int
 main(void)
 {
@@ -477,6 +507,7 @@ main(void)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_recover_after_error(&loop);
 	uv_loop_close(&loop);
 
 	if (failures > 0) {

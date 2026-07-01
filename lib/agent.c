@@ -233,7 +233,13 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 	ASSERT_RETURN(agent != NULL, -EINVAL);
 	ASSERT_RETURN(prompt != NULL, -EINVAL);
 
-	if (agent->state != CLM_STATE_IDLE && agent->state != CLM_STATE_COMPLETE) {
+	/*
+	 * Reject only while a turn is genuinely in flight. A previous turn that
+	 * finished, errored, or was cancelled must not lock out new prompts:
+	 * the user should be able to just type again to recover.
+	 */
+	if (agent->state == CLM_STATE_THINKING ||
+	    agent->state == CLM_STATE_CALLING_TOOL) {
 		clm_agent_set_error(agent, "turn already in progress");
 		return -EBUSY;
 	}
@@ -645,6 +651,14 @@ stream_handle_line(struct clm_async_turn *turn)
 	const char *line = turn->line ? turn->line : "";
 	const char *payload;
 
+	/*
+	 * If the turn was cancelled, clm_agent_cancel has already cleared
+	 * inflight and started tearing the request down; drop any buffered or
+	 * in-transit stream data so a cancelled reply stops rendering at once.
+	 */
+	if (agent->inflight == NULL)
+		return;
+
 	if (turn->line_len > 0 && line[turn->line_len - 1] == '\r')
 		turn->line[--turn->line_len] = '\0';
 	if (turn->line_len == 0 || strncmp(line, "data:", 5) != 0)
@@ -738,8 +752,19 @@ clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 	struct clm_agent *agent = turn->agent;
 
 	agent->inflight = NULL; /* request has completed (or was cancelled) */
-	clm_agent_set_error(agent, error_msg ? error_msg : "http request failed");
-	agent->state = CLM_STATE_ERROR;
+
+	/*
+	 * A user cancel is not an error: land in a clean, submittable state and
+	 * leave no error string, so the status bar does not show "error" and the
+	 * next prompt just works.
+	 */
+	if (error_code == -ECANCELED) {
+		agent->state = CLM_STATE_COMPLETE;
+	} else {
+		clm_agent_set_error(agent,
+		    error_msg ? error_msg : "http request failed");
+		agent->state = CLM_STATE_ERROR;
+	}
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
 	clm_async_turn_free(turn);
@@ -967,7 +992,12 @@ clm_agent_tools_done(struct clm_agent *agent, int status)
 {
 	if (agent->cancelling) { /* Escape hit while tools were running */
 		agent->cancelling = false;
-		agent_fail(agent, "cancelled", -ECANCELED);
+		/* A cancel is not an error: land clean and submittable. */
+		agent->state = CLM_STATE_COMPLETE;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		if (agent->cb_on_turn_done)
+			agent->cb_on_turn_done(-ECANCELED, agent->cb_user);
 		return;
 	}
 
