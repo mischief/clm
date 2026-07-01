@@ -320,6 +320,7 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 
 	agent->state = CLM_STATE_THINKING;
 	agent->iteration = 0;
+	agent->cancelling = false; /* fresh turn: clear any prior cancel */
 
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
@@ -871,11 +872,13 @@ stream_handle_line(struct clm_async_turn *turn)
 	const char *payload;
 
 	/*
-	 * If the turn was cancelled, clm_agent_cancel has already cleared
-	 * inflight and started tearing the request down; drop any buffered or
-	 * in-transit stream data so a cancelled reply stops rendering at once.
+	 * Drop buffered/in-transit stream data only if the turn was cancelled,
+	 * so a cancelled reply stops rendering at once. Do NOT gate on inflight:
+	 * a normal completion also nulls inflight, and gating on it would drop
+	 * the final content of a fast response whose body and completion land
+	 * close together.
 	 */
-	if (agent->inflight == NULL)
+	if (agent->cancelling)
 		return;
 
 	if (turn->line_len > 0 && line[turn->line_len - 1] == '\r')
@@ -1095,9 +1098,13 @@ clm_agent_cancel(struct clm_agent *agent)
 
 	if (agent->inflight != NULL) {
 		/* Waiting on the model: abort the request. Its error callback
-		 * fires on_turn_done(-ECANCELED) and clears inflight. */
+		 * fires on_turn_done(-ECANCELED) and clears inflight. Mark the
+		 * cancel so any buffered stream data is dropped rather than
+		 * rendered (a normal completion also nulls inflight, so the flag
+		 * is what distinguishes the two). */
 		struct clm_http_request *req = agent->inflight;
 		agent->inflight = NULL;
+		agent->cancelling = true;
 		clm_http_async_cancel(req);
 		return 0;
 	}
