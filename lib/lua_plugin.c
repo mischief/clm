@@ -494,6 +494,19 @@ lua_clm_tool_register(lua_State *L)
 		timeout_ms = (uint64_t)lua_tointeger(L, -1);
 	lua_pop(L, 1);
 
+	/* Extract optional permission flags. Default is gated (default-deny);
+	 * a plugin may opt a safe tool out of prompting with no_prompt, and/or
+	 * hide it from the model's schema with hidden. */
+	unsigned flags = 0;
+	lua_getfield(L, 2, "no_prompt");
+	if (lua_toboolean(L, -1))
+		flags |= CLM_TOOL_NO_PROMPT;
+	lua_pop(L, 1);
+	lua_getfield(L, 2, "hidden");
+	if (lua_toboolean(L, -1))
+		flags |= CLM_TOOL_HIDDEN;
+	lua_pop(L, 1);
+
 	/* Allocate persistent tool user data. */
 	tu = malloc(sizeof(*tu));
 	if (tu == NULL) {
@@ -512,6 +525,7 @@ lua_clm_tool_register(lua_State *L)
 	def.invoke = lua_tool_invoke;
 	def.user = tu;
 	def.timeout_ms = timeout_ms;
+	def.flags = flags;
 
 	r = clm_tool_add(plugin->agent, &def);
 	free(schema_json);

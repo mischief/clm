@@ -197,7 +197,8 @@ lua_ctx_http_get(lua_State *L)
 	/* clm_http_async_post with NULL body = GET. We pass empty api_key for
 	 * external requests (no auth header needed for arbitrary URLs). */
 	r = clm_http_async_post(loop, url, "", NULL,
-	    lua_http_on_success, lua_http_on_error, NULL, lr, &lr->req);
+	    lua_http_on_success, lua_http_on_error, NULL, lr->tool_name, lr,
+	    &lr->req);
 	if (r < 0) {
 		free(lr);
 		return luaL_error(L, "http_get: failed to start request: %s",
@@ -272,7 +273,8 @@ lua_ctx_http_post(lua_State *L)
 	}
 
 	r = clm_http_async_post(loop, url, "", body,
-	    lua_http_on_success, lua_http_on_error, NULL, lr, &lr->req);
+	    lua_http_on_success, lua_http_on_error, NULL, lr->tool_name, lr,
+	    &lr->req);
 	if (r < 0) {
 		free(lr);
 		return luaL_error(L, "http_post: failed to start request: %s",
