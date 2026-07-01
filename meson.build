@@ -45,7 +45,7 @@ endforeach
 
 
 # Suppress noisy warnings that don't apply cleanly across compilers
-suppress_args = ['-Wno-unused-parameter']
+suppress_args = ['-Wno-unused-parameter', '-Wno-zero-length-array']
 
 foreach a : suppress_args
   if cc.has_argument(a)

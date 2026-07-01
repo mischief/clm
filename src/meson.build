@@ -34,6 +34,6 @@ clm_exe = executable('clm', clm_src + files('tui.c') + [version_h],
   link_with: [clm_lib, md_render_lib],
   dependencies: clm_bin_deps + [curses_dep, jsonc_dep],
   include_directories: [clm_bin_inc, md_render_inc, clm_inc],
-  c_args: curses_warn,
+  c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'],
   install: true,
 )

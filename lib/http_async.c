@@ -53,7 +53,7 @@ http_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 
 static void http_handle_closed(uv_handle_t *handle);
 static void http_request_teardown(struct clm_http_request *req);
-static void http_timer_callback(CURLM *multi, long timeout_ms, void *userp);
+static int http_timer_callback(CURLM *multi, long timeout_ms, void *userp);
 static void http_timer_expired(uv_timer_t *handle);
 
 /*
@@ -79,7 +79,7 @@ http_reap_done(struct clm_http_request *req)
 			clm_debug("CURLMSG_DONE, CURLE_OK");
 		} else {
 			req->state = CLM_HTTP_ERROR;
-			req->error_code = curl_err;
+			req->error_code = (int)curl_err;
 			snprintf(req->error_msg, sizeof(req->error_msg),
 			    "curl error: %s", curl_easy_strerror(curl_err));
 			clm_debug("CURLMSG_DONE, curl_err=%d", curl_err);
@@ -133,7 +133,7 @@ on_socket_closed(uv_handle_t *handle)
 	free(ctx);
 }
 
-static void
+static int
 http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void *socketp)
 {
 	struct clm_http_request *req = userp;
@@ -147,13 +147,13 @@ http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void 
 			uv_close((uv_handle_t *)&ctx->poll, on_socket_closed);
 			curl_multi_assign(req->multi_handle, s, NULL);
 		}
-		return;
+		return 0;
 	}
 
 	if (ctx == NULL) {
 		ctx = calloc(1, sizeof(*ctx));
 		if (ctx == NULL)
-			return;
+			return 0;
 		ctx->sockfd = s;
 		ctx->req = req;
 		ctx->poll.data = ctx;
@@ -172,6 +172,7 @@ http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void 
 
 	if (!uv_is_closing((uv_handle_t *)&ctx->poll))
 		uv_poll_start(&ctx->poll, events, http_poll_callback);
+	return 0;
 }
 
 int
@@ -365,7 +366,7 @@ http_request_teardown(struct clm_http_request *req)
 	}
 }
 
-static void
+static int
 http_timer_callback(CURLM *multi, long timeout_ms, void *userp)
 {
 	struct clm_http_request *req = userp;
@@ -377,7 +378,7 @@ http_timer_callback(CURLM *multi, long timeout_ms, void *userp)
 			uv_timer_stop(&req->timer_handle);
 			clm_debug("uv_timer_stop completed");
 		}
-		return;
+		return 0;
 	}
 
 	if (!req->timer_initialized) {
@@ -389,6 +390,7 @@ http_timer_callback(CURLM *multi, long timeout_ms, void *userp)
 
 	uv_timer_start(&req->timer_handle, http_timer_expired, (uint64_t)timeout_ms, 0);
 	clm_debug("uv_timer_start completed with timeout=%lu", (unsigned long)timeout_ms);
+	return 0;
 }
 
 static void
