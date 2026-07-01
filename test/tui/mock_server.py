@@ -80,11 +80,47 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         req = self._body()
         if req.get("stream"):
-            self._stream()
+            self._stream(req)
         else:
             self._whole()
 
-    def _stream(self):
+    def _wants_tool(self, req):
+        """True if the latest user turn asks for a shell tool and no tool
+        result is present yet (so we emit the call exactly once)."""
+        msgs = req.get("messages", [])
+        text = " ".join(str(m.get("content", "")) for m in msgs)
+        asked = any("shelltest" in str(m.get("content", "")).lower()
+                    for m in msgs if m.get("role") == "user")
+        has_result = "<tool_response>" in text or any(
+            m.get("role") == "tool" for m in msgs)
+        return asked and not has_result
+
+    def _stream_tool_call(self):
+        """Stream a single shell_exec tool call."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def send(obj):
+            self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
+            self.wfile.flush()
+        try:
+            send({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": 0, "id": "call_1", "type": "function",
+                "function": {"name": "shell_exec",
+                             "arguments": "{\"command\":\"echo hi\"}"}}]}}]})
+            send({"choices": [{"index": 0, "delta": {},
+                               "finish_reason": "tool_calls"}]})
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionError):
+            return
+
+    def _stream(self, req=None):
+        if req is not None and self._wants_tool(req):
+            self._stream_tool_call()
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")

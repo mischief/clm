@@ -169,6 +169,31 @@ def test_history(url):
               "history: Down returns toward the newer prompt")
 
 
+def test_permission(url):
+    # 'shelltest' makes the mock emit a shell_exec tool call, which the tui
+    # gates behind the permission prompt.
+    with Tui(BIN, url, rows=24, cols=80) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"shelltest please\r")
+        assert t.wait_for("allow tool", timeout=15), "no permission prompt"
+        txt = t.text()
+        check("shell_exec" in txt, "permission: prompt names the tool")
+        check("(y) once" in txt, "permission: prompt shows the key choices")
+        # Approve once; the tool then runs and the turn finishes.
+        t.send(b"y")
+        t.pump(1.0)
+        check("allowed" in t.text(), "permission: 'y' approves the call")
+
+    # A fresh session, deny this time.
+    with Tui(BIN, url, rows=24, cols=80) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"shelltest please\r")
+        assert t.wait_for("allow tool", timeout=15), "no permission prompt (deny)"
+        t.send(b"n")
+        t.pump(1.0)
+        check("denied" in t.text(), "permission: 'n' denies the call")
+
+
 def main():
     with MockServer() as srv:
         test_connection_online(srv.url)
@@ -180,6 +205,7 @@ def main():
         test_history(srv.url)
         test_commands(srv.url)
         test_queueing(srv.url)
+        test_permission(srv.url)
         test_cancel(srv.url)
     if _failures:
         print(f"\n{len(_failures)} check(s) failed")

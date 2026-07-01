@@ -39,6 +39,7 @@ enum ui_style {
 	ST_USER,     /* the user's prompt echo */
 	ST_ASSIST,   /* assistant answer text */
 	ST_LABEL,    /* the "clm>" answer label */
+	ST_PERM,     /* tool-permission prompt (orange) */
 	ST_REASON,   /* dim "thinking" channel */
 	ST_TOOL,     /* tool invocation summary line */
 	ST_TOOL_OUT, /* tool output body (collapsible) */
@@ -111,6 +112,9 @@ struct ui {
 	int spinner;
 	bool busy;           /* a turn is in flight */
 	bool started_assist; /* assistant text seen this turn */
+
+	/* Non-NULL while a tool-permission prompt is awaiting a y/n/a/d key. */
+	const struct clm_permission_req *perm_pending;
 
 	/* Tool-batch tally, for the aggregate summary line. */
 	int n_cmd, n_read, n_write, n_other;
@@ -439,21 +443,34 @@ cb_turn_done(int status, void *user)
 	}
 	ui_push(u, ST_NORMAL, "\n");
 	u->busy = false;
+	u->perm_pending = NULL; /* no prompt outlives its turn */
 	u->batch[0] = '\0';
 	u->dirty = true;
 	drain_queue(u); /* start the next queued prompt, if any */
 }
 
 /*
- * Permission handler. For now this auto-allows, preserving the pre-gate
- * behaviour; the interactive y/n/a/d prompt is a later change. Without this,
- * the library's default-deny would block every gated tool.
+ * Permission handler: render an orange prompt showing the tool and its args,
+ * then park in permission-input mode. handle_keys routes the next y/n/a/d key
+ * (or Escape) to answer via clm_tool_permission_respond.
  */
 static void
 cb_permission(const struct clm_permission_req *req, void *user)
 {
 	struct ui *u = user;
-	clm_tool_permission_respond(u->agent, req, CLM_PERM_ALLOW_ONCE);
+	const char *name = clm_permission_req_name(req);
+	const char *args = clm_permission_req_args(req);
+
+	u->perm_pending = req;
+	ui_push(u, ST_PERM, "\nallow tool ");
+	ui_push(u, ST_PERM, name ? name : "?");
+	if (args != NULL && args[0] != '\0' && strcmp(args, "{}") != 0) {
+		ui_push(u, ST_PERM, " ");
+		ui_push(u, ST_PERM, args);
+	}
+	ui_push(u, ST_PERM,
+	    "\n(y) once  (n) deny  (a) always  (d) never  [esc = deny+cancel]\n");
+	u->dirty = true;
 }
 
 static const struct clm_callbacks tui_callbacks = {
@@ -482,6 +499,8 @@ seg_attr(enum ui_style style)
 		return A_NORMAL;
 	case ST_LABEL:
 		return COLOR_PAIR(8);
+	case ST_PERM:
+		return COLOR_PAIR(9) | A_BOLD;
 	case ST_REASON:
 		return COLOR_PAIR(6);
 	case ST_TOOL:
@@ -1354,6 +1373,42 @@ input_yank(struct ui *u)
 	u->dirty = true;
 }
 
+/*
+ * Answer a pending permission prompt from a keypress. Returns true if the key
+ * was a recognised answer (y/n/a/d) or Escape. Escape denies and cancels the
+ * turn; the others map to the four allow/deny x once/always decisions.
+ */
+static bool
+answer_permission(struct ui *u, int ch)
+{
+	const struct clm_permission_req *req = u->perm_pending;
+	enum clm_permission_decision d;
+	const char *label;
+
+	switch (ch) {
+	case 'y': case 'Y': d = CLM_PERM_ALLOW_ONCE;   label = "allowed"; break;
+	case 'a': case 'A': d = CLM_PERM_ALLOW_ALWAYS; label = "always allowed"; break;
+	case 'n': case 'N': d = CLM_PERM_DENY_ONCE;    label = "denied"; break;
+	case 'd': case 'D': d = CLM_PERM_DENY_ALWAYS;  label = "always denied"; break;
+	case 27:            d = CLM_PERM_DENY_ONCE;    label = "denied (cancelled)"; break;
+	default:
+		return false; /* not an answer key */
+	}
+
+	u->perm_pending = NULL;
+	ui_push(u, ST_PERM, "-> ");
+	ui_push(u, ST_PERM, label);
+	ui_push(u, ST_PERM, "\n");
+	clm_tool_permission_respond(u->agent, req, d);
+
+	/* Escape also cancels the rest of the turn. */
+	if (ch == 27)
+		clm_agent_cancel(u->agent);
+
+	u->dirty = true;
+	return true;
+}
+
 static void
 handle_keys(struct ui *u)
 {
@@ -1361,6 +1416,17 @@ handle_keys(struct ui *u)
 	int r;
 
 	while ((r = wget_wch(u->in, &wch)) != ERR) {
+		/*
+		 * Permission-input mode: while a tool authorization is pending,
+		 * the next key answers it and nothing else is processed.
+		 */
+		if (u->perm_pending != NULL && r != KEY_CODE_YES) {
+			if (answer_permission(u, (int)wch))
+				continue;
+			/* Not a recognised answer key: ignore it, stay pending. */
+			continue;
+		}
+
 		if (r == KEY_CODE_YES) {
 			switch (wch) {
 			case KEY_BACKSPACE:
@@ -1582,9 +1648,11 @@ init_colors(void)
 	init_pair(8, COLOR_CYAN, -1);          /* assistant "clm>" label */
 	/*
 	 * Reserved for attention, not decoration: red = error; yellow = warning /
-	 * timeout; and (future) orange/brred for tool-call permission prompts.
-	 * TODO: expose the whole role->colour map via the theme layer.
+	 * timeout; and orange (ANSI 9 / brred) for tool-call permission prompts --
+	 * the "about to do something, confirm?" caution colour. TODO: expose the
+	 * whole role->colour map via the theme layer.
 	 */
+	init_pair(9, 9, -1);                   /* permission prompt (orange) */
 }
 
 /* Periodic (and startup) connectivity probe. */
