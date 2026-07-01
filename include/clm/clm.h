@@ -282,6 +282,15 @@ CLM_API int clm_agent_check_connection(struct clm_agent *agent);
 CLM_API int clm_agent_cancel(struct clm_agent *agent);
 
 /*
+ * Reconfigure the LLM provider on a live agent. Swaps the endpoint, API key,
+ * and model. Safe to call between turns (not while one is in flight).
+ * base_url is the full chat completions URL (e.g. "http://host/v1/chat/completions").
+ * api_key may be NULL for no-auth servers.
+ */
+CLM_API int clm_agent_set_provider(struct clm_agent *agent,
+    const char *base_url, const char *api_key, const char *model);
+
+/*
  * Summarize the conversation and fold old turns into that summary, keeping the
  * system prologue and recent turns. Asynchronous (one model round-trip): fires
  * on_turn_done when finished. Manual only; there is no auto-compaction.

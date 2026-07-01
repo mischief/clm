@@ -1212,6 +1212,7 @@ run_command(struct ui *u, const char *line)
 		    "\ncommands:\n"
 		    "  /help              this help\n"
 		    "  /clear             clear the transcript\n"
+		    "  /provider <url> [model]  switch LLM endpoint\n"
 		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
 		    "  /output [full|short] tool output detail (^O)\n"
 		    "  /compact           summarize old turns to reclaim context\n"
@@ -1253,6 +1254,47 @@ run_command(struct ui *u, const char *line)
 			ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
 		} else {
 			ui_push(u, ST_ERROR, "\ncompaction failed to start\n");
+		}
+	} else if (CMD("provider") || CMD("p")) {
+		/* /provider <url> [model]
+		 * Switches the LLM endpoint. Appends /chat/completions to url.
+		 * API key comes from CLM_API_KEY env (unchanged). */
+		if (arg[0] == '\0') {
+			ui_push(u, ST_META, "\nusage: /provider <url> [model]\n");
+		} else {
+			char url_buf[512];
+			const char *model_arg = NULL;
+			const char *p = arg;
+			size_t ulen = 0;
+			while (*p != '\0' && *p != ' ')
+				p++;
+			ulen = (size_t)(p - arg);
+			while (*p == ' ')
+				p++;
+			if (*p != '\0')
+				model_arg = p;
+			/* Build full URL: strip trailing slash, append /chat/completions */
+			while (ulen > 0 && arg[ulen - 1] == '/')
+				ulen--;
+			(void)snprintf(url_buf, sizeof(url_buf), "%.*s/chat/completions",
+			    (int)ulen, arg);
+			const char *key = getenv("CLM_API_KEY");
+			int rc = clm_agent_set_provider(u->agent, url_buf,
+			    key, model_arg);
+			if (rc == 0) {
+				char msg[256];
+				(void)snprintf(msg, sizeof(msg), "\n[provider: %.*s model=%s]\n",
+				    (int)ulen, arg,
+				    model_arg ? model_arg : "default");
+				ui_push(u, ST_META, msg);
+				if (model_arg != NULL)
+					u->model = model_arg;
+				clm_agent_check_connection(u->agent);
+			} else if (rc == -EBUSY) {
+				ui_push(u, ST_ERROR, "\nbusy; switch provider when idle\n");
+			} else {
+				ui_push(u, ST_ERROR, "\nfailed to switch provider\n");
+			}
 		}
 	} else if (CMD("quit") || CMD("exit") || CMD("q")) {
 		u->quit = true;

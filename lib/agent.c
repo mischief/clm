@@ -1127,6 +1127,54 @@ clm_agent_cancel(struct clm_agent *agent)
 	return -EINVAL; /* nothing in flight */
 }
 
+int
+clm_agent_set_provider(struct clm_agent *agent,
+    const char *base_url, const char *api_key, const char *model)
+{
+	char *new_url, *new_key, *new_model, *new_models_url, *new_props_url;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(base_url != NULL, -EINVAL);
+
+	/* Refuse while a turn is in flight. */
+	if (agent->state != CLM_STATE_IDLE)
+		return -EBUSY;
+
+	new_url = strdup(base_url);
+	new_key = (api_key != NULL && api_key[0] != '\0')
+	    ? strdup(api_key) : strdup("sk-no-key-required");
+	new_model = strdup(model != NULL ? model : "local-model");
+	if (new_url == NULL || new_key == NULL || new_model == NULL) {
+		free(new_url);
+		free(new_key);
+		free(new_model);
+		return -ENOMEM;
+	}
+
+	/* Derive health/props URLs from the new base. */
+	new_models_url = clm_derive_models_url(base_url);
+	new_props_url = clm_derive_props_url(base_url);
+
+	/* Swap. */
+	free(agent->llm->base_url);
+	free(agent->llm->api_key);
+	free(agent->llm->model);
+	agent->llm->base_url = new_url;
+	agent->llm->api_key = new_key;
+	agent->llm->model = new_model;
+
+	free(agent->models_url);
+	free(agent->props_url);
+	agent->models_url = new_models_url;
+	agent->props_url = new_props_url;
+
+	/* Reset context info (new server may have different limits). */
+	agent->ctx_max = 0;
+
+	clm_debug("provider switched: %s model=%s", base_url, new_model);
+	return 0;
+}
+
 static void
 clm_agent_start_turn(struct clm_agent *agent)
 {
