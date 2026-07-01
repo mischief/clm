@@ -132,12 +132,77 @@ test_nonexistent_dir(void)
 	return 0;
 }
 
+static int
+tool_registered(struct clm_agent *agent, const char *name)
+{
+	for (size_t i = 0; i < agent->tool_count; i++)
+		if (strcmp(agent->tools[i].name, name) == 0)
+			return 1;
+	return 0;
+}
+
+/*
+ * Load the self-test plugin dir, which contains one clean plugin plus three
+ * that must fail to load gracefully: an explicit error(), an indirect nil
+ * call, and an infinite loop at file scope (bounded by the load-time CPU cap).
+ * The clean plugin's marker tool must be registered; reaching this point at
+ * all proves the loop plugin did not hang the process.
+ */
+static int
+test_sandbox_and_load_failures(void)
+{
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	uv_loop_t *loop = uv_default_loop();
+	struct clm_cfg cfg = {
+		.api_key = "test",
+		.base_url = "http://127.0.0.1:1/v1/chat/completions",
+		.provider = CLM_PROVIDER_OPENAI,
+		.model = "test",
+		.max_iterations = 1,
+		.stream = 0,
+	};
+	int r;
+
+	r = clm_agent_new(&cfg, loop, NULL, NULL, &agent);
+	CHECK(r == 0, "agent creation (sandbox)");
+	if (r != 0)
+		return 1;
+
+	r = clm_lua_env_new(agent, &env);
+	CHECK(r == 0, "lua env creation (sandbox)");
+
+	/* Returns 0 even though individual plugins fail; failures are skipped.
+	 * Reaching the next line proves loop_at_load.lua did not hang. */
+	r = clm_lua_load_plugins(env, "test/plugins");
+	CHECK(r == 0, "self-test plugin dir loads (failures skipped, no hang)");
+
+	/* The clean, sandbox-asserting plugin loaded and registered its marker:
+	 * the sandbox denies os/io/require/load and exposes only safe libs. */
+	CHECK(tool_registered(agent, "sandbox_ok_marker"),
+	    "sandbox-clean plugin loaded (no unsafe globals reachable)");
+
+	/* The failing plugins registered nothing (they raised before/instead of
+	 * registering); they must not have leaked tools into the registry. */
+	CHECK(!tool_registered(agent, "fail_explicit_marker"),
+	    "explicit-error load failure registered no tool");
+	CHECK(!tool_registered(agent, "fail_indirect_marker"),
+	    "indirect-error load failure registered no tool");
+	CHECK(!tool_registered(agent, "loop_marker"),
+	    "infinite-loop load failure registered no tool");
+
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	return 0;
+}
+
 int
 main(void)
 {
 	printf("test_lua_plugin: running...\n");
 	test_plugin_loads();
 	test_nonexistent_dir();
+	test_sandbox_and_load_failures();
 
 	if (failures > 0) {
 		printf("test_lua_plugin: %d failure(s)\n", failures);
