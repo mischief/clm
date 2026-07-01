@@ -90,6 +90,14 @@ lua_json_decode(lua_State *L)
 	struct json_tokener *tok;
 	struct json_object *obj;
 
+	/* Enforce per-plugin decode size limit. */
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_json_max");
+	size_t max_len = (size_t)lua_tointeger(L, -1);
+	lua_pop(L, 1);
+	if (max_len > 0 && len > max_len)
+		return luaL_error(L, "json.decode: input too large (%zu > %zu)",
+		    len, max_len);
+
 	tok = json_tokener_new();
 	if (tok == NULL)
 		return luaL_error(L, "json.decode: out of memory");

@@ -27,9 +27,31 @@ int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
 #define CLM_LUA_MEM_LIMIT (8 * 1024 * 1024) /* 8 MiB per plugin */
 #define CLM_LUA_EXEC_TIMEOUT_MS 30000u     /* default: 30s CPU timeout */
 #define CLM_LUA_HOOK_INTERVAL 10000        /* check deadline every N instructions */
+#define CLM_LUA_HTTP_MAX_INFLIGHT 8        /* max concurrent HTTP requests */
+#define CLM_LUA_HTTP_MAX_PER_CALL 32       /* max total HTTP requests per tool call */
+#define CLM_LUA_JSON_DECODE_MAX (2 * 1024 * 1024) /* 2 MiB max input to json.decode */
 
 /* Forward declaration. */
 struct lua_tool_user;
+
+/* Per-plugin resource budget and peak tracking. */
+struct clm_lua_budget {
+	/* Limits (set from env defaults). */
+	size_t http_max_inflight;
+	size_t http_max_per_call;
+	size_t json_decode_max;
+
+	/* Current counters (reset per tool call). */
+	size_t http_inflight;
+	size_t http_total;
+	uint64_t call_start_ns;   /* wall-clock start of current call */
+
+	/* Peak counters (lifetime of plugin, never reset). */
+	size_t peak_mem;
+	size_t peak_http_inflight;
+	size_t peak_http_total;    /* peak per single tool call */
+	uint64_t peak_call_ns;     /* longest tool call duration */
+};
 
 /* Per-plugin state. */
 struct clm_lua_plugin {
@@ -42,6 +64,7 @@ struct clm_lua_plugin {
 	size_t tool_user_count;
 	size_t tool_user_cap;
 	uint64_t deadline_ns; /* wall-clock deadline for current execution */
+	struct clm_lua_budget budget;
 };
 
 /* Top-level environment holding all plugins. */
@@ -51,7 +74,16 @@ struct clm_lua_env {
 	size_t count;
 	size_t cap;
 	uint64_t exec_timeout_ms; /* global execution timeout */
+	/* Global budget defaults. */
+	size_t http_max_inflight;
+	size_t http_max_per_call;
+	size_t json_decode_max;
 };
+
+/* Budget helpers called from lua_http.c (defined below). */
+void clm_lua_http_done(struct clm_lua_plugin *plugin);
+int clm_lua_http_start(struct clm_lua_plugin *plugin);
+void clm_lua_budget_report(struct clm_lua_plugin *plugin, const char *name);
 
 /* ------------------------------------------------------------------ */
 /* Capped allocator                                                    */
@@ -73,6 +105,8 @@ lua_capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	if (np == NULL)
 		return NULL;
 	p->mem_used = p->mem_used - osize + nsize;
+	if (p->mem_used > p->budget.peak_mem)
+		p->budget.peak_mem = p->mem_used;
 	return np;
 }
 
@@ -211,6 +245,70 @@ lua_exec_hook(lua_State *L, lua_Debug *ar)
 }
 
 /*
+ * Log resource peaks for this plugin after a tool call completes.
+ */
+void
+clm_lua_budget_report(struct clm_lua_plugin *plugin, const char *tool_name)
+{
+	struct clm_lua_budget *b = &plugin->budget;
+	uint64_t elapsed_ns = clock_ns() - b->call_start_ns;
+
+	/* Update peaks before reporting. */
+	if (elapsed_ns > b->peak_call_ns)
+		b->peak_call_ns = elapsed_ns;
+	if (b->http_total > b->peak_http_total)
+		b->peak_http_total = b->http_total;
+
+	size_t elapsed_ms = (size_t)(elapsed_ns / 1000000ULL);
+	size_t peak_ms = (size_t)(b->peak_call_ns / 1000000ULL);
+
+	clm_debug("lua budget [%s]: call=%zums mem_peak=%zu/%zu "
+	    "http=%zu http_peak_inflight=%zu peak_call=%zums",
+	    tool_name,
+	    elapsed_ms,
+	    b->peak_mem, plugin->mem_limit,
+	    b->http_total,
+	    b->peak_http_inflight,
+	    peak_ms);
+}
+
+/*
+ * Called by lua_http.c when an HTTP request completes (success or error).
+ * Decrements the in-flight counter. plugin may be NULL (defensive).
+ */
+void
+clm_lua_http_done(struct clm_lua_plugin *plugin)
+{
+	if (plugin == NULL)
+		return;
+	if (plugin->budget.http_inflight > 0)
+		plugin->budget.http_inflight--;
+}
+
+/*
+ * Called by lua_http.c before starting an HTTP request. Returns 0 if allowed,
+ * -1 if the budget is exceeded (caller should raise an error).
+ */
+int
+clm_lua_http_start(struct clm_lua_plugin *plugin)
+{
+	struct clm_lua_budget *b;
+
+	if (plugin == NULL)
+		return 0;
+	b = &plugin->budget;
+	if (b->http_inflight >= b->http_max_inflight)
+		return -1;
+	if (b->http_total >= b->http_max_per_call)
+		return -2;
+	b->http_inflight++;
+	b->http_total++;
+	if (b->http_inflight > b->peak_http_inflight)
+		b->peak_http_inflight = b->http_inflight;
+	return 0;
+}
+
+/*
  * clm_tool_fn callback: called by the agent framework when a Lua tool is
  * invoked. Runs the plugin's invoke function as a coroutine so that async
  * operations (HTTP) can yield.
@@ -224,6 +322,10 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	lua_State *co;
 	struct lua_tool_ctx *ctx;
 	int nres, rc;
+
+	/* Reset per-call budget counters. */
+	plugin->budget.http_total = 0;
+	plugin->budget.call_start_ns = clock_ns();
 
 	/* Create a coroutine for this invocation. */
 	co = lua_newthread(L);
@@ -263,6 +365,10 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	lua_pushinteger(co, co_ref);
 	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_co_ref");
 
+	/* Store tool name for budget attribution in async callbacks. */
+	lua_pushstring(co, clm_tool_invocation_name(inv));
+	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_tool_name");
+
 	/* Set execution deadline and install the count hook. The hook fires
 	 * every N instructions and raises if the deadline has passed. */
 	uint64_t timeout = clm_tool_invocation_timeout_ms(inv);
@@ -281,6 +387,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		lua_sethook(co, NULL, 0, 0);
 		if (!ctx->completed)
 			clm_tool_fail(inv, "plugin returned without calling ctx:complete/ctx:fail");
+		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 	} else if (rc == LUA_YIELD) {
 		/* Coroutine yielded (waiting for async op like HTTP).
@@ -296,6 +403,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		clm_debug("lua plugin error: %s", err ? err : "(unknown)");
 		if (!ctx->completed)
 			clm_tool_fail(inv, err ? err : "Lua runtime error");
+		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 	}
 }
@@ -477,6 +585,10 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 	/* Register json module. */
 	clm_lua_json_open(L);
 
+	/* Set json.decode size limit in registry. */
+	lua_pushinteger(L, (lua_Integer)plugin->budget.json_decode_max);
+	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_json_max");
+
 	/* Register http module (sets up ctx:http_get, ctx:http_post). */
 	clm_lua_http_open(L, plugin->agent);
 }
@@ -506,6 +618,9 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	memset(plugin, 0, sizeof(*plugin));
 	plugin->agent = env->agent;
 	plugin->mem_limit = CLM_LUA_MEM_LIMIT;
+	plugin->budget.http_max_inflight = env->http_max_inflight;
+	plugin->budget.http_max_per_call = env->http_max_per_call;
+	plugin->budget.json_decode_max = env->json_decode_max;
 	plugin->path = strdup(path);
 	if (plugin->path == NULL)
 		return -ENOMEM;
@@ -559,6 +674,9 @@ clm_lua_env_new(struct clm_agent *agent, struct clm_lua_env **out)
 		return -ENOMEM;
 	env->agent = agent;
 	env->exec_timeout_ms = CLM_LUA_EXEC_TIMEOUT_MS;
+	env->http_max_inflight = CLM_LUA_HTTP_MAX_INFLIGHT;
+	env->http_max_per_call = CLM_LUA_HTTP_MAX_PER_CALL;
+	env->json_decode_max = CLM_LUA_JSON_DECODE_MAX;
 	*out = env;
 	return 0;
 }
