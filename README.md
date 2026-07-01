@@ -21,6 +21,19 @@ ISC License — see [LICENSE](LICENSE)
 Requires: meson ≥ 1.1, a C17 compiler, libcurl, libuv, json-c, ncursesw,
 md4c, and optionally Lua 5.4.
 
+**OpenBSD:**
+
+```sh
+pkg_add lua%5.4 md4c libuv json-c curl
+```
+
+**Debian/Ubuntu:**
+
+```sh
+apt install meson libcurl4-openssl-dev libuv1-dev libjson-c-dev \
+    libncursesw5-dev libmd4c-dev liblua5.4-dev
+```
+
 ```sh
 meson setup build
 meson compile -C build
