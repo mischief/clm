@@ -11,6 +11,7 @@
 #include "clm/history.h"
 #include "clm/llm.h"
 #include "clm/tools.h"
+#include "clm/ratelimit.h"
 #include "clm/cleanup.h"
 #include "useful.h"
 
@@ -36,6 +37,9 @@ struct clm_agent {
 	char *compact_body;       /* POST body for an in-flight /compact, freed on done */
 	time_t last_time_stamp; /* wall clock of the last injected time context */
 	struct clm_tool_batch *active_batch;
+
+	/* Token-bucket rate limiter for tool dispatch (NULL = unlimited). */
+	struct clm_ratelimit *tool_rl;
 
 	/* The turn's in-flight HTTP request (for cancellation), else NULL. */
 	struct clm_http_request *inflight;

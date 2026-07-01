@@ -61,6 +61,11 @@ struct clm_tool_invocation {
 	 * the frontend answers against; it points back to this invocation. */
 	bool awaiting_perm;
 	struct clm_permission_req perm_req;
+
+	/* Rate-limit deferral: when the token bucket is empty, the invocation
+	 * is parked on rl_timer and dispatched when tokens refill. */
+	uv_timer_t rl_timer;
+	bool rl_deferred;
 };
 
 /* A batch of tool calls dispatched together for one assistant message. */
@@ -434,17 +439,23 @@ batch_finalize(struct clm_tool_batch *batch)
 	clm_agent_tools_done(agent, status);
 
 	batch->closing = 0;
-	for (i = 0; i < batch->n; i++)
+	for (i = 0; i < batch->n; i++) {
 		if (batch->inv[i].timer_init)
 			batch->closing++;
+		if (batch->inv[i].rl_deferred)
+			batch->closing++;
+	}
 
 	if (batch->closing == 0) {
 		batch_really_free(batch);
 		return;
 	}
-	for (i = 0; i < batch->n; i++)
+	for (i = 0; i < batch->n; i++) {
 		if (batch->inv[i].timer_init)
 			uv_close((uv_handle_t *)&batch->inv[i].timer, on_timer_closed);
+		if (batch->inv[i].rl_deferred)
+			uv_close((uv_handle_t *)&batch->inv[i].rl_timer, on_timer_closed);
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -633,6 +644,20 @@ run_invoke(struct clm_tool_invocation *inv)
 	inv->def->invoke(inv, inv->def->user);
 }
 
+/* Rate-limit timer: fires when enough tokens have refilled. */
+static void dispatch_one(struct clm_tool_invocation *inv);
+
+static void
+on_rl_timer(uv_timer_t *t)
+{
+	struct clm_tool_invocation *inv = t->data;
+	struct clm_agent *agent = inv->batch->agent;
+
+	/* Consume the token now (should succeed after the delay). */
+	clm_ratelimit_consume(agent->tool_rl, 1);
+	dispatch_one(inv);
+}
+
 static void
 dispatch_one(struct clm_tool_invocation *inv)
 {
@@ -747,8 +772,22 @@ clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls)
 
 	/* Dispatch. Synchronous completers (e.g. file tools) finalize inline
 	 * but cannot drop pending to zero thanks to the hold. */
-	for (i = 0; i < n; i++)
-		dispatch_one(&batch->inv[i]);
+	for (i = 0; i < n; i++) {
+		struct clm_tool_invocation *inv = &batch->inv[i];
+		if (clm_ratelimit_allow(agent->tool_rl, 1)) {
+			dispatch_one(inv);
+		} else {
+			/* Park until tokens refill. */
+			uint64_t delay_us = clm_ratelimit_delay(agent->tool_rl, 1);
+			uint64_t delay_ms = delay_us / 1000;
+			if (delay_ms == 0)
+				delay_ms = 1;
+			inv->rl_deferred = true;
+			uv_timer_init(agent->uv, &inv->rl_timer);
+			inv->rl_timer.data = inv;
+			uv_timer_start(&inv->rl_timer, on_rl_timer, delay_ms, 0);
+		}
+	}
 
 	/* Release the hold. */
 	if (batch->pending > 0)

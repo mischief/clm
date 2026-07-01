@@ -216,6 +216,12 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 		return -ENOMEM;
 	}
 
+	/* Tool dispatch rate limiter: 1 token/sec refill, burst of 8. */
+	if (clm_ratelimit_new(&agent->tool_rl, 1, 8) < 0) {
+		clm_agent_free(agent);
+		return -ENOMEM;
+	}
+
 	*out = agent;
 	return 0;
 }
@@ -234,6 +240,7 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->props_url);
 	free(agent->compact_body);
 	clm_tools_free_registry(agent->tools, agent->tool_count);
+	clm_ratelimit_free(agent->tool_rl);
 	free(agent);
 }
 
