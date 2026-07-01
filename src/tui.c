@@ -23,17 +23,18 @@
 
 #include <curses.h>
 #include <json-c/json.h>
-#include <lowdown.h>
 #include <uv.h>
 
 #include "clm/clm.h"
 #include "frontend.h"
+#include "md_render.h"
 
 /* Style buckets, mapped to curses attributes in seg_attr(). */
 enum ui_style {
 	ST_NORMAL,
 	ST_USER,     /* the user's prompt echo */
 	ST_ASSIST,   /* assistant answer text */
+	ST_LABEL,    /* the "clm>" answer label */
 	ST_REASON,   /* dim "thinking" channel */
 	ST_TOOL,     /* tool invocation summary line */
 	ST_TOOL_OUT, /* tool output body (collapsible) */
@@ -130,6 +131,14 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 	if (text == NULL || *text == '\0')
 		return;
 
+	/* A markdown reparse (gen bump) only makes sense at a line boundary --
+	 * a partial trailing line ("**bol", an unfinished table row) must not be
+	 * rendered until it completes. So bump gen (triggering rebuild_render)
+	 * only when this chunk closes a line; otherwise just append and mark
+	 * dirty, and the last complete render stays on screen. Turn-end pushes a
+	 * trailing newline, which flushes the final line. */
+	bool has_nl = strchr(text, '\n') != NULL;
+
 	/* Coalesce consecutive same-style pushes into one span. This keeps the
 	 * span count small under streaming (many tiny chunks) and, crucially,
 	 * rejoins a multibyte char that was split across two stream chunks. */
@@ -142,7 +151,8 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 			return;
 		memcpy(p + oldlen, text, addlen + 1);
 		u->segs[u->nsegs - 1].text = p;
-		u->gen++;
+		if (has_nl)
+			u->gen++;
 		u->dirty = true;
 		return;
 	}
@@ -161,6 +171,8 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 	u->segs[u->nsegs].style = style;
 	u->segs[u->nsegs].text = dup;
 	u->nsegs++;
+	/* A new span of a different style closes the previous line's context;
+	 * bump gen so the switch is rendered even without an embedded newline. */
 	u->gen++;
 	u->dirty = true;
 }
@@ -181,7 +193,7 @@ cb_assistant_text(const char *text, void *user)
 {
 	struct ui *u = user;
 	if (!u->started_assist) {
-		ui_push(u, ST_META, "\nclm> ");
+		ui_push(u, ST_LABEL, "\nclm>\n");
 		u->started_assist = true;
 	}
 	ui_push(u, ST_ASSIST, text);
@@ -431,11 +443,13 @@ seg_attr(enum ui_style style)
 {
 	switch (style) {
 	case ST_USER:
-		return A_BOLD | COLOR_PAIR(1);
+		return COLOR_PAIR(1);
 	case ST_ASSIST:
 		return A_NORMAL;
+	case ST_LABEL:
+		return COLOR_PAIR(8);
 	case ST_REASON:
-		return A_DIM;
+		return COLOR_PAIR(6);
 	case ST_TOOL:
 		return COLOR_PAIR(2);
 	case ST_TOOL_OUT:
@@ -510,6 +524,19 @@ draw_status(struct ui *u)
 	}
 
 	wprintw(u->stat, "  %c %s ", sp, info);
+
+	/* Right-aligned key hints, shown only when they fit without colliding
+	 * with the live status on the left. */
+	{
+		static const char hints[] =
+		    "^R reasoning  ^O output  ^L redraw  PgUp/PgDn scroll ";
+		int w = getmaxx(u->stat);
+		int used = getcurx(u->stat);
+		int hw = (int)(sizeof(hints) - 1);
+
+		if (w - hw > used + 2)
+			mvwprintw(u->stat, 0, w - hw, "%s", hints);
+	}
 
 	wattroff(u->stat, COLOR_PAIR(5));
 	wnoutrefresh(u->stat);
@@ -653,144 +680,78 @@ rseg_push(struct ui *u, int attr, const char *text, size_t len)
 	u->nrsegs++;
 }
 
-/* Fold an SGR parameter list (the digits of an ESC[...m) into a curses attr. */
-static int
-apply_sgr(int attr, const char *s, size_t n)
+/*
+ * Markdown rendering.
+ *
+ * The md_render module (src/md_render.c) parses markdown into abstract styled
+ * runs; here we map those abstract styles to curses attributes.
+ *
+ * Colour model: element styles are applied uniformly across streams -- code is
+ * green (COLOR_PAIR 7) whether inline or block, in the answer or the think
+ * channel. A stream contributes a "floor" via base_attr: the assistant stream
+ * is A_NORMAL, the reasoning channel is COLOR_PAIR(6) (Solarized base01, a
+ * muted secondary tone). An element with its own colour (code) overrides the
+ * floor's colour pair. On a Solarized 16-colour palette A_BOLD promotes an
+ * accent colour to its grey bright-slot twin, so the reasoning stream sets
+ * no_bold to keep emphasis from greying/brightening its muted text.
+ */
+struct md_sink {
+	struct ui *u;
+	unsigned base_attr;
+	bool no_bold; /* drop A_BOLD (reasoning stream: bold would promote) */
+};
+
+/* Non-colour emphasis attributes for a run's abstract style. */
+static unsigned
+md_style_to_attr(unsigned style)
 {
-	unsigned a = (unsigned)attr;
-	size_t i = 0;
+	unsigned a = 0;
 
-	if (n == 0)
-		return (int)A_NORMAL; /* bare ESC[m == reset */
-	while (i < n) {
-		int v = 0;
-		bool any = false;
+	if (style & MD_ST_BOLD)
+		a |= (unsigned)A_BOLD;
+	if (style & MD_ST_ITALIC)
+		a |= (unsigned)A_ITALIC;
+	if (style & MD_ST_UNDERLINE)
+		a |= (unsigned)A_UNDERLINE;
+	if (style & MD_ST_STRIKE)
+		a |= (unsigned)A_DIM;
+	return a;
+}
 
-		while (i < n && s[i] >= '0' && s[i] <= '9') {
-			v = v * 10 + (s[i] - '0');
-			i++;
-			any = true;
-		}
-		if (any) {
-			switch (v) {
-			case 0:
-				a = (unsigned)A_NORMAL;
-				break;
-			case 1:
-				a |= (unsigned)A_BOLD;
-				break;
-			case 2:
-				a |= (unsigned)A_DIM;
-				break;
-			case 3:
-				a |= (unsigned)A_ITALIC;
-				break;
-			case 4:
-				a |= (unsigned)A_UNDERLINE;
-				break;
-			case 7:
-				a |= (unsigned)A_REVERSE;
-				break;
-			case 22:
-				a &= ~(unsigned)(A_BOLD | A_DIM);
-				break;
-			case 23:
-				a &= ~(unsigned)A_ITALIC;
-				break;
-			case 24:
-				a &= ~(unsigned)A_UNDERLINE;
-				break;
-			case 27:
-				a &= ~(unsigned)A_REVERSE;
-				break;
-			default:
-				break; /* colours ignored (rendered NOCOLOUR) */
-			}
-		}
-		if (i < n && s[i] == ';')
-			i++;
-		else if (!any)
-			i++; /* skip a stray non-digit */
-	}
-	return (int)a;
+static void
+md_emit(const struct md_run *run, void *userdata)
+{
+	struct md_sink *s = userdata;
+	unsigned attr = s->base_attr | md_style_to_attr(run->style);
+
+	/* Code carries its own colour, overriding the stream's default pair. */
+	if (run->style & MD_ST_CODE)
+		attr = (attr & ~(unsigned)A_COLOR) | (unsigned)COLOR_PAIR(7);
+
+	if (s->no_bold)
+		attr &= ~(unsigned)A_BOLD;
+
+	rseg_push(s->u, (int)attr, run->text, run->len);
 }
 
 /*
- * Split an ANSI (SGR-only) string into rendered runs, translating escapes to
- * curses attributes. Unknown CSI/OSC escapes are skipped, not printed.
+ * Render one markdown span into rendered runs, OR-ing base_attr into every run
+ * (e.g. the reasoning colour for the think channel). no_bold drops emphasis
+ * bold (used by the reasoning stream, where bold would promote its muted
+ * colour to a grey bright slot). Width feeds table layout; soft-wrapping of the
+ * emitted runs is still done later by wrap_walk.
  */
 static void
-ansi_to_rsegs(struct ui *u, const char *s, size_t n, int base_attr)
+render_markdown(struct ui *u, const char *md, int w, int base_attr, bool no_bold)
 {
-	int attr = A_NORMAL;
-	size_t i = 0, start = 0;
+	struct md_sink sink = {
+		.u = u,
+		.base_attr = (unsigned)base_attr,
+		.no_bold = no_bold,
+	};
+	struct md_opts opts = {.width = w, .tables = MD_TABLE_AUTO};
 
-	while (i < n) {
-		if (s[i] != 0x1b) {
-			i++;
-			continue;
-		}
-		if (i > start)
-			rseg_push(u, attr | base_attr, s + start, i - start);
-		i++;
-		if (i < n && s[i] == '[') { /* CSI ... final */
-			size_t p;
-			i++;
-			p = i;
-			while (i < n && !(s[i] >= 0x40 && s[i] <= 0x7e))
-				i++;
-			if (i < n && s[i] == 'm')
-				attr = apply_sgr(attr, s + p, i - p);
-			if (i < n)
-				i++;               /* consume final byte */
-		} else if (i < n && s[i] == ']') { /* OSC ... BEL/ST */
-			i++;
-			while (i < n && s[i] != 0x07 &&
-			       !(s[i] == 0x1b && i + 1 < n && s[i + 1] == '\\'))
-				i++;
-			if (i < n && s[i] == 0x1b)
-				i++;
-			if (i < n)
-				i++;
-		} else if (i < n) {
-			i++; /* skip a lone escape */
-		}
-		start = i;
-	}
-	if (i > start)
-		rseg_push(u, attr | base_attr, s + start, i - start);
-}
-
-/* Render one markdown span to ANSI (attributes only) and split it into rendered
- * runs, OR-ing base_attr into every run (e.g. A_DIM for the think channel).
- * Falls back to raw text on any lowdown failure. */
-static void
-render_markdown(struct ui *u, const char *md, int w, int base_attr)
-{
-	struct lowdown_opts o;
-	char *out = NULL;
-	size_t outlen = 0;
-
-	memset(&o, 0, sizeof(o));
-	o.type = LOWDOWN_TERM;
-	o.term.cols = (size_t)w;
-	o.term.width = (size_t)w;
-	o.feat = LOWDOWN_TABLES | LOWDOWN_FENCED | LOWDOWN_AUTOLINK |
-	         LOWDOWN_STRIKE | LOWDOWN_SUPER | LOWDOWN_TASKLIST |
-	         LOWDOWN_DEFLIST;
-	o.oflags = LOWDOWN_TERM_NOCOLOUR; /* keep bold/italic/underline only */
-
-	if (!lowdown_buf(&o, md, strlen(md), &out, &outlen, NULL)) {
-		free(out);
-		rseg_push(u, seg_attr(ST_ASSIST) | base_attr, md, strlen(md));
-		return;
-	}
-	/* Trim lowdown's trailing blank lines so turns don't gap apart. */
-	while (outlen > 0 &&
-	       (out[outlen - 1] == '\n' || out[outlen - 1] == ' '))
-		outlen--;
-	ansi_to_rsegs(u, out, outlen, base_attr);
-	free(out);
+	md_render(md, strlen(md), &opts, md_emit, &sink);
 }
 
 /* Number of newline-delimited lines in text (a trailing partial line counts).
@@ -850,9 +811,9 @@ rebuild_render(struct ui *u, int w)
 		if (g->style == ST_REASON && !u->show_reasoning)
 			continue; /* think channel hidden */
 		if (g->style == ST_ASSIST && w >= 4)
-			render_markdown(u, g->text, w, A_NORMAL);
+			render_markdown(u, g->text, w, A_NORMAL, false);
 		else if (g->style == ST_REASON && w >= 4)
-			render_markdown(u, g->text, w, A_DIM);
+			render_markdown(u, g->text, w, COLOR_PAIR(6), true);
 		else if (g->style == ST_TOOL_OUT)
 			push_tool_output(u, g->text);
 		else
@@ -1432,11 +1393,25 @@ init_colors(void)
 		return;
 	start_color();
 	use_default_colors();
-	init_pair(1, COLOR_GREEN, -1);         /* user */
-	init_pair(2, COLOR_CYAN, -1);          /* tool */
+	/*
+	 * Colours are chosen to read well on a stock Solarized 16-colour palette
+	 * where A_BOLD promotes 0-7 accents to the grey 8-15 base tones. So we
+	 * distinguish by colour, not bold, and reserve the grey base tones for
+	 * genuinely secondary text (the reasoning channel). TODO: themeable.
+	 */
+	init_pair(1, COLOR_BLUE, -1);          /* user prompt (blue) */
+	init_pair(2, COLOR_MAGENTA, -1);       /* tool call summary (magenta) */
 	init_pair(3, COLOR_RED, -1);           /* error */
-	init_pair(4, COLOR_YELLOW, -1);        /* timeout */
+	init_pair(4, COLOR_YELLOW, -1);        /* timeout / warning */
 	init_pair(5, COLOR_BLACK, COLOR_BLUE); /* status bar */
+	init_pair(6, 10, -1);                  /* reasoning: Solarized base01 */
+	init_pair(7, COLOR_GREEN, -1);         /* code (inline and block) */
+	init_pair(8, COLOR_CYAN, -1);          /* assistant "clm>" label */
+	/*
+	 * Reserved for attention, not decoration: red = error; yellow = warning /
+	 * timeout; and (future) orange/brred for tool-call permission prompts.
+	 * TODO: expose the whole role->colour map via the theme layer.
+	 */
 }
 
 /* Periodic (and startup) connectivity probe. */
@@ -1466,7 +1441,10 @@ tui_run(const struct clm_cfg *cfg)
 	u->loop = loop;
 	u->model = cfg->model;
 	u->state = CLM_STATE_IDLE;
-	u->show_reasoning = true;
+	/* Default to the clean view: reasoning hidden and tool output collapsed.
+	 * Opt in with ^R / ^O (see the status-bar hints). */
+	u->show_reasoning = false;
+	u->expand_output = false;
 
 	r = clm_agent_new(cfg, loop, &tui_callbacks, u, &u->agent);
 	if (r < 0) {
