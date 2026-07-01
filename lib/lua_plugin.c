@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #include <lua5.4/lua.h>
@@ -755,6 +756,15 @@ clm_lua_env_new(struct clm_agent *agent, struct clm_lua_env **out)
 	return 0;
 }
 
+/* qsort comparator over strdup'd plugin file names. */
+static int
+name_cmp(const void *a, const void *b)
+{
+	const char *const *pa = a;
+	const char *const *pb = b;
+	return strcmp(*pa, *pb);
+}
+
 CLM_API int
 clm_lua_load_plugins(struct clm_lua_env *env, const char *dir)
 {
@@ -774,21 +784,60 @@ clm_lua_load_plugins(struct clm_lua_env *env, const char *dir)
 		return -errno;
 	}
 
-	size_t dirlen = strlen(dir);
+	/*
+	 * Collect the *.lua entries, then sort by name so load order is
+	 * deterministic (readdir order is filesystem-defined). This matters when
+	 * two plugins register the same tool name — the outcome shouldn't depend
+	 * on directory layout.
+	 */
+	char **names = NULL;
+	size_t nnames = 0, ncap = 0;
 	while ((ent = readdir(d)) != NULL) {
 		size_t nlen = strlen(ent->d_name);
-		char *path;
 
 		if (nlen < 5)
 			continue;
 		if (strcmp(ent->d_name + nlen - 4, ".lua") != 0)
 			continue;
 
+		if (nnames >= ncap) {
+			size_t ncap2 = ncap ? ncap * 2 : 8;
+			char **np = realloc(names, ncap2 * sizeof(*np));
+			if (np == NULL)
+				continue;
+			names = np;
+			ncap = ncap2;
+		}
+		names[nnames] = strdup(ent->d_name);
+		if (names[nnames] != NULL)
+			nnames++;
+	}
+	closedir(d);
+
+	qsort(names, nnames, sizeof(*names), name_cmp);
+
+	size_t dirlen = strlen(dir);
+	for (size_t i = 0; i < nnames; i++) {
+		size_t nlen = strlen(names[i]);
+		char *path;
+		struct stat st;
+
 		/* dir + '/' + name + '\0' */
 		path = malloc(dirlen + 1 + nlen + 1);
-		if (path == NULL)
+		if (path == NULL) {
+			free(names[i]);
 			continue;
-		(void)snprintf(path, dirlen + 1 + nlen + 1, "%s/%s", dir, ent->d_name);
+		}
+		(void)snprintf(path, dirlen + 1 + nlen + 1, "%s/%s", dir, names[i]);
+
+		/* Only load regular files (stat follows symlinks, so a symlink to a
+		 * regular file is fine; a directory named foo.lua is skipped). */
+		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+			clm_debug("lua: skipping %s (not a regular file)", path);
+			free(path);
+			free(names[i]);
+			continue;
+		}
 
 		int r = load_one_plugin(env, path);
 		if (r < 0)
@@ -796,8 +845,9 @@ clm_lua_load_plugins(struct clm_lua_env *env, const char *dir)
 		else
 			loaded++;
 		free(path);
+		free(names[i]);
 	}
-	closedir(d);
+	free(names);
 
 	clm_debug("lua: loaded %d plugin(s) from %s", loaded, dir);
 	return 0;

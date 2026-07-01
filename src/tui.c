@@ -113,8 +113,12 @@ struct ui {
 	bool busy;           /* a turn is in flight */
 	bool started_assist; /* assistant text seen this turn */
 
-	/* Non-NULL while a tool-permission prompt is awaiting a y/n/a/d key. */
-	const struct clm_permission_req *perm_pending;
+	/* Permission prompt queue: requests arrive in bursts (batched tool
+	 * calls) and we present them one at a time. */
+	const struct clm_permission_req **perm_queue;
+	size_t perm_count;
+	size_t perm_cap;
+	bool perm_showing; /* true when a prompt is displayed awaiting input */
 
 	/* Tool-batch tally, for the aggregate summary line. */
 	int n_cmd, n_read, n_write, n_other;
@@ -443,7 +447,8 @@ cb_turn_done(int status, void *user)
 	}
 	ui_push(u, ST_NORMAL, "\n");
 	u->busy = false;
-	u->perm_pending = NULL; /* no prompt outlives its turn */
+	u->perm_count = 0;    /* no prompt outlives its turn */
+	u->perm_showing = false;
 	u->batch[0] = '\0';
 	u->dirty = true;
 	drain_queue(u); /* start the next queued prompt, if any */
@@ -500,20 +505,52 @@ push_perm_args(struct ui *u, const char *args)
  * then park in permission-input mode. handle_keys routes the next y/n/a/d key
  * (or Escape) to answer via clm_tool_permission_respond.
  */
+/*
+ * Show the next permission prompt from the queue (if any).
+ */
 static void
-cb_permission(const struct clm_permission_req *req, void *user)
+show_next_perm(struct ui *u)
 {
-	struct ui *u = user;
-	const char *name = clm_permission_req_name(req);
-	const char *args = clm_permission_req_args(req);
+	const struct clm_permission_req *req;
+	const char *name, *args;
 
-	u->perm_pending = req;
+	if (u->perm_count == 0) {
+		u->perm_showing = false;
+		return;
+	}
+	req = u->perm_queue[0];
+	name = clm_permission_req_name(req);
+	args = clm_permission_req_args(req);
+
+	u->perm_showing = true;
 	ui_push(u, ST_PERM, "\nallow tool ");
 	ui_push(u, ST_PERM, name ? name : "?");
 	push_perm_args(u, args);
 	ui_push(u, ST_PERM,
 	    "\n(y) once  (n) deny  (a) always  (d) never  [esc = deny+cancel]\n");
 	u->dirty = true;
+}
+
+static void
+cb_permission(const struct clm_permission_req *req, void *user)
+{
+	struct ui *u = user;
+
+	/* Enqueue the request. */
+	if (u->perm_count >= u->perm_cap) {
+		size_t ncap = u->perm_cap ? u->perm_cap * 2 : 16;
+		const struct clm_permission_req **nq = realloc(u->perm_queue,
+		    ncap * sizeof(*nq));
+		if (nq == NULL)
+			return; /* drop on OOM; tool will time out */
+		u->perm_queue = nq;
+		u->perm_cap = ncap;
+	}
+	u->perm_queue[u->perm_count++] = req;
+
+	/* If no prompt is currently showing, display this one. */
+	if (!u->perm_showing)
+		show_next_perm(u);
 }
 
 static const struct clm_callbacks tui_callbacks = {
@@ -1424,9 +1461,13 @@ input_yank(struct ui *u)
 static bool
 answer_permission(struct ui *u, int ch)
 {
-	const struct clm_permission_req *req = u->perm_pending;
+	const struct clm_permission_req *req;
 	enum clm_permission_decision d;
 	const char *label;
+
+	if (u->perm_count == 0)
+		return false;
+	req = u->perm_queue[0];
 
 	switch (ch) {
 	case 'y': case 'Y': d = CLM_PERM_ALLOW_ONCE;   label = "allowed"; break;
@@ -1438,15 +1479,49 @@ answer_permission(struct ui *u, int ch)
 		return false; /* not an answer key */
 	}
 
-	u->perm_pending = NULL;
+	/* Pop the front of the queue. */
+	u->perm_count--;
+	for (size_t i = 0; i < u->perm_count; i++)
+		u->perm_queue[i] = u->perm_queue[i + 1];
+	u->perm_showing = false;
+
 	ui_push(u, ST_PERM, "-> ");
 	ui_push(u, ST_PERM, label);
 	ui_push(u, ST_PERM, "\n");
 	clm_tool_permission_respond(u->agent, req, d);
 
-	/* Escape also cancels the rest of the turn. */
-	if (ch == 27)
+	/* Escape also cancels the rest of the turn (drain remaining). */
+	if (ch == 27) {
+		for (size_t i = 0; i < u->perm_count; i++)
+			clm_tool_permission_respond(u->agent, u->perm_queue[i],
+			    CLM_PERM_DENY_ONCE);
+		u->perm_count = 0;
 		clm_agent_cancel(u->agent);
+	}
+
+	/* For "always" decisions, auto-resolve remaining queued requests for
+	 * the same tool without prompting. */
+	if (d == CLM_PERM_ALLOW_ALWAYS || d == CLM_PERM_DENY_ALWAYS) {
+		const char *answered_name = clm_permission_req_name(req);
+		size_t i = 0;
+		while (i < u->perm_count) {
+			const char *qname = clm_permission_req_name(u->perm_queue[i]);
+			if (answered_name != NULL && qname != NULL &&
+			    strcmp(answered_name, qname) == 0) {
+				clm_tool_permission_respond(u->agent,
+				    u->perm_queue[i], d);
+				u->perm_count--;
+				for (size_t j = i; j < u->perm_count; j++)
+					u->perm_queue[j] = u->perm_queue[j + 1];
+			} else {
+				i++;
+			}
+		}
+	}
+
+	/* Show next prompt if any remain. */
+	if (u->perm_count > 0)
+		show_next_perm(u);
 
 	u->dirty = true;
 	return true;
@@ -1463,7 +1538,7 @@ handle_keys(struct ui *u)
 		 * Permission-input mode: while a tool authorization is pending,
 		 * the next key answers it and nothing else is processed.
 		 */
-		if (u->perm_pending != NULL && r != KEY_CODE_YES) {
+		if (u->perm_showing && r != KEY_CODE_YES) {
 			if (answer_permission(u, (int)wch))
 				continue;
 			/* Not a recognised answer key: ignore it, stay pending. */
@@ -1796,6 +1871,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
 	for (size_t i = 0; i < u->nsegs; i++)
 		free(u->segs[i].text);
 	free(u->segs);
+	free(u->perm_queue);
 	for (size_t i = 0; i < u->nrsegs; i++)
 		free(u->rsegs[i].text);
 	free(u->rsegs);
