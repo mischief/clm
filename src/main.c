@@ -18,7 +18,7 @@ usage(const char *prog)
 {
 	fprintf(stderr,
 	    "usage: %s [-o|--oneshot PROMPT] [-H|--headless] [-u|--url BASE] "
-	    "[-m|--model NAME] [-S|--no-stream] [-h|--help]\n",
+	    "[-m|--model NAME] [-p|--plugins DIR] [-S|--no-stream] [-h|--help]\n",
 	    prog);
 	fprintf(stderr,
 	    "  -o, --oneshot PROMPT  run one prompt headless and exit\n"
@@ -27,6 +27,8 @@ usage(const char *prog)
 	    "(default http://127.0.0.1:8081);\n"
 	    "                        \"/v1/chat/completions\" is appended\n"
 	    "  -m, --model NAME      model name to request\n"
+	    "  -p, --plugins DIR     plugin directory "
+	    "(default $XDG_CONFIG_HOME/clm/plugins)\n"
 	    "  -S, --no-stream       disable streamed (SSE) responses\n"
 	    "  -h, --help            show this help\n"
 	    "\n"
@@ -236,6 +238,7 @@ main(int argc, char *argv[])
 {
 	const char *api_base = "http://127.0.0.1:8081";
 	const char *model = "local-model";
+	const char *plugin_dir = NULL;
 	char *oneshot = NULL;
 	int stream = 1;
 	int headless = 0;
@@ -250,17 +253,19 @@ main(int argc, char *argv[])
 		{"oneshot", required_argument, NULL, 'o'},
 		{"url", required_argument, NULL, 'u'},
 		{"model", required_argument, NULL, 'm'},
+		{"plugins", required_argument, NULL, 'p'},
 		{"headless", no_argument, NULL, 'H'},
 		{"no-stream", no_argument, NULL, 'S'},
 		{"help", no_argument, NULL, 'h'},
 		{NULL, 0, NULL, 0},
 	};
 
-	while ((opt = getopt_long(argc, argv, "o:u:m:HSh", opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "o:u:m:p:HSh", opts, NULL)) != -1) {
 		switch (opt) {
 		case 'o': oneshot = optarg; break;
 		case 'u': api_base = optarg; break;
 		case 'm': model = optarg; break;
+		case 'p': plugin_dir = optarg; break;
 		case 'H': headless = 1; break;
 		case 'S': stream = 0; break;
 		case 'h': usage(argv[0]); return 0;
@@ -290,7 +295,7 @@ main(int argc, char *argv[])
 	 */
 	if (oneshot == NULL && !headless && isatty(STDIN_FILENO) &&
 	    isatty(STDOUT_FILENO))
-		return tui_run(&cfg);
+		return tui_run(&cfg, plugin_dir);
 
 	/* Heap-allocated so the 1 KB input buffer stays off main's stack frame. */
 	state = calloc(1, sizeof(*state));
@@ -312,8 +317,22 @@ main(int argc, char *argv[])
 	}
 
 #ifdef CLM_LUA
-	if (clm_lua_env_new(state->agent, &state->lua_env) == 0)
-		clm_lua_load_plugins(state->lua_env, "plugins");
+	if (clm_lua_env_new(state->agent, &state->lua_env) == 0) {
+		if (plugin_dir != NULL) {
+			clm_lua_load_plugins(state->lua_env, plugin_dir);
+		} else {
+			const char *xdg = getenv("XDG_CONFIG_HOME");
+			const char *home = getenv("HOME");
+			char pbuf[512];
+			if (xdg != NULL && xdg[0] != '\0') {
+				(void)snprintf(pbuf, sizeof(pbuf), "%s/clm/plugins", xdg);
+				clm_lua_load_plugins(state->lua_env, pbuf);
+			} else if (home != NULL && home[0] != '\0') {
+				(void)snprintf(pbuf, sizeof(pbuf), "%s/.config/clm/plugins", home);
+				clm_lua_load_plugins(state->lua_env, pbuf);
+			}
+		}
+	}
 #endif
 
 	if (oneshot != NULL) {

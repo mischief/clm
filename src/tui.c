@@ -1583,7 +1583,7 @@ on_health(uv_timer_t *t)
 }
 
 int
-tui_run(const struct clm_cfg *cfg)
+tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -1614,8 +1614,22 @@ tui_run(const struct clm_cfg *cfg)
 	}
 
 #ifdef CLM_LUA
-	if (clm_lua_env_new(u->agent, &u->lua_env) == 0)
-		clm_lua_load_plugins(u->lua_env, "plugins");
+	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
+		if (plugin_dir != NULL) {
+			clm_lua_load_plugins(u->lua_env, plugin_dir);
+		} else {
+			const char *xdg = getenv("XDG_CONFIG_HOME");
+			const char *home = getenv("HOME");
+			char pbuf[512];
+			if (xdg != NULL && xdg[0] != '\0') {
+				(void)snprintf(pbuf, sizeof(pbuf), "%s/clm/plugins", xdg);
+				clm_lua_load_plugins(u->lua_env, pbuf);
+			} else if (home != NULL && home[0] != '\0') {
+				(void)snprintf(pbuf, sizeof(pbuf), "%s/.config/clm/plugins", home);
+				clm_lua_load_plugins(u->lua_env, pbuf);
+			}
+		}
+	}
 #endif
 
 	initscr();
