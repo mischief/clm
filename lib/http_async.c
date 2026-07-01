@@ -51,10 +51,11 @@ static void http_timer_expired(uv_timer_t *handle);
 static void
 http_poll_callback(uv_poll_t *handle, int status, int events)
 {
-	struct clm_http_request *req = handle->data;
+	struct clm_http_socket *ctx = handle->data;
+	struct clm_http_request *req = ctx->req;
 	int curl_action = 0;
 
-	clm_debug("status=%d, events=%d", status, events);
+	clm_debug("status=%d, events=%d, fd=%d", status, events, ctx->sockfd);
 
 	if (status < 0) {
 		req->state = CLM_HTTP_ERROR;
@@ -71,7 +72,7 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 
 	clm_debug("curl_action=%d", curl_action);
 
-	curl_multi_socket_action(req->multi_handle, req->sockfd, curl_action, &req->events_pending);
+	curl_multi_socket_action(req->multi_handle, ctx->sockfd, curl_action, &req->events_pending);
 	clm_debug("curl_multi_socket_action completed");
 
 	/* Check for completed transfers */
@@ -101,40 +102,51 @@ done:
 }
 
 static void
+on_socket_closed(uv_handle_t *handle)
+{
+	struct clm_http_socket *ctx = handle->data;
+	free(ctx);
+}
+
+static void
 http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void *socketp)
 {
 	struct clm_http_request *req = userp;
+	struct clm_http_socket *ctx = socketp;
 
 	clm_debug("action=%d, s=%d", action, s);
 
-	if (action == CURL_POLL_IN || action == CURL_POLL_OUT || action == CURL_POLL_INOUT) {
-		if (req->sockfd == CURL_SOCKET_BAD) {
-			req->sockfd = s;
-			uv_poll_init_socket(req->uv, &req->poll_socket, s);
-			req->poll_socket.data = req;
-			req->poll_initialized = 1;
-			clm_debug("uv_poll_init_socket success, sockfd=%d", s);
+	if (action == CURL_POLL_REMOVE) {
+		if (ctx != NULL) {
+			uv_poll_stop(&ctx->poll);
+			uv_close((uv_handle_t *)&ctx->poll, on_socket_closed);
+			curl_multi_assign(req->multi_handle, s, NULL);
 		}
-
-		int events = 0;
-		if (action & CURL_POLL_IN)
-			events |= UV_READABLE;
-		if (action & CURL_POLL_OUT)
-			events |= UV_WRITABLE;
-
-		clm_debug("events=%d", events);
-
-		if (req->poll_initialized && !uv_is_closing((uv_handle_t *)&req->poll_socket)) {
-			uv_poll_start(&req->poll_socket, events, http_poll_callback);
-			clm_debug("uv_poll_start completed");
-		}
-	} else if (action == CURL_POLL_REMOVE) {
-		if (req->sockfd != CURL_SOCKET_BAD && !uv_is_closing((uv_handle_t *)&req->poll_socket)) {
-			uv_poll_stop(&req->poll_socket);
-			req->sockfd = CURL_SOCKET_BAD;
-			clm_debug("uv_poll_stop completed");
-		}
+		return;
 	}
+
+	if (ctx == NULL) {
+		ctx = calloc(1, sizeof(*ctx));
+		if (ctx == NULL)
+			return;
+		ctx->sockfd = s;
+		ctx->req = req;
+		ctx->poll.data = ctx;
+		uv_poll_init_socket(req->uv, &ctx->poll, s);
+		curl_multi_assign(req->multi_handle, s, ctx);
+		clm_debug("uv_poll_init_socket success, sockfd=%d", s);
+	}
+
+	int events = 0;
+	if (action & CURL_POLL_IN)
+		events |= UV_READABLE;
+	if (action & CURL_POLL_OUT)
+		events |= UV_WRITABLE;
+
+	clm_debug("events=%d", events);
+
+	if (!uv_is_closing((uv_handle_t *)&ctx->poll))
+		uv_poll_start(&ctx->poll, events, http_poll_callback);
 }
 
 int
@@ -170,7 +182,6 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	req->data_cb = data_cb;
 	req->user = user;
 	req->state = CLM_HTTP_PENDING;
-	req->sockfd = CURL_SOCKET_BAD;
 	req->response_buf.data = NULL;
 	req->response_buf.len = 0;
 
@@ -279,27 +290,26 @@ http_handle_closed(uv_handle_t *handle)
 static void
 http_request_teardown(struct clm_http_request *req)
 {
-	clm_debug("closing=%d, handles_to_close=%d", req->closing, req->handles_to_close);
+	clm_debug("closing=%d", req->closing);
 
 	if (req->closing)
 		return;
 	req->closing = 1;
+
+	/* Remove the easy handle from multi; this triggers CURL_POLL_REMOVE
+	 * callbacks for any open sockets, which close their poll handles. */
+	if (req->easy_handle != NULL && req->multi_handle != NULL)
+		curl_multi_remove_handle(req->multi_handle, req->easy_handle);
+
 	req->handles_to_close = 0;
-	if (req->poll_initialized)
-		req->handles_to_close++;
 	if (req->timer_initialized)
 		req->handles_to_close++;
-	clm_debug("handles_to_close=%d", req->handles_to_close);
 
 	if (req->handles_to_close == 0) {
-		clm_debug("no handles to close, calling clm_http_request_free");
+		clm_debug("no handles to close, completing");
 		http_request_complete(req);
 		clm_http_request_free(req);
 		return;
-	}
-	if (req->poll_initialized) {
-		clm_debug("uv_close poll_socket");
-		uv_close((uv_handle_t *)&req->poll_socket, http_handle_closed);
 	}
 	if (req->timer_initialized) {
 		clm_debug("uv_close timer_handle");
@@ -349,11 +359,10 @@ clm_http_request_free(struct clm_http_request *req)
 	if (req == NULL)
 		return;
 
-	if (req->easy_handle != NULL && req->multi_handle != NULL) {
-		curl_multi_remove_handle(req->multi_handle, req->easy_handle);
-	}
-
 	if (req->easy_handle != NULL) {
+		/* Remove from multi if not already done in teardown. */
+		if (req->multi_handle != NULL)
+			curl_multi_remove_handle(req->multi_handle, req->easy_handle);
 		curl_easy_cleanup(req->easy_handle);
 		req->easy_handle = NULL;
 	}

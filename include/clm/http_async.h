@@ -36,6 +36,13 @@ struct http_buf {
 	size_t len;
 };
 
+/* Per-socket poll context, allocated by the socket callback. */
+struct clm_http_socket {
+	uv_poll_t poll;
+	curl_socket_t sockfd;
+	struct clm_http_request *req;
+};
+
 /* Async HTTP request context */
 struct clm_http_request {
 	uv_loop_t *uv;
@@ -48,11 +55,7 @@ struct clm_http_request {
 	/* Response buffer */
 	struct http_buf response_buf;
 	
-	/* UV socket poll handle */
-	uv_poll_t poll_socket;
-	curl_socket_t sockfd;
 	int events_pending;
-	int poll_initialized;
 	
 	/* UV timer handle */
 	uv_timer_t timer_handle;
