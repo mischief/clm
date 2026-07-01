@@ -30,6 +30,7 @@ int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
 struct lua_http_req {
 	lua_State *co;              /* the yielded coroutine */
 	lua_State *main_L;          /* plugin's main state */
+	int co_ref;                 /* registry ref for the coroutine */
 	struct clm_agent *agent;
 	struct clm_http_request *req; /* the underlying async request */
 };
@@ -73,17 +74,8 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 	}
 
 	/* If the coroutine finished (rc == LUA_OK), unref it. */
-	if (rc == LUA_OK) {
-		lua_pushlightuserdata(L, co);
-		lua_gettable(L, LUA_REGISTRYINDEX);
-		int co_ref = (int)lua_tointeger(L, -1);
-		lua_pop(L, 1);
-		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
-		/* Remove the mapping. */
-		lua_pushlightuserdata(L, co);
-		lua_pushnil(L);
-		lua_settable(L, LUA_REGISTRYINDEX);
-	}
+	if (rc == LUA_OK)
+		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 
 	free(lr);
 }
@@ -111,16 +103,8 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 		    err ? err : "(unknown)");
 	}
 
-	if (rc == LUA_OK) {
-		lua_pushlightuserdata(L, co);
-		lua_gettable(L, LUA_REGISTRYINDEX);
-		int co_ref = (int)lua_tointeger(L, -1);
-		lua_pop(L, 1);
-		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
-		lua_pushlightuserdata(L, co);
-		lua_pushnil(L);
-		lua_settable(L, LUA_REGISTRYINDEX);
-	}
+	if (rc == LUA_OK)
+		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 
 	(void)error_code;
 	free(lr);
@@ -166,9 +150,13 @@ lua_ctx_http_get(lua_State *L)
 	lr->co = L;
 	lr->agent = agent;
 
-	/* Get the main state from registry. */
+	/* Get the main state and coroutine ref from registry. */
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_main_L");
 	lr->main_L = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_co_ref");
+	lr->co_ref = (int)lua_tointeger(L, -1);
 	lua_pop(L, 1);
 
 	/* clm_http_async_post with NULL body = GET. We pass empty api_key for
@@ -221,6 +209,10 @@ lua_ctx_http_post(lua_State *L)
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_main_L");
 	lr->main_L = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_co_ref");
+	lr->co_ref = (int)lua_tointeger(L, -1);
 	lua_pop(L, 1);
 
 	r = clm_http_async_post(loop, url, "", body,

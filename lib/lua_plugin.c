@@ -10,6 +10,8 @@
 #include <lua5.4/lauxlib.h>
 #include <lua5.4/lualib.h>
 
+#include <json-c/json.h>
+
 #include "clm/clm.h"
 #include "clm/lua_plugin.h"
 #include "clm/log.h"
@@ -18,9 +20,13 @@
 
 /* Forward declarations for modules registered into each plugin state. */
 int clm_lua_json_open(lua_State *L);
+void clm_lua_push_json_value(lua_State *L, struct json_object *obj);
 int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
 
 #define CLM_LUA_MEM_LIMIT (8 * 1024 * 1024) /* 8 MiB per plugin */
+
+/* Forward declaration. */
+struct lua_tool_user;
 
 /* Per-plugin state. */
 struct clm_lua_plugin {
@@ -29,6 +35,9 @@ struct clm_lua_plugin {
 	size_t mem_used;
 	size_t mem_limit;
 	char *path;
+	struct lua_tool_user **tool_users; /* tracked for teardown */
+	size_t tool_user_count;
+	size_t tool_user_cap;
 };
 
 /* Top-level environment holding all plugins. */
@@ -70,6 +79,8 @@ lua_capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 
 struct lua_tool_ctx {
 	struct clm_tool_invocation *inv;
+	lua_State *main_L;  /* plugin's main state */
+	int co_ref;         /* registry ref keeping coroutine alive */
 	bool completed;
 };
 
@@ -190,19 +201,30 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	/* Push the invoke function onto the coroutine stack. */
 	lua_rawgeti(co, LUA_REGISTRYINDEX, tu->invoke_ref);
 
-	/* Push the args table: decode JSON args via json.decode in C. */
+	/* Decode tool args directly in C (avoids unprotected lua_call and the
+	 * C->Lua->C round trip through json.decode). */
 	const char *args_str = clm_tool_invocation_args(inv);
-	lua_getglobal(co, "json");
-	lua_getfield(co, -1, "decode");
-	lua_remove(co, -2); /* remove json table */
-	lua_pushstring(co, args_str ? args_str : "{}");
-	lua_call(co, 1, 1); /* json.decode(args_str) -> table on stack */
+	struct json_object *args_obj = json_tokener_parse(args_str ? args_str : "{}");
+	if (args_obj == NULL) {
+		clm_tool_fail(inv, "invalid tool arguments (malformed JSON)");
+		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
+		return;
+	}
+	clm_lua_push_json_value(co, args_obj);
+	json_object_put(args_obj);
 
 	/* Push ctx userdata. */
 	ctx = lua_newuserdatauv(co, sizeof(*ctx), 0);
 	ctx->inv = inv;
+	ctx->main_L = L;
+	ctx->co_ref = co_ref;
 	ctx->completed = false;
 	luaL_setmetatable(co, CLM_LUA_CTX_META);
+
+	/* Store co_ref on the coroutine's registry so http functions
+	 * (which run on `co`) can retrieve it for the async callback. */
+	lua_pushinteger(co, co_ref);
+	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_co_ref");
 
 	/* Resume the coroutine with (args_table, ctx). */
 	nres = 0;
@@ -215,13 +237,8 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 	} else if (rc == LUA_YIELD) {
 		/* Coroutine yielded (waiting for async op like HTTP).
-		 * The HTTP completion callback will resume it. The co_ref
-		 * keeps the coroutine alive; it will be unref'd on resume
-		 * completion. We store the ref in the registry keyed by the
-		 * coroutine pointer for the HTTP layer to find. */
-		lua_pushlightuserdata(L, co);
-		lua_pushinteger(L, co_ref);
-		lua_settable(L, LUA_REGISTRYINDEX);
+		 * The co_ref in ctx keeps the coroutine alive; the HTTP
+		 * completion callback will retrieve it from ctx to unref. */
 	} else {
 		/* Runtime error. */
 		const char *err = lua_tostring(co, -1);
@@ -346,6 +363,20 @@ lua_clm_tool_register(lua_State *L)
 	}
 
 	clm_debug("lua: registered tool '%s' from %s", name, plugin->path);
+
+	/* Track tu for teardown. */
+	if (plugin->tool_user_count >= plugin->tool_user_cap) {
+		size_t ncap = plugin->tool_user_cap ? plugin->tool_user_cap * 2 : 4;
+		struct lua_tool_user **np = realloc(plugin->tool_users,
+		    ncap * sizeof(*np));
+		if (np != NULL) {
+			plugin->tool_users = np;
+			plugin->tool_user_cap = ncap;
+		}
+	}
+	if (plugin->tool_user_count < plugin->tool_user_cap)
+		plugin->tool_users[plugin->tool_user_count++] = tu;
+
 	return 0;
 }
 
@@ -530,9 +561,17 @@ clm_lua_env_free(struct clm_lua_env *env)
 	if (env == NULL)
 		return;
 	for (size_t i = 0; i < env->count; i++) {
-		if (env->plugins[i].L != NULL)
-			lua_close(env->plugins[i].L);
-		free(env->plugins[i].path);
+		struct clm_lua_plugin *p = &env->plugins[i];
+		/* Free tool user structs and unref invoke functions. */
+		for (size_t j = 0; j < p->tool_user_count; j++) {
+			luaL_unref(p->L, LUA_REGISTRYINDEX,
+			    p->tool_users[j]->invoke_ref);
+			free(p->tool_users[j]);
+		}
+		free(p->tool_users);
+		if (p->L != NULL)
+			lua_close(p->L);
+		free(p->path);
 	}
 	free(env->plugins);
 	free(env);

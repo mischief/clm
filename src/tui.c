@@ -62,6 +62,9 @@ struct rseg {
 struct ui {
 	uv_loop_t *loop;
 	struct clm_agent *agent;
+#ifdef CLM_LUA
+	struct clm_lua_env *lua_env;
+#endif
 
 	uv_poll_t stdin_poll;
 	uv_timer_t repaint;
@@ -1611,12 +1614,8 @@ tui_run(const struct clm_cfg *cfg)
 	}
 
 #ifdef CLM_LUA
-	{
-		struct clm_lua_env *lua_env = NULL;
-		if (clm_lua_env_new(u->agent, &lua_env) == 0) {
-			clm_lua_load_plugins(lua_env, "plugins");
-		}
-	}
+	if (clm_lua_env_new(u->agent, &u->lua_env) == 0)
+		clm_lua_load_plugins(u->lua_env, "plugins");
 #endif
 
 	initscr();
@@ -1652,6 +1651,9 @@ tui_run(const struct clm_cfg *cfg)
 	uv_run(loop, UV_RUN_DEFAULT);
 
 	endwin();
+#ifdef CLM_LUA
+	clm_lua_env_free(u->lua_env);
+#endif
 	clm_agent_free(u->agent);
 	for (size_t i = 0; i < u->nsegs; i++)
 		free(u->segs[i].text);

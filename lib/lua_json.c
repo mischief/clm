@@ -20,6 +20,10 @@
 /* Prototype — called from lua_plugin.c. */
 int clm_lua_json_open(lua_State *L);
 
+/* Push a json-c object as a Lua value (table/string/number/etc).
+ * Called from lua_plugin.c to decode tool args without a Lua hop. */
+void clm_lua_push_json_value(lua_State *L, struct json_object *obj);
+
 /* Sentinel for JSON null. */
 static char json_null_sentinel;
 
@@ -27,8 +31,8 @@ static char json_null_sentinel;
 /* decode: JSON string -> Lua value                                    */
 /* ------------------------------------------------------------------ */
 
-static void
-push_json_value(lua_State *L, struct json_object *obj)
+void
+clm_lua_push_json_value(lua_State *L, struct json_object *obj)
 {
 	if (obj == NULL) {
 		lua_pushlightuserdata(L, &json_null_sentinel);
@@ -56,7 +60,7 @@ push_json_value(lua_State *L, struct json_object *obj)
 		size_t len = json_object_array_length(obj);
 		lua_createtable(L, (int)len, 0);
 		for (size_t i = 0; i < len; i++) {
-			push_json_value(L, json_object_array_get_idx(obj, i));
+			clm_lua_push_json_value(L, json_object_array_get_idx(obj, i));
 			lua_rawseti(L, -2, (lua_Integer)(i + 1));
 		}
 		break;
@@ -69,7 +73,7 @@ push_json_value(lua_State *L, struct json_object *obj)
 			const char *key = json_object_iter_peek_name(&it);
 			struct json_object *val = json_object_iter_peek_value(&it);
 			lua_pushstring(L, key);
-			push_json_value(L, val);
+			clm_lua_push_json_value(L, val);
 			lua_rawset(L, -3);
 			json_object_iter_next(&it);
 		}
@@ -99,7 +103,7 @@ lua_json_decode(lua_State *L)
 	}
 	json_tokener_free(tok);
 
-	push_json_value(L, obj);
+	clm_lua_push_json_value(L, obj);
 	json_object_put(obj);
 	return 1;
 }

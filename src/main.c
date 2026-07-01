@@ -37,6 +37,9 @@ usage(const char *prog)
 struct cli_state {
 	uv_loop_t *loop;
 	struct clm_agent *agent;
+#ifdef CLM_LUA
+	struct clm_lua_env *lua_env;
+#endif
 	uv_pipe_t stdin_pipe;
 	char prompt_line[1024];
 	size_t prompt_len;
@@ -309,18 +312,17 @@ main(int argc, char *argv[])
 	}
 
 #ifdef CLM_LUA
-	{
-		struct clm_lua_env *lua_env = NULL;
-		if (clm_lua_env_new(state->agent, &lua_env) == 0) {
-			clm_lua_load_plugins(lua_env, "plugins");
-		}
-	}
+	if (clm_lua_env_new(state->agent, &state->lua_env) == 0)
+		clm_lua_load_plugins(state->lua_env, "plugins");
 #endif
 
 	if (oneshot != NULL) {
 		r = clm_agent_submit(state->agent, oneshot);
 		if (r < 0) {
 			fprintf(stderr, "error: %s\n", clm_agent_get_last_error(state->agent));
+#ifdef CLM_LUA
+			clm_lua_env_free(state->lua_env);
+#endif
 			clm_agent_free(state->agent);
 			free(state);
 			return 1;
@@ -330,6 +332,9 @@ main(int argc, char *argv[])
 			uv_run(loop, UV_RUN_ONCE);
 
 		printf("\n");
+#ifdef CLM_LUA
+		clm_lua_env_free(state->lua_env);
+#endif
 		clm_agent_free(state->agent);
 		r = state->turn_status;
 		free(state);
@@ -348,6 +353,9 @@ main(int argc, char *argv[])
 
 	uv_run(loop, UV_RUN_DEFAULT);
 
+#ifdef CLM_LUA
+	clm_lua_env_free(state->lua_env);
+#endif
 	clm_agent_free(state->agent);
 	free(state);
 
