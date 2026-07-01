@@ -84,6 +84,8 @@ struct clm_lua_env {
 	size_t http_max_inflight;
 	size_t http_max_per_call;
 	size_t json_decode_max;
+	/* Per-tool config (parsed JSON object, keyed by tool/plugin name). */
+	struct json_object *tool_config;
 };
 
 /* Budget helpers called from lua_http.c (defined below). */
@@ -701,6 +703,41 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	/* Set up the sandbox. */
 	sandbox_state(L, plugin);
 
+	/* Inject per-plugin config as clm.config (scoped by plugin name). */
+	if (env->tool_config != NULL) {
+		/* Derive plugin name from filename: strip directory and .lua */
+		const char *base = strrchr(path, '/');
+		base = base ? base + 1 : path;
+		size_t blen = strlen(base);
+		char name[256];
+		if (blen > 4 && blen < sizeof(name)) {
+			memcpy(name, base, blen - 4);
+			name[blen - 4] = '\0';
+		} else {
+			(void)snprintf(name, sizeof(name), "%s", base);
+		}
+
+		struct json_object *pcfg = NULL;
+		if (json_object_object_get_ex(env->tool_config, name, &pcfg) &&
+		    pcfg != NULL) {
+			lua_getglobal(L, "clm");
+			clm_lua_push_json_value(L, pcfg);
+			lua_setfield(L, -2, "config");
+			lua_pop(L, 1); /* pop clm table */
+		} else {
+			/* No config for this plugin: clm.config = {} */
+			lua_getglobal(L, "clm");
+			lua_newtable(L);
+			lua_setfield(L, -2, "config");
+			lua_pop(L, 1);
+		}
+	} else {
+		lua_getglobal(L, "clm");
+		lua_newtable(L);
+		lua_setfield(L, -2, "config");
+		lua_pop(L, 1);
+	}
+
 	/* Execute the plugin file. */
 	if (luaL_loadfile(L, path) != LUA_OK) {
 		const char *err = lua_tostring(L, -1);
@@ -876,5 +913,86 @@ clm_lua_env_free(struct clm_lua_env *env)
 		free(p->path);
 	}
 	free(env->plugins);
+	if (env->tool_config != NULL)
+		json_object_put(env->tool_config);
 	free(env);
+}
+
+CLM_API int
+clm_lua_env_set_config(struct clm_lua_env *env, const char *tool_config_json)
+{
+	struct json_object *obj;
+
+	ASSERT_RETURN(env != NULL, -EINVAL);
+	if (tool_config_json == NULL)
+		return 0;
+
+	obj = json_tokener_parse(tool_config_json);
+	if (obj == NULL || json_object_get_type(obj) != json_type_object) {
+		if (obj != NULL)
+			json_object_put(obj);
+		return -EINVAL;
+	}
+	if (env->tool_config != NULL)
+		json_object_put(env->tool_config);
+	env->tool_config = obj;
+	return 0;
+}
+
+CLM_API char *
+clm_lua_load_config(const char *path)
+{
+	lua_State *L;
+	char *out;
+
+	if (path == NULL)
+		return NULL;
+
+	L = luaL_newstate();
+	if (L == NULL)
+		return NULL;
+
+	/* Only open safe libs for config evaluation. */
+	luaL_requiref(L, "_G", luaopen_base, 1);
+	lua_pop(L, 1);
+	luaL_requiref(L, "string", luaopen_string, 1);
+	lua_pop(L, 1);
+	luaL_requiref(L, "table", luaopen_table, 1);
+	lua_pop(L, 1);
+	luaL_requiref(L, "math", luaopen_math, 1);
+	lua_pop(L, 1);
+	clm_lua_json_open(L);
+
+	if (luaL_loadfile(L, path) != LUA_OK) {
+		clm_debug("config: failed to load %s: %s", path,
+		    lua_tostring(L, -1));
+		lua_close(L);
+		return NULL;
+	}
+	if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+		clm_debug("config: error in %s: %s", path,
+		    lua_tostring(L, -1));
+		lua_close(L);
+		return NULL;
+	}
+
+	/* Expect the config to return a table. */
+	if (!lua_istable(L, -1)) {
+		clm_debug("config: %s did not return a table", path);
+		lua_close(L);
+		return NULL;
+	}
+
+	/* Extract the "tools" subtable. */
+	lua_getfield(L, -1, "tools");
+	if (!lua_istable(L, -1)) {
+		clm_debug("config: no 'tools' table in %s", path);
+		lua_close(L);
+		return NULL;
+	}
+
+	/* Serialize the tools table to JSON using lua_table_to_json. */
+	out = lua_table_to_json(L, -1);
+	lua_close(L);
+	return out;
 }

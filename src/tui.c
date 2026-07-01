@@ -1814,6 +1814,25 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
 
 #ifdef CLM_LUA
 	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
+		{
+			const char *xdg = getenv("XDG_CONFIG_HOME");
+			const char *home = getenv("HOME");
+			char cbuf[512];
+			char *cfg_json = NULL;
+			if (xdg != NULL && xdg[0] != '\0')
+				(void)snprintf(cbuf, sizeof(cbuf), "%s/clm/config.lua", xdg);
+			else if (home != NULL && home[0] != '\0')
+				(void)snprintf(cbuf, sizeof(cbuf), "%s/.config/clm/config.lua", home);
+			else
+				cbuf[0] = '\0';
+			if (cbuf[0] != '\0') {
+				cfg_json = clm_lua_load_config(cbuf);
+				if (cfg_json != NULL) {
+					clm_lua_env_set_config(u->lua_env, cfg_json);
+					free(cfg_json);
+				}
+			}
+		}
 		if (plugin_dir != NULL) {
 			clm_lua_load_plugins(u->lua_env, plugin_dir);
 		} else {

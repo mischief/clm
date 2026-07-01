@@ -1,8 +1,19 @@
 -- plugins/web_search.lua
--- Web search via Tavily API.
--- API docs: https://docs.tavily.com
+-- Web search via Tavily API (https://docs.tavily.com).
+--
+-- Requires a Tavily API key in ~/.config/clm/config.lua:
+--
+--   return {
+--       tools = {
+--           web_search = {
+--               api_key = "tvly-YOUR-KEY-HERE",
+--           },
+--       },
+--   }
+--
+-- Get a free key at https://tavily.com (1000 queries/month on free tier).
 
-local api_key = "" -- set your Tavily API key here or via environment
+local api_key = clm.config.api_key or ""
 
 clm.tool_register("web_search", {
     description = "Search the web and return titles, URLs, and content snippets.",
