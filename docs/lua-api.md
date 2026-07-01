@@ -56,9 +56,10 @@ Logs a debug message.
 
 The `http` module provides asynchronous HTTP GET and POST requests. These functions yield the coroutine and resume with the response or an error.
 
-### `http.get(url)`
+### `http.get(url[, headers_table])`
 
-Performs an HTTP GET request to the given URL.
+Performs an HTTP GET request to the given URL. An optional headers table
+may be provided as `{["Header-Name"] = "value", ...}`.
 
 **Returns:** `response_table` or `nil, error_string`
 
@@ -66,9 +67,11 @@ Performs an HTTP GET request to the given URL.
 - `status`: Integer, HTTP status code.
 - `body`: String, response body.
 
-### `http.post(url, body[, content_type])`
+### `http.post(url, body[, headers_table])`
 
 Performs an HTTP POST request to the given URL with the given body.
+`Content-Type: application/json` is sent automatically. An optional
+headers table may be provided for additional headers.
 
 **Returns:** `response_table` or `nil, error_string`
 
@@ -87,6 +90,39 @@ Decodes a JSON string to a Lua value (table, string, number, boolean, etc.).
 ### `json.null`
 
 Sentinel value representing JSON `null`.
+
+## Filesystem (`clm.read_file`, `clm.write_file`)
+
+### `clm.read_file(path) -> string` or `nil, error_string`
+
+Reads the entire contents of a file and returns it as a string.
+
+### `clm.write_file(path, content) -> true` or `nil, error_string`
+
+Writes content to a file, overwriting it.
+
+## Plugin Configuration (`clm.config`)
+
+Each plugin receives its own configuration section from
+`~/.config/clm/config.lua`:
+
+```lua
+-- config.lua
+return {
+    tools = {
+        my_plugin = { api_key = "...", option = "value" },
+    },
+}
+```
+
+Inside `my_plugin.lua`, the config is available as:
+
+```lua
+local key = clm.config.api_key
+local opt = clm.config.option
+```
+
+Plugins cannot access other plugins' configuration sections.
 
 ## Sandbox Restrictions
 
