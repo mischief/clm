@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <lua5.4/lua.h>
 #include <lua5.4/lauxlib.h>
@@ -24,6 +25,8 @@ void clm_lua_push_json_value(lua_State *L, struct json_object *obj);
 int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
 
 #define CLM_LUA_MEM_LIMIT (8 * 1024 * 1024) /* 8 MiB per plugin */
+#define CLM_LUA_EXEC_TIMEOUT_MS 30000u     /* default: 30s CPU timeout */
+#define CLM_LUA_HOOK_INTERVAL 10000        /* check deadline every N instructions */
 
 /* Forward declaration. */
 struct lua_tool_user;
@@ -38,6 +41,7 @@ struct clm_lua_plugin {
 	struct lua_tool_user **tool_users; /* tracked for teardown */
 	size_t tool_user_count;
 	size_t tool_user_cap;
+	uint64_t deadline_ns; /* wall-clock deadline for current execution */
 };
 
 /* Top-level environment holding all plugins. */
@@ -46,6 +50,7 @@ struct clm_lua_env {
 	struct clm_lua_plugin *plugins;
 	size_t count;
 	size_t cap;
+	uint64_t exec_timeout_ms; /* global execution timeout */
 };
 
 /* ------------------------------------------------------------------ */
@@ -173,6 +178,38 @@ struct lua_tool_user {
 	int invoke_ref; /* LUA_REGISTRYINDEX reference to the invoke fn */
 };
 
+/* ------------------------------------------------------------------ */
+/* CPU timeout hook                                                    */
+/* ------------------------------------------------------------------ */
+
+static uint64_t
+clock_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+/*
+ * lua_sethook count callback. Fires every CLM_LUA_HOOK_INTERVAL bytecode
+ * instructions. Checks if the plugin's wall-clock deadline has been exceeded
+ * and raises an error if so, unwinding to lua_resume.
+ */
+static void
+lua_exec_hook(lua_State *L, lua_Debug *ar)
+{
+	(void)ar;
+	/* Retrieve the plugin pointer from the registry. */
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_plugin");
+	struct clm_lua_plugin *p = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	if (p == NULL || p->deadline_ns == 0)
+		return;
+	if (clock_ns() > p->deadline_ns)
+		luaL_error(L, "plugin exceeded execution time budget");
+}
+
 /*
  * clm_tool_fn callback: called by the agent framework when a Lua tool is
  * invoked. Runs the plugin's invoke function as a coroutine so that async
@@ -226,21 +263,35 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	lua_pushinteger(co, co_ref);
 	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_co_ref");
 
+	/* Set execution deadline and install the count hook. The hook fires
+	 * every N instructions and raises if the deadline has passed. */
+	uint64_t timeout = clm_tool_invocation_timeout_ms(inv);
+	if (timeout == 0)
+		timeout = CLM_LUA_EXEC_TIMEOUT_MS;
+	plugin->deadline_ns = clock_ns() + timeout * 1000000ULL;
+	lua_sethook(co, lua_exec_hook, LUA_MASKCOUNT, CLM_LUA_HOOK_INTERVAL);
+
 	/* Resume the coroutine with (args_table, ctx). */
 	nres = 0;
 	rc = lua_resume(co, L, 2, &nres);
 
 	if (rc == LUA_OK) {
 		/* Coroutine returned normally (synchronous tool). */
+		plugin->deadline_ns = 0;
+		lua_sethook(co, NULL, 0, 0);
 		if (!ctx->completed)
 			clm_tool_fail(inv, "plugin returned without calling ctx:complete/ctx:fail");
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 	} else if (rc == LUA_YIELD) {
 		/* Coroutine yielded (waiting for async op like HTTP).
-		 * The co_ref in ctx keeps the coroutine alive; the HTTP
-		 * completion callback will retrieve it from ctx to unref. */
+		 * Clear the hook while suspended — the plugin isn't running
+		 * Lua bytecode during the wait. */
+		plugin->deadline_ns = 0;
+		lua_sethook(co, NULL, 0, 0);
 	} else {
-		/* Runtime error. */
+		/* Runtime error (includes timeout from the exec hook). */
+		plugin->deadline_ns = 0;
+		lua_sethook(co, NULL, 0, 0);
 		const char *err = lua_tostring(co, -1);
 		clm_debug("lua plugin error: %s", err ? err : "(unknown)");
 		if (!ctx->completed)
@@ -419,6 +470,10 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 	/* Register ctx metatable. */
 	register_ctx_meta(L);
 
+	/* Store plugin pointer in registry for the exec timeout hook. */
+	lua_pushlightuserdata(L, plugin);
+	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_plugin");
+
 	/* Register json module. */
 	clm_lua_json_open(L);
 
@@ -503,6 +558,7 @@ clm_lua_env_new(struct clm_agent *agent, struct clm_lua_env **out)
 	if (env == NULL)
 		return -ENOMEM;
 	env->agent = agent;
+	env->exec_timeout_ms = CLM_LUA_EXEC_TIMEOUT_MS;
 	*out = env;
 	return 0;
 }
