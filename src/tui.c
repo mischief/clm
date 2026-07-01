@@ -450,6 +450,52 @@ cb_turn_done(int status, void *user)
 }
 
 /*
+ * Render tool-call args for the permission prompt without the JSON envelope:
+ * a single string arg shows as just its value (e.g. shell_exec's command);
+ * multiple args show as "key: value" pairs. Falls back to the raw string if
+ * it is not a JSON object.
+ */
+static void
+push_perm_args(struct ui *u, const char *args)
+{
+	json_object *obj, *v;
+	bool first = true;
+
+	if (args == NULL || args[0] == '\0' || strcmp(args, "{}") == 0)
+		return;
+
+	obj = json_tokener_parse(args);
+	if (obj == NULL || json_object_get_type(obj) != json_type_object) {
+		ui_push(u, ST_PERM, ": ");
+		ui_push(u, ST_PERM, args); /* not an object: show as-is */
+		if (obj != NULL)
+			json_object_put(obj);
+		return;
+	}
+
+	ui_push(u, ST_PERM, ": ");
+	{
+		int n = json_object_object_length(obj);
+		json_object_object_foreach(obj, key, val) {
+			if (!first)
+				ui_push(u, ST_PERM, "  ");
+			first = false;
+			/* For a lone arg, the key is noise; show only the value. */
+			if (n > 1) {
+				ui_push(u, ST_PERM, key);
+				ui_push(u, ST_PERM, ": ");
+			}
+			v = val;
+			ui_push(u, ST_PERM,
+			    json_object_get_type(v) == json_type_string
+			        ? json_object_get_string(v)
+			        : json_object_to_json_string(v));
+		}
+	}
+	json_object_put(obj);
+}
+
+/*
  * Permission handler: render an orange prompt showing the tool and its args,
  * then park in permission-input mode. handle_keys routes the next y/n/a/d key
  * (or Escape) to answer via clm_tool_permission_respond.
@@ -464,10 +510,7 @@ cb_permission(const struct clm_permission_req *req, void *user)
 	u->perm_pending = req;
 	ui_push(u, ST_PERM, "\nallow tool ");
 	ui_push(u, ST_PERM, name ? name : "?");
-	if (args != NULL && args[0] != '\0' && strcmp(args, "{}") != 0) {
-		ui_push(u, ST_PERM, " ");
-		ui_push(u, ST_PERM, args);
-	}
+	push_perm_args(u, args);
 	ui_push(u, ST_PERM,
 	    "\n(y) once  (n) deny  (a) always  (d) never  [esc = deny+cancel]\n");
 	u->dirty = true;
