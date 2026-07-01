@@ -122,31 +122,51 @@ lua_json_decode(lua_State *L)
 
 static struct json_object *lua_to_json(lua_State *L, int idx, int depth);
 
+/* Registry key for the metatable set by json.array() to force array encoding. */
+#define CLM_JSON_ARRAY_MT "clm_json_array"
+
+/* True if the table at idx carries the json.array() marker metatable. */
+static bool
+has_array_marker(lua_State *L, int idx)
+{
+	if (!lua_getmetatable(L, idx))
+		return false;
+	luaL_getmetatable(L, CLM_JSON_ARRAY_MT);
+	bool marked = lua_rawequal(L, -1, -2);
+	lua_pop(L, 2);
+	return marked;
+}
+
 /*
- * Determine if a Lua table at idx is an array (sequential integer keys
- * starting from 1 with no gaps).
+ * Decide whether a Lua table encodes as a JSON array or object.
+ *
+ * Lua cannot distinguish an empty array from an empty object -- both are {}.
+ * We default an empty (or otherwise ambiguous) table to a JSON OBJECT, because
+ * empty objects dominate in practice (notably JSON Schema, e.g. an empty
+ * "properties": {}). A strict server (Nova) rejects "properties": [], so the
+ * object default is the safe one. To force an empty (or any) table to encode
+ * as an array, wrap it with json.array().
  */
 static bool
 is_lua_array(lua_State *L, int idx)
 {
+	if (has_array_marker(L, idx))
+		return true;
+
 	size_t len = lua_rawlen(L, idx);
-	if (len == 0) {
-		/* Could be an empty object or empty array; check for any keys. */
-		lua_pushnil(L);
-		if (lua_next(L, idx) != 0) {
-			lua_pop(L, 2);
-			return false; /* has string keys */
-		}
-		return true; /* truly empty: treat as array */
-	}
+	if (len == 0)
+		return false; /* ambiguous/empty: default to object */
+
 	/* Verify no keys beyond 1..len. */
 	lua_Integer count = 0;
 	lua_pushnil(L);
 	while (lua_next(L, idx) != 0) {
 		lua_pop(L, 1); /* pop value, keep key for iteration */
 		count++;
-		if (count > (lua_Integer)len)
+		if (count > (lua_Integer)len) {
+			lua_pop(L, 1); /* pop the key before returning */
 			return false; /* extra keys beyond rawlen */
+		}
 	}
 	return count == (lua_Integer)len;
 }
@@ -229,9 +249,26 @@ lua_json_encode(lua_State *L)
 /* Module registration                                                 */
 /* ------------------------------------------------------------------ */
 
+/*
+ * json.array(t) -> t : mark a table so json.encode always encodes it as a JSON
+ * array, even when empty. Needed only for the (rare) empty-array case, since a
+ * non-empty sequence is detected automatically and empty tables default to an
+ * object. Returns the same table for convenient inline use.
+ */
+static int
+lua_json_array(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TTABLE);
+	lua_settop(L, 1);
+	luaL_getmetatable(L, CLM_JSON_ARRAY_MT);
+	lua_setmetatable(L, 1);
+	return 1;
+}
+
 static const luaL_Reg json_funcs[] = {
 	{"decode", lua_json_decode},
 	{"encode", lua_json_encode},
+	{"array", lua_json_array},
 	{NULL, NULL},
 };
 
@@ -240,6 +277,10 @@ clm_lua_json_open(lua_State *L)
 {
 	lua_newtable(L);
 	luaL_setfuncs(L, json_funcs, 0);
+
+	/* Marker metatable for json.array(); created once per state. */
+	luaL_newmetatable(L, CLM_JSON_ARRAY_MT);
+	lua_pop(L, 1);
 
 	/* json.null sentinel */
 	lua_pushlightuserdata(L, &json_null_sentinel);
