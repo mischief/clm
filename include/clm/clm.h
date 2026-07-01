@@ -218,7 +218,7 @@ CLM_API void clm_agent_free(struct clm_agent *agent);
 CLM_API int clm_agent_submit(struct clm_agent *agent, const char *prompt);
 
 CLM_API enum clm_agent_state clm_agent_get_state(const struct clm_agent *agent);
-CLM_API long clm_agent_get_ctx_max(const struct clm_agent *agent);
+CLM_API int64_t clm_agent_get_ctx_max(const struct clm_agent *agent);
 CLM_API const char *clm_agent_get_last_error(const struct clm_agent *agent);
 
 /*

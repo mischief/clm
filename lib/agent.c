@@ -252,7 +252,7 @@ clm_agent_get_state(const struct clm_agent *agent)
 
 /* Per-conversation context budget in tokens, or 0 if unknown (non-llama.cpp
  * backend, or /props not yet fetched). */
-long
+int64_t
 clm_agent_get_ctx_max(const struct clm_agent *agent)
 {
 	return agent ? agent->ctx_max : 0;
@@ -819,7 +819,7 @@ static void
 props_success_cb(struct clm_http_response *resp, void *user)
 {
 	struct clm_agent *agent = user;
-	long ctx = 0;
+	int64_t ctx = 0;
 
 	if (resp != NULL && resp->status_code >= 200 && resp->status_code < 300 &&
 	    resp->body != NULL && clm_parse_props(resp->body, &ctx) == 0) {

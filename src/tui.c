@@ -99,7 +99,7 @@ struct ui {
 	enum clm_conn_status conn;
 	char conn_detail[64];
 	char usage[96];
-	long ctx_used; /* tokens carried forward, for the context gauge */
+	int64_t ctx_used; /* tokens carried forward, for the context gauge */
 	char batch[64];
 	int spinner;
 	bool busy;           /* a turn is in flight */
@@ -391,7 +391,7 @@ cb_usage(const struct clm_usage *usage, void *user)
 
 	/* Tokens carried into the next turn's prompt; drives the context gauge
 	 * drawn in the status bar. */
-	u->ctx_used = (long)usage->prompt_tokens + usage->completion_tokens;
+	u->ctx_used = (int64_t)usage->prompt_tokens + usage->completion_tokens;
 
 	if (usage->tokens_per_sec > 0)
 		snprintf(u->usage, sizeof(u->usage), "%.0f tok/s",
@@ -508,7 +508,7 @@ state_label(enum clm_agent_state st)
 static void
 fmt_ctx_gauge(struct ui *u, char *buf, size_t len)
 {
-	long ctx_max = clm_agent_get_ctx_max(u->agent);
+	int64_t ctx_max = clm_agent_get_ctx_max(u->agent);
 	int filled, pct;
 	size_t off = 0;
 

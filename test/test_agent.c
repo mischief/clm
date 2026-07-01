@@ -503,7 +503,7 @@ test_recover_after_error(uv_loop_t *loop)
 static void
 test_parse_props(void)
 {
-	long ctx = 0;
+	int64_t ctx = 0;
 
 	/* Single slot: ctx is the full n_ctx. */
 	ctx = 0;

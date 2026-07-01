@@ -7,17 +7,19 @@
  * This is backend-specific (llama.cpp); as more backend quirks appear this is
  * the kind of thing a per-backend ops module would own.
  */
+#include <stdint.h>
+
 #include <json-c/json.h>
 
 #include "clm/internal.h"
 #include "clm/cleanup.h"
 
 int
-clm_parse_props(const char *body, long *ctx_out)
+clm_parse_props(const char *body, int64_t *ctx_out)
 {
 	json_cleanup struct json_object *root = NULL;
 	struct json_object *dgs = NULL, *nctx = NULL, *slots = NULL, *bi = NULL;
-	long n_ctx, n_slots;
+	int64_t n_ctx, n_slots;
 
 	if (body == NULL || ctx_out == NULL)
 		return -1;
@@ -32,18 +34,22 @@ clm_parse_props(const char *body, long *ctx_out)
 	if (!json_object_object_get_ex(root, "default_generation_settings", &dgs) ||
 	    !json_object_object_get_ex(dgs, "n_ctx", &nctx))
 		return -1;
-	n_ctx = (long)json_object_get_int64(nctx);
+	n_ctx = json_object_get_int64(nctx);
 	if (n_ctx <= 0)
 		return -1;
 
 	/* Context is shared across parallel slots; a conversation gets a share. */
 	n_slots = 1;
 	if (json_object_object_get_ex(root, "total_slots", &slots)) {
-		long s = (long)json_object_get_int64(slots);
+		int64_t s = json_object_get_int64(slots);
 		if (s > 1)
 			n_slots = s;
 	}
 
+	/*
+	 * Context sizes fit comfortably in a long on every target; assign
+	 * without a cast so newer compilers don't flag a useless cast on LP64.
+	 */
 	*ctx_out = n_ctx / n_slots;
 	return 0;
 }
