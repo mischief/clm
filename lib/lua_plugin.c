@@ -414,6 +414,10 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	lua_pushstring(co, clm_tool_invocation_name(inv));
 	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_tool_name");
 
+	/* Store invocation pointer for error reporting from HTTP callbacks. */
+	lua_pushlightuserdata(co, inv);
+	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_inv");
+
 	/* Set execution deadline and install the count hook. The hook fires
 	 * every N instructions and raises if the deadline has passed. */
 	uint64_t timeout = clm_tool_invocation_timeout_ms(inv);

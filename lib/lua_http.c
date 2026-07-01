@@ -47,6 +47,7 @@ struct lua_http_req {
 	struct clm_http_request *req; /* the underlying async request */
 	struct clm_lua_plugin *plugin; /* for budget tracking */
 	const char *tool_name;      /* borrowed from invocation, for reporting */
+	struct clm_tool_invocation *inv; /* for failing the tool on error */
 };
 
 /* ------------------------------------------------------------------ */
@@ -81,14 +82,20 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 	/* Resume the coroutine with one result (the table). */
 	nres = 0;
 	rc = lua_resume(co, L, 1, &nres);
-	if (rc != LUA_OK && rc != LUA_YIELD) {
+	if (rc == LUA_OK) {
+		clm_lua_mark_invocation_thread(L, co, 0);
+		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
+		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
+	} else if (rc == LUA_YIELD) {
+		/* Yielded again (e.g. another HTTP request in the same tool).
+		 * The next HTTP callback will resume it. */
+	} else {
+		/* Runtime error after resume. Fail the tool so it doesn't hang. */
 		const char *err = lua_tostring(co, -1);
 		clm_debug("lua http: coroutine error on resume: %s",
 		    err ? err : "(unknown)");
-	}
-
-	/* If the coroutine finished (rc == LUA_OK), unref it. */
-	if (rc == LUA_OK) {
+		if (lr->inv != NULL)
+			clm_tool_fail(lr->inv, err ? err : "Lua runtime error");
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
@@ -115,13 +122,18 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 
 	nres = 0;
 	rc = lua_resume(co, L, 2, &nres);
-	if (rc != LUA_OK && rc != LUA_YIELD) {
+	if (rc == LUA_OK) {
+		clm_lua_mark_invocation_thread(L, co, 0);
+		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
+		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
+	} else if (rc == LUA_YIELD) {
+		/* Yielded again. */
+	} else {
 		const char *err = lua_tostring(co, -1);
 		clm_debug("lua http: coroutine error on error resume: %s",
 		    err ? err : "(unknown)");
-	}
-
-	if (rc == LUA_OK) {
+		if (lr->inv != NULL)
+			clm_tool_fail(lr->inv, err ? err : "Lua runtime error");
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
@@ -199,6 +211,10 @@ lua_ctx_http_get(lua_State *L)
 	lr->tool_name = lua_tostring(L, -1);
 	lua_pop(L, 1);
 
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_inv");
+	lr->inv = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
 	/* Enforce HTTP budget. */
 	{
 		int br = clm_lua_http_start(lr->plugin);
@@ -212,9 +228,24 @@ lua_ctx_http_get(lua_State *L)
 		}
 	}
 
-	/* clm_http_async_post with NULL body = GET. We pass empty api_key for
-	 * external requests (no auth header needed for arbitrary URLs). */
-	r = clm_http_async_post(loop, url, NULL, NULL, NULL,
+	/* Build optional request headers from arg 2 (table). */
+	struct curl_slist *hdrs = NULL;
+	if (lua_istable(L, 2)) {
+		lua_pushnil(L);
+		while (lua_next(L, 2) != 0) {
+			if (lua_type(L, -2) == LUA_TSTRING &&
+			    lua_type(L, -1) == LUA_TSTRING) {
+				const char *k = lua_tostring(L, -2);
+				const char *v = lua_tostring(L, -1);
+				char hdr[512];
+				(void)snprintf(hdr, sizeof(hdr), "%s: %s", k, v);
+				hdrs = curl_slist_append(hdrs, hdr);
+			}
+			lua_pop(L, 1);
+		}
+	}
+
+	r = clm_http_async_post(loop, url, NULL, NULL, hdrs,
 	    lua_http_on_success, lua_http_on_error, NULL, lr->tool_name, lr,
 	    &lr->req);
 	if (r < 0) {
@@ -285,6 +316,10 @@ lua_ctx_http_post(lua_State *L)
 	lr->tool_name = lua_tostring(L, -1);
 	lua_pop(L, 1);
 
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_inv");
+	lr->inv = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
 	/* Enforce HTTP budget. */
 	{
 		int br = clm_lua_http_start(lr->plugin);
@@ -298,7 +333,26 @@ lua_ctx_http_post(lua_State *L)
 		}
 	}
 
-	r = clm_http_async_post(loop, url, NULL, body, NULL,
+	/* Build request headers. Always set Content-Type for POST.
+	 * If arg 3 is a table, add those as extra headers. */
+	struct curl_slist *hdrs = NULL;
+	hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
+	if (lua_istable(L, 3)) {
+		lua_pushnil(L);
+		while (lua_next(L, 3) != 0) {
+			if (lua_type(L, -2) == LUA_TSTRING &&
+			    lua_type(L, -1) == LUA_TSTRING) {
+				const char *k = lua_tostring(L, -2);
+				const char *v = lua_tostring(L, -1);
+				char hdr[512];
+				(void)snprintf(hdr, sizeof(hdr), "%s: %s", k, v);
+				hdrs = curl_slist_append(hdrs, hdr);
+			}
+			lua_pop(L, 1);
+		}
+	}
+
+	r = clm_http_async_post(loop, url, NULL, body, hdrs,
 	    lua_http_on_success, lua_http_on_error, NULL, lr->tool_name, lr,
 	    &lr->req);
 	if (r < 0) {
