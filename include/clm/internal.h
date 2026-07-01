@@ -4,6 +4,7 @@
 #define CLM_INTERNAL_H
 
 #include <stddef.h>
+#include <time.h>
 
 #include "clm/clm.h"
 #include "clm/history.h"
@@ -28,6 +29,7 @@ struct clm_agent {
 	size_t max_iterations;
 	size_t iteration;
 	bool stream;
+	time_t last_time_stamp; /* wall clock of the last injected time context */
 	struct clm_tool_batch *active_batch;
 
 	/* The turn's in-flight HTTP request (for cancellation), else NULL. */

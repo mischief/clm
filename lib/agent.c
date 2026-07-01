@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <json-c/json.h>
 
@@ -23,6 +24,61 @@ static const char *default_system_prompt =
     "Use the provided tools only when the task requires reading or modifying the "
     "user's files or running a command on their system. When you already have the "
     "answer, reply directly without using tools.";
+
+/* Minimum spacing between injected "current time" context updates. */
+#define CLM_TIME_STAMP_INTERVAL 600 /* seconds (10 minutes) */
+
+/*
+ * Explains the automatic time-context injections to the model. Appended to the
+ * system prompt once, so a mid-conversation "[context update]" line is treated
+ * as silent ambient background rather than something the user said. The Qwen3
+ * chat template rejects any system message that is not first, so per-turn
+ * updates ride in a clearly framed user-role message instead (see
+ * clm_agent_submit); this convention line is what keeps that transparent.
+ */
+static const char *time_context_note =
+    "\n\nYou may periodically receive a line beginning with \"[context update]\" "
+    "carrying the current date and time. Treat it as silent ambient context, not "
+    "as a message from the user. Never announce, repeat, or comment on the time "
+    "unless the user explicitly asks about the date or time.";
+
+/* Format the current local time as an RFC 2822 date string. */
+static void
+fmt_rfc2822(char *buf, size_t len)
+{
+	time_t now = time(NULL);
+	struct tm tm;
+
+	if (localtime_r(&now, &tm) == NULL ||
+	    strftime(buf, len, "%a, %d %b %Y %H:%M:%S %z", &tm) == 0) {
+		if (len > 0)
+			buf[0] = '\0';
+	}
+}
+
+/*
+ * Build the session-start system prompt: the base prompt, a current-time stamp,
+ * and the note explaining future time updates. Returns a malloc'd string the
+ * caller must free, or NULL on OOM.
+ */
+static char *
+build_system_prompt(const char *base)
+{
+	char stamp[64];
+	autofree char *out = NULL;
+	int n;
+
+	fmt_rfc2822(stamp, sizeof(stamp));
+
+	n = asprintf(&out, "%s\n\ncurrent time: %s%s", base, stamp,
+	    time_context_note);
+	if (n < 0)
+		return NULL;
+
+	char *ret = out;
+	out = NULL;
+	return ret;
+}
 
 void
 clm_agent_set_error(struct clm_agent *agent, const char *msg)
@@ -110,11 +166,17 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 		return r;
 	}
 
-	if (clm_history_add_system(&agent->history,
-	    cfg->system_prompt ? cfg->system_prompt : default_system_prompt) == NULL) {
-		clm_agent_free(agent);
-		return -ENOMEM;
+	{
+		const char *base = cfg->system_prompt ? cfg->system_prompt
+		                                       : default_system_prompt;
+		autofree char *sys = build_system_prompt(base);
+
+		if (sys == NULL || clm_history_add_system(&agent->history, sys) == NULL) {
+			clm_agent_free(agent);
+			return -ENOMEM;
+		}
 	}
+	agent->last_time_stamp = time(NULL);
 
 	if (clm_tools_register_builtins(agent) < 0) {
 		clm_agent_free(agent);
@@ -174,6 +236,31 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 	if (agent->state != CLM_STATE_IDLE && agent->state != CLM_STATE_COMPLETE) {
 		clm_agent_set_error(agent, "turn already in progress");
 		return -EBUSY;
+	}
+
+	/*
+	 * Refresh the model's sense of time on a new turn once enough has passed.
+	 * The Qwen3 template forbids a non-leading system message, so this rides
+	 * in a user-role message framed as ambient context; the system prompt's
+	 * note tells the model to treat "[context update]" lines silently. It is
+	 * appended near the newest turn (outside the cached prefix) so it does not
+	 * invalidate the server's prompt cache for the earlier conversation.
+	 */
+	{
+		time_t now = time(NULL);
+
+		if (now - agent->last_time_stamp >= CLM_TIME_STAMP_INTERVAL) {
+			char stamp[64];
+			autofree char *msg = NULL;
+
+			fmt_rfc2822(stamp, sizeof(stamp));
+			if (asprintf(&msg,
+			    "[context update] current time: %s\n"
+			    "(automatic context, not user input; do not acknowledge)",
+			    stamp) >= 0 && msg != NULL)
+				(void)clm_history_add_user(&agent->history, msg);
+			agent->last_time_stamp = now;
+		}
 	}
 
 	if (clm_history_add_user(&agent->history, prompt) == NULL) {
