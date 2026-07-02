@@ -1,0 +1,17 @@
+# M5Stack Cardputer (StampS3, ESP32-S3FN8): 8 MB flash, NO PSRAM.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# No SPIRAM on this part -- everything lives in internal SRAM (~300 KB heap),
+# so keep histories short and (later) the Lua memory cap small.
+
+# TLS: use the bundled x509 root bundle so https:// endpoints verify.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# Size-optimize; the app task gets a large stack (agent runs synchronously).
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=2048
+
+# Console on the native USB-Serial-JTAG (the /dev/ttyACM port).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

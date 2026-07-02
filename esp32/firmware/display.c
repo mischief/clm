@@ -17,21 +17,20 @@
 #include "freertos/semphr.h"
 
 #include "display.h"
+#include "board_config.h"
 #include "font8x16.h"
 
 static const char *TAG = "clm_disp";
 
-/* T-Deck ST7789 pins (shared SPI bus, initialized elsewhere). */
-#define LCD_HOST      SPI2_HOST
-#define LCD_CS        12
-#define LCD_DC        11
-#define LCD_BL        42
-#define LCD_H_RES     320
-#define LCD_V_RES     240
-#define LCD_PCLK_HZ   (40 * 1000 * 1000)
+/* ST7789 pins/geometry/orientation come from board_config.h (the SPI bus is
+ * initialized by board_init before display_init runs). */
+#define COLS (LCD_H_RES / FONT_W)
+#define ROWS (LCD_V_RES / FONT_H)
 
-#define COLS (LCD_H_RES / FONT_W) /* 40 */
-#define ROWS (LCD_V_RES / FONT_H) /* 15 */
+/* ST7789 controller GRAM is 240x320; the visible panel is a sub-window of it
+ * (positioned via the gap). We wipe the whole GRAM at boot. */
+#define ST7789_RAM_W 240
+#define ST7789_RAM_H 320
 
 static esp_lcd_panel_handle_t s_panel;
 
@@ -98,7 +97,7 @@ display_init(void)
 	esp_lcd_panel_io_register_event_callbacks(io, &cbs, NULL);
 
 	esp_lcd_panel_dev_config_t panel_cfg = {
-		.reset_gpio_num = -1, /* no dedicated reset line on the T-Deck */
+		.reset_gpio_num = LCD_RST,
 		.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
 		.bits_per_pixel = 16,
 	};
@@ -110,10 +109,26 @@ display_init(void)
 
 	esp_lcd_panel_reset(s_panel);
 	esp_lcd_panel_init(s_panel);
-	esp_lcd_panel_invert_color(s_panel, true); /* ST7789 wants inversion on */
-	/* 240x320 native -> 320x240 landscape. */
-	esp_lcd_panel_swap_xy(s_panel, true);
-	esp_lcd_panel_mirror(s_panel, true, false);
+	esp_lcd_panel_invert_color(s_panel, LCD_INVERT);
+
+	/* Wipe the entire 240x320 GRAM in native orientation (before rotation/gap,
+	 * with the display still off) so no boot-time leftovers linger in the panel
+	 * margins the char grid never repaints. */
+	uint16_t bg = (uint16_t)((s_bg << 8) | (s_bg >> 8));
+	for (int i = 0; i < LCD_H_RES * FONT_H; i++)
+		s_rowbuf[i] = bg;
+	for (int y = 0; y < ST7789_RAM_H; y += FONT_H) {
+		int h = (y + FONT_H <= ST7789_RAM_H) ? FONT_H : (ST7789_RAM_H - y);
+		xSemaphoreTake(s_draw_done, portMAX_DELAY);
+		esp_lcd_panel_draw_bitmap(s_panel, 0, y, ST7789_RAM_W, y + h, s_rowbuf);
+	}
+
+	/* native portrait -> landscape, per-board mirror + centering gap. */
+	esp_lcd_panel_swap_xy(s_panel, LCD_SWAP_XY);
+	esp_lcd_panel_mirror(s_panel, LCD_MIRROR_X, LCD_MIRROR_Y);
+#if LCD_GAP_X || LCD_GAP_Y
+	esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y);
+#endif
 	esp_lcd_panel_disp_on_off(s_panel, true);
 
 	console_clear();
