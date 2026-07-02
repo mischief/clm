@@ -192,7 +192,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 	agent->state = CLM_STATE_IDLE;
 	agent->stream = cfg->stream;
 	agent->backend = cfg->backend;
-	agent->max_iterations = cfg->max_iterations ? cfg->max_iterations : CLM_DEFAULT_MAX_ITERATIONS;
+	agent->max_iterations = cfg->max_iterations; /* 0 = unlimited */
 	clm_history_init(&agent->history);
 
 	if (cb != NULL) {
@@ -1358,7 +1358,8 @@ clm_agent_tools_done(struct clm_agent *agent, int status)
 		return;
 	}
 
-	if (++agent->iteration >= agent->max_iterations) {
+	if (agent->max_iterations > 0 &&
+	    ++agent->iteration >= agent->max_iterations) {
 		clm_agent_set_error(agent, "max iterations reached");
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)

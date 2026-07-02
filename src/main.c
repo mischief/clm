@@ -337,7 +337,7 @@ main(int argc, char *argv[])
 	cfg.base_url = endpoint;
 	cfg.provider = CLM_PROVIDER_OPENAI;
 	cfg.model = model;
-	cfg.max_iterations = 25;
+	cfg.max_iterations = 0;
 	cfg.stream = stream;
 
 	/*
