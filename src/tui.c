@@ -28,6 +28,7 @@
 #include <uv.h>
 
 #include "clm/clm.h"
+#include "clm/cleanup.h"
 #include "clm/host_uv.h"
 #include "frontend.h"
 #include "md_render.h"
@@ -1774,10 +1775,12 @@ input_complete(struct ui *u)
 	if (ncandidates == 1) {
 		basename_insert = candidates[0];
 		basename_len = strlen(candidates[0]);
-		char full[1024];
-		(void)snprintf(full, sizeof(full), "%s/%s", dir, candidates[0]);
-		if (is_directory(full))
-			append_slash = true;
+		autofree char *full = malloc(1024);
+		if (full) {
+			(void)snprintf(full, 1024, "%s/%s", dir, candidates[0]);
+			if (is_directory(full))
+				append_slash = true;
+		}
 	} else if (common > plen) {
 		basename_insert = candidates[0];
 		basename_len = common;
@@ -1785,30 +1788,32 @@ input_complete(struct ui *u)
 
 	/* Show candidates if ambiguous, columnated. */
 	if (ncandidates > 1) {
-		char buf[1024];
-		int blen = 0;
+		autofree char *buf = malloc(1024);
+		if (buf) {
+			int blen = 0;
 
-		/* Find widest name for column padding. */
-		size_t maxw = 0;
-		for (size_t i = 0; i < ncandidates; i++) {
-			size_t n = strlen(candidates[i]);
-			if (n > maxw)
-				maxw = n;
-		}
-		maxw += 2; /* inter-column gap */
-		size_t cols = 60 / (maxw > 0 ? maxw : 1);
-		if (cols < 1) cols = 1;
+			/* Find widest name for column padding. */
+			size_t maxw = 0;
+			for (size_t i = 0; i < ncandidates; i++) {
+				size_t n = strlen(candidates[i]);
+				if (n > maxw)
+					maxw = n;
+			}
+			maxw += 2; /* inter-column gap */
+			size_t cols = 60 / (maxw > 0 ? maxw : 1);
+			if (cols < 1) cols = 1;
 
-		blen += snprintf(buf, sizeof(buf), "\n");
-		for (size_t i = 0; i < ncandidates && (size_t)blen < sizeof(buf) - maxw - 4; i++) {
-			size_t remaining = sizeof(buf) - (size_t)blen;
-			blen += snprintf(buf + blen, remaining, "%-*s",
-			    (int)maxw, candidates[i]);
-			if ((i + 1) % cols == 0 || i + 1 == ncandidates)
-				blen += snprintf(buf + blen,
-				    sizeof(buf) - (size_t)blen, "\n");
+			blen += snprintf(buf, 1024, "\n");
+			for (size_t i = 0; i < ncandidates && (size_t)blen < 1024 - maxw - 4; i++) {
+				size_t remaining = 1024 - (size_t)blen;
+				blen += snprintf(buf + blen, remaining, "%-*s",
+				    (int)maxw, candidates[i]);
+				if ((i + 1) % cols == 0 || i + 1 == ncandidates)
+					blen += snprintf(buf + blen,
+					    1024 - (size_t)blen, "\n");
+			}
+			ui_push(u, ST_META, buf);
 		}
-		ui_push(u, ST_META, buf);
 	}
 
 	/* Replace the word from dir_offset onward with the completion. */
