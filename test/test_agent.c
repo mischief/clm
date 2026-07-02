@@ -8,6 +8,7 @@
 #include <uv.h>
 
 #include "clm/clm.h"
+#include "clm/host_uv.h"
 #include "clm/internal.h"
 #include "clm/history.h"
 #include "canned.h"
@@ -25,6 +26,7 @@ static int failures;
 
 struct tstate {
 	uv_loop_t *loop;
+	struct clm_host *host;
 	struct clm_agent *agent;
 	int stream;
 	const char *system_prompt;
@@ -182,8 +184,11 @@ make_agent(struct tstate *st, int port)
 	cfg.stream = st->stream;
 	cfg.system_prompt = st->system_prompt;
 
-	r = clm_agent_new(&cfg, st->loop, &callbacks, st, &agent);
+	r = clm_host_uv_new(st->loop, &st->host);
+	CHECK(r == 0, "clm_host_uv_new");
+	r = clm_agent_new(&cfg, st->host, &callbacks, st, &agent);
 	CHECK(r == 0, "clm_agent_new");
+	CHECK(clm_tools_register_shell(agent) == 0, "register shell");
 	return agent;
 }
 
@@ -198,6 +203,7 @@ static void
 teardown(struct tstate *st, struct canned_server *srv)
 {
 	clm_agent_free(st->agent);
+	clm_host_uv_free(st->host);
 	canned_stop(srv);
 	uv_run(st->loop, UV_RUN_DEFAULT); /* drain pending closes */
 }
@@ -505,6 +511,7 @@ test_recover_after_error(uv_loop_t *loop)
 	run_until_done(&st);
 
 	clm_agent_free(st.agent);
+	clm_host_uv_free(st.host);
 	uv_run(loop, UV_RUN_DEFAULT); /* drain pending closes */
 }
 
@@ -770,7 +777,8 @@ test_perm_no_handler(uv_loop_t *loop)
 	cfg.base_url = url;
 	cfg.provider = CLM_PROVIDER_OPENAI;
 	cfg.model = "test-model";
-	CHECK(clm_agent_new(&cfg, loop, &no_perm_cb, &st, &st.agent) == 0,
+	CHECK(clm_host_uv_new(loop, &st.host) == 0, "perm: host");
+	CHECK(clm_agent_new(&cfg, st.host, &no_perm_cb, &st, &st.agent) == 0,
 	    "perm: agent with no handler");
 
 	def.name = "echo_hello";
@@ -784,6 +792,7 @@ test_perm_no_handler(uv_loop_t *loop)
 	CHECK(st.last_outcome == CLM_TOOL_FAILED,
 	    "perm: no handler -> denied");
 	clm_agent_free(st.agent);
+	clm_host_uv_free(st.host);
 	canned_stop(srv);
 	uv_run(loop, UV_RUN_DEFAULT);
 }

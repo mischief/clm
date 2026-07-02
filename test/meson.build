@@ -1,14 +1,16 @@
+# Uses the uv host (clm_host_uv) + shell_exec, so it links the uv layer.
 test_agent = executable('test_agent',
   files('test_agent.c', 'canned.c', '../lib/props.c', '../lib/history.c'),
-  dependencies: [clm_dep],
+  dependencies: [clmuv_dep],
   include_directories: [include_directories('.'), clm_inc, include_directories('../include')],
 )
 test('agent', test_agent)
 
 # Lua plugin test: loads plugins from ../plugins/ and verifies tool dispatch.
+# Builds a clm_host_uv, so it links the uv layer too.
 test_lua = executable('test_lua_plugin',
   files('test_lua_plugin.c'),
-  dependencies: [clm_dep],
+  dependencies: [clmuv_dep],
   include_directories: [clm_inc, include_directories('../include')],
 )
 test('lua_plugin', test_lua, workdir: meson.project_source_root())

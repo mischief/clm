@@ -7,6 +7,7 @@
 #include <uv.h>
 
 #include "clm/clm.h"
+#include "clm/host_uv.h"
 #include "frontend.h"
 #include "version.h"
 
@@ -42,6 +43,7 @@ usage(const char *prog)
 
 struct cli_state {
 	uv_loop_t *loop;
+	struct clm_host *host;
 	struct clm_agent *agent;
 #ifdef CLM_LUA
 	struct clm_lua_env *lua_env;
@@ -359,12 +361,22 @@ main(int argc, char *argv[])
 
 	state->oneshot = (oneshot != NULL);
 
-	r = clm_agent_new(&cfg, loop, &cli_callbacks, state, &state->agent);
+	r = clm_host_uv_new(loop, &state->host);
 	if (r < 0) {
-		fprintf(stderr, "error: failed to create agent (%d)\n", r);
+		fprintf(stderr, "error: failed to create host (%d)\n", r);
 		free(state);
 		return 1;
 	}
+
+	r = clm_agent_new(&cfg, state->host, &cli_callbacks, state, &state->agent);
+	if (r < 0) {
+		fprintf(stderr, "error: failed to create agent (%d)\n", r);
+		clm_host_uv_free(state->host);
+		free(state);
+		return 1;
+	}
+	/* Desktop uv layer: add the shell_exec tool (not in the portable core). */
+	clm_tools_register_shell(state->agent);
 
 #ifdef CLM_LUA
 	if (clm_lua_env_new(state->agent, &state->lua_env) == 0) {
@@ -400,6 +412,7 @@ main(int argc, char *argv[])
 			clm_lua_env_free(state->lua_env);
 #endif
 			clm_agent_free(state->agent);
+			clm_host_uv_free(state->host);
 			free(state);
 			return 1;
 		}
@@ -412,6 +425,7 @@ main(int argc, char *argv[])
 		clm_lua_env_free(state->lua_env);
 #endif
 		clm_agent_free(state->agent);
+		clm_host_uv_free(state->host);
 		r = state->turn_status;
 		free(state);
 		return r == 0 ? 0 : 1;
@@ -433,6 +447,7 @@ main(int argc, char *argv[])
 	clm_lua_env_free(state->lua_env);
 #endif
 	clm_agent_free(state->agent);
+	clm_host_uv_free(state->host);
 	free(state);
 
 	return 0;

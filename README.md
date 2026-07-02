@@ -14,7 +14,28 @@ ISC License — see [LICENSE](LICENSE)
 - Per-tool permission prompts (allow once / always / deny / never)
 - Token-bucket rate limiter on tool dispatch
 - Streaming (SSE) and non-streaming response modes
-- libuv event loop, libcurl async HTTP, json-c
+- Portable core: transport + timers come in through a small host interface, so
+  the agent engine itself depends only on json-c (no libuv/libcurl)
+
+## Architecture
+
+The library is split into a portable core and a desktop transport layer:
+
+- **`libclm`** — the agent engine, tool registry, history, and
+  OpenAI-compatible client. It has no libuv or libcurl dependency. HTTP and
+  timers are provided by the embedder through a `struct clm_host` (see
+  `clm/host.h`): four function pointers for `http_post` / `http_cancel` /
+  `timer_set` / `timer_cancel`. `clm_agent_new()` takes a `clm_host *`. A host
+  may leave `timer_set` NULL, in which case per-tool timeouts are disabled.
+- **`libclmuv`** (static) — the desktop host: a libcurl + libuv implementation
+  of `clm_host` (`clm_host_uv_new()`), plus the `shell_exec` tool (which needs
+  `uv_spawn`, so it lives here rather than in the core:
+  `clm_tools_register_shell()`). Link it alongside `libclm` for a full desktop
+  agent.
+
+An embedder targeting a different platform supplies its own `clm_host` and links
+only `libclm`. For example, the ESP32 port implements `clm_host` over
+`esp_http_client` (with SSE streaming) and never pulls in libuv or libcurl.
 
 ## Build
 

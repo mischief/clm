@@ -18,11 +18,11 @@
 /* Default maximum agent loop iterations when cfg->max_iterations is 0. */
 #define CLM_DEFAULT_MAX_ITERATIONS 25
 
-struct clm_http_request; /* opaque; see clm/http_async.h */
+/* struct clm_host, clm_http_call, clm_timer come from clm/host.h (via clm.h). */
 
 struct clm_agent {
 	struct clm_llm *llm;
-	uv_loop_t *uv;
+	struct clm_host *host;
 	enum clm_agent_state state;
 	char *last_error;
 	struct clm_history history;
@@ -42,7 +42,7 @@ struct clm_agent {
 	struct clm_ratelimit *tool_rl;
 
 	/* The turn's in-flight HTTP request (for cancellation), else NULL. */
-	struct clm_http_request *inflight;
+	struct clm_http_call *inflight;
 	bool cancelling; /* a cancel is unwinding the current turn */
 
 	/* Event callbacks */

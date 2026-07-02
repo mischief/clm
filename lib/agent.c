@@ -9,7 +9,7 @@
 
 #include "clm/agent.h"
 #include "clm/http.h"
-#include "clm/http_async.h"
+#include "clm/host.h"
 #include "clm/llm.h"
 #include "clm/tools.h"
 #include "clm/history.h"
@@ -150,9 +150,29 @@ clm_derive_props_url(const char *base_url)
 	return out;
 }
 
+/*
+ * Start an HTTP request through the host transport. All of the agent's requests
+ * use the configured API key and no extra headers or client suffix, so this
+ * wraps the common shape; callers vary only url/body/callbacks/user/out.
+ */
+static int
+agent_http_post(struct clm_agent *agent, const char *url, const char *body,
+    clm_http_success_cb success, clm_http_error_cb error,
+    clm_http_data_cb data, void *user, struct clm_http_call **out)
+{
+	struct clm_http_req req = {
+		.url = url,
+		.api_key = agent->llm->api_key,
+		.body = body,
+		.headers = NULL,
+		.client_suffix = NULL,
+	};
+	return agent->host->http_post(agent->host->ctx, &req, success, error,
+	    data, user, out);
+}
 
 int
-clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbacks *cb, void *user, struct clm_agent **out)
+clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm_callbacks *cb, void *user, struct clm_agent **out)
 {
 	struct clm_agent *agent;
 	int r;
@@ -161,13 +181,14 @@ clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *uv, const struct clm_callbac
 	ASSERT_RETURN(cfg != NULL, -EINVAL);
 	ASSERT_RETURN(cfg->api_key != NULL, -EINVAL);
 	ASSERT_RETURN(cfg->base_url != NULL, -EINVAL);
-	ASSERT_RETURN(uv != NULL, -EINVAL);
+	ASSERT_RETURN(host != NULL, -EINVAL);
+	ASSERT_RETURN(host->http_post != NULL, -EINVAL);
 
 	agent = calloc(1, sizeof(*agent));
 	if (agent == NULL)
 		return -ENOMEM;
 
-	agent->uv = uv;
+	agent->host = host;
 	agent->state = CLM_STATE_IDLE;
 	agent->stream = cfg->stream;
 	agent->backend = cfg->backend;
@@ -571,9 +592,8 @@ clm_agent_compact(struct clm_agent *agent)
 	free(agent->compact_body);
 	agent->compact_body = body;
 
-	r = clm_http_async_post(agent->uv, agent->llm->base_url,
-	    agent->llm->api_key, body, NULL, compact_success_cb,
-	    compact_error_cb, NULL, NULL, agent, &agent->inflight);
+	r = agent_http_post(agent, agent->llm->base_url, body,
+	    compact_success_cb, compact_error_cb, NULL, agent, &agent->inflight);
 	if (r < 0) {
 		free(agent->compact_body);
 		agent->compact_body = NULL;
@@ -1039,9 +1059,8 @@ clm_agent_fetch_props(struct clm_agent *agent)
 	if (agent->backend != CLM_BACKEND_GENERIC &&
 	    agent->backend != CLM_BACKEND_LLAMACPP)
 		return;
-	(void)clm_http_async_post(agent->uv, agent->props_url,
-	    agent->llm->api_key, NULL, NULL, props_success_cb, props_error_cb,
-	    NULL, NULL, agent, NULL);
+	(void)agent_http_post(agent, agent->props_url, NULL, props_success_cb,
+	    props_error_cb, NULL, agent, NULL);
 }
 
 /* Health probe completed (GET /v1/models): 2xx is online, anything else is
@@ -1095,9 +1114,8 @@ clm_agent_check_connection(struct clm_agent *agent)
 
 	/* NULL body => GET. user is the agent, distinct from turn requests;
 	 * out_req is NULL so this probe is not tracked for cancellation. */
-	return clm_http_async_post(agent->uv, agent->models_url,
-	    agent->llm->api_key, NULL, NULL, health_success_cb,
-	    health_error_cb, NULL, NULL, agent, NULL);
+	return agent_http_post(agent, agent->models_url, NULL, health_success_cb,
+	    health_error_cb, NULL, agent, NULL);
 }
 
 int
@@ -1111,10 +1129,10 @@ clm_agent_cancel(struct clm_agent *agent)
 		 * cancel so any buffered stream data is dropped rather than
 		 * rendered (a normal completion also nulls inflight, so the flag
 		 * is what distinguishes the two). */
-		struct clm_http_request *req = agent->inflight;
+		struct clm_http_call *req = agent->inflight;
 		agent->inflight = NULL;
 		agent->cancelling = true;
-		clm_http_async_cancel(req);
+		agent->host->http_cancel(req);
 		return 0;
 	}
 	if (agent->active_batch != NULL) {
@@ -1289,10 +1307,9 @@ clm_agent_start_turn(struct clm_agent *agent)
 
 	clm_debug("posting body: %s", turn->body);
 
-	clm_http_async_post(agent->uv, agent->llm->base_url, agent->llm->api_key,
-			    turn->body, NULL, clm_http_success_cb_wrapper,
-			    clm_http_error_cb_wrapper,
-			    agent->stream ? clm_http_data_cb_wrapper : NULL, NULL,
+	agent_http_post(agent, agent->llm->base_url, turn->body,
+			    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
+			    agent->stream ? clm_http_data_cb_wrapper : NULL,
 			    turn, &agent->inflight);
 }
 

@@ -22,6 +22,59 @@
 #define CLM_HOMEPAGE "https://github.com/mischief/clm"
 #define CLM_UA_BASE "clm/" CLM_VERSION " (+" CLM_HOMEPAGE ")"
 
+/* HTTP request state. */
+enum clm_http_request_state {
+	CLM_HTTP_PENDING,
+	CLM_HTTP_RUNNING,
+	CLM_HTTP_DONE,
+	CLM_HTTP_ERROR,
+};
+
+/* Async HTTP request response buffer. */
+struct http_buf {
+	char *data;
+	size_t len;
+};
+
+/* Per-socket poll context, allocated by the socket callback. */
+struct clm_http_socket {
+	uv_poll_t poll;
+	curl_socket_t sockfd;
+	struct clm_http_request *req;
+};
+
+/* Async HTTP request context (opaque to callers; see clm/http_async.h). */
+struct clm_http_request {
+	uv_loop_t *uv;
+
+	/* Curl handles */
+	CURLM *multi_handle;
+	CURL *easy_handle;
+	struct curl_slist *headers;
+
+	/* Response buffer */
+	struct http_buf response_buf;
+
+	int events_pending;
+
+	/* UV timer handle */
+	uv_timer_t timer_handle;
+	int timer_initialized;
+
+	/* Callbacks and user data */
+	clm_http_success_cb success_cb;
+	clm_http_error_cb error_cb;
+	clm_http_data_cb data_cb;
+	void *user;
+
+	/* State */
+	enum clm_http_request_state state;
+	int error_code;
+	char error_msg[256];
+	int closing;
+	int handles_to_close;
+};
+
 static size_t
 http_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 {
@@ -442,16 +495,4 @@ clm_http_request_free(struct clm_http_request *req)
 	}
 
 	free(req);
-}
-
-void
-clm_http_response_free(struct clm_http_response *resp)
-{
-	if (resp == NULL)
-		return;
-	free(resp->body);
-	free(resp->error_msg);
-	resp->body = NULL;
-	resp->error_msg = NULL;
-	resp->status_code = 0;
 }

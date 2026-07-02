@@ -12,6 +12,7 @@
 #include <uv.h>
 
 #include "clm/clm.h"
+#include "clm/host_uv.h"
 #include "clm/internal.h"
 #include "clm/lua_plugin.h"
 
@@ -42,7 +43,10 @@ test_plugin_loads(void)
 	};
 	int r;
 
-	r = clm_agent_new(&cfg, loop, NULL, NULL, &agent);
+	struct clm_host *host = NULL;
+	r = clm_host_uv_new(loop, &host);
+	CHECK(r == 0, "host creation");
+	r = clm_agent_new(&cfg, host, NULL, NULL, &agent);
 	CHECK(r == 0, "agent creation");
 	if (r != 0)
 		return 1;
@@ -96,6 +100,7 @@ test_plugin_loads(void)
 
 	clm_lua_env_free(env);
 	clm_agent_free(agent);
+	clm_host_uv_free(host);
 	return 0;
 }
 
@@ -115,7 +120,10 @@ test_nonexistent_dir(void)
 	};
 	int r;
 
-	r = clm_agent_new(&cfg, loop, NULL, NULL, &agent);
+	struct clm_host *host = NULL;
+	r = clm_host_uv_new(loop, &host);
+	CHECK(r == 0, "host creation");
+	r = clm_agent_new(&cfg, host, NULL, NULL, &agent);
 	CHECK(r == 0, "agent creation (nonexistent)");
 	if (r != 0)
 		return 1;
@@ -129,6 +137,7 @@ test_nonexistent_dir(void)
 
 	clm_lua_env_free(env);
 	clm_agent_free(agent);
+	clm_host_uv_free(host);
 	return 0;
 }
 
@@ -164,7 +173,10 @@ test_sandbox_and_load_failures(void)
 	};
 	int r;
 
-	r = clm_agent_new(&cfg, loop, NULL, NULL, &agent);
+	struct clm_host *host = NULL;
+	r = clm_host_uv_new(loop, &host);
+	CHECK(r == 0, "host creation");
+	r = clm_agent_new(&cfg, host, NULL, NULL, &agent);
 	CHECK(r == 0, "agent creation (sandbox)");
 	if (r != 0)
 		return 1;
@@ -193,6 +205,7 @@ test_sandbox_and_load_failures(void)
 
 	clm_lua_env_free(env);
 	clm_agent_free(agent);
+	clm_host_uv_free(host);
 	return 0;
 }
 

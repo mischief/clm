@@ -13,11 +13,9 @@
 #include <lauxlib.h>
 #include <lualib.h>
 
-#include <uv.h>
-
 #include "clm/clm.h"
 #include "clm/internal.h"
-#include "clm/http_async.h"
+#include "clm/host.h"
 #include "clm/http.h"
 #include "clm/log.h"
 #include "useful.h"
@@ -44,7 +42,7 @@ struct lua_http_req {
 	lua_State *main_L;          /* plugin's main state */
 	int co_ref;                 /* registry ref for the coroutine */
 	struct clm_agent *agent;
-	struct clm_http_request *req; /* the underlying async request */
+	struct clm_http_call *req; /* the underlying async request */
 	struct clm_lua_plugin *plugin; /* for budget tracking */
 	const char *tool_name;      /* borrowed from invocation, for reporting */
 	struct clm_tool_invocation *inv; /* for failing the tool on error */
@@ -152,12 +150,76 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
  * ctx:http_get(url [, headers_table])
  * Yields. On resume returns: response_table or nil, err.
  */
+/* Free a NULL-terminated header array from lua_collect_headers. */
+static void
+free_headers(char **h)
+{
+	if (h == NULL)
+		return;
+	for (size_t i = 0; h[i] != NULL; i++)
+		free(h[i]);
+	free(h);
+}
+
+/*
+ * Collect "Name: Value" strings from the string-keyed Lua table at `idx` (a
+ * non-table is treated as empty) into a fresh NULL-terminated array. `seed`, if
+ * non-NULL, becomes the first entry (e.g. a default Content-Type). The strings
+ * are copied, so the result outlives the Lua stack. Returns NULL on OOM; the
+ * caller frees with free_headers.
+ */
+static char **
+lua_collect_headers(lua_State *L, int idx, const char *seed)
+{
+	size_t cap = 8, n = 0;
+	char **arr = malloc(cap * sizeof(*arr));
+	if (arr == NULL)
+		return NULL;
+	if (seed != NULL) {
+		if ((arr[n] = strdup(seed)) == NULL)
+			goto oom;
+		n++;
+	}
+	if (lua_istable(L, idx)) {
+		lua_pushnil(L);
+		while (lua_next(L, idx) != 0) {
+			if (lua_type(L, -2) == LUA_TSTRING &&
+			    lua_type(L, -1) == LUA_TSTRING) {
+				char hdr[512];
+				(void)snprintf(hdr, sizeof(hdr), "%s: %s",
+				    lua_tostring(L, -2), lua_tostring(L, -1));
+				if (n + 1 >= cap) {
+					size_t ncap = cap * 2;
+					char **na = realloc(arr, ncap * sizeof(*arr));
+					if (na == NULL) {
+						lua_pop(L, 2);
+						goto oom;
+					}
+					arr = na;
+					cap = ncap;
+				}
+				if ((arr[n] = strdup(hdr)) == NULL) {
+					lua_pop(L, 2);
+					goto oom;
+				}
+				n++;
+			}
+			lua_pop(L, 1);
+		}
+	}
+	arr[n] = NULL;
+	return arr;
+oom:
+	arr[n] = NULL;
+	free_headers(arr);
+	return NULL;
+}
+
 static int
 lua_ctx_http_get(lua_State *L)
 {
 	const char *url = luaL_checkstring(L, 1);
 	struct lua_http_req *lr;
-	uv_loop_t *loop;
 	int r;
 
 	/* Must run directly on the invocation coroutine: a nested coroutine or a
@@ -178,14 +240,8 @@ lua_ctx_http_get(lua_State *L)
 	if (agent == NULL)
 		return luaL_error(L, "http_get: no agent context");
 
-	loop = clm_tool_invocation_loop(NULL); /* We need the loop from agent */
-	/* Actually get the loop from the agent's uv field directly. */
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_uv_loop");
-	loop = lua_touserdata(L, -1);
-	lua_pop(L, 1);
-
-	if (loop == NULL)
-		return luaL_error(L, "http_get: no event loop");
+	if (agent->host == NULL || agent->host->http_post == NULL)
+		return luaL_error(L, "http_get: no HTTP transport");
 
 	lr = calloc(1, sizeof(*lr));
 	if (lr == NULL)
@@ -229,25 +285,22 @@ lua_ctx_http_get(lua_State *L)
 	}
 
 	/* Build optional request headers from arg 2 (table). */
-	struct curl_slist *hdrs = NULL;
-	if (lua_istable(L, 2)) {
-		lua_pushnil(L);
-		while (lua_next(L, 2) != 0) {
-			if (lua_type(L, -2) == LUA_TSTRING &&
-			    lua_type(L, -1) == LUA_TSTRING) {
-				const char *k = lua_tostring(L, -2);
-				const char *v = lua_tostring(L, -1);
-				char hdr[512];
-				(void)snprintf(hdr, sizeof(hdr), "%s: %s", k, v);
-				hdrs = curl_slist_append(hdrs, hdr);
-			}
-			lua_pop(L, 1);
-		}
+	char **hdrs = lua_collect_headers(L, 2, NULL);
+	if (hdrs == NULL) {
+		free(lr);
+		return luaL_error(L, "http_get: out of memory");
 	}
 
-	r = clm_http_async_post(loop, url, NULL, NULL, hdrs,
-	    lua_http_on_success, lua_http_on_error, NULL, lr->tool_name, lr,
-	    &lr->req);
+	struct clm_http_req hreq = {
+		.url = url,
+		.api_key = NULL,
+		.body = NULL,
+		.headers = (const char *const *)hdrs,
+		.client_suffix = lr->tool_name,
+	};
+	r = agent->host->http_post(agent->host->ctx, &hreq, lua_http_on_success,
+	    lua_http_on_error, NULL, lr, &lr->req);
+	free_headers(hdrs);
 	if (r < 0) {
 		free(lr);
 		return luaL_error(L, "http_get: failed to start request: %s",
@@ -268,7 +321,6 @@ lua_ctx_http_post(lua_State *L)
 	const char *url = luaL_checkstring(L, 1);
 	const char *body = luaL_checkstring(L, 2);
 	struct lua_http_req *lr;
-	uv_loop_t *loop;
 	int r;
 
 	/* See lua_ctx_http_get: must run on the invocation coroutine. */
@@ -286,12 +338,8 @@ lua_ctx_http_post(lua_State *L)
 	if (agent == NULL)
 		return luaL_error(L, "http_post: no agent context");
 
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_uv_loop");
-	loop = lua_touserdata(L, -1);
-	lua_pop(L, 1);
-
-	if (loop == NULL)
-		return luaL_error(L, "http_post: no event loop");
+	if (agent->host == NULL || agent->host->http_post == NULL)
+		return luaL_error(L, "http_post: no HTTP transport");
 
 	lr = calloc(1, sizeof(*lr));
 	if (lr == NULL)
@@ -333,28 +381,24 @@ lua_ctx_http_post(lua_State *L)
 		}
 	}
 
-	/* Build request headers. Always set Content-Type for POST.
-	 * If arg 3 is a table, add those as extra headers. */
-	struct curl_slist *hdrs = NULL;
-	hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
-	if (lua_istable(L, 3)) {
-		lua_pushnil(L);
-		while (lua_next(L, 3) != 0) {
-			if (lua_type(L, -2) == LUA_TSTRING &&
-			    lua_type(L, -1) == LUA_TSTRING) {
-				const char *k = lua_tostring(L, -2);
-				const char *v = lua_tostring(L, -1);
-				char hdr[512];
-				(void)snprintf(hdr, sizeof(hdr), "%s: %s", k, v);
-				hdrs = curl_slist_append(hdrs, hdr);
-			}
-			lua_pop(L, 1);
-		}
+	/* Build request headers. Always set Content-Type for POST; arg 3, if a
+	 * table, contributes extra headers. */
+	char **hdrs = lua_collect_headers(L, 3, "Content-Type: application/json");
+	if (hdrs == NULL) {
+		free(lr);
+		return luaL_error(L, "http_post: out of memory");
 	}
 
-	r = clm_http_async_post(loop, url, NULL, body, hdrs,
-	    lua_http_on_success, lua_http_on_error, NULL, lr->tool_name, lr,
-	    &lr->req);
+	struct clm_http_req hreq = {
+		.url = url,
+		.api_key = NULL,
+		.body = body,
+		.headers = (const char *const *)hdrs,
+		.client_suffix = lr->tool_name,
+	};
+	r = agent->host->http_post(agent->host->ctx, &hreq, lua_http_on_success,
+	    lua_http_on_error, NULL, lr, &lr->req);
+	free_headers(hdrs);
 	if (r < 0) {
 		free(lr);
 		return luaL_error(L, "http_post: failed to start request: %s",
@@ -371,13 +415,10 @@ lua_ctx_http_post(lua_State *L)
 int
 clm_lua_http_open(lua_State *L, struct clm_agent *agent)
 {
-	/* Store agent pointer and its uv loop in the registry for retrieval
-	 * from within coroutines. */
+	/* Store the agent pointer in the registry for retrieval from within
+	 * coroutines; the HTTP transport is reached via agent->host. */
 	lua_pushlightuserdata(L, agent);
 	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_agent");
-
-	lua_pushlightuserdata(L, agent->uv);
-	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_uv_loop");
 
 	/* Store main L for coroutine resume. */
 	lua_pushlightuserdata(L, L);

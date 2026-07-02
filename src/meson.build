@@ -30,9 +30,11 @@ md_render_lib = static_library('md_render',
 # ncurses' own macros (NCURSES_CAST) trip -Wuseless-cast; not our code.
 curses_warn = cc.get_supported_arguments('-Wno-useless-cast')
 
+# clmuv_dep pulls in the core (libclm) plus the uv/curl host layer and its
+# libuv/libcurl deps, so the binary gets clm_host_uv_new + shell_exec.
 clm_exe = executable('clm', clm_src + files('tui.c') + [version_h],
-  link_with: [clm_lib, md_render_lib],
-  dependencies: clm_bin_deps + [curses_dep, jsonc_dep],
+  link_with: [md_render_lib],
+  dependencies: [clmuv_dep, curses_dep, jsonc_dep],
   include_directories: [clm_bin_inc, md_render_inc, clm_inc],
   c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'],
   install: true,

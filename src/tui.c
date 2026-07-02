@@ -26,6 +26,7 @@
 #include <uv.h>
 
 #include "clm/clm.h"
+#include "clm/host_uv.h"
 #include "frontend.h"
 #include "md_render.h"
 
@@ -62,6 +63,7 @@ struct rseg {
 
 struct ui {
 	uv_loop_t *loop;
+	struct clm_host *host;
 	struct clm_agent *agent;
 #ifdef CLM_LUA
 	struct clm_lua_env *lua_env;
@@ -1870,12 +1872,22 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
 	u->show_reasoning = false;
 	u->expand_output = false;
 
-	r = clm_agent_new(cfg, loop, &tui_callbacks, u, &u->agent);
+	r = clm_host_uv_new(loop, &u->host);
 	if (r < 0) {
-		fprintf(stderr, "error: failed to create agent (%d)\n", r);
+		fprintf(stderr, "error: failed to create host (%d)\n", r);
 		free(u);
 		return 1;
 	}
+
+	r = clm_agent_new(cfg, u->host, &tui_callbacks, u, &u->agent);
+	if (r < 0) {
+		fprintf(stderr, "error: failed to create agent (%d)\n", r);
+		clm_host_uv_free(u->host);
+		free(u);
+		return 1;
+	}
+	/* Desktop uv layer: add the shell_exec tool (not in the portable core). */
+	clm_tools_register_shell(u->agent);
 
 #ifdef CLM_LUA
 	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
@@ -1939,6 +1951,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
 	clm_lua_env_free(u->lua_env);
 #endif
 	clm_agent_free(u->agent);
+	clm_host_uv_free(u->host);
 	for (size_t i = 0; i < u->nsegs; i++)
 		free(u->segs[i].text);
 	free(u->segs);

@@ -6,9 +6,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <uv.h>
-
 #include "clm/clm_export.h"
+#include "clm/host.h"
 
 struct clm_agent;
 struct clm_cfg;
@@ -241,14 +240,14 @@ struct clm_callbacks {
 };
 
 /*
- * Create an agent bound to the caller's event loop.
+ * Create an agent bound to a host (transport + optional timers; see clm/host.h).
  *
- * The caller OWNS `loop`: the library registers handles on it but never calls
- * uv_run() or uv_loop_close(). cb may be NULL (no events). user is passed back
- * to every callback. cfg and cb are copied/consumed at the call; loop and user
- * must outlive the agent.
+ * The caller OWNS `host` and whatever it wraps (e.g. an event loop): the library
+ * uses it but never tears it down. cb may be NULL (no events). user is passed
+ * back to every callback. cfg and cb are copied/consumed at the call; host and
+ * user must outlive the agent.
  */
-CLM_API int clm_agent_new(const struct clm_cfg *cfg, uv_loop_t *loop,
+CLM_API int clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
     const struct clm_callbacks *cb, void *user, struct clm_agent **out);
 
 CLM_API void clm_agent_free(struct clm_agent *agent);
@@ -317,7 +316,12 @@ CLM_API int clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def
 /* --- accessors usable from inside a tool's invoke fn --- */
 CLM_API const char *clm_tool_invocation_name(const struct clm_tool_invocation *inv);
 CLM_API const char *clm_tool_invocation_args(const struct clm_tool_invocation *inv);
-CLM_API uv_loop_t *clm_tool_invocation_loop(const struct clm_tool_invocation *inv);
+/*
+ * The host's native loop/context (clm_host.ctx) for tools that need to reach
+ * the underlying platform — e.g. a subprocess tool casting it back to its
+ * uv_loop_t*. Returns NULL if the host exposes no context. Most tools ignore it.
+ */
+CLM_API void *clm_tool_invocation_loop(const struct clm_tool_invocation *inv);
 CLM_API size_t clm_tool_invocation_output_cap(const struct clm_tool_invocation *inv);
 CLM_API uint64_t clm_tool_invocation_timeout_ms(const struct clm_tool_invocation *inv);
 

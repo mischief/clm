@@ -9,7 +9,6 @@
 #include <fcntl.h>
 
 #include <json-c/json.h>
-#include <uv.h>
 
 #include "clm/tools.h"
 #include "clm/internal.h"
@@ -21,7 +20,6 @@
 #define CLM_TOOL_OUTPUT_CAP_DEFAULT (64 * 1024)    /* bytes returned to model */
 #define CLM_TOOL_OUTPUT_CAP_MAX (1024 * 1024)      /* ceiling for overrides */
 #define CLM_TOOL_TIMEOUT_MAX_MS 600000u            /* 10 minutes */
-#define CLM_SHELL_DEFAULT_TIMEOUT_MS 30000u
 #define CLM_READ_DEFAULT_LIMIT 200                 /* lines */
 
 /*
@@ -48,8 +46,7 @@ struct clm_tool_invocation {
 	size_t output_cap;            /* effective for this call */
 	uint64_t timeout_ms;          /* effective for this call */
 
-	uv_timer_t timer;
-	bool timer_init;
+	struct clm_timer *timer;      /* per-call timeout, via host; NULL if none */
 	bool timed_out;
 	bool completed;
 
@@ -64,8 +61,7 @@ struct clm_tool_invocation {
 
 	/* Rate-limit deferral: when the token bucket is empty, the invocation
 	 * is parked on rl_timer and dispatched when tokens refill. */
-	uv_timer_t rl_timer;
-	bool rl_deferred;
+	struct clm_timer *rl_timer;
 };
 
 /* A batch of tool calls dispatched together for one assistant message. */
@@ -75,7 +71,6 @@ struct clm_tool_batch {
 	size_t n;
 	size_t pending;   /* outstanding completions + a dispatch hold */
 	size_t done;      /* completed calls, for progress reporting */
-	size_t closing;   /* timer handles still being closed at teardown */
 	int status;       /* first hard error encountered, else 0 */
 };
 
@@ -340,10 +335,11 @@ clm_tool_invocation_args(const struct clm_tool_invocation *inv)
 	return inv ? inv->args : NULL;
 }
 
-uv_loop_t *
+void *
 clm_tool_invocation_loop(const struct clm_tool_invocation *inv)
 {
-	return inv ? inv->batch->agent->uv : NULL;
+	struct clm_host *host = inv ? inv->batch->agent->host : NULL;
+	return host ? host->ctx : NULL;
 }
 
 const char *
@@ -444,15 +440,6 @@ batch_really_free(struct clm_tool_batch *batch)
 }
 
 static void
-on_timer_closed(uv_handle_t *handle)
-{
-	struct clm_tool_invocation *inv = handle->data;
-	struct clm_tool_batch *batch = inv->batch;
-	if (--batch->closing == 0)
-		batch_really_free(batch);
-}
-
-static void
 batch_finalize(struct clm_tool_batch *batch)
 {
 	struct clm_agent *agent = batch->agent;
@@ -466,24 +453,20 @@ batch_finalize(struct clm_tool_batch *batch)
 	 * independent batch asynchronously; this one is torn down below. */
 	clm_agent_tools_done(agent, status);
 
-	batch->closing = 0;
+	/* Release any live timers. The host owns the timer memory (freed on its
+	 * own schedule), so the batch itself can be freed synchronously -- no
+	 * embedded handles to close first. */
 	for (i = 0; i < batch->n; i++) {
-		if (batch->inv[i].timer_init)
-			batch->closing++;
-		if (batch->inv[i].rl_deferred)
-			batch->closing++;
+		if (batch->inv[i].timer != NULL) {
+			agent->host->timer_cancel(batch->inv[i].timer);
+			batch->inv[i].timer = NULL;
+		}
+		if (batch->inv[i].rl_timer != NULL) {
+			agent->host->timer_cancel(batch->inv[i].rl_timer);
+			batch->inv[i].rl_timer = NULL;
+		}
 	}
-
-	if (batch->closing == 0) {
-		batch_really_free(batch);
-		return;
-	}
-	for (i = 0; i < batch->n; i++) {
-		if (batch->inv[i].timer_init)
-			uv_close((uv_handle_t *)&batch->inv[i].timer, on_timer_closed);
-		if (batch->inv[i].rl_deferred)
-			uv_close((uv_handle_t *)&batch->inv[i].rl_timer, on_timer_closed);
-	}
+	batch_really_free(batch);
 }
 
 /* ------------------------------------------------------------------ */
@@ -533,8 +516,10 @@ inv_finalize(struct clm_tool_invocation *inv, const char *content,
 	const char *out;
 
 	inv->completed = true;
-	if (inv->timer_init)
-		uv_timer_stop(&inv->timer);
+	if (inv->timer != NULL) {
+		agent->host->timer_cancel(inv->timer);
+		inv->timer = NULL;
+	}
 
 	clamped = clamp_dup(content, inv->output_cap);
 	out = clamped ? clamped : (content ? content : "");
@@ -593,9 +578,9 @@ clm_tool_fail(struct clm_tool_invocation *inv, const char *msg)
 }
 
 static void
-on_timeout(uv_timer_t *timer)
+on_timeout(void *arg)
 {
-	struct clm_tool_invocation *inv = timer->data;
+	struct clm_tool_invocation *inv = arg;
 
 	if (inv->completed)
 		return;
@@ -663,11 +648,12 @@ run_invoke(struct clm_tool_invocation *inv)
 {
 	struct clm_agent *agent = inv->batch->agent;
 
-	if (inv->timeout_ms > 0 && !inv->timer_init) {
-		uv_timer_init(agent->uv, &inv->timer);
-		inv->timer.data = inv;
-		inv->timer_init = true;
-		uv_timer_start(&inv->timer, on_timeout, inv->timeout_ms, 0);
+	/* Arm the per-call timeout if the host provides timers; otherwise the
+	 * tool simply runs without one (a blocking transport enforces its own). */
+	if (inv->timeout_ms > 0 && inv->timer == NULL &&
+	    agent->host->timer_set != NULL) {
+		agent->host->timer_set(agent->host->ctx, inv->timeout_ms,
+		    on_timeout, inv, &inv->timer);
 	}
 	inv->def->invoke(inv, inv->def->user);
 }
@@ -676,10 +662,16 @@ run_invoke(struct clm_tool_invocation *inv)
 static void dispatch_one(struct clm_tool_invocation *inv);
 
 static void
-on_rl_timer(uv_timer_t *t)
+on_rl_timer(void *arg)
 {
-	struct clm_tool_invocation *inv = t->data;
+	struct clm_tool_invocation *inv = arg;
 	struct clm_agent *agent = inv->batch->agent;
+
+	/* Release the fired timer before dispatching. */
+	if (inv->rl_timer != NULL) {
+		agent->host->timer_cancel(inv->rl_timer);
+		inv->rl_timer = NULL;
+	}
 
 	/* Consume the token now (should succeed after the delay). */
 	clm_ratelimit_consume(agent->tool_rl, 1);
@@ -802,7 +794,9 @@ clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls)
 	 * but cannot drop pending to zero thanks to the hold. */
 	for (i = 0; i < n; i++) {
 		struct clm_tool_invocation *inv = &batch->inv[i];
-		if (clm_ratelimit_allow(agent->tool_rl, 1)) {
+		if (clm_ratelimit_allow(agent->tool_rl, 1) ||
+		    agent->host->timer_set == NULL) {
+			/* Allowed, or no timer to defer with: dispatch now. */
 			dispatch_one(inv);
 		} else {
 			/* Park until tokens refill. */
@@ -810,10 +804,8 @@ clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls)
 			uint64_t delay_ms = delay_us / 1000;
 			if (delay_ms == 0)
 				delay_ms = 1;
-			inv->rl_deferred = true;
-			uv_timer_init(agent->uv, &inv->rl_timer);
-			inv->rl_timer.data = inv;
-			uv_timer_start(&inv->rl_timer, on_rl_timer, delay_ms, 0);
+			agent->host->timer_set(agent->host->ctx, delay_ms,
+			    on_rl_timer, inv, &inv->rl_timer);
 		}
 	}
 
@@ -1001,254 +993,10 @@ tool_file_write(struct clm_tool_invocation *inv, void *user)
 	clm_tool_complete(inv, "ok: file written");
 }
 
-/* Shell exec via uv_spawn ($SHELL -c <command>). */
-struct shell_state {
-	struct clm_tool_invocation *inv;
-	uv_process_t proc;
-	uv_pipe_t in;         /* present only when stdin is supplied */
-	uv_pipe_t out;
-	uv_pipe_t err;
-	uv_write_t wreq;
-	char *in_buf;         /* stdin blob, kept alive across the write */
-	bool has_stdin;
-	char *buf;
-	size_t len;
-	size_t bufcap;
-	int handles;          /* uv handles still open (proc + pipes) */
-	int64_t exit_status;
-	int term_signal;
-	char *spawn_err;
-};
-
-static void
-shell_append(struct shell_state *s, const char *data, size_t n)
-{
-	size_t cap = s->inv->output_cap;
-	size_t room, take;
-
-	if (s->len >= cap)
-		return; /* full; drain and discard the rest */
-	room = cap - s->len;
-	take = n < room ? n : room;
-
-	if (s->len + take + 1 > s->bufcap) {
-		size_t nc = s->bufcap ? s->bufcap * 2 : 4096;
-		char *p;
-		while (nc < s->len + take + 1)
-			nc *= 2;
-		if (nc > cap + 1)
-			nc = cap + 1;
-		p = realloc(s->buf, nc);
-		if (p == NULL)
-			return;
-		s->buf = p;
-		s->bufcap = nc;
-	}
-	memcpy(s->buf + s->len, data, take);
-	s->len += take;
-	s->buf[s->len] = '\0';
-}
-
-static void
-shell_alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf)
-{
-	(void)handle;
-	buf->base = malloc(suggested);
-	buf->len = buf->base ? suggested : 0;
-}
-
-static void
-shell_finish(struct shell_state *s)
-{
-	struct clm_tool_invocation *inv = s->inv;
-
-	if (s->spawn_err != NULL) {
-		clm_tool_fail(inv, s->spawn_err);
-	} else if (s->exit_status != 0 || s->term_signal != 0) {
-		size_t mlen = s->len + 80;
-		autofree char *msg = malloc(mlen);
-		if (msg != NULL) {
-			(void)snprintf(msg, mlen, "%s%s(exit status %lld%s)",
-			    s->len ? s->buf : "", s->len ? "\n" : "",
-			    (long long)s->exit_status,
-			    s->term_signal ? ", killed by signal" : "");
-			clm_tool_fail(inv, msg);
-		} else {
-			clm_tool_fail(inv, "command failed");
-		}
-	} else {
-		clm_tool_complete(inv, s->len ? s->buf : "(command produced no output)");
-	}
-
-	free(s->spawn_err);
-	free(s->in_buf);
-	free(s->buf);
-	free(s);
-}
-
-static void
-shell_on_close(uv_handle_t *handle)
-{
-	struct shell_state *s = handle->data;
-	if (--s->handles == 0)
-		shell_finish(s);
-}
-
-static void
-shell_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
-{
-	struct shell_state *s = stream->data;
-	if (nread > 0)
-		shell_append(s, buf->base, (size_t)nread);
-	else if (nread < 0)
-		uv_close((uv_handle_t *)stream, shell_on_close);
-	free(buf->base);
-}
-
-static void
-shell_on_exit(uv_process_t *proc, int64_t exit_status, int term_signal)
-{
-	struct shell_state *s = proc->data;
-	s->exit_status = exit_status;
-	s->term_signal = term_signal;
-	uv_close((uv_handle_t *)proc, shell_on_close);
-}
-
-static void
-shell_cancel(struct clm_tool_invocation *inv, void *user)
-{
-	struct shell_state *s = user;
-	(void)inv;
-	uv_process_kill(&s->proc, SIGTERM);
-}
-
-/* stdin blob written: close the pipe so the child sees EOF. */
-static void
-shell_on_stdin_written(uv_write_t *req, int status)
-{
-	struct shell_state *s = req->data;
-	(void)status;
-	uv_close((uv_handle_t *)&s->in, shell_on_close);
-}
-
-static void
-tool_shell_exec(struct clm_tool_invocation *inv, void *user)
-{
-	json_cleanup struct json_object *args = inv_args(inv);
-	autofree char *command = NULL;
-	autoclose int devnull = -1;
-	struct shell_state *s;
-	uv_loop_t *loop = clm_tool_invocation_loop(inv);
-	uv_stdio_container_t stdio[3];
-	uv_process_options_t opt;
-	const char *shell;
-	char *argv[4];
-	int r;
-
-	(void)user;
-	if (args == NULL || json_object_get_type(args) != json_type_object) {
-		clm_tool_fail(inv, "invalid arguments");
-		return;
-	}
-	command = arg_string(args, "command");
-	if (command == NULL) {
-		clm_tool_fail(inv, "missing required string argument 'command'");
-		return;
-	}
-
-	s = calloc(1, sizeof(*s));
-	if (s == NULL) {
-		clm_tool_fail(inv, "out of memory");
-		return;
-	}
-	s->inv = inv;
-	s->proc.data = s;
-	uv_pipe_init(loop, &s->out, 0);
-	s->out.data = s;
-	uv_pipe_init(loop, &s->err, 0);
-	s->err.data = s;
-
-	/* Optional stdin blob: feed it through a pipe, else use /dev/null. */
-	s->in_buf = arg_string(args, "stdin");
-	s->has_stdin = (s->in_buf != NULL);
-	if (s->has_stdin) {
-		uv_pipe_init(loop, &s->in, 0);
-		s->in.data = s;
-		stdio[0].flags = UV_CREATE_PIPE | UV_READABLE_PIPE;
-		stdio[0].data.stream = (uv_stream_t *)&s->in;
-	} else {
-		devnull = open("/dev/null", O_RDONLY | O_CLOEXEC);
-		if (devnull >= 0) {
-			stdio[0].flags = UV_INHERIT_FD;
-			stdio[0].data.fd = devnull;
-		} else {
-			stdio[0].flags = UV_IGNORE;
-		}
-	}
-
-	shell = getenv("SHELL");
-	if (shell == NULL || shell[0] == '\0')
-		shell = "/bin/sh";
-	argv[0] = (char *)shell;
-	argv[1] = "-c";
-	argv[2] = command;
-	argv[3] = NULL;
-
-	memset(&opt, 0, sizeof(opt));
-	opt.file = shell;
-	opt.args = argv;
-	opt.exit_cb = shell_on_exit;
-	stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
-	stdio[1].data.stream = (uv_stream_t *)&s->out;
-	stdio[2].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
-	stdio[2].data.stream = (uv_stream_t *)&s->err;
-	opt.stdio = stdio;
-	opt.stdio_count = 3;
-
-	s->handles = s->has_stdin ? 4 : 3;
-	r = uv_spawn(loop, &s->proc, &opt);
-	if (r < 0) {
-		s->spawn_err = strdup(uv_strerror(r));
-		uv_close((uv_handle_t *)&s->proc, shell_on_close);
-		uv_close((uv_handle_t *)&s->out, shell_on_close);
-		uv_close((uv_handle_t *)&s->err, shell_on_close);
-		if (s->has_stdin)
-			uv_close((uv_handle_t *)&s->in, shell_on_close);
-		return;
-	}
-
-	clm_tool_invocation_set_cancel(inv, shell_cancel, s);
-	uv_read_start((uv_stream_t *)&s->out, shell_alloc, shell_read);
-	uv_read_start((uv_stream_t *)&s->err, shell_alloc, shell_read);
-
-	if (s->has_stdin) {
-		uv_buf_t b = uv_buf_init(s->in_buf, (unsigned)strlen(s->in_buf));
-		s->wreq.data = s;
-		if (uv_write(&s->wreq, (uv_stream_t *)&s->in, &b, 1,
-		    shell_on_stdin_written) < 0)
-			uv_close((uv_handle_t *)&s->in, shell_on_close);
-	}
-}
-
 int
 clm_tools_register_builtins(struct clm_agent *agent)
 {
 	int r;
-	const struct clm_tool_def shell_def = {
-		.name = "shell_exec",
-		.description = "execute a shell command and return its output",
-		.params_schema =
-		    "{\"type\":\"object\","
-		    "\"properties\":{"
-		    "\"command\":{\"type\":\"string\","
-		    "\"description\":\"the shell command to execute\"},"
-		    "\"stdin\":{\"type\":\"string\","
-		    "\"description\":\"optional: data to write to the command's standard input\"}},"
-		    "\"required\":[\"command\"]}",
-		.invoke = tool_shell_exec,
-		.timeout_ms = CLM_SHELL_DEFAULT_TIMEOUT_MS,
-		.flags = CLM_TOOL_TIMEOUT_OVERRIDABLE | CLM_TOOL_OUTPUT_CAP_OVERRIDABLE,
-	};
 	const struct clm_tool_def read_def = {
 		.name = "read_file",
 		.description = "read a window of lines from a text file",
@@ -1277,8 +1025,5 @@ clm_tools_register_builtins(struct clm_agent *agent)
 	r = clm_tool_add(agent, &read_def);
 	if (r < 0)
 		return r;
-	r = clm_tool_add(agent, &write_def);
-	if (r < 0)
-		return r;
-	return clm_tool_add(agent, &shell_def);
+	return clm_tool_add(agent, &write_def);
 }
