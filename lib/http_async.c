@@ -326,7 +326,11 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	} else {
 		curl_easy_setopt(req->easy_handle, CURLOPT_USERAGENT, CLM_UA_BASE);
 	}
-	curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 120L);
+	curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 0L);
+	/* No total timeout, but abort if the connection goes completely dead:
+	 * less than 1 byte/sec for 120 seconds means the server is gone. */
+	curl_easy_setopt(req->easy_handle, CURLOPT_LOW_SPEED_LIMIT, 1L);
+	curl_easy_setopt(req->easy_handle, CURLOPT_LOW_SPEED_TIME, 120L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
 	curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, req);
