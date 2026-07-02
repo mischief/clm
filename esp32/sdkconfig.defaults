@@ -1,0 +1,22 @@
+# 16 MB flash (N16R8).
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# 8 MB octal (OPI) PSRAM on the T-Deck N16R8. Enabled so the display framebuffer
+# and long histories have room; the agent core itself fits in internal SRAM.
+CONFIG_ESP32S3_SPIRAM_SUPPORT=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# TLS: use the bundled x509 root bundle so https:// endpoints verify.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# Size-optimize; the app task gets a large stack (agent runs synchronously).
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=2048
+
+# Console on the native USB-Serial-JTAG (the /dev/ttyACM port) so REPL input
+# and output share one link, instead of UART0-primary + USB secondary mirror.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

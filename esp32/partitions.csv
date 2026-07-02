@@ -1,0 +1,6 @@
+# 16 MB flash (T-Deck N16R8). Single 4 MB factory app; conversation files live
+# on the microSD card, not on flash, so no data partition is needed here.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 0x400000,

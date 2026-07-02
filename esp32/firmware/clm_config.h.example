@@ -1,0 +1,9 @@
+// clm_config.h — device + endpoint configuration. Copy to clm_config.h.
+#define WIFI_SSID    "your_ssid"
+#define WIFI_PASS    "your_password"
+
+// OpenAI-compatible endpoint. For a local llama.cpp server:
+//   llama-server ... --host 0.0.0.0 --port 8080
+#define CLM_BASE_URL "http://192.168.0.190:8080/v1/chat/completions"
+#define CLM_API_KEY  ""
+#define CLM_MODEL    "local-model"
