@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -74,6 +75,41 @@ clm_message_create(enum clm_role role)
 	m->role = role;
 	TAILQ_INIT(&m->tool_calls);
 	return m;
+}
+
+/*
+ * Duplicate content into m->content and set m->content_len to its length,
+ * capped at UINT16_MAX (a single message cannot exceed 64 KiB - 1; content
+ * longer than that is truncated to fit). Every insertion path routes through
+ * here so content_len is never stale or left unset. A NULL content is a
+ * no-op: m->content stays NULL, m->content_len stays 0.
+ */
+static int
+message_set_content(struct clm_message *m, const char *content)
+{
+	size_t len;
+
+	if (content == NULL) {
+		free(m->content);
+		m->content = NULL;
+		m->content_len = 0;
+		return 0;
+	}
+
+	len = strlen(content);
+	if (len > UINT16_MAX)
+		len = UINT16_MAX;
+
+	char *copy = malloc(len + 1);
+	if (copy == NULL)
+		return -ENOMEM;
+	memcpy(copy, content, len);
+	copy[len] = '\0';
+
+	free(m->content);
+	m->content = copy;
+	m->content_len = (uint16_t)len;
+	return 0;
 }
 
 /*
@@ -196,8 +232,7 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 	summ = clm_message_create(CLM_ROLE_USER);
 	if (summ == NULL)
 		return -ENOMEM;
-	summ->content = strdup(summary);
-	if (summ->content == NULL) {
+	if (message_set_content(summ, summary) < 0) {
 		clm_message_free(summ);
 		return -ENOMEM;
 	}
@@ -224,12 +259,9 @@ clm_history_add_system(struct clm_history *h, const char *content)
 	if (m == NULL)
 		return NULL;
 
-	if (content) {
-		m->content = strdup(content);
-		if (m->content == NULL) {
-			free(m);
-			return NULL;
-		}
+	if (message_set_content(m, content) < 0) {
+		clm_message_free(m);
+		return NULL;
 	}
 
 	TAILQ_INSERT_TAIL(h, m, entries);
@@ -243,12 +275,9 @@ clm_history_add_user(struct clm_history *h, const char *content)
 	if (m == NULL)
 		return NULL;
 
-	if (content) {
-		m->content = strdup(content);
-		if (m->content == NULL) {
-			free(m);
-			return NULL;
-		}
+	if (message_set_content(m, content) < 0) {
+		clm_message_free(m);
+		return NULL;
 	}
 
 	TAILQ_INSERT_TAIL(h, m, entries);
@@ -262,12 +291,9 @@ clm_history_add_assistant_text(struct clm_history *h, const char *content)
 	if (m == NULL)
 		return NULL;
 
-	if (content) {
-		m->content = strdup(content);
-		if (m->content == NULL) {
-			free(m);
-			return NULL;
-		}
+	if (message_set_content(m, content) < 0) {
+		clm_message_free(m);
+		return NULL;
 	}
 
 	TAILQ_INSERT_TAIL(h, m, entries);
@@ -281,7 +307,7 @@ clm_history_add_assistant_tool_calls(struct clm_history *h)
 	if (m == NULL)
 		return NULL;
 
-	m->content = NULL;
+	/* content/content_len already NULL/0 from calloc in clm_message_create. */
 	TAILQ_INSERT_TAIL(h, m, entries);
 	return m;
 }
@@ -297,7 +323,7 @@ clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id,
 	if (tool_call_id) {
 		m->tool_call_id = strdup(tool_call_id);
 		if (m->tool_call_id == NULL) {
-			free(m);
+			clm_message_free(m);
 			return NULL;
 		}
 	}
@@ -305,20 +331,14 @@ clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id,
 	if (tool_name) {
 		m->tool_name = strdup(tool_name);
 		if (m->tool_name == NULL) {
-			free(m->tool_call_id);
-			free(m);
+			clm_message_free(m);
 			return NULL;
 		}
 	}
 
-	if (content) {
-		m->content = strdup(content);
-		if (m->content == NULL) {
-			free(m->tool_name);
-			free(m->tool_call_id);
-			free(m);
-			return NULL;
-		}
+	if (message_set_content(m, content) < 0) {
+		clm_message_free(m);
+		return NULL;
 	}
 
 	TAILQ_INSERT_TAIL(h, m, entries);

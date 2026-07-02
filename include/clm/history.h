@@ -3,6 +3,7 @@
 #define CLM_HISTORY_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/queue.h>
 
 #include <cJSON.h>
@@ -48,7 +49,12 @@ void clm_tool_result_free(struct clm_tool_result *r);
  *                        tool_calls (empty unless the assistant requested calls)
  *   CLM_ROLE_TOOL      : content (the tool output), tool_call_id
  *
- * content and tool_call_id are owned strings or NULL.
+ * content and tool_call_id are owned strings or NULL. content_len is the
+ * strlen() of content (0 if content is NULL), capped at UINT16_MAX -- a
+ * single stored message cannot exceed 64 KiB - 1. This is tracked explicitly
+ * (rather than relying on content always being NUL-terminated) so a future
+ * compressed representation of content has a length to work with without
+ * re-deriving it, and so no caller has to assume content is a plain C string.
  *
  * tool_name (CLM_ROLE_TOOL only) records which tool produced the result.
  * It exists for clm_history_supersede_tool() -- the wire format links a
@@ -58,6 +64,7 @@ void clm_tool_result_free(struct clm_tool_result *r);
 struct clm_message {
 	enum clm_role role;
 	char *content;
+	uint16_t content_len;
 	char *tool_call_id;
 	char *tool_name;
 	struct clm_tool_call_list tool_calls;
