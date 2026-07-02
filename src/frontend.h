@@ -5,11 +5,15 @@
 
 #include "clm/clm.h"
 
+struct clm_lua_cfg; /* opaque; may be NULL when CLM_LUA is disabled */
+
 /*
  * Run the interactive ncurses frontend on a fresh default loop. Blocks until
  * the user quits. Returns 0 on success, non-zero on setup failure.
  * plugin_dir may be NULL (uses XDG default).
+ * lcfg may be NULL (no config file found).
  */
-int tui_run(const struct clm_cfg *cfg, const char *plugin_dir);
+int tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
+    struct clm_lua_cfg *lcfg);
 
 #endif /* CLM_FRONTEND_H */

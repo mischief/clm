@@ -1003,11 +1003,37 @@ clm_lua_env_set_config(struct clm_lua_env *env, const char *tool_config_json)
 	return 0;
 }
 
-CLM_API char *
-clm_lua_load_config(const char *path)
+CLM_API int
+clm_lua_env_set_config_from(struct clm_lua_env *env, struct clm_lua_cfg *cfg)
 {
+	char *json;
+
+	ASSERT_RETURN(env != NULL, -EINVAL);
+	if (cfg == NULL)
+		return 0;
+	json = clm_lua_cfg_tools_json(cfg);
+	if (json == NULL)
+		return 0; /* no tools section is fine */
+	int r = clm_lua_env_set_config(env, json);
+	free(json);
+	return r;
+}
+
+/* ------------------------------------------------------------------ */
+/* Config state                                                        */
+/* ------------------------------------------------------------------ */
+
+struct clm_lua_cfg {
 	lua_State *L;
-	char *out;
+	int cfg_ref; /* registry ref to the config table */
+	int agent_ref; /* registry ref to the resolved agent table, or LUA_NOREF */
+};
+
+CLM_API struct clm_lua_cfg *
+clm_lua_cfg_load(const char *path)
+{
+	struct clm_lua_cfg *cfg;
+	lua_State *L;
 
 	if (path == NULL)
 		return NULL;
@@ -1016,7 +1042,6 @@ clm_lua_load_config(const char *path)
 	if (L == NULL)
 		return NULL;
 
-	/* Only open safe libs for config evaluation. */
 	luaL_requiref(L, "_G", luaopen_base, 1);
 	lua_pop(L, 1);
 	luaL_requiref(L, "string", luaopen_string, 1);
@@ -1039,24 +1064,179 @@ clm_lua_load_config(const char *path)
 		lua_close(L);
 		return NULL;
 	}
-
-	/* Expect the config to return a table. */
 	if (!lua_istable(L, -1)) {
 		clm_debug("config: %s did not return a table", path);
 		lua_close(L);
 		return NULL;
 	}
 
-	/* Extract the "tools" subtable. */
-	lua_getfield(L, -1, "tools");
-	if (!lua_istable(L, -1)) {
-		/* No tools section is fine — not an error. */
+	cfg = calloc(1, sizeof(*cfg));
+	if (cfg == NULL) {
 		lua_close(L);
 		return NULL;
 	}
+	cfg->L = L;
+	cfg->cfg_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	cfg->agent_ref = LUA_NOREF;
+	return cfg;
+}
 
-	/* Serialize the tools table to JSON. */
+CLM_API int
+clm_lua_cfg_load_agent(struct clm_lua_cfg *cfg, const char *agents_dir,
+    const char *agent_name)
+{
+	lua_State *L = cfg->L;
+	char *aname = NULL;
+
+	/* If no name given, read config.agent. */
+	if (agent_name == NULL) {
+		lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+		lua_getfield(L, -1, "agent");
+		if (lua_isstring(L, -1))
+			agent_name = lua_tostring(L, -1);
+		lua_pop(L, 2);
+		if (agent_name == NULL)
+			return -1;
+	}
+
+	/* Check if config.agents[name] exists (inline). */
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+	lua_getfield(L, -1, "agents");
+	if (lua_istable(L, -1)) {
+		lua_getfield(L, -1, agent_name);
+		if (lua_istable(L, -1)) {
+			if (cfg->agent_ref != LUA_NOREF)
+				luaL_unref(L, LUA_REGISTRYINDEX, cfg->agent_ref);
+			cfg->agent_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+			lua_pop(L, 2); /* agents table, config table */
+			return 0;
+		}
+		lua_pop(L, 1); /* nil */
+	}
+	lua_pop(L, 2); /* agents (or nil), config table */
+
+	/* Try loading agents_dir/<name>.lua */
+	if (agents_dir == NULL)
+		return -1;
+
+	size_t dlen = strlen(agents_dir);
+	size_t nlen = strlen(agent_name);
+	aname = malloc(dlen + 1 + nlen + 4 + 1);
+	if (aname == NULL)
+		return -1;
+	(void)snprintf(aname, dlen + 1 + nlen + 5, "%s/%s.lua",
+	    agents_dir, agent_name);
+
+	if (luaL_loadfile(L, aname) != LUA_OK) {
+		clm_debug("config: agent file %s: %s", aname,
+		    lua_tostring(L, -1));
+		lua_pop(L, 1);
+		free(aname);
+		return -1;
+	}
+	free(aname);
+
+	if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+		clm_debug("config: agent error: %s", lua_tostring(L, -1));
+		lua_pop(L, 1);
+		return -1;
+	}
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 1);
+		return -1;
+	}
+
+	if (cfg->agent_ref != LUA_NOREF)
+		luaL_unref(L, LUA_REGISTRYINDEX, cfg->agent_ref);
+	cfg->agent_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	return 0;
+}
+
+CLM_API const char *
+clm_lua_cfg_get_str(struct clm_lua_cfg *cfg, const char *key)
+{
+	lua_State *L = cfg->L;
+	const char *val = NULL;
+
+	/* Check agent table first, then top-level config. */
+	if (cfg->agent_ref != LUA_NOREF) {
+		lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->agent_ref);
+		lua_getfield(L, -1, key);
+		if (lua_isstring(L, -1))
+			val = lua_tostring(L, -1);
+		lua_pop(L, 2);
+		if (val != NULL)
+			return val;
+	}
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+	lua_getfield(L, -1, key);
+	if (lua_isstring(L, -1))
+		val = lua_tostring(L, -1);
+	lua_pop(L, 2);
+	return val;
+}
+
+CLM_API const char *
+clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
+    const char *provider_name, const char *key)
+{
+	lua_State *L = cfg->L;
+	const char *val = NULL;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+	lua_getfield(L, -1, "providers");
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 2);
+		return NULL;
+	}
+	lua_getfield(L, -1, provider_name);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 3);
+		return NULL;
+	}
+	lua_getfield(L, -1, key);
+	if (lua_isstring(L, -1))
+		val = lua_tostring(L, -1);
+	lua_pop(L, 4);
+	return val;
+}
+
+CLM_API char *
+clm_lua_cfg_tools_json(struct clm_lua_cfg *cfg)
+{
+	lua_State *L = cfg->L;
+	char *out;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+	lua_getfield(L, -1, "tools");
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 2);
+		return NULL;
+	}
 	out = lua_table_to_json(L, -1);
-	lua_close(L);
+	lua_pop(L, 2);
 	return out;
+}
+
+CLM_API void
+clm_lua_cfg_free(struct clm_lua_cfg *cfg)
+{
+	if (cfg == NULL)
+		return;
+	if (cfg->L != NULL)
+		lua_close(cfg->L);
+	free(cfg);
+}
+
+/* Legacy wrapper. */
+CLM_API char *
+clm_lua_load_config(const char *path)
+{
+	struct clm_lua_cfg *cfg = clm_lua_cfg_load(path);
+	if (cfg == NULL)
+		return NULL;
+	char *json = clm_lua_cfg_tools_json(cfg);
+	clm_lua_cfg_free(cfg);
+	return json;
 }

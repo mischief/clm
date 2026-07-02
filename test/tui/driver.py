@@ -48,6 +48,9 @@ class Tui:
         self.pid, self._fd = pty.fork()
         if self.pid == 0:  # child
             os.environ["TERM"] = "xterm-256color"
+            # Point at the in-tree test config so agent profiles resolve.
+            test_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            os.environ["XDG_CONFIG_HOME"] = os.path.join(test_dir, "config")
             try:
                 os.execv(argv[0], argv)
             finally:

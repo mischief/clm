@@ -69,6 +69,8 @@ struct ui {
 	struct clm_agent *agent;
 #ifdef CLM_LUA
 	struct clm_lua_env *lua_env;
+	struct clm_lua_cfg *lcfg;      /* kept alive for /agent switching */
+	const char *plugin_dir;        /* NULL = use XDG default */
 #endif
 
 	uv_poll_t stdin_poll;
@@ -111,6 +113,7 @@ struct ui {
 
 	/* Status model. */
 	const char *model;
+	char *agent_name; /* displayed in status bar (owned) */
 	enum clm_agent_state state;
 	enum clm_conn_status conn;
 	char conn_detail[64];
@@ -679,7 +682,9 @@ draw_status(struct ui *u)
 		info = state_label(u->state);
 
 	mvwprintw(u->stat, 0, 0, " clm");
-	if (u->model != NULL)
+	if (u->agent_name != NULL)
+		wprintw(u->stat, " [%s]", u->agent_name);
+	else if (u->model != NULL)
 		wprintw(u->stat, " [%s]", u->model);
 
 	switch (u->conn) {
@@ -1198,6 +1203,10 @@ drain_queue(struct ui *u)
 	free(prompt);
 }
 
+#ifdef CLM_LUA
+static char *xdg_config_path(const char *suffix);
+#endif
+
 /* A '/word ...' line: run a UI command instead of prompting the model. */
 static void
 run_command(struct ui *u, const char *line)
@@ -1220,7 +1229,7 @@ run_command(struct ui *u, const char *line)
 		    "\ncommands:\n"
 		    "  /help              this help\n"
 		    "  /clear             clear the transcript\n"
-		    "  /provider <url> [model]  switch LLM endpoint\n"
+		    "  /agent <name>      switch agent profile\n"
 		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
 		    "  /output [full|short] tool output detail (^O)\n"
 		    "  /compact           summarize old turns to reclaim context\n"
@@ -1263,47 +1272,96 @@ run_command(struct ui *u, const char *line)
 		} else {
 			ui_push(u, ST_ERROR, "\ncompaction failed to start\n");
 		}
-	} else if (CMD("provider") || CMD("p")) {
-		/* /provider <url> [model]
-		 * Switches the LLM endpoint. Appends /chat/completions to url.
-		 * API key comes from CLM_API_KEY env (unchanged). */
+	} else if (CMD("agent") || CMD("a")) {
+		/* /agent <name>
+		 * Switch agent: reload profile, swap provider+prompt, clear history. */
+#ifdef CLM_LUA
 		if (arg[0] == '\0') {
-			ui_push(u, ST_META, "\nusage: /provider <url> [model]\n");
+			ui_push(u, ST_META, "\nusage: /agent <name>\n");
+		} else if (u->lcfg == NULL) {
+			ui_push(u, ST_ERROR, "\nno config loaded\n");
 		} else {
-			char url_buf[512];
-			const char *model_arg = NULL;
-			const char *p = arg;
-			size_t ulen = 0;
-			while (*p != '\0' && *p != ' ')
-				p++;
-			ulen = (size_t)(p - arg);
-			while (*p == ' ')
-				p++;
-			if (*p != '\0')
-				model_arg = p;
-			/* Build full URL: strip trailing slash, append /chat/completions */
-			while (ulen > 0 && arg[ulen - 1] == '/')
-				ulen--;
-			(void)snprintf(url_buf, sizeof(url_buf), "%.*s/chat/completions",
-			    (int)ulen, arg);
-			const char *key = getenv("CLM_API_KEY");
-			int rc = clm_agent_set_provider(u->agent, url_buf,
-			    key, model_arg);
-			if (rc == 0) {
-				char msg[256];
-				(void)snprintf(msg, sizeof(msg), "\n[provider: %.*s model=%s]\n",
-				    (int)ulen, arg,
-				    model_arg ? model_arg : "default");
-				ui_push(u, ST_META, msg);
-				if (model_arg != NULL)
-					u->model = model_arg;
-				clm_agent_check_connection(u->agent);
-			} else if (rc == -EBUSY) {
-				ui_push(u, ST_ERROR, "\nbusy; switch provider when idle\n");
+			char *adir = xdg_config_path("clm/agents");
+			if (clm_lua_cfg_load_agent(u->lcfg, adir, arg) < 0) {
+				char msg[128];
+				(void)snprintf(msg, sizeof(msg),
+				    "\nagent '%s' not found\n", arg);
+				ui_push(u, ST_ERROR, msg);
+				free(adir);
 			} else {
-				ui_push(u, ST_ERROR, "\nfailed to switch provider\n");
+				free(adir);
+				/* Resolve new provider. */
+				const char *prov = clm_lua_cfg_get_str(u->lcfg, "provider");
+				const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
+				const char *pmodel = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "model") : NULL;
+				const char *pkey = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "api_key") : NULL;
+				const char *sprompt = clm_lua_cfg_get_str(u->lcfg, "system_prompt");
+
+				/* Tear down plugins + agent. */
+				clm_lua_env_free(u->lua_env);
+				u->lua_env = NULL;
+				clm_agent_free(u->agent);
+
+				/* Rebuild cfg. */
+				int r;
+				struct clm_cfg newcfg = {0};
+				char url_buf[512];
+				if (purl != NULL) {
+					size_t ulen = strlen(purl);
+					while (ulen > 0 && purl[ulen-1] == '/')
+						ulen--;
+					(void)snprintf(url_buf, sizeof(url_buf),
+					    "%.*s/chat/completions", (int)ulen, purl);
+					newcfg.base_url = url_buf;
+				} else {
+					newcfg.base_url = "http://127.0.0.1:8081/v1/chat/completions";
+				}
+				newcfg.model = pmodel ? pmodel : "local-model";
+				newcfg.api_key = pkey ? pkey : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY") : "sk-no-key-required");
+				newcfg.system_prompt = sprompt;
+				newcfg.provider = CLM_PROVIDER_OPENAI;
+				newcfg.stream = 1;
+
+				r = clm_agent_new(&newcfg, u->host, &tui_callbacks, u, &u->agent);
+				if (r < 0) {
+					ui_push(u, ST_ERROR, "\nfailed to create agent\n");
+				} else {
+					clm_tools_register_shell(u->agent);
+					/* Reload plugins. */
+					if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
+						clm_lua_env_set_config_from(u->lua_env, u->lcfg);
+						if (u->plugin_dir != NULL) {
+							clm_lua_load_plugins(u->lua_env, u->plugin_dir);
+						} else {
+							char *pp = xdg_config_path("clm/plugins");
+							if (pp != NULL) {
+								clm_lua_load_plugins(u->lua_env, pp);
+								free(pp);
+							}
+						}
+						/* Load agent-specific plugins. */
+						char *apdir = xdg_config_path("clm/agents");
+						if (apdir != NULL) {
+							char apbuf[512];
+							(void)snprintf(apbuf, sizeof(apbuf), "%s/%s", apdir, arg);
+							clm_lua_load_plugins(u->lua_env, apbuf);
+							free(apdir);
+						}
+					}
+					free(u->agent_name);
+					u->agent_name = strdup(arg);
+					u->model = newcfg.model;
+					char msg[128];
+					(void)snprintf(msg, sizeof(msg),
+					    "\n[switched to agent: %s]\n", arg);
+					ui_push(u, ST_META, msg);
+					clm_agent_check_connection(u->agent);
+				}
 			}
 		}
+#else
+		ui_push(u, ST_ERROR, "\nagents require Lua support\n");
+#endif
 	} else if (CMD("quit") || CMD("exit") || CMD("q")) {
 		u->quit = true;
 	} else {
@@ -2133,7 +2191,8 @@ xdg_config_path(const char *suffix)
 #endif
 
 int
-tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
+tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
+    struct clm_lua_cfg *lcfg)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -2150,6 +2209,12 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
 	loop = uv_default_loop();
 	u->loop = loop;
 	u->model = cfg->model;
+#ifdef CLM_LUA
+	if (lcfg != NULL)
+		u->agent_name = strdup(clm_lua_cfg_get_str(lcfg, "agent"));
+	u->lcfg = lcfg;
+	u->plugin_dir = plugin_dir;
+#endif
 	u->state = CLM_STATE_IDLE;
 	/* Default to the clean view: reasoning hidden and tool output collapsed.
 	 * Opt in with ^R / ^O (see the status-bar hints). */
@@ -2175,17 +2240,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir)
 
 #ifdef CLM_LUA
 	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
-		{
-			char *cpath = xdg_config_path("clm/config.lua");
-			if (cpath != NULL) {
-				char *cfg_json = clm_lua_load_config(cpath);
-				if (cfg_json != NULL) {
-					clm_lua_env_set_config(u->lua_env, cfg_json);
-					free(cfg_json);
-				}
-				free(cpath);
-			}
-		}
+		if (lcfg != NULL)
+			clm_lua_env_set_config_from(u->lua_env, lcfg);
 		if (plugin_dir != NULL) {
 			clm_lua_load_plugins(u->lua_env, plugin_dir);
 		} else {

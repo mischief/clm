@@ -13,6 +13,7 @@
 
 #ifdef CLM_LUA
 #include "clm/lua_plugin.h"
+#include "clm/cleanup.h"
 #endif
 
 static void
@@ -47,6 +48,7 @@ struct cli_state {
 	struct clm_agent *agent;
 #ifdef CLM_LUA
 	struct clm_lua_env *lua_env;
+	struct clm_lua_cfg *lua_cfg;
 #endif
 	uv_pipe_t stdin_pipe;
 	char prompt_line[1024];
@@ -252,6 +254,7 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 	free(buf->base);
 }
 
+#ifdef CLM_LUA
 /*
  * Build a path under the XDG config dir: $XDG_CONFIG_HOME/<suffix> or
  * ~/.config/<suffix>. Returns a malloc'd string, or NULL.
@@ -276,13 +279,15 @@ xdg_config_path(const char *suffix)
 	}
 	return out;
 }
+#endif /* CLM_LUA */
 
 int
 main(int argc, char *argv[])
 {
-	const char *api_base = "http://127.0.0.1:8081/v1";
-	const char *model = "local-model";
+	const char *api_base = NULL;
+	const char *model = NULL;
 	const char *plugin_dir = NULL;
+	const char *agent_name = NULL;
 	char *oneshot = NULL;
 	int stream = 1;
 	int headless = 0;
@@ -292,12 +297,16 @@ main(int argc, char *argv[])
 	char endpoint[256];
 	size_t baselen;
 	int opt, r;
+#ifdef CLM_LUA
+	struct clm_lua_cfg *lcfg = NULL;
+#endif
 
 	const struct option opts[] = {
 		{"oneshot", required_argument, NULL, 'o'},
 		{"url", required_argument, NULL, 'u'},
 		{"model", required_argument, NULL, 'm'},
 		{"plugins", required_argument, NULL, 'p'},
+		{"agent", required_argument, NULL, 'a'},
 		{"headless", no_argument, NULL, 'H'},
 		{"no-stream", no_argument, NULL, 'S'},
 		{"version", no_argument, NULL, 'V'},
@@ -305,8 +314,9 @@ main(int argc, char *argv[])
 		{NULL, 0, NULL, 0},
 	};
 
-	while ((opt = getopt_long(argc, argv, "o:u:m:p:HSVh", opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "a:o:u:m:p:HSVh", opts, NULL)) != -1) {
 		switch (opt) {
+		case 'a': agent_name = optarg; break;
 		case 'o': oneshot = optarg; break;
 		case 'u': api_base = optarg; break;
 		case 'm': model = optarg; break;
@@ -319,17 +329,48 @@ main(int argc, char *argv[])
 		}
 	}
 
-	/* -u takes the base endpoint; /chat/completions is appended.
-	 * Tolerates a trailing slash on the base. */
+#ifdef CLM_LUA
+	/* Load config early so agent profile + provider inform the cfg. */
+	{
+		autofree char *cpath = xdg_config_path("clm/config.lua");
+		if (cpath != NULL)
+			lcfg = clm_lua_cfg_load(cpath);
+	}
+	if (lcfg != NULL) {
+		autofree char *adir = xdg_config_path("clm/agents");
+		clm_lua_cfg_load_agent(lcfg, adir, agent_name);
+
+		/* Resolve provider from agent profile. */
+		const char *prov_name = clm_lua_cfg_get_str(lcfg, "provider");
+		if (prov_name != NULL) {
+			const char *purl = clm_lua_cfg_provider_str(lcfg, prov_name, "url");
+			const char *pmodel = clm_lua_cfg_provider_str(lcfg, prov_name, "model");
+			const char *pkey = clm_lua_cfg_provider_str(lcfg, prov_name, "api_key");
+			if (api_base == NULL && purl != NULL)
+				api_base = purl;
+			if (model == NULL && pmodel != NULL)
+				model = pmodel;
+			if (pkey != NULL && getenv("CLM_API_KEY") == NULL)
+				cfg.api_key = pkey;
+		}
+	}
+#endif
+
+	/* Defaults for anything not set by config or CLI. */
+	if (api_base == NULL)
+		api_base = "http://127.0.0.1:8081/v1";
+	if (model == NULL)
+		model = "local-model";
+
+	/* -u takes the base endpoint; /chat/completions is appended. */
 	baselen = strlen(api_base);
 	while (baselen > 0 && api_base[baselen - 1] == '/')
 		baselen--;
 	snprintf(endpoint, sizeof(endpoint), "%.*s/chat/completions",
 	    (int)baselen, api_base);
 
-	/* API key from the environment (kept out of argv, which leaks via ps and
-	 * shell history). Falls back to a placeholder for local no-auth servers. */
-	{
+	/* API key: env > config > placeholder. */
+	if (cfg.api_key == NULL) {
 		const char *key = getenv("CLM_API_KEY");
 		cfg.api_key = (key != NULL && key[0] != '\0') ? key
 		                                              : "sk-no-key-required";
@@ -339,6 +380,10 @@ main(int argc, char *argv[])
 	cfg.model = model;
 	cfg.max_iterations = 0;
 	cfg.stream = stream;
+#ifdef CLM_LUA
+	if (lcfg != NULL)
+		cfg.system_prompt = clm_lua_cfg_get_str(lcfg, "system_prompt");
+#endif
 
 	/*
 	 * Default to the ncurses UI when we're interactive: no oneshot, not
@@ -347,7 +392,11 @@ main(int argc, char *argv[])
 	 */
 	if (oneshot == NULL && !headless && isatty(STDIN_FILENO) &&
 	    isatty(STDOUT_FILENO))
-		return tui_run(&cfg, plugin_dir);
+#ifdef CLM_LUA
+		return tui_run(&cfg, plugin_dir, lcfg);
+#else
+		return tui_run(&cfg, plugin_dir, NULL);
+#endif
 
 	/* Heap-allocated so the 1 KB input buffer stays off main's stack frame. */
 	state = calloc(1, sizeof(*state));
@@ -380,26 +429,14 @@ main(int argc, char *argv[])
 
 #ifdef CLM_LUA
 	if (clm_lua_env_new(state->agent, &state->lua_env) == 0) {
-		/* Load config and inject per-plugin settings. */
-		{
-			char *cpath = xdg_config_path("clm/config.lua");
-			if (cpath != NULL) {
-				char *cfg_json = clm_lua_load_config(cpath);
-				if (cfg_json != NULL) {
-					clm_lua_env_set_config(state->lua_env, cfg_json);
-					free(cfg_json);
-				}
-				free(cpath);
-			}
-		}
+		if (lcfg != NULL)
+			clm_lua_env_set_config_from(state->lua_env, lcfg);
 		if (plugin_dir != NULL) {
 			clm_lua_load_plugins(state->lua_env, plugin_dir);
 		} else {
-			char *ppath = xdg_config_path("clm/plugins");
-			if (ppath != NULL) {
+			autofree char *ppath = xdg_config_path("clm/plugins");
+			if (ppath != NULL)
 				clm_lua_load_plugins(state->lua_env, ppath);
-				free(ppath);
-			}
 		}
 	}
 #endif

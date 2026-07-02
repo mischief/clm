@@ -194,10 +194,20 @@ def test_permission(url):
         check("denied" in t.text(), "permission: 'n' denies the call")
 
 
+def test_agent_name(url):
+    """The status bar should show the agent name from config."""
+    with Tui(BIN, url, rows=12, cols=60) as t:
+        t.wait_for("[online]", timeout=10) or t.pump(1.0)
+        txt = t.text()
+        # The test config sets agent = "test"
+        check("[test]" in txt, "agent: status bar shows agent name from config")
+
+
 def main():
     with MockServer() as srv:
         test_connection_online(srv.url)
         test_connection_offline()
+        test_agent_name(srv.url)
         test_markdown(srv.url)
         test_scrollback(srv.url)
         test_resize(srv.url)
