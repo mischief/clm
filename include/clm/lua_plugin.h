@@ -84,6 +84,13 @@ CLM_API const char *clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
 CLM_API char *clm_lua_cfg_tools_json(struct clm_lua_cfg *cfg);
 
 /*
+ * Get the mcp_servers config as a JSON string (array of server tables; see
+ * clm/mcp.h for the fields each entry needs per transport).
+ * Caller owns the returned string (free with free()). NULL if unset.
+ */
+CLM_API char *clm_lua_cfg_mcp_servers_json(struct clm_lua_cfg *cfg);
+
+/*
  * Free the config state.
  */
 CLM_API void clm_lua_cfg_free(struct clm_lua_cfg *cfg);

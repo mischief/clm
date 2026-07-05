@@ -32,7 +32,7 @@ curses_warn = cc.get_supported_arguments('-Wno-useless-cast')
 
 # clmuv_dep pulls in the core (libclm) plus the uv/curl host layer and its
 # libuv/libcurl deps, so the binary gets clm_host_uv_new + shell_exec.
-clm_exe = executable('clm', clm_src + files('tui.c') + [version_h],
+clm_exe = executable('clm', clm_src + files('tui.c', 'mcp_setup.c') + [version_h],
   link_with: [md_render_lib],
   dependencies: [clmuv_dep, curses_dep, jsonc_dep],
   include_directories: [clm_bin_inc, md_render_inc, clm_inc],

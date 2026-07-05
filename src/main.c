@@ -14,6 +14,7 @@
 #ifdef CLM_LUA
 #include "clm/lua_plugin.h"
 #include "clm/cleanup.h"
+#include "mcp_setup.h"
 #endif
 
 static void
@@ -49,6 +50,8 @@ struct cli_state {
 #ifdef CLM_LUA
 	struct clm_lua_env *lua_env;
 	struct clm_lua_cfg *lua_cfg;
+	struct clm_mcp_client **mcp_clients;
+	size_t mcp_client_count;
 #endif
 	uv_pipe_t stdin_pipe;
 	char prompt_line[1024];
@@ -439,6 +442,8 @@ main(int argc, char *argv[])
 				clm_lua_load_plugins(state->lua_env, ppath);
 		}
 	}
+	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop, lcfg,
+	    &state->mcp_client_count);
 #endif
 
 	if (oneshot != NULL) {
@@ -447,6 +452,7 @@ main(int argc, char *argv[])
 			fprintf(stderr, "error: %s\n", clm_agent_get_last_error(state->agent));
 #ifdef CLM_LUA
 			clm_lua_env_free(state->lua_env);
+			clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
 #endif
 			clm_agent_free(state->agent);
 			clm_host_uv_free(state->host);
@@ -460,6 +466,7 @@ main(int argc, char *argv[])
 		printf("\n");
 #ifdef CLM_LUA
 		clm_lua_env_free(state->lua_env);
+		clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
 #endif
 		clm_agent_free(state->agent);
 		clm_host_uv_free(state->host);
@@ -482,6 +489,7 @@ main(int argc, char *argv[])
 
 #ifdef CLM_LUA
 	clm_lua_env_free(state->lua_env);
+	clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
 #endif
 	clm_agent_free(state->agent);
 	clm_host_uv_free(state->host);

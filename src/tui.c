@@ -35,6 +35,7 @@
 
 #ifdef CLM_LUA
 #include "clm/lua_plugin.h"
+#include "mcp_setup.h"
 #endif
 
 /* Style buckets, mapped to curses attributes in seg_attr(). */
@@ -72,6 +73,8 @@ struct ui {
 	struct clm_lua_env *lua_env;
 	struct clm_lua_cfg *lcfg;      /* kept alive for /agent switching */
 	const char *plugin_dir;        /* NULL = use XDG default */
+	struct clm_mcp_client **mcp_clients;
+	size_t mcp_client_count;
 #endif
 
 	uv_poll_t stdin_poll;
@@ -1298,9 +1301,14 @@ run_command(struct ui *u, const char *line)
 				const char *pkey = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "api_key") : NULL;
 				const char *sprompt = clm_lua_cfg_get_str(u->lcfg, "system_prompt");
 
-				/* Tear down plugins + agent. */
+				/* Tear down plugins + MCP clients (must happen while the
+				 * old agent is still alive: unregistering their tools
+				 * touches it) + agent. */
 				clm_lua_env_free(u->lua_env);
 				u->lua_env = NULL;
+				clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
+				u->mcp_clients = NULL;
+				u->mcp_client_count = 0;
 				clm_agent_free(u->agent);
 
 				/* Rebuild cfg. */
@@ -1349,6 +1357,8 @@ run_command(struct ui *u, const char *line)
 							free(apdir);
 						}
 					}
+					u->mcp_clients = clm_cli_connect_mcp_servers(u->agent,
+					    u->loop, u->lcfg, &u->mcp_client_count);
 					free(u->agent_name);
 					u->agent_name = strdup(arg);
 					u->model = newcfg.model;
@@ -2257,6 +2267,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 			}
 		}
 	}
+	u->mcp_clients = clm_cli_connect_mcp_servers(u->agent, loop, lcfg,
+	    &u->mcp_client_count);
 #endif
 
 	initscr();
@@ -2294,6 +2306,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	endwin();
 #ifdef CLM_LUA
 	clm_lua_env_free(u->lua_env);
+	clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
 #endif
 	clm_agent_free(u->agent);
 	clm_host_uv_free(u->host);

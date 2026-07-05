@@ -1219,6 +1219,31 @@ clm_lua_cfg_tools_json(struct clm_lua_cfg *cfg)
 	return out;
 }
 
+/*
+ * Get the mcp_servers config as a JSON string, e.g.:
+ *   mcp_servers = {
+ *     { name = "fs", transport = "stdio", command = {"mcp-server-fs", "/tmp"} },
+ *     { name = "search", transport = "http", url = "https://.../mcp", api_key = "..." },
+ *   }
+ * Caller owns the returned string (free with free()). NULL if unset.
+ */
+CLM_API char *
+clm_lua_cfg_mcp_servers_json(struct clm_lua_cfg *cfg)
+{
+	lua_State *L = cfg->L;
+	char *out;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+	lua_getfield(L, -1, "mcp_servers");
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 2);
+		return NULL;
+	}
+	out = lua_table_to_json(L, -1);
+	lua_pop(L, 2);
+	return out;
+}
+
 CLM_API void
 clm_lua_cfg_free(struct clm_lua_cfg *cfg)
 {
