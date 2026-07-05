@@ -3,6 +3,7 @@
 #define CLM_TOOLS_H
 
 #include <stddef.h>
+#include <sys/queue.h>
 
 #include <json-c/json.h>
 
@@ -11,8 +12,24 @@
 
 struct clm_agent;
 
-/* A registered tool: an owned copy of the clm_tool_def the caller provided. */
+/*
+ * A registered tool: an owned copy of the clm_tool_def the caller provided.
+ * Held on a TAILQ (see struct clm_tool_list below) rather than an array so
+ * that clm_tool_remove() never has to move or invalidate another tool's
+ * node -- important because struct clm_tool_invocation.def is a raw pointer
+ * into one of these nodes, held for the life of an invocation (including
+ * across an async permission prompt, which clm_tool_permission_respond may
+ * answer much later; see clm_tool_permission_respond in clm.h).
+ *
+ * A tool being removed while it still has an incomplete invocation is
+ * handled by "removed"/"inflight": clm_tool_remove unlinks the node
+ * immediately (so it stops being dispatched to or advertised) but only
+ * frees it once inflight drops to zero (see inv_finalize/find_tool in
+ * tools.c).
+ */
 struct clm_tool {
+	TAILQ_ENTRY(clm_tool) entries;
+
 	char *name;
 	char *description;   /* owned, may be NULL */
 	char *params_schema; /* owned JSON string, may be NULL */
@@ -25,13 +42,20 @@ struct clm_tool {
 	/* Session memory of an _ALWAYS permission decision for this tool. */
 	bool remembered;      /* a decision has been made */
 	bool remember_allow;  /* true=always allow, false=always deny */
+
+	/* Removal bookkeeping; see the struct comment above. */
+	bool removed;      /* clm_tool_remove was called; unlinked, zombie */
+	unsigned inflight; /* invocations with def == this node, not yet finalized */
 };
+TAILQ_HEAD(clm_tool_list, clm_tool);
 
 /* Register the three built-in tools (read_file, write_file, shell_exec). */
 int clm_tools_register_builtins(struct clm_agent *agent);
 
-/* Free a tool registry array (name/description/params_schema strings). */
-void clm_tools_free_registry(struct clm_tool *tools, size_t count);
+/* Free every node on a tool registry list (name/description/params_schema
+ * strings, then the node itself). Used at agent teardown only -- by then no
+ * invocation can be in flight, so removed-but-zombie nodes are freed too. */
+void clm_tools_free_registry(struct clm_tool_list *tools);
 
 /*
  * Build the OpenAI "tools" schema array for the agent's registered tools,

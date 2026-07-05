@@ -313,6 +313,16 @@ CLM_API int clm_tool_permission_respond(struct clm_agent *agent,
  */
 CLM_API int clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def);
 
+/*
+ * Unregister a tool by name. Safe to call at any time, including with an
+ * invocation of that tool still in flight (e.g. awaiting a permission
+ * decision, or a slow async call): the tool stops being dispatched to and
+ * disappears from the schema advertised to the model immediately, but its
+ * bookkeeping is only freed once any in-flight invocation finishes. Returns
+ * 0, or -ENOENT if no tool is registered under that name.
+ */
+CLM_API int clm_tool_remove(struct clm_agent *agent, const char *name);
+
 /* --- accessors usable from inside a tool's invoke fn --- */
 CLM_API const char *clm_tool_invocation_name(const struct clm_tool_invocation *inv);
 CLM_API const char *clm_tool_invocation_args(const struct clm_tool_invocation *inv);

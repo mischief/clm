@@ -194,6 +194,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 	agent->backend = cfg->backend;
 	agent->max_iterations = cfg->max_iterations; /* 0 = unlimited */
 	clm_history_init(&agent->history);
+	TAILQ_INIT(&agent->tools);
 
 	if (cb != NULL) {
 		agent->cb_on_assistant_text = cb->on_assistant_text;
@@ -260,7 +261,7 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->models_url);
 	free(agent->props_url);
 	free(agent->compact_body);
-	clm_tools_free_registry(agent->tools, agent->tool_count);
+	clm_tools_free_registry(&agent->tools);
 	clm_ratelimit_free(agent->tool_rl);
 	free(agent);
 }

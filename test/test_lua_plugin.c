@@ -59,15 +59,13 @@ test_plugin_loads(void)
 
 	/* Verify the reverse_string tool was registered. */
 	int found = 0;
-	for (size_t i = 0; i < agent->tool_count; i++) {
-		if (strcmp(agent->tools[i].name, "reverse_string") == 0) {
+	struct clm_tool *rt;
+	TAILQ_FOREACH(rt, &agent->tools, entries) {
+		if (strcmp(rt->name, "reverse_string") == 0) {
 			found = 1;
-			CHECK(agent->tools[i].description != NULL,
-			    "tool has description");
-			CHECK(agent->tools[i].params_schema != NULL,
-			    "tool has params_schema");
-			CHECK(agent->tools[i].invoke != NULL,
-			    "tool has invoke function");
+			CHECK(rt->description != NULL, "tool has description");
+			CHECK(rt->params_schema != NULL, "tool has params_schema");
+			CHECK(rt->invoke != NULL, "tool has invoke function");
 			break;
 		}
 	}
@@ -75,11 +73,11 @@ test_plugin_loads(void)
 
 	/* Verify the schema is valid JSON. */
 	if (found) {
-		for (size_t i = 0; i < agent->tool_count; i++) {
-			if (strcmp(agent->tools[i].name, "reverse_string") != 0)
+		TAILQ_FOREACH(rt, &agent->tools, entries) {
+			if (strcmp(rt->name, "reverse_string") != 0)
 				continue;
 			struct json_object *schema =
-			    json_tokener_parse(agent->tools[i].params_schema);
+			    json_tokener_parse(rt->params_schema);
 			CHECK(schema != NULL, "params_schema is valid JSON");
 			if (schema) {
 				struct json_object *props = NULL;
@@ -144,8 +142,9 @@ test_nonexistent_dir(void)
 static int
 tool_registered(struct clm_agent *agent, const char *name)
 {
-	for (size_t i = 0; i < agent->tool_count; i++)
-		if (strcmp(agent->tools[i].name, name) == 0)
+	struct clm_tool *t;
+	TAILQ_FOREACH(t, &agent->tools, entries)
+		if (strcmp(t->name, name) == 0)
 			return 1;
 	return 0;
 }

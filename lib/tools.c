@@ -132,20 +132,26 @@ arg_int(struct json_object *args, const char *key, int dflt)
 /* Registration                                                        */
 /* ------------------------------------------------------------------ */
 
+/*
+ * A "removed" node is a zombie kept alive only until its last invocation
+ * finishes (see the struct clm_tool comment in clm/tools.h); it must never be
+ * resolved again, so lookups skip it.
+ */
 static const struct clm_tool *
 find_tool(const struct clm_agent *agent, const char *name)
 {
-	size_t i;
-	for (i = 0; i < agent->tool_count; i++)
-		if (strcmp(agent->tools[i].name, name) == 0)
-			return &agent->tools[i];
+	const struct clm_tool *t;
+	TAILQ_FOREACH(t, &agent->tools, entries) {
+		if (!t->removed && strcmp(t->name, name) == 0)
+			return t;
+	}
 	return NULL;
 }
 
 int
 clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def)
 {
-	struct clm_tool *tools, *t;
+	struct clm_tool *t;
 
 	ASSERT_RETURN(agent != NULL, -EINVAL);
 	ASSERT_RETURN(def != NULL, -EINVAL);
@@ -155,13 +161,10 @@ clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def)
 	if (find_tool(agent, def->name) != NULL)
 		return -EEXIST;
 
-	tools = realloc(agent->tools, (agent->tool_count + 1) * sizeof(*tools));
-	if (tools == NULL)
+	t = calloc(1, sizeof(*t));
+	if (t == NULL)
 		return -ENOMEM;
-	agent->tools = tools;
 
-	t = &tools[agent->tool_count];
-	memset(t, 0, sizeof(*t));
 	t->name = strdup(def->name);
 	t->description = def->description ? strdup(def->description) : NULL;
 	t->params_schema = def->params_schema ? strdup(def->params_schema) : NULL;
@@ -171,6 +174,7 @@ clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def)
 		free(t->name);
 		free(t->description);
 		free(t->params_schema);
+		free(t);
 		return -ENOMEM;
 	}
 	t->invoke = def->invoke;
@@ -179,22 +183,59 @@ clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def)
 	t->timeout_ms = def->timeout_ms;
 	t->flags = def->flags;
 
+	TAILQ_INSERT_TAIL(&agent->tools, t, entries);
 	agent->tool_count++;
 	return 0;
 }
 
-void
-clm_tools_free_registry(struct clm_tool *tools, size_t count)
+/* Free a node's owned strings and itself. Does not unlink or touch pending
+ * invocations; callers must already know it is safe (unlinked + inflight==0,
+ * or agent teardown). */
+static void
+tool_node_free(struct clm_tool *t)
 {
-	size_t i;
+	free(t->name);
+	free(t->description);
+	free(t->params_schema);
+	free(t);
+}
+
+int
+clm_tool_remove(struct clm_agent *agent, const char *name)
+{
+	struct clm_tool *t;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(name != NULL, -EINVAL);
+
+	TAILQ_FOREACH(t, &agent->tools, entries) {
+		if (t->removed || strcmp(t->name, name) != 0)
+			continue;
+		TAILQ_REMOVE(&agent->tools, t, entries);
+		agent->tool_count--;
+		if (t->inflight == 0)
+			tool_node_free(t);
+		else
+			t->removed = true; /* freed once the last invocation finalizes */
+		return 0;
+	}
+	return -ENOENT;
+}
+
+void
+clm_tools_free_registry(struct clm_tool_list *tools)
+{
+	struct clm_tool *t, *tmp;
 	if (tools == NULL)
 		return;
-	for (i = 0; i < count; i++) {
-		free(tools[i].name);
-		free(tools[i].description);
-		free(tools[i].params_schema);
+	/* glibc's sys/queue.h has no TAILQ_FOREACH_SAFE; walk manually. */
+	t = TAILQ_FIRST(tools);
+	while (t != NULL) {
+		tmp = TAILQ_NEXT(t, entries);
+		TAILQ_REMOVE(tools, t, entries);
+		tool_node_free(t);
+		t = tmp;
 	}
-	free(tools);
 }
 
 /* ------------------------------------------------------------------ */
@@ -298,7 +339,7 @@ struct json_object *
 clm_tools_build_schema(const struct clm_agent *agent)
 {
 	struct json_object *arr;
-	size_t i;
+	const struct clm_tool *t;
 
 	if (agent == NULL)
 		return NULL;
@@ -309,11 +350,11 @@ clm_tools_build_schema(const struct clm_agent *agent)
 
 	/* json_object_array_add steals the reference; do not put afterwards.
 	 * HIDDEN tools stay in the registry (invocable internally) but are not
-	 * advertised to the model. */
-	for (i = 0; i < agent->tool_count; i++) {
-		if (agent->tools[i].flags & CLM_TOOL_HIDDEN)
+	 * advertised to the model. Removed (zombie) tools are skipped too. */
+	TAILQ_FOREACH(t, &agent->tools, entries) {
+		if (t->removed || (t->flags & CLM_TOOL_HIDDEN))
 			continue;
-		json_object_array_add(arr, tool_schema(&agent->tools[i]));
+		json_object_array_add(arr, tool_schema(t));
 	}
 
 	return arr;
@@ -358,10 +399,11 @@ clm_permission_req_args(const struct clm_permission_req *req)
 static struct clm_tool *
 find_tool_mut(struct clm_agent *agent, const char *name)
 {
-	size_t i;
-	for (i = 0; i < agent->tool_count; i++)
-		if (strcmp(agent->tools[i].name, name) == 0)
-			return &agent->tools[i];
+	struct clm_tool *t;
+	TAILQ_FOREACH(t, &agent->tools, entries) {
+		if (!t->removed && strcmp(t->name, name) == 0)
+			return t;
+	}
 	return NULL;
 }
 
@@ -519,6 +561,16 @@ inv_finalize(struct clm_tool_invocation *inv, const char *content,
 	if (inv->timer != NULL) {
 		agent->host->timer_cancel(inv->timer);
 		inv->timer = NULL;
+	}
+
+	/* Release this invocation's pin on its tool node; if clm_tool_remove
+	 * already unlinked it (removed) and we were the last one holding it
+	 * alive, free it now. See struct clm_tool in clm/tools.h. */
+	if (inv->def != NULL) {
+		struct clm_tool *t = (struct clm_tool *)inv->def;
+		t->inflight--;
+		if (t->removed && t->inflight == 0)
+			tool_node_free(t);
 	}
 
 	clamped = clamp_dup(content, inv->output_cap);
@@ -787,6 +839,12 @@ clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls)
 			clm_message_add_tool_call(amsg, inv->id, inv->name, inv->args);
 
 		inv->def = find_tool(agent, inv->name ? inv->name : "");
+		/* Pin the node alive: it must survive until this invocation
+		 * finalizes, even if clm_tool_remove is called meanwhile (e.g. an
+		 * MCP server disconnecting mid-turn). See struct clm_tool in
+		 * clm/tools.h. */
+		if (inv->def != NULL)
+			((struct clm_tool *)inv->def)->inflight++;
 		inv_compute_limits(inv);
 	}
 

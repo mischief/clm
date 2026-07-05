@@ -26,8 +26,8 @@ struct clm_agent {
 	enum clm_agent_state state;
 	char *last_error;
 	struct clm_history history;
-	struct clm_tool *tools;
-	size_t tool_count;
+	struct clm_tool_list tools;
+	size_t tool_count; /* live (non-removed) tools; diagnostics only */
 	size_t max_iterations;
 	size_t iteration;
 	bool stream;
