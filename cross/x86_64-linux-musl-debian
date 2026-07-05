@@ -1,0 +1,22 @@
+[binaries]
+c = 'musl-gcc'
+ar = 'ar'
+strip = 'strip'
+pkg-config = 'pkg-config'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+
+[properties]
+# Populate with the deps built from source under musl-gcc (json-c, lua5.4,
+# libcurl, libuv, ncursesw, md4c, openssl, zlib) -- Debian ships none of
+# these as musl builds, unlike Gentoo's crossdev target. See the "Static
+# builds" section of README.md for how this sysroot gets built.
+sys_root = '/home/mischief/musl-sysroot'
+pkg_config_libdir = '/home/mischief/musl-sysroot/lib/pkgconfig:/home/mischief/musl-sysroot/lib64/pkgconfig'
+
+[built-in options]
+c_link_args = ['-static']
