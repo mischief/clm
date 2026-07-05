@@ -35,7 +35,9 @@ curses_warn = cc.get_supported_arguments('-Wno-useless-cast')
 # seed_plugins.h). Only relevant when Lua plugins are compiled in.
 seed_src = []
 if lua_dep.found()
-  lua_bin = find_program('lua5.4', 'lua', required: true)
+  # Runs at build time on the build machine to generate a source file;
+  # under a cross build this must not resolve to the target's lua.
+  lua_bin = find_program('lua5.4', 'lua', required: true, native: true)
   seed_plugin_files = files(
     '../plugins/edit_file.lua',
     '../plugins/reverse.lua',
