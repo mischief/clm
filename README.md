@@ -173,6 +173,43 @@ response per call, not the SSE-streamed variant some MCP servers use.
 - Linux (primary development)
 - OpenBSD (tested, runs in production)
 
+## Static builds
+
+`-Dstatic=true` links libclm and every third-party dependency (json-c,
+lua5.4, libcurl, libuv, ncursesw, md4c, and curl's own chain) as static
+archives, in one flag:
+
+```sh
+meson setup build-static -Dstatic=true -Dtests=false
+meson compile -C build-static
+```
+
+On glibc this still leaves libc itself dynamic (`ldd` shows only
+`libc`/`libm`/the loader) — glibc's static linking has NSS/`dlopen`
+caveats that don't matter for most builds but are worth knowing about.
+Every third-party lib needs a static archive on disk (`.a`, not just
+`.so`) for this to work; on distros that don't ship one by default
+(e.g. Gentoo's `static-libs` USE flag, or a `-static` / `-dev` package
+elsewhere), you'll need to install or rebuild it first.
+
+For a truly portable binary with **zero** dynamic dependencies —
+including libc — build against musl instead, with a cross-file:
+
+```sh
+meson setup build-musl --cross-file cross/x86_64-linux-musl \
+  -Dstatic=true -Dtests=false
+meson compile -C build-musl
+```
+
+This needs a musl cross-toolchain (e.g. via Gentoo's `crossdev
+--target x86_64-linux-musl`) with the same dependency stack built
+static into its sysroot. `cross/x86_64-linux-musl` assumes the sysroot
+lives at `/usr/x86_64-linux-musl`; adjust `sys_root` and the `x86_64-
+linux-musl-*` tool names in that file for a different toolchain layout.
+musl has no `<sys/queue.h>`; `compat/sys/queue.h` (vendored from glibc,
+BSD-3-Clause) is picked up automatically as a fallback via `-idirafter`
+only when the system doesn't provide one.
+
 ## Sanitizers
 
 **Linux** — ASan + UBSan:
