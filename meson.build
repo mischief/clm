@@ -70,6 +70,13 @@ clm_inc = include_directories('.')
 want_static = get_option('static')
 static_kw = want_static ? {'static': true} : {}
 
+# include_type: 'system' makes dependency() headers behave like -isystem,
+# so our own -Werror hardening flags never fire on third-party header
+# content we don't control (seen in practice: json-c 0.18's linkhash.h
+# trips -Wuseless-cast under gcc 14, but not under every gcc/json-c
+# combination -- a vendored-header quirk, not a bug in our code).
+static_kw += {'include_type': 'system'}
+
 version_h = configure_file(
   input: 'include/clm/version.h.in',
   output: 'version.h',
