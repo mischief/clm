@@ -293,9 +293,9 @@ xdg_config_path(const char *suffix)
 /* Writes content to path unless it already exists. Returns 0 if written,
  * 1 if it already existed (left untouched), or -errno on failure. */
 static int
-write_new_file(const char *path, const char *content)
+write_new_file(const char *path, const char *content, mode_t mode)
 {
-	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, mode);
 	if (fd < 0)
 		return errno == EEXIST ? 1 : -errno;
 
@@ -330,7 +330,10 @@ static const char config_template[] =
     "    --     ollama = {\n"
     "    --         url = \"http://127.0.0.1:8081/v1\",\n"
     "    --         model = \"qwen3-32b\",\n"
-    "    --         api_key = \"...\",\n"
+    "    --         -- Prefer clm.secrets.* (see secrets.lua) over a\n"
+    "    --         -- literal key here, since this file often ends up\n"
+    "    --         -- checked into dotfiles.\n"
+    "    --         api_key = clm.secrets.ollama,\n"
     "    --     },\n"
     "    -- },\n"
     "\n"
@@ -339,22 +342,37 @@ static const char config_template[] =
     "    -- Per-plugin config: each plugin sees only its own section as\n"
     "    -- clm.config.\n"
     "    tools = {\n"
-    "        -- web_search = { api_key = \"tvly-...\" },\n"
+    "        -- web_search = { api_key = clm.secrets.tavily },\n"
     "        -- weather = { units = \"metric\" },\n"
     "    },\n"
     "}\n";
 
-/* `clm setup`: writes a starter config.lua and seeds the builtin plugins,
- * without silently doing either on a normal run. Safe to re-run: never
- * overwrites a config.lua or plugin file that's already there. */
+static const char secrets_template[] =
+    "-- clm secrets: kept separate from config.lua so the latter can be\n"
+    "-- shared/checked in without leaking keys. Exposed as clm.secrets in\n"
+    "-- config.lua and in per-agent profile files (~/.config/clm/agents/).\n"
+    "--\n"
+    "-- chmod 600 this file; clm warns (via CLM_DEBUG_LOG) if it's\n"
+    "-- readable by group or other.\n"
+    "return {\n"
+    "    -- tavily = \"tvly-...\",\n"
+    "    -- ollama = \"...\",\n"
+    "}\n";
+
+/* `clm setup`: writes a starter config.lua and secrets.lua, and seeds the
+ * builtin plugins, without silently doing any of that on a normal run.
+ * Safe to re-run: never overwrites a config, secrets, or plugin file
+ * that's already there. */
 static int
 run_setup(void)
 {
 	autofree char *cfg_path = xdg_config_path("clm/config.lua");
+	autofree char *secrets_path = xdg_config_path("clm/secrets.lua");
 	autofree char *agents_dir = xdg_config_path("clm/agents");
 	autofree char *plugins_dir = xdg_config_path("clm/plugins");
 
-	if (cfg_path == NULL || agents_dir == NULL || plugins_dir == NULL) {
+	if (cfg_path == NULL || secrets_path == NULL || agents_dir == NULL ||
+	    plugins_dir == NULL) {
 		fprintf(stderr, "setup: could not determine config path "
 		    "($XDG_CONFIG_HOME or $HOME not set)\n");
 		return 1;
@@ -376,7 +394,16 @@ run_setup(void)
 	}
 	printf("agent profiles in %s\n", agents_dir);
 
-	int cr = write_new_file(cfg_path, config_template);
+	/* 0600: secrets.lua holds API keys, unlike config.lua. */
+	int xr = write_new_file(secrets_path, secrets_template, 0600);
+	if (xr < 0) {
+		fprintf(stderr, "setup: writing %s: %s\n", secrets_path,
+		    strerror(-xr));
+		return 1;
+	}
+	printf("%s %s\n", xr == 1 ? "kept existing" : "wrote", secrets_path);
+
+	int cr = write_new_file(cfg_path, config_template, 0644);
 	if (cr < 0) {
 		fprintf(stderr, "setup: writing %s: %s\n", cfg_path,
 		    strerror(-cr));

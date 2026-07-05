@@ -172,6 +172,35 @@ tools disappear from the model's view while it's down and reappear once it's
 back. The HTTP transport is newer and less exercised: it expects a plain JSON
 response per call, not the SSE-streamed variant some MCP servers use.
 
+### Secrets
+
+API keys and other secrets live in a separate `~/.config/clm/secrets.lua`
+(mode `600`), not in `config.lua` itself, so `config.lua` can be shared
+or checked into dotfiles without leaking anything:
+
+```lua
+-- ~/.config/clm/secrets.lua
+return {
+    tavily = "tvly-...",
+}
+```
+
+`clm.secrets` is exposed to `config.lua` and to per-agent profile files
+under `~/.config/clm/agents/` (they share the same Lua state), so both
+can reference it instead of a literal key:
+
+```lua
+return {
+    tools = {
+        web_search = { api_key = clm.secrets.tavily },
+    },
+}
+```
+
+`clm` warns (via `CLM_DEBUG_LOG`) if `secrets.lua` is readable by group
+or other. `clm setup` writes a starter `secrets.lua` with the right
+permissions.
+
 ## Platforms
 
 - Linux (primary development)

@@ -17,6 +17,7 @@
 #include <json-c/json.h>
 
 #include "clm/clm.h"
+#include "clm/cleanup.h"
 #include "clm/lua_plugin.h"
 #include "clm/log.h"
 #include "useful.h"
@@ -1029,6 +1030,68 @@ struct clm_lua_cfg {
 	int agent_ref; /* registry ref to the resolved agent table, or LUA_NOREF */
 };
 
+/* Path with the last component replaced, e.g. ".../clm/config.lua" +
+ * "secrets.lua" -> ".../clm/secrets.lua". NULL if path has no '/'. */
+static char *
+sibling_path(const char *path, const char *name)
+{
+	const char *slash = strrchr(path, '/');
+	if (slash == NULL)
+		return NULL;
+
+	size_t dirlen = (size_t)(slash - path);
+	size_t n = dirlen + 1 + strlen(name) + 1;
+	char *out = malloc(n);
+	if (out == NULL)
+		return NULL;
+	(void)snprintf(out, n, "%.*s/%s", (int)dirlen, path, name);
+	return out;
+}
+
+/*
+ * Loads secrets.lua (a sibling of config.lua) and pushes it as
+ * clm.secrets, so config.lua and per-agent profile files -- which share
+ * this lua_State -- can write e.g. api_key = clm.secrets.tavily instead
+ * of a literal key. Missing or invalid secrets.lua yields an empty
+ * table rather than failing config load entirely: secrets are optional.
+ * Leaves a table on top of the stack (secrets), suitable for
+ * lua_setfield(L, -2, "secrets") into the caller's 'clm' table.
+ */
+static void
+push_secrets(lua_State *L, const char *config_path)
+{
+	autofree char *spath = sibling_path(config_path, "secrets.lua");
+	if (spath == NULL) {
+		lua_newtable(L);
+		return;
+	}
+
+	struct stat st;
+	if (stat(spath, &st) == 0 && (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+		clm_debug("secrets: %s is readable by group/other; "
+		    "consider chmod 600", spath);
+	}
+
+	if (luaL_loadfile(L, spath) != LUA_OK) {
+		clm_debug("secrets: %s: %s", spath, lua_tostring(L, -1));
+		lua_pop(L, 1);
+		lua_newtable(L);
+		return;
+	}
+	if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+		clm_debug("secrets: error in %s: %s", spath,
+		    lua_tostring(L, -1));
+		lua_pop(L, 1);
+		lua_newtable(L);
+		return;
+	}
+	if (!lua_istable(L, -1)) {
+		clm_debug("secrets: %s did not return a table", spath);
+		lua_pop(L, 1);
+		lua_newtable(L);
+	}
+}
+
 CLM_API struct clm_lua_cfg *
 clm_lua_cfg_load(const char *path)
 {
@@ -1051,6 +1114,13 @@ clm_lua_cfg_load(const char *path)
 	luaL_requiref(L, "math", luaopen_math, 1);
 	lua_pop(L, 1);
 	clm_lua_json_open(L);
+
+	/* clm.secrets: visible to config.lua and, since agent profile files
+	 * share this same lua_State, to them too. */
+	lua_newtable(L); /* clm */
+	push_secrets(L, path); /* clm, secrets */
+	lua_setfield(L, -2, "secrets"); /* clm.secrets = secrets */
+	lua_setglobal(L, "clm"); /* clm = {secrets = ...} */
 
 	if (luaL_loadfile(L, path) != LUA_OK) {
 		clm_debug("config: failed to load %s: %s", path,

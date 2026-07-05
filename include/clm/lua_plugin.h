@@ -49,6 +49,13 @@ CLM_API void clm_lua_env_free(struct clm_lua_env *env);
 /*
  * Load and evaluate a config.lua file. Keeps the lua_State alive for
  * subsequent queries. Returns NULL on failure (missing file, parse error).
+ *
+ * Before evaluating config.lua, also loads a sibling secrets.lua (same
+ * directory) if present and exposes it as the global clm.secrets table,
+ * so config.lua -- and, since clm_lua_cfg_load_agent reuses this same
+ * lua_State, agent profile files too -- can write e.g.
+ * api_key = clm.secrets.tavily instead of a literal key. A missing or
+ * invalid secrets.lua yields an empty clm.secrets rather than failing.
  */
 CLM_API struct clm_lua_cfg *clm_lua_cfg_load(const char *path);
 
