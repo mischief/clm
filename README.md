@@ -139,6 +139,35 @@ return {
 
 Each plugin receives only its own section as `clm.config`.
 
+### MCP servers
+
+clm can also pull in tools from external [MCP](https://modelcontextprotocol.io)
+servers, configured in the same `~/.config/clm/config.lua`:
+
+```lua
+return {
+    mcp_servers = {
+        -- Spawned as a subprocess; speaks JSON-RPC over its stdin/stdout.
+        { name = "fs", transport = "stdio", command = {"mcp-server-fs", "/home/me/notes"} },
+
+        -- A remote server; one JSON-RPC POST per call, no persistent connection.
+        { name = "search", transport = "http", url = "https://example.com/mcp", api_key = "..." },
+    },
+}
+```
+
+`transport` defaults to `"stdio"` if omitted. `timeout_ms` is optional on
+either kind (per-call deadline; defaults to 30s). Each remote tool is
+registered as `mcp__<server name>__<tool name>` (matching the scheme Claude
+Code uses for MCP-sourced tools), so identically-named tools from different
+servers -- or from a built-in like `read_file` -- never collide.
+
+A stdio server that crashes is automatically restarted (with a small backoff
+budget, so a genuine crash loop doesn't turn into a fork/exec storm); its
+tools disappear from the model's view while it's down and reappear once it's
+back. The HTTP transport is newer and less exercised: it expects a plain JSON
+response per call, not the SSE-streamed variant some MCP servers use.
+
 ## Platforms
 
 - Linux (primary development)
