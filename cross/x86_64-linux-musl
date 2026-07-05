@@ -1,0 +1,20 @@
+[binaries]
+c = 'x86_64-linux-musl-gcc'
+ar = 'x86_64-linux-musl-ar'
+strip = 'x86_64-linux-musl-strip'
+pkg-config = 'x86_64-linux-musl-pkg-config'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+
+[properties]
+sys_root = '/usr/x86_64-linux-musl'
+
+[built-in options]
+# musl's own static linking has none of glibc's NSS/dlopen caveats (DNS
+# goes through c-ares here anyway), so unlike the native glibc build this
+# target goes fully static, libc included.
+c_link_args = ['-static']

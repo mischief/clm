@@ -3,19 +3,19 @@ clm_src = files('main.c')
 clm_bin_inc = include_directories('../include')
 
 clm_bin_deps = [
-  dependency('libuv'),
+  dependency('libuv', kwargs: static_kw),
 ]
 
 # ncurses (wide) is a hard dependency: the default frontend is the TUI.
 # Available in base/ports on the BSDs, Linux, and macOS.
-curses_dep = dependency('ncursesw')
+curses_dep = dependency('ncursesw', kwargs: static_kw)
 
 # md4c: streaming markdown parser. Confined to the md_render module below so
 # the core libclm stays free of a markdown dependency.
-md_dep = dependency('md4c')
+md_dep = dependency('md4c', kwargs: static_kw)
 
 # json-c: the TUI parses tool-call arguments to summarize them for display.
-jsonc_dep = dependency('json-c')
+jsonc_dep = dependency('json-c', kwargs: static_kw)
 
 # md_render: markdown -> styled runs, ncurses-free so it can be unit-tested in
 # isolation. Static, internal, not installed.

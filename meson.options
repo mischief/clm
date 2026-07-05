@@ -2,3 +2,7 @@ option('tests', type: 'boolean', value: true,
   description: 'Build test suite and fuzz targets')
 option('lua', type: 'feature', value: 'auto',
   description: 'Lua 5.4 plugin support')
+option('static', type: 'boolean', value: false,
+  description: 'Link libclm and all third-party deps statically ' +
+    '(glibc stays dynamic). Equivalent to -Ddefault_library=static ' +
+    '--prefer-static plus forcing static dependency lookup, in one flag.')

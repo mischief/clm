@@ -13,6 +13,14 @@ cc = meson.get_compiler('c')
 add_project_arguments('-D_DEFAULT_SOURCE', language: 'c')
 add_project_arguments('-fno-omit-frame-pointer', language: 'c')
 
+# musl has no <sys/queue.h> (a BSD/glibc extension we use for TAILQ_*).
+# compat/sys/queue.h is a vendored copy (BSD-3-Clause, from glibc, itself
+# lifted from the original CSRG sources). -idirafter puts it after the
+# normal system search path, so glibc/BSD's real header always wins and
+# this is only consulted where the system genuinely has none.
+add_project_arguments('-idirafter', meson.project_source_root() / 'compat',
+  language: 'c')
+
 # Hardening: warnings (from openbsd-gitea-runner)
 hardening_args = [
   '-Wnull-dereference',
@@ -54,6 +62,13 @@ foreach a : suppress_args
 endforeach
 
 clm_inc = include_directories('.')
+
+# -Dstatic=true is a one-flag substitute for
+# -Ddefault_library=static --prefer-static: it forces libclm itself to a
+# static archive regardless of default_library, and forces every
+# pkg-config dependency lookup below to prefer .a over .so.
+want_static = get_option('static')
+static_kw = want_static ? {'static': true} : {}
 
 version_h = configure_file(
   input: 'include/clm/version.h.in',
