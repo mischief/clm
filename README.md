@@ -70,6 +70,10 @@ meson setup build -Dlua=disabled
 ## Usage
 
 ```sh
+# First run: write a starter config.lua and seed the builtin plugins into
+# $XDG_CONFIG_HOME/clm/. Safe to re-run -- never overwrites existing files.
+clm setup
+
 # Interactive TUI (default when on a terminal)
 clm -u http://localhost:8080
 

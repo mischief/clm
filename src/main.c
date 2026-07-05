@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: ISC
+#include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <uv.h>
 
@@ -22,11 +25,14 @@ static void
 usage(const char *prog)
 {
 	fprintf(stderr,
-	    "usage: %s [-o|--oneshot PROMPT] [-H|--headless] [-u|--url BASE] "
+	    "usage: %s setup\n"
+	    "       %s [-o|--oneshot PROMPT] [-H|--headless] [-u|--url BASE] "
 	    "[-m|--model NAME] [-p|--plugins DIR] [-S|--no-stream] "
 	    "[-V|--version] [-h|--help]\n",
-	    prog);
+	    prog, prog);
 	fprintf(stderr,
+	    "  setup                 write a starter config.lua and seed "
+	    "builtin plugins\n"
 	    "  -o, --oneshot PROMPT  run one prompt headless and exit\n"
 	    "  -H, --headless        force the plain stdio REPL\n"
 	    "  -u, --url BASE        base API endpoint "
@@ -283,6 +289,110 @@ xdg_config_path(const char *suffix)
 	}
 	return out;
 }
+
+/* Writes content to path unless it already exists. Returns 0 if written,
+ * 1 if it already existed (left untouched), or -errno on failure. */
+static int
+write_new_file(const char *path, const char *content)
+{
+	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+	if (fd < 0)
+		return errno == EEXIST ? 1 : -errno;
+
+	size_t len = strlen(content);
+	size_t off = 0;
+	while (off < len) {
+		ssize_t n = write(fd, content + off, len - off);
+		if (n < 0) {
+			int err = -errno;
+			close(fd);
+			(void)unlink(path);
+			return err;
+		}
+		off += (size_t)n;
+	}
+	close(fd);
+	return 0;
+}
+
+static const char config_template[] =
+    "-- clm configuration\n"
+    "--\n"
+    "-- Uncomment and edit the sections you need. See README.md for the\n"
+    "-- full schema (providers, agent profiles, per-plugin tool config).\n"
+    "return {\n"
+    "    -- Default agent profile: an inline entry in an `agents` table\n"
+    "    -- here, or a file at ~/.config/clm/agents/<name>.lua.\n"
+    "    -- agent = \"default\",\n"
+    "\n"
+    "    -- provider = \"ollama\",\n"
+    "    -- providers = {\n"
+    "    --     ollama = {\n"
+    "    --         url = \"http://127.0.0.1:8081/v1\",\n"
+    "    --         model = \"qwen3-32b\",\n"
+    "    --         api_key = \"...\",\n"
+    "    --     },\n"
+    "    -- },\n"
+    "\n"
+    "    -- system_prompt = \"You are a helpful assistant.\",\n"
+    "\n"
+    "    -- Per-plugin config: each plugin sees only its own section as\n"
+    "    -- clm.config.\n"
+    "    tools = {\n"
+    "        -- web_search = { api_key = \"tvly-...\" },\n"
+    "        -- weather = { units = \"metric\" },\n"
+    "    },\n"
+    "}\n";
+
+/* `clm setup`: writes a starter config.lua and seeds the builtin plugins,
+ * without silently doing either on a normal run. Safe to re-run: never
+ * overwrites a config.lua or plugin file that's already there. */
+static int
+run_setup(void)
+{
+	autofree char *cfg_path = xdg_config_path("clm/config.lua");
+	autofree char *agents_dir = xdg_config_path("clm/agents");
+	autofree char *plugins_dir = xdg_config_path("clm/plugins");
+
+	if (cfg_path == NULL || agents_dir == NULL || plugins_dir == NULL) {
+		fprintf(stderr, "setup: could not determine config path "
+		    "($XDG_CONFIG_HOME or $HOME not set)\n");
+		return 1;
+	}
+
+	/* Also creates the parent clm/ dir. */
+	int sr = clm_seed_default_plugins(plugins_dir);
+	if (sr < 0) {
+		fprintf(stderr, "setup: seeding %s: %s\n", plugins_dir,
+		    strerror(-sr));
+		return 1;
+	}
+	printf("plugins in %s\n", plugins_dir);
+
+	if (mkdir(agents_dir, 0755) != 0 && errno != EEXIST) {
+		fprintf(stderr, "setup: mkdir %s: %s\n", agents_dir,
+		    strerror(errno));
+		return 1;
+	}
+	printf("agent profiles in %s\n", agents_dir);
+
+	int cr = write_new_file(cfg_path, config_template);
+	if (cr < 0) {
+		fprintf(stderr, "setup: writing %s: %s\n", cfg_path,
+		    strerror(-cr));
+		return 1;
+	}
+	printf("%s %s\n", cr == 1 ? "kept existing" : "wrote", cfg_path);
+	return 0;
+}
+#else
+static int
+run_setup(void)
+{
+	fprintf(stderr, "setup: built without Lua support "
+	    "(config.lua and plugins are no-ops)\n");
+	return 1;
+}
 #endif /* CLM_LUA */
 
 int
@@ -304,6 +414,9 @@ main(int argc, char *argv[])
 #ifdef CLM_LUA
 	struct clm_lua_cfg *lcfg = NULL;
 #endif
+
+	if (argc >= 2 && strcmp(argv[1], "setup") == 0)
+		return run_setup();
 
 	const struct option opts[] = {
 		{"oneshot", required_argument, NULL, 'o'},
