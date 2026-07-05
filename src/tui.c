@@ -1239,7 +1239,7 @@ run_command(struct ui *u, const char *line)
 		    "  /compact           summarize old turns to reclaim context\n"
 		    "  /quit              exit\n"
 		    "keys: ^R reasoning  ^O output  ^L redraw  "
-		    "PgUp/PgDn scroll\n");
+		    "PgUp/PgDn/wheel scroll\n");
 	} else if (CMD("clear") || CMD("cls")) {
 		for (size_t i = 0; i < u->nsegs; i++)
 			free(u->segs[i].text);
@@ -2003,6 +2003,27 @@ handle_keys(struct ui *u)
 				u->dirty = true;
 				break;
 			}
+			case KEY_MOUSE: {
+				/* Wheel notch: a few lines, not a full page
+				 * like PgUp/PgDn. Terminals report wheel
+				 * motion as button-4/5 press events, no
+				 * corresponding release. */
+				MEVENT event;
+				if (getmouse(&event) != OK)
+					break;
+				const size_t notch = 3;
+				if (event.bstate & BUTTON4_PRESSED) {
+					u->scroll += notch;
+					u->dirty = true;
+				} else if (event.bstate & BUTTON5_PRESSED) {
+					if (u->scroll > notch)
+						u->scroll -= notch;
+					else
+						u->scroll = 0;
+					u->dirty = true;
+				}
+				break;
+			}
 			case KEY_RESIZE:
 				break; /* handled via SIGWINCH */
 			default:
@@ -2276,6 +2297,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	noecho();
 	nonl();
 	set_escdelay(25); /* make a lone Escape (cancel) responsive */
+	mousemask(BUTTON4_PRESSED | BUTTON5_PRESSED, NULL);
 	init_colors();
 	make_windows(u);
 
