@@ -52,8 +52,14 @@ foreach a : hardening_args
 endforeach
 
 
-# Suppress noisy warnings that don't apply cleanly across compilers
-suppress_args = ['-Wno-unused-parameter', '-Wno-zero-length-array']
+# Suppress noisy warnings that don't apply cleanly across compilers.
+# -Wno-useless-cast: json-c 0.18's linkhash.h trips -Wuseless-cast under
+# gcc 14 (Debian's default) but not under every gcc/json-c combination --
+# a vendored-header quirk, not a bug in our code. (Tried include_type:
+# 'system' on dependency() to sidestep this generally, but that hit a
+# meson 1.7.0 bug generating malformed -isystem flags; this is simpler
+# and version-independent.)
+suppress_args = ['-Wno-unused-parameter', '-Wno-zero-length-array', '-Wno-useless-cast']
 
 foreach a : suppress_args
   if cc.has_argument(a)
@@ -69,13 +75,6 @@ clm_inc = include_directories('.')
 # pkg-config dependency lookup below to prefer .a over .so.
 want_static = get_option('static')
 static_kw = want_static ? {'static': true} : {}
-
-# include_type: 'system' makes dependency() headers behave like -isystem,
-# so our own -Werror hardening flags never fire on third-party header
-# content we don't control (seen in practice: json-c 0.18's linkhash.h
-# trips -Wuseless-cast under gcc 14, but not under every gcc/json-c
-# combination -- a vendored-header quirk, not a bug in our code).
-static_kw += {'include_type': 'system'}
 
 version_h = configure_file(
   input: 'include/clm/version.h.in',
