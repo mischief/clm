@@ -5,6 +5,7 @@
  * uv_timer. See clm/host_uv.h.
  */
 #include <errno.h>
+#include <signal.h>
 #include <stdlib.h>
 
 #include <curl/curl.h>
@@ -126,6 +127,17 @@ clm_host_uv_new(uv_loop_t *loop, struct clm_host **out)
 
 	if (loop == NULL || out == NULL)
 		return -EINVAL;
+
+	/*
+	 * A write to a subprocess pipe whose reader just died (tool_shell's
+	 * stdin blob, or the MCP stdio client) can hit the write() syscall at
+	 * the exact moment the pipe breaks, raising SIGPIPE synchronously; the
+	 * default disposition kills the whole process. libuv does not ignore
+	 * this for you. We report the failure through the normal write-callback
+	 * error path instead, so ignore it here, once, for any process using
+	 * this desktop host.
+	 */
+	signal(SIGPIPE, SIG_IGN);
 
 	h = calloc(1, sizeof(*h));
 	if (h == NULL)
