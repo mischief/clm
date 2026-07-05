@@ -13,6 +13,7 @@
 
 #ifdef CLM_LUA
 #include "clm/lua_plugin.h"
+#include "seed_plugins.h"
 #include "clm/cleanup.h"
 #include "mcp_setup.h"
 #endif
@@ -438,8 +439,10 @@ main(int argc, char *argv[])
 			clm_lua_load_plugins(state->lua_env, plugin_dir);
 		} else {
 			autofree char *ppath = xdg_config_path("clm/plugins");
-			if (ppath != NULL)
+			if (ppath != NULL) {
+				clm_seed_default_plugins(ppath);
 				clm_lua_load_plugins(state->lua_env, ppath);
+			}
 		}
 	}
 	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop, lcfg,

@@ -30,9 +30,30 @@ md_render_lib = static_library('md_render',
 # ncurses' own macros (NCURSES_CAST) trip -Wuseless-cast; not our code.
 curses_warn = cc.get_supported_arguments('-Wno-useless-cast')
 
+# Builtin plugin seeds: embed plugins/*.lua into the binary so a fresh
+# XDG plugin dir gets a usable starter set on first run (see
+# seed_plugins.h). Only relevant when Lua plugins are compiled in.
+seed_src = []
+if lua_dep.found()
+  lua_bin = find_program('lua5.4', 'lua', required: true)
+  seed_plugin_files = files(
+    '../plugins/edit_file.lua',
+    '../plugins/reverse.lua',
+    '../plugins/tasks.lua',
+    '../plugins/weather.lua',
+    '../plugins/web_search.lua',
+  )
+  seed_plugins_data = custom_target('seed_plugins_data.c',
+    input: seed_plugin_files,
+    output: 'seed_plugins_data.c',
+    command: [lua_bin, files('gen_seed_plugins.lua'), '@OUTPUT@', '@INPUT@'],
+  )
+  seed_src = [files('seed_plugins.c'), seed_plugins_data]
+endif
+
 # clmuv_dep pulls in the core (libclm) plus the uv/curl host layer and its
 # libuv/libcurl deps, so the binary gets clm_host_uv_new + shell_exec.
-clm_exe = executable('clm', clm_src + files('tui.c', 'mcp_setup.c') + [version_h],
+clm_exe = executable('clm', clm_src + files('tui.c', 'mcp_setup.c') + seed_src + [version_h],
   link_with: [md_render_lib],
   dependencies: [clmuv_dep, curses_dep, jsonc_dep],
   include_directories: [clm_bin_inc, md_render_inc, clm_inc],
