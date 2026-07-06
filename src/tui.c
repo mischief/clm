@@ -2507,6 +2507,16 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	 * Opt in with ^R / ^O (see the status-bar hints). */
 	u->show_reasoning = false;
 	u->expand_output = false;
+#ifdef CLM_LUA
+	if (lcfg != NULL) {
+		const char *sr = clm_lua_cfg_get_str(lcfg, "show_thinking");
+		if (sr != NULL && strcmp(sr, "true") == 0)
+			u->show_reasoning = true;
+		const char *eo = clm_lua_cfg_get_str(lcfg, "expand_output");
+		if (eo != NULL && strcmp(eo, "true") == 0)
+			u->expand_output = true;
+	}
+#endif
 
 	r = clm_host_uv_new(loop, &u->host);
 	if (r < 0) {
