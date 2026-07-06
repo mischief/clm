@@ -969,7 +969,7 @@ draw_status(struct ui *u)
 	 * with the live status on the left. */
 	{
 		static const char hints[] =
-		    "^R reasoning  ^O output  ^L redraw  PgUp/PgDn scroll ";
+		    "^R reasoning  ^O output  ^L redraw  PgUp/PgDn/End scroll ";
 		int w = getmaxx(u->stat);
 		int used = getcurx(u->stat);
 		int hw = (int)(sizeof(hints) - 1);
@@ -1506,7 +1506,7 @@ run_command(struct ui *u, const char *line)
 		    "  /compact           summarize old turns to reclaim context\n"
 		    "  /quit              exit\n"
 		    "keys: ^R reasoning  ^O output  ^L redraw  "
-		    "PgUp/PgDn/wheel scroll\n");
+		    "PgUp/PgDn/wheel/End scroll\n");
 	} else if (CMD("clear") || CMD("cls")) {
 		for (size_t i = 0; i < u->nsegs; i++)
 			free(u->segs[i].text);
@@ -2253,7 +2253,18 @@ handle_keys(struct ui *u)
 				u->dirty = true;
 				break;
 			case KEY_END:
-				u->input_pos = u->input_len;
+				/* An empty input line has no meaningful
+				 * "end of line" to jump to, so repurpose End
+				 * there as "scroll the transcript to the
+				 * bottom" instead -- the same convention many
+				 * pagers/terminals use, and it doesn't
+				 * collide with the common case (End while
+				 * actually editing a line still just moves
+				 * the cursor). */
+				if (u->input_len == 0)
+					u->scroll = 0;
+				else
+					u->input_pos = u->input_len;
 				u->dirty = true;
 				break;
 			case KEY_DC: /* Delete */

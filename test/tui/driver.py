@@ -36,6 +36,10 @@ RIGHT = b"\x1b[C"
 # ncurses expects in that mode, so use these for arrow-key tests.
 UP = b"\x1bOA"
 DOWN = b"\x1bOB"
+# Home/End, same SS3 family (matches xterm-256color's terminfo: khome=\EOH,
+# kend=\EOF).
+HOME = b"\x1bOH"
+END = b"\x1bOF"
 
 
 class Tui:

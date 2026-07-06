@@ -12,7 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from driver import (Tui, CTRL_A, CTRL_K, CTRL_U, CTRL_Y, PGUP, PGDN, UP, DOWN)
+from driver import (Tui, CTRL_A, CTRL_K, CTRL_U, CTRL_Y, PGUP, PGDN, UP, DOWN,
+                    END)
 from mock_server import MockServer
 
 BIN = os.environ.get("CLM_BIN", "clm")
@@ -122,6 +123,41 @@ def test_scroll_stable_while_streaming(url):
         t.pump(0.4)
         check(transcript(t) != scrolled,
               "scroll-stable: PgDn still returns toward the bottom")
+
+
+def test_end_key(url):
+    # End on an empty input line jumps the transcript to the bottom; End
+    # while actually editing a line still just moves the cursor there
+    # (unchanged prior behaviour) -- the two must not be conflated.
+    with Tui(BIN, url, rows=10, cols=40) as t:
+        t.send(b"show me fruit\r")
+        assert t.wait_for("Colour", timeout=15), "no first response"
+        t.send(PGUP)
+        t.send(PGUP)
+        t.pump(0.4)
+        transcript_before = "\n".join(t.lines()[:-2])
+        check("Fruit" in transcript_before, "end: scrolled up into history")
+
+        t.send(END)  # input is empty here
+        t.pump(0.4)
+        transcript_after = "\n".join(t.lines()[:-2])
+        check(transcript_after != transcript_before,
+              "end: jumps the transcript to the bottom from an empty input")
+        check("Colour" in transcript_after,
+              "end: bottom of the transcript is now visible")
+
+        # Now with actual text typed: End must move the cursor, not scroll.
+        t.send(PGUP)
+        t.send(PGUP)
+        t.pump(0.4)
+        t.send(b"hello")
+        t.pump(0.2)
+        before_typing = "\n".join(t.lines()[:-2])
+        t.send(END)
+        t.pump(0.3)
+        check("\n".join(t.lines()[:-2]) == before_typing,
+              "end: with text typed, only moves the input cursor, "
+              "doesn't scroll")
 
 
 def test_resize(url):
@@ -261,6 +297,7 @@ def main():
         test_markdown(srv.url)
         test_scrollback(srv.url)
         test_scroll_stable_while_streaming(srv.url)
+        test_end_key(srv.url)
         test_resize(srv.url)
         test_editing(srv.url)
         test_history(srv.url)
