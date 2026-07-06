@@ -42,7 +42,7 @@ void clm_lua_clear_invocation_registry(lua_State *L);
 #define CLM_LUA_LOAD_TIMEOUT_MS 500u       /* plugin load must be quick */
 #define CLM_LUA_HOOK_INTERVAL 10000        /* check deadline every N instructions */
 #define CLM_LUA_HTTP_MAX_INFLIGHT 8        /* max concurrent HTTP requests */
-#define CLM_LUA_HTTP_MAX_PER_CALL 32       /* max total HTTP requests per tool call */
+#define CLM_LUA_HTTP_MAX_PER_CALL 128      /* max total HTTP requests per tool call */
 #define CLM_LUA_JSON_DECODE_MAX (2 * 1024 * 1024) /* 2 MiB max input to json.decode */
 
 /* Forward declaration. */
