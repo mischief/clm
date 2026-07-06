@@ -20,18 +20,17 @@ md_render_lib = static_library('md_render',
 # for an eventual embedded/ESP32 build with no terminal), the clm desktop
 # binary (this directory: main.c, tui.c, mcp_setup.c) has no embedded story
 # at all -- it already hard-depends on ncursesw, getopt_long, XDG paths. So
-# Lua plugin/agent-profile support is required for it, not optional: every
-# #ifdef CLM_LUA that used to be in main.c/tui.c was dead code in practice
-# (nothing ever built or tested this frontend without Lua) and, as of
-# writing, actually broken -- main.c's --agent handling only read its parsed
-# value inside `#ifdef CLM_LUA`, so a Lua-less build failed outright under
-# -Werror (`agent_name` set but not used).
+# Lua plugin/agent-profile support is required for it, not optional: nothing
+# in main.c/tui.c is #ifdef CLM_LUA'd (that define no longer exists anywhere
+# -- lua_plugin.c et al now live in their own clmlua static archive, see
+# lib/meson.build, exactly like the existing clmuv split; libclm itself
+# never depended on Lua either way).
 #
-# So rather than the binary demanding Lua and erroring out a `-Dlua=disabled`
-# configure entirely (which must still succeed, e.g. for an embedded build
-# of lib/ alone), the whole binary -- and only the parts of the test suite
-# that exercise it -- are skipped whenever lib/'s lua feature resolved to
-# disabled. have_lua is checked again in test/meson.build for the same
+# But the binary still must not error out of a -Dlua=disabled configure
+# entirely -- that flag is legitimate for embedding the portable core alone.
+# So the whole binary -- and only the parts of the test suite that exercise
+# it -- are skipped whenever lib/'s lua feature (and so clmlua_dep) resolved
+# to disabled. have_lua is checked again in test/meson.build for the same
 # reason.
 have_lua = lua_dep.found()
 
@@ -74,11 +73,13 @@ if have_lua
 
   # clmuv_dep pulls in the core (libclm) plus the uv/curl host layer and its
   # libuv/libcurl deps, so the binary gets clm_host_uv_new + shell_exec.
-  # lib/'s clm_dep (pulled in transitively via clmuv_dep) already carries
-  # lua_dep here since have_lua required it to be found.
+  # clmlua_dep is listed explicitly (lib/meson.build only declares it when
+  # have_lua, which this whole block is already gated on) since lua_plugin.c
+  # et al no longer live inside libclm/clm_dep at all -- they're their own
+  # archive now, same shape as clmuv.
   clm_exe = executable('clm', clm_src + files('tui.c', 'mcp_setup.c') + seed_src + [version_h],
     link_with: [md_render_lib],
-    dependencies: [clmuv_dep, curses_dep, jsonc_dep],
+    dependencies: [clmuv_dep, clmlua_dep, curses_dep, jsonc_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],
     c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'],
     install: true,

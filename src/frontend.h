@@ -5,7 +5,7 @@
 
 #include "clm/clm.h"
 
-struct clm_lua_cfg; /* opaque; may be NULL when CLM_LUA is disabled */
+struct clm_lua_cfg; /* opaque; NULL if no config.lua was found */
 
 /*
  * Run the interactive ncurses frontend on a fresh default loop. Blocks until
