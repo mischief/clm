@@ -7,12 +7,15 @@ clm_core_deps = [
   dependency('json-c', kwargs: static_kw),
 ]
 
+# lib/'s own optional feature: whether Lua plugin/agent-profile support is
+# built at all. Independent of whether any particular consumer (the clm
+# desktop binary, tests) wants it -- see clmlua_dep below, which mirrors
+# clmuv_dep's pattern: an always-buildable-when-available static archive,
+# kept OUT of libclm itself, that a consumer either links or doesn't. This
+# is what actually lets an embedded build (e.g. a future esp32 target) omit
+# Lua/liblua entirely without any #ifdef CLM_LUA anywhere in C source --
+# the seam is a link-time decision, not a preprocessor one.
 lua_dep = dependency('lua5.4', required: get_option('lua'), kwargs: static_kw)
-if lua_dep.found()
-  clm_core_src += files('lua_plugin.c', 'lua_json.c', 'lua_http.c')
-  clm_core_deps += lua_dep
-  add_project_arguments('-DCLM_LUA=1', language: 'c')
-endif
 
 # Lib sources find "clm/..." via ../include, and "useful.h"/"banned.h" via
 # ../include and the project root.
@@ -49,6 +52,33 @@ clm_dep = declare_dependency(
   include_directories: include_directories('..', '../include'),
   dependencies: clm_core_deps,
 )
+
+# Lua plugin support: registers Lua-backed tools through the same clm_tool_fn
+# callback every other tool provider uses (see tools.c/clm.h) -- lua_plugin.c
+# only ever calls INTO the core (clm_agent_*, clm_debug), never the reverse,
+# so this can live entirely outside libclm as its own static archive, exactly
+# like clmuv_lib below. That keeps libclm itself free of a liblua dependency
+# unconditionally, while a consumer that wants Lua support links clmlua_dep.
+# log.c is duplicated here for the same reason clmuv_src duplicates it:
+# clm_debug is library-internal (clm/log.h is explicitly "not part of the
+# public contract and not installed"), so an out-of-tree consumer linking
+# this archive against an already-built libclm has no other way to get it.
+clmlua_src = files('lua_plugin.c', 'lua_json.c', 'lua_http.c', 'log.c')
+
+if lua_dep.found()
+  clm_lua_lib = static_library('clmlua', clmlua_src,
+    c_args: ['-DCLM_BUILDING'],
+    dependencies: [lua_dep, clm_core_deps],
+    include_directories: [clm_lib_inc, clm_inc],
+    install: true,
+  )
+
+  clmlua_dep = declare_dependency(
+    link_with: clm_lua_lib,
+    include_directories: include_directories('..', '../include'),
+    dependencies: [lua_dep, clm_dep],
+  )
+endif
 
 # Desktop uv/curl layer: the libuv+libcurl transport (host_uv + the async curl
 # engine) plus the shell_exec tool. Kept OUT of the core so libclm itself pulls
