@@ -75,6 +75,15 @@ struct cli_state {
 	int turn_status;
 };
 
+#ifdef CLM_LUA
+static void
+cb_mcp_status(const char *msg, void *user)
+{
+	(void)user;
+	fprintf(stderr, "%s\n", msg);
+}
+#endif
+
 static void
 cb_assistant_text(const char *text, void *user)
 {
@@ -607,7 +616,7 @@ main(int argc, char *argv[])
 		}
 	}
 	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop, lcfg,
-	    &state->mcp_client_count);
+	    cb_mcp_status, state, &state->mcp_client_count);
 #endif
 
 	if (oneshot != NULL) {

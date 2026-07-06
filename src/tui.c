@@ -225,6 +225,20 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 	u->dirty = true;
 }
 
+#ifdef CLM_LUA
+static void
+cb_mcp_status(const char *msg, void *user)
+{
+	struct ui *u = user;
+	char line[512];
+
+	if (msg == NULL)
+		return;
+	(void)snprintf(line, sizeof(line), "%s\n", msg);
+	ui_push(u, ST_META, line);
+}
+#endif
+
 static void
 ui_set_state(struct ui *u, enum clm_agent_state st)
 {
@@ -1605,7 +1619,8 @@ run_command(struct ui *u, const char *line)
 						}
 					}
 					u->mcp_clients = clm_cli_connect_mcp_servers(u->agent,
-					    u->loop, u->lcfg, &u->mcp_client_count);
+					    u->loop, u->lcfg, cb_mcp_status, u,
+					    &u->mcp_client_count);
 					free(u->agent_name);
 					u->agent_name = strdup(arg);
 					u->model = newcfg.model;
@@ -2550,7 +2565,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		}
 	}
 	u->mcp_clients = clm_cli_connect_mcp_servers(u->agent, loop, lcfg,
-	    &u->mcp_client_count);
+	    cb_mcp_status, u, &u->mcp_client_count);
 #endif
 
 	initscr();

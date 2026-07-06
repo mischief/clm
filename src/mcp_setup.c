@@ -23,17 +23,32 @@
 
 struct mcp_ready_ctx {
 	char *name;
+	clm_cli_mcp_status_cb status_cb;
+	void *status_user;
 };
+
+static void
+emit_status(clm_cli_mcp_status_cb status_cb, void *user, const char *msg)
+{
+	if (status_cb != NULL)
+		status_cb(msg, user);
+	else
+		fprintf(stderr, "%s\n", msg);
+}
 
 static void
 on_mcp_ready(int status, size_t tool_count, void *user)
 {
 	struct mcp_ready_ctx *ctx = user;
+	char msg[256];
+
 	if (status == 0)
-		fprintf(stderr, "mcp: %s: %zu tool%s registered\n", ctx->name,
-		    tool_count, tool_count == 1 ? "" : "s");
+		(void)snprintf(msg, sizeof(msg), "mcp: %s: %zu tool%s registered",
+		    ctx->name, tool_count, tool_count == 1 ? "" : "s");
 	else
-		fprintf(stderr, "mcp: %s: connect failed (%d)\n", ctx->name, status);
+		(void)snprintf(msg, sizeof(msg), "mcp: %s: connect failed (%d)",
+		    ctx->name, status);
+	emit_status(ctx->status_cb, ctx->status_user, msg);
 	free(ctx->name);
 	free(ctx);
 }
@@ -49,10 +64,11 @@ json_str(struct json_object *obj, const char *key)
 	return json_object_get_string(v);
 }
 
-/* Returns the connected client handle, or NULL if this entry was skipped or
- * failed to start (already reported to stderr either way). */
+/* returns the connected client handle, or NULL if this entry was skipped or
+ * failed to start (already reported through status_cb either way). */
 static struct clm_mcp_client *
-connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv)
+connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv,
+    clm_cli_mcp_status_cb status_cb, void *status_user)
 {
 	const char *name = json_str(srv, "name");
 	const char *transport = json_str(srv, "transport");
@@ -63,7 +79,8 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv)
 	struct clm_mcp_client *client = NULL;
 
 	if (name == NULL) {
-		fprintf(stderr, "mcp: skipping server with no 'name'\n");
+		emit_status(status_cb, status_user,
+		    "mcp: skipping server with no 'name'");
 		return NULL;
 	}
 
@@ -76,7 +93,10 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv)
 		server_cfg.url = json_str(srv, "url");
 		server_cfg.api_key = json_str(srv, "api_key");
 		if (server_cfg.url == NULL) {
-			fprintf(stderr, "mcp: %s: http transport needs 'url'\n", name);
+			char msg[256];
+			(void)snprintf(msg, sizeof(msg),
+			    "mcp: %s: http transport needs 'url'", name);
+			emit_status(status_cb, status_user, msg);
 			return NULL;
 		}
 	} else {
@@ -86,8 +106,11 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv)
 		if (!json_object_object_get_ex(srv, "command", &jcmd) ||
 		    json_object_get_type(jcmd) != json_type_array ||
 		    json_object_array_length(jcmd) == 0) {
-			fprintf(stderr, "mcp: %s: stdio transport needs a non-empty 'command' array\n",
+			char msg[256];
+			(void)snprintf(msg, sizeof(msg),
+			    "mcp: %s: stdio transport needs a non-empty 'command' array",
 			    name);
+			emit_status(status_cb, status_user, msg);
 			return NULL;
 		}
 		n = json_object_array_length(jcmd);
@@ -105,9 +128,13 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv)
 	if (ready_ctx == NULL)
 		return NULL;
 	ready_ctx->name = strdup(name);
+	ready_ctx->status_cb = status_cb;
+	ready_ctx->status_user = status_user;
 
 	if (clm_mcp_connect(agent, loop, &server_cfg, on_mcp_ready, ready_ctx, &client) != 0) {
-		fprintf(stderr, "mcp: %s: failed to start\n", name);
+		char msg[256];
+		(void)snprintf(msg, sizeof(msg), "mcp: %s: failed to start", name);
+		emit_status(status_cb, status_user, msg);
 		free(ready_ctx->name);
 		free(ready_ctx);
 		return NULL;
@@ -117,7 +144,8 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv)
 
 struct clm_mcp_client **
 clm_cli_connect_mcp_servers(struct clm_agent *agent, uv_loop_t *loop,
-    struct clm_lua_cfg *lcfg, size_t *out_count)
+    struct clm_lua_cfg *lcfg, clm_cli_mcp_status_cb status_cb,
+    void *status_user, size_t *out_count)
 {
 	autofree char *json = NULL;
 	json_cleanup struct json_object *arr = NULL;
@@ -143,12 +171,14 @@ clm_cli_connect_mcp_servers(struct clm_agent *agent, uv_loop_t *loop,
 
 	clients = calloc(n, sizeof(*clients));
 	if (clients == NULL) {
-		fprintf(stderr, "mcp: out of memory starting configured servers\n");
+		emit_status(status_cb, status_user,
+		    "mcp: out of memory starting configured servers");
 		return NULL;
 	}
 
 	for (i = 0; i < n; i++)
-		clients[i] = connect_one(agent, loop, json_object_array_get_idx(arr, i));
+		clients[i] = connect_one(agent, loop, json_object_array_get_idx(arr, i),
+		    status_cb, status_user);
 
 	if (out_count != NULL)
 		*out_count = n;
