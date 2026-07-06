@@ -1193,6 +1193,7 @@ struct clm_lua_cfg {
 	lua_State *L;
 	int cfg_ref; /* registry ref to the config table */
 	int agent_ref; /* registry ref to the resolved agent table, or LUA_NOREF */
+	char *resolved_agent_name; /* name actually resolved by load_agent (owned) */
 };
 
 /* Path with the last component replaced, e.g. ".../clm/config.lua" +
@@ -1344,6 +1345,8 @@ clm_lua_cfg_load_agent(struct clm_lua_cfg *cfg, const char *agents_dir,
 				luaL_unref(L, LUA_REGISTRYINDEX, cfg->agent_ref);
 			cfg->agent_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 			lua_pop(L, 2); /* agents table, config table */
+			free(cfg->resolved_agent_name);
+			cfg->resolved_agent_name = strdup(agent_name);
 			return 0;
 		}
 		lua_pop(L, 1); /* nil */
@@ -1384,6 +1387,8 @@ clm_lua_cfg_load_agent(struct clm_lua_cfg *cfg, const char *agents_dir,
 	if (cfg->agent_ref != LUA_NOREF)
 		luaL_unref(L, LUA_REGISTRYINDEX, cfg->agent_ref);
 	cfg->agent_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	free(cfg->resolved_agent_name);
+	cfg->resolved_agent_name = strdup(agent_name);
 	return 0;
 }
 
@@ -1593,7 +1598,25 @@ clm_lua_cfg_free(struct clm_lua_cfg *cfg)
 		return;
 	if (cfg->L != NULL)
 		lua_close(cfg->L);
+	free(cfg->resolved_agent_name);
 	free(cfg);
+}
+
+/*
+ * Returns the agent name actually resolved by the most recent successful
+ * clm_lua_cfg_load_agent() call (whether that came from an explicit
+ * agent_name argument or a fallback read of config.agent), or NULL if
+ * clm_lua_cfg_load_agent() has not yet succeeded. Distinct from reading
+ * the "agent" field directly off the config table, which only ever
+ * reflects config.lua's static default and ignores any -a/--agent
+ * override actually used to select the loaded agent.
+ */
+CLM_API const char *
+clm_lua_cfg_get_agent_name(struct clm_lua_cfg *cfg)
+{
+	if (cfg == NULL)
+		return NULL;
+	return cfg->resolved_agent_name;
 }
 
 /* Legacy wrapper. */

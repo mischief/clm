@@ -2249,8 +2249,11 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	u->loop = loop;
 	u->model = cfg->model;
 #ifdef CLM_LUA
-	if (lcfg != NULL)
-		u->agent_name = strdup(clm_lua_cfg_get_str(lcfg, "agent"));
+	if (lcfg != NULL) {
+		const char *aname = clm_lua_cfg_get_agent_name(lcfg);
+		if (aname != NULL)
+			u->agent_name = strdup(aname);
+	}
 	u->lcfg = lcfg;
 	u->plugin_dir = plugin_dir;
 #endif

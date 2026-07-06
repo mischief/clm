@@ -92,6 +92,15 @@ CLM_API char **clm_lua_cfg_get_str_list(struct clm_lua_cfg *cfg,
 CLM_API void clm_lua_cfg_free_str_list(char **list);
 
 /*
+ * Returns the agent name actually resolved by the most recent successful
+ * clm_lua_cfg_load_agent() call, or NULL if that has not yet succeeded.
+ * Use this (not config.agent via clm_lua_cfg_get_str) to display which
+ * agent is actually active -- it reflects any -a/--agent override, not
+ * just config.lua's static default.
+ */
+CLM_API const char *clm_lua_cfg_get_agent_name(struct clm_lua_cfg *cfg);
+
+/*
  * Query a string field from a named provider in config.providers.
  * e.g. clm_lua_cfg_provider_str(cfg, "huggingface", "url")
  * Returns NULL if not found.
