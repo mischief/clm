@@ -19,28 +19,34 @@ ISC License — see [LICENSE](LICENSE)
 
 ## Architecture
 
-The library is split into a portable core and a desktop transport layer:
+The library is split into a portable core and two static add-on layers:
 
 - **`libclm`** — the agent engine, tool registry, history, and
-  OpenAI-compatible client. It has no libuv or libcurl dependency. HTTP and
-  timers are provided by the embedder through a `struct clm_host` (see
+  OpenAI-compatible client. It has no libuv, libcurl, or Lua dependency. HTTP
+  and timers are provided by the embedder through a `struct clm_host` (see
   `clm/host.h`): four function pointers for `http_post` / `http_cancel` /
   `timer_set` / `timer_cancel`. `clm_agent_new()` takes a `clm_host *`. A host
   may leave `timer_set` NULL, in which case per-tool timeouts are disabled.
 - **`libclmuv`** (static) — the desktop host: a libcurl + libuv implementation
   of `clm_host` (`clm_host_uv_new()`), plus the `shell_exec` tool (which needs
   `uv_spawn`, so it lives here rather than in the core:
-  `clm_tools_register_shell()`). Link it alongside `libclm` for a full desktop
-  agent.
+  `clm_tools_register_shell()`).
+- **`libclmlua`** (static) — Lua 5.4 plugin/agent-profile support
+  (`clm_lua_env_new()` etc). Only ever calls *into* `libclm` (the same
+  `clm_tool_fn` callback any tool provider uses to register a tool), never
+  the reverse, so it lives entirely outside `libclm` too. Built whenever
+  `lua5.4` is found (`-Dlua=disabled` to skip it).
 
-An embedder targeting a different platform supplies its own `clm_host` and links
-only `libclm`. For example, the ESP32 port implements `clm_host` over
+The `clm` binary (the ncurses TUI / headless CLI) links all three. An embedder
+targeting a different platform supplies its own `clm_host` and links only
+`libclm` (and `libclmlua`, if it wants Lua plugins with no libuv/libcurl at
+all). For example, the ESP32 port implements `clm_host` over
 `esp_http_client` (with SSE streaming) and never pulls in libuv or libcurl.
 
 ## Build
 
 Requires: meson ≥ 1.1, a C17 compiler, libcurl, libuv, json-c, ncursesw,
-md4c, and optionally Lua 5.4.
+md4c, and Lua 5.4.
 
 **OpenBSD:**
 
@@ -61,7 +67,13 @@ meson compile -C build
 meson test -C build
 ```
 
-Disable Lua plugins:
+`-Dlua=disabled` builds `libclm` (the portable core) without Lua support at
+all -- for embedding the core into something with no terminal and no Lua
+(the ESP32 port, for instance). It also skips `libclmlua` and, with it, the
+`clm` binary itself: the ncurses/CLI frontend always requires Lua (agent
+profiles, plugins), so there's nothing for this flag to build there. Use it
+when you only want `libclm` as a library, not when building `clm` the
+program:
 
 ```sh
 meson setup build -Dlua=disabled
