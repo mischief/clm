@@ -6,7 +6,7 @@ CLM-TOOL(5) - File Formats Manual
 
 # DESCRIPTION
 
-clm(1)
+[clm(1)](clm.md)
 loads every
 *\*.lua*
 file in
@@ -95,7 +95,7 @@ below); calling either a second time is an error.
 
 By default a tool is gated behind an interactive allow/deny prompt the
 first time it is called in a session (see
-clm\_agent(3)'s
+[clm_agent(3)](clm_agent.md)'s
 *on\_permission*
 callback); set
 *no\_prompt = true*
@@ -109,50 +109,50 @@ model itself.
 
 **ctx:complete**(*result*)
 
-> Ends the invocation successfully.
-> *result*
-> is a string; the model sees it as the tool's output.
+Ends the invocation successfully.
+*result*
+is a string; the model sees it as the tool's output.
 
 **ctx:fail**(*message*)
 
-> Ends the invocation with a failure the model sees as
-> "\[tool failed: X]"
-> (where
-> 'X'
-> is
-> *message*).
+Ends the invocation with a failure the model sees as
+"\[tool failed: X]"
+(where
+'X'
+is
+*message*).
 
 **ctx:args\_raw**()
 
-> Returns the raw, undecoded JSON arguments string
-> ("{}"
-> if the model supplied none)
-> .
-> Most plugins use the decoded
-> *args*
-> table passed to
-> *invoke*
-> instead; this is for a plugin that wants to reparse or forward the
-> arguments verbatim.
+Returns the raw, undecoded JSON arguments string
+("{}"
+if the model supplied none)
+.
+Most plugins use the decoded
+*args*
+table passed to
+*invoke*
+instead; this is for a plugin that wants to reparse or forward the
+arguments verbatim.
 
 **ctx:log**(*message*)
 
-> Writes
-> *message*
-> to the debug log (see
-> `CLM_DEBUG_LOG`
-> in
-> clm(1)).
-> A no-op, at negligible cost, when that variable is unset.
+Writes
+*message*
+to the debug log (see
+`CLM_DEBUG_LOG`
+in
+[clm(1)](clm.md)).
+A no-op, at negligible cost, when that variable is unset.
 
 **ctx:http\_get**(*url*, *headers*)
 
 **ctx:http\_post**(*url*, *body*, *headers*)
 
-> Described under
-> *HTTP requests*;
-> *headers*
-> is optional in both.
+Described under
+*HTTP requests*;
+*headers*
+is optional in both.
 
 ## HTTP requests
 
@@ -203,19 +203,19 @@ either limit fails the request rather than queuing it.
 
 **clm.write\_file**(*path*, *content*)
 
-> Read or write a file, without the sandbox's normal lack of filesystem
-> access.
-> Available at any point in a plugin, not just from within
-> *invoke*.
+Read or write a file, without the sandbox's normal lack of filesystem
+access.
+Available at any point in a plugin, not just from within
+*invoke*.
 
 **clm.sleep**(*ms*)
 
-> Yield the calling coroutine for
-> *ms*
-> milliseconds without blocking the event loop.
-> Same coroutine restriction as
-> *HTTP requests*
-> above.
+Yield the calling coroutine for
+*ms*
+milliseconds without blocking the event loop.
+Same coroutine restriction as
+*HTTP requests*
+above.
 
 ## The json module
 
@@ -241,7 +241,7 @@ If the plugin's file or tool name appears as a key under
 in
 *config.lua*
 (see
-clm-config(5)),
+[clm-config(5)](clm-config.md)),
 that subtable is available inside the plugin as
 *clm.config*.
 A plugin with no matching
@@ -270,8 +270,8 @@ as an empty table, not
 
 # SEE ALSO
 
-clm(1),
-clm\_agent(3),
-clm-config(5)
+[clm(1)](clm.md),
+[clm_agent(3)](clm_agent.md),
+[clm-config(5)](clm-config.md)
 
 clm - July 6, 2026

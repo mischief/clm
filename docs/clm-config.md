@@ -6,7 +6,7 @@ CLM-CONFIG(5) - File Formats Manual
 
 # DESCRIPTION
 
-clm(1)
+[clm(1)](clm.md)
 reads its configuration from
 *~/.config/clm/config.lua*
 (or
@@ -18,161 +18,161 @@ a table, evaluated once at startup by a long-lived interpreter that
 also backs agent profile loading and the
 *clm.secrets*
 table
-(clm-tool(5)).
+([clm-tool(5)](clm-tool.md)).
 
 Top-level keys:
 
 *agent*
 
-> Name of the default agent profile to load from
-> *~/.config/clm/agents/*&zwnj;*name*&zwnj;*.lua*.
-> Overridden by
-> clm(1)'s
-> **--agent**
-> flag.
-> If neither is set, the top-level
-> *provider*
-> and
-> *system\_prompt*
-> below apply directly with no named profile.
+Name of the default agent profile to load from
+*~/.config/clm/agents/*&zwnj;*name*&zwnj;*.lua*.
+Overridden by
+[clm(1)](clm.md)'s
+**--agent**
+flag.
+If neither is set, the top-level
+*provider*
+and
+*system\_prompt*
+below apply directly with no named profile.
 
 *provider*
 
-> Name of the entry in
-> *providers*
-> (below) to use.
+Name of the entry in
+*providers*
+(below) to use.
 
 *providers*
 
-> A table of provider definitions, keyed by name.
-> Each entry may set:
+A table of provider definitions, keyed by name.
+Each entry may set:
 
-> *url*
+*url*
 
-> > Base API endpoint, e.g.
-> > "http://127.0.0.1:8081/v1".
-> > */chat/completions*
-> > is appended automatically.
+Base API endpoint, e.g.
+"http://127.0.0.1:8081/v1".
+*/chat/completions*
+is appended automatically.
 
-> *model*
+*model*
 
-> > Model name to request.
+Model name to request.
 
-> *api\_key*
+*api\_key*
 
-> > Bearer token.
-> > Prefer
-> > *clm.secrets.\*&zwnj;*
-> > (see clm-tool(5))
-> > over a literal key here, since
-> > *config.lua*
-> > often ends up shared or checked into dotfiles.
-> > Overridden by the
-> > `CLM_API_KEY`
-> > environment variable if set.
+Bearer token.
+Prefer
+*clm.secrets.\*&zwnj;*
+(see [clm-tool(5)](clm-tool.md))
+over a literal key here, since
+*config.lua*
+often ends up shared or checked into dotfiles.
+Overridden by the
+`CLM_API_KEY`
+environment variable if set.
 
-> *context\_size*
+*context\_size*
 
-> > Override the context window size (tokens) the agent assumes, instead
-> > of learning it from the backend.
+Override the context window size (tokens) the agent assumes, instead
+of learning it from the backend.
 
-> *autocompact\_pct*
+*autocompact\_pct*
 
-> > Override the percentage of the context window that triggers automatic
-> > conversation summarization.
+Override the percentage of the context window that triggers automatic
+conversation summarization.
 
-> *rate\_tokens\_per\_sec*, *rate\_burst*
+*rate\_tokens\_per\_sec*, *rate\_burst*
 
-> > Token-bucket rate limiter parameters for tool dispatch.
+Token-bucket rate limiter parameters for tool dispatch.
 
 *system\_prompt*
 
-> The system message sent to the model.
-> A built-in default is used if unset.
+The system message sent to the model.
+A built-in default is used if unset.
 
 *tools*
 
-> Per-plugin configuration, keyed by tool/plugin name.
-> Each plugin sees only its own subtable, as
-> *clm.config*
-> (see
-> clm-tool(5)).
+Per-plugin configuration, keyed by tool/plugin name.
+Each plugin sees only its own subtable, as
+*clm.config*
+(see
+[clm-tool(5)](clm-tool.md)).
 
 *volatile\_tools*
 
-> A list of
-> fnmatch(3)
-> patterns naming tools whose results go stale as soon as a newer
-> result exists (a map read, a status query).
-> When a matching tool completes, every prior result from that same
-> tool is replaced in place with a short stub of the form
-> "\[superseded by newer X]"
-> (where
-> 'X'
-> is the tool's name)
-> before the new result is recorded, keeping the request prefix
-> byte-stable for backend prompt caching while bounding history growth.
+A list of
+fnmatch(3)
+patterns naming tools whose results go stale as soon as a newer
+result exists (a map read, a status query).
+When a matching tool completes, every prior result from that same
+tool is replaced in place with a short stub of the form
+"\[superseded by newer X]"
+(where
+'X'
+is the tool's name)
+before the new result is recorded, keeping the request prefix
+byte-stable for backend prompt caching while bounding history growth.
 
 *mcp\_servers*
 
-> A list of
-> [MCP](https://modelcontextprotocol.io)
-> server definitions to connect to at startup.
-> Each entry is a table with:
+A list of
+[MCP](https://modelcontextprotocol.io)
+server definitions to connect to at startup.
+Each entry is a table with:
 
-> *name*
+*name*
 
-> > Used to namespace the server's tools as
-> > "mcp\_\_X\_\_Y"
-> > (where
-> > 'X'
-> > is this
-> > *name*
-> > and
-> > 'Y'
-> > is the tool's own name),
-> > matching the scheme Claude Code uses for MCP-sourced tools, so
-> > identically-named tools from different servers, or from a builtin
-> > tool, never collide.
+Used to namespace the server's tools as
+"mcp\_\_X\_\_Y"
+(where
+'X'
+is this
+*name*
+and
+'Y'
+is the tool's own name),
+matching the scheme Claude Code uses for MCP-sourced tools, so
+identically-named tools from different servers, or from a builtin
+tool, never collide.
 
-> *transport*
+*transport*
 
-> > Either
-> > "stdio"
-> > (the default if omitted) or
-> > "http".
+Either
+"stdio"
+(the default if omitted) or
+"http".
 
-> *command*
+*command*
 
-> > For
-> > "stdio":
-> > an argv array; the server is spawned as a subprocess and speaks
-> > JSON-RPC over its stdin/stdout.
-> > A crashing stdio server is automatically restarted, with a small
-> > backoff budget so a genuine crash loop does not turn into a
-> > fork/exec storm; its tools disappear from the model's view while it
-> > is down and reappear once it is back.
+For
+"stdio":
+an argv array; the server is spawned as a subprocess and speaks
+JSON-RPC over its stdin/stdout.
+A crashing stdio server is automatically restarted, with a small
+backoff budget so a genuine crash loop does not turn into a
+fork/exec storm; its tools disappear from the model's view while it
+is down and reappear once it is back.
 
-> *url*
+*url*
 
-> > For
-> > "http":
-> > the server's endpoint.
-> > One JSON-RPC POST per call, no persistent connection.
-> > This transport is newer and less exercised than
-> > "stdio";
-> > it expects a plain JSON response per call, not an SSE-streamed one.
+For
+"http":
+the server's endpoint.
+One JSON-RPC POST per call, no persistent connection.
+This transport is newer and less exercised than
+"stdio";
+it expects a plain JSON response per call, not an SSE-streamed one.
 
-> *api\_key*
+*api\_key*
 
-> > Optional bearer token for an
-> > "http"
-> > server.
+Optional bearer token for an
+"http"
+server.
 
-> *timeout\_ms*
+*timeout\_ms*
 
-> > Optional per-call deadline for either transport.
-> > Defaults to 30000 (30s).
+Optional per-call deadline for either transport.
+Defaults to 30000 (30s).
 
 Agent profile files under
 *~/.config/clm/agents/*
@@ -197,7 +197,7 @@ It must also
 **return**
 a table; there is no required schema beyond that, since keys are
 referenced by whatever name the rest of the configuration expects.
-clm(1)
+[clm(1)](clm.md)
 warns, via
 `CLM_DEBUG_LOG`,
 if this file is readable by group or other.
@@ -232,7 +232,7 @@ The corresponding
 
 # SEE ALSO
 
-clm(1),
-clm-tool(5)
+[clm(1)](clm.md),
+[clm-tool(5)](clm-tool.md)
 
 clm - July 6, 2026

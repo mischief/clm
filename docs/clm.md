@@ -26,7 +26,7 @@ runs a conversational LLM agent against any OpenAI-compatible chat
 completions endpoint (llama.cpp, Ollama, OpenAI, Anthropic's
 OpenAI-compatible endpoint), with a Lua plugin system for custom
 tools; see
-clm-tool(5).
+[clm-tool(5)](clm-tool.md).
 With no options, and when both standard input and standard output are
 a terminal,
 **clm**
@@ -52,142 +52,142 @@ if
 is unset) and seeds the builtin plugins into its
 *plugins*
 subdirectory; see
-clm-config(5).
+[clm-config(5)](clm-config.md).
 Safe to re-run: it never overwrites a file that already exists.
 
 The options are as follows:
 
 **-a** *name*, **--agent** *name*
 
-> Use the agent profile named
-> *name*
-> (*~/.config/clm/agents/*&zwnj;*name*&zwnj;*.lua*)
-> .
-> If omitted, the
-> *agent*
-> key in
-> *config.lua*
-> is used, or otherwise the top-level provider settings apply directly
-> with no named profile.
+Use the agent profile named
+*name*
+(*~/.config/clm/agents/*&zwnj;*name*&zwnj;*.lua*)
+.
+If omitted, the
+*agent*
+key in
+*config.lua*
+is used, or otherwise the top-level provider settings apply directly
+with no named profile.
 
 **-f** *prompt*, **--forever** *prompt*
 
-> Interactive UI mode only.
-> Submit
-> *prompt*
-> immediately, then automatically resubmit it every time a turn
-> completes with nothing else queued, so the agent keeps going without
-> a human re-prompting it each turn.
+Interactive UI mode only.
+Submit
+*prompt*
+immediately, then automatically resubmit it every time a turn
+completes with nothing else queued, so the agent keeps going without
+a human re-prompting it each turn.
 
 **-H**, **--headless**
 
-> Force the plain stdio REPL even when standard input and standard
-> output are both a terminal.
+Force the plain stdio REPL even when standard input and standard
+output are both a terminal.
 
 **-m** *name*, **--model** *name*
 
-> Model name to request from the endpoint.
-> Overrides whatever the active provider (CLI, agent profile, or
-> *config.lua*'s
-> top-level provider) would otherwise supply.
+Model name to request from the endpoint.
+Overrides whatever the active provider (CLI, agent profile, or
+*config.lua*'s
+top-level provider) would otherwise supply.
 
 **-o** *prompt*, **--oneshot** *prompt*
 
-> Run a single prompt headlessly and exit, printing only the assistant's
-> reply (plus any tool-call/error lines) to standard output.
-> The process exits 0 if the turn completed successfully, or 1 otherwise.
+Run a single prompt headlessly and exit, printing only the assistant's
+reply (plus any tool-call/error lines) to standard output.
+The process exits 0 if the turn completed successfully, or 1 otherwise.
 
 **-p** *dir*, **--plugins** *dir*
 
-> Load Lua plugins from
-> *dir*
-> instead of the default
-> `XDG_CONFIG_HOME`*/clm/plugins*.
+Load Lua plugins from
+*dir*
+instead of the default
+`XDG_CONFIG_HOME`*/clm/plugins*.
 
 **-S**, **--no-stream**
 
-> Request non-streamed responses instead of the default
-> server-sent-events streaming.
+Request non-streamed responses instead of the default
+server-sent-events streaming.
 
 **-u** *base*, **--url** *base*
 
-> Base API endpoint.
-> */chat/completions*
-> is appended automatically; do not include it in
-> *base*.
-> Defaults to
-> *http://127.0.0.1:8081/v1*.
+Base API endpoint.
+*/chat/completions*
+is appended automatically; do not include it in
+*base*.
+Defaults to
+*http://127.0.0.1:8081/v1*.
 
 **-V**, **--version**
 
-> Print the version number and exit.
+Print the version number and exit.
 
 **-h**, **--help**
 
-> Print usage and exit.
+Print usage and exit.
 
 # ENVIRONMENT
 
 `CLM_API_KEY`
 
-> Bearer token sent as
-> `Authorization: Bearer` *key*
-> on every request to the configured endpoint.
-> Takes precedence over any
-> *api\_key*
-> set in
-> *config.lua*
-> or an agent profile.
-> Servers that need no authentication (most local llama.cpp/Ollama
-> setups) can leave this unset.
+Bearer token sent as
+`Authorization: Bearer` *key*
+on every request to the configured endpoint.
+Takes precedence over any
+*api\_key*
+set in
+*config.lua*
+or an agent profile.
+Servers that need no authentication (most local llama.cpp/Ollama
+setups) can leave this unset.
 
 `XDG_CONFIG_HOME`
 
-> Base directory for
-> *clm/config.lua*,
-> *clm/secrets.lua*,
-> *clm/plugins/*,
-> and
-> *clm/agents/*.
-> Defaults to
-> *~/.config*
-> if unset.
+Base directory for
+*clm/config.lua*,
+*clm/secrets.lua*,
+*clm/plugins/*,
+and
+*clm/agents/*.
+Defaults to
+*~/.config*
+if unset.
 
 `CLM_DEBUG_LOG`
 
-> Path to a file that internal debug logging is appended to.
-> Unset (the default) disables logging entirely, nothing is written,
-> and the check is cheap enough to leave alone in production.
+Path to a file that internal debug logging is appended to.
+Unset (the default) disables logging entirely, nothing is written,
+and the check is cheap enough to leave alone in production.
 
 # FILES
 
 *~/.config/clm/config.lua*
 
-> Provider, agent, and per-tool plugin configuration; see
-> clm-config(5).
+Provider, agent, and per-tool plugin configuration; see
+[clm-config(5)](clm-config.md).
 
 *~/.config/clm/secrets.lua*
 
-> API keys and other secrets, kept separate from
-> *config.lua*
-> so the latter can be shared or checked into dotfiles.
-> Mode 0600;
-> **clm**
-> warns (via
-> `CLM_DEBUG_LOG`)
-> if it is readable by group or other.
+API keys and other secrets, kept separate from
+*config.lua*
+so the latter can be shared or checked into dotfiles.
+Mode 0600;
+**clm**
+warns (via
+`CLM_DEBUG_LOG`)
+if it is readable by group or other.
 
 *~/.config/clm/agents/\*.lua*
 
-> Per-agent profiles, each overriding or extending
-> *config.lua*'s
-> settings; see
-> clm-config(5).
+Per-agent profiles, each overriding or extending
+*config.lua*'s
+settings; see
+[clm-config(5)](clm-config.md).
 
 *~/.config/clm/plugins/\*.lua*
 
-> Lua plugins, each registering one or more tools; see
-> clm-tool(5).
+Lua plugins, each registering one or more tools; see
+[clm-tool(5)](clm-tool.md).
 
 # EXIT STATUS
 
@@ -199,8 +199,8 @@ successfully (0) or not (1).
 
 # SEE ALSO
 
-clm\_agent(3),
-clm-config(5),
-clm-tool(5)
+[clm_agent(3)](clm_agent.md),
+[clm-config(5)](clm-config.md),
+[clm-tool(5)](clm-tool.md)
 
 clm - July 6, 2026

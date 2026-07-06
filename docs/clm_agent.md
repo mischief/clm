@@ -300,24 +300,24 @@ or
 
 \[`ENOMEM`]
 
-> **clm\_agent\_new**()
-> failed to allocate memory.
+**clm\_agent\_new**()
+failed to allocate memory.
 
 \[`ECANCELED`]
 
-> **clm\_agent\_cancel**()
-> successfully cancelled a turn that was in flight; this is reported to
-> *on\_turn\_done*
-> as the turn's status, not returned directly by
-> **clm\_agent\_cancel**()
-> itself.
+**clm\_agent\_cancel**()
+successfully cancelled a turn that was in flight; this is reported to
+*on\_turn\_done*
+as the turn's status, not returned directly by
+**clm\_agent\_cancel**()
+itself.
 
 \[`EBUSY`]
 
-> **clm\_agent\_submit**()
-> or
-> **clm\_agent\_compact**()
-> was called while a turn was already in flight.
+**clm\_agent\_submit**()
+or
+**clm\_agent\_compact**()
+was called while a turn was already in flight.
 
 # SEE ALSO
 
