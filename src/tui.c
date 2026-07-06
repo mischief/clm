@@ -151,6 +151,11 @@ struct ui {
 	char **queue;
 	size_t nqueue, cap_queue;
 
+	/* --forever: NULL normally; when set, this fixed prompt is
+	 * auto-resubmitted every time a turn completes and nothing else is
+	 * queued, so the agent keeps going without a human re-prompting it. */
+	const char *forever_prompt;
+
 	/*
 	 * Submitted-prompt history for Up/Down recall. hist_pos == nhist means
 	 * "the live line"; browsing up saves the live line in hist_saved so
@@ -230,6 +235,7 @@ ui_set_state(struct ui *u, enum clm_agent_state st)
 }
 
 static void drain_queue(struct ui *u); /* runs the next queued prompt */
+static bool do_submit(struct ui *u, const char *prompt, bool echo);
 
 /* ---- libclm callbacks ---- */
 
@@ -521,8 +527,9 @@ cb_turn_done(int status, void *user)
 	u->dirty = true;
 
 	/*
-	 * Force a compaction here, before draining the queue, if usage
-	 * crossed the threshold on the turn that just finished.
+	 * Force a compaction here, before draining the queue or resubmitting
+	 * --forever, if usage crossed the threshold on the turn that just
+	 * finished.
 	 *
 	 * This is NOT truly mid-turn -- clm_agent_compact()/clm_agent_cancel()
 	 * only have anything to act on while an HTTP request or a tool batch
@@ -567,9 +574,9 @@ cb_turn_done(int status, void *user)
 			    "\n[context over threshold, auto-compacting...]\n");
 			return; /* re-enters this function (see above) with
 			         * was_compacting true, which then falls
-			         * through below to drain the queue regardless
-			         * of whether compaction itself succeeded or
-			         * failed. */
+			         * through below to drain the queue / resubmit
+			         * regardless of whether compaction itself
+			         * succeeded or failed. */
 		}
 		/* -EBUSY shouldn't happen here (state is idle), and any other
 		 * failure just means we fall through and keep going without
@@ -578,6 +585,16 @@ cb_turn_done(int status, void *user)
 	}
 
 	drain_queue(u); /* start the next queued prompt, if any */
+	/* Nothing was queued and --forever is set: keep the agent going
+	 * instead of idling for human input. Skip on a real error so a
+	 * broken backend/tool doesn't spin forever -- UNLESS that "error"
+	 * was just a failed autocompact attempt (was_compacting), in which
+	 * case the original turn before it already completed successfully
+	 * and --forever should keep going regardless; only a failure of the
+	 * agent's actual conversational turn should stop the loop. */
+	if (!u->busy && u->nqueue == 0 && u->forever_prompt != NULL &&
+	    (status == 0 || status == -ECANCELED || was_compacting))
+		do_submit(u, u->forever_prompt, true);
 }
 
 /*
@@ -2360,7 +2377,7 @@ xdg_config_path(const char *suffix)
 
 int
 tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
-    struct clm_lua_cfg *lcfg)
+    struct clm_lua_cfg *lcfg, const char *forever_prompt)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -2377,6 +2394,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	loop = uv_default_loop();
 	u->loop = loop;
 	u->model = cfg->model;
+	u->forever_prompt = forever_prompt;
 #ifdef CLM_LUA
 	if (lcfg != NULL) {
 		const char *aname = clm_lua_cfg_get_agent_name(lcfg);
@@ -2457,6 +2475,11 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	uv_timer_init(loop, &u->health);
 	u->health.data = u;
 	uv_timer_start(&u->health, on_health, 0, 20000);
+
+	/* --forever: kick off the first turn ourselves instead of waiting on
+	 * a human to type it in. */
+	if (u->forever_prompt != NULL)
+		do_submit(u, u->forever_prompt, true);
 
 	uv_run(loop, UV_RUN_DEFAULT);
 

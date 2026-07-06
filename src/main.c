@@ -26,7 +26,8 @@ usage(const char *prog)
 {
 	fprintf(stderr,
 	    "usage: %s setup\n"
-	    "       %s [-o|--oneshot PROMPT] [-H|--headless] [-u|--url BASE] "
+	    "       %s [-o|--oneshot PROMPT] [-f|--forever PROMPT] "
+	    "[-H|--headless] [-u|--url BASE] "
 	    "[-m|--model NAME] [-p|--plugins DIR] [-S|--no-stream] "
 	    "[-V|--version] [-h|--help]\n",
 	    prog, prog);
@@ -34,6 +35,12 @@ usage(const char *prog)
 	    "  setup                 write a starter config.lua and seed "
 	    "builtin plugins\n"
 	    "  -o, --oneshot PROMPT  run one prompt headless and exit\n"
+	    "  -f, --forever PROMPT  TUI mode: submit PROMPT, then "
+	    "auto-resubmit it\n"
+	    "                        every time a turn completes with nothing "
+	    "queued,\n"
+	    "                        so the agent keeps going without a human "
+	    "re-prompting it\n"
 	    "  -H, --headless        force the plain stdio REPL\n"
 	    "  -u, --url BASE        base API endpoint "
 	    "(default http://127.0.0.1:8081/v1);\n"
@@ -430,6 +437,7 @@ main(int argc, char *argv[])
 	const char *plugin_dir = NULL;
 	const char *agent_name = NULL;
 	char *oneshot = NULL;
+	char *forever_prompt = NULL;
 	int stream = 1;
 	int headless = 0;
 	struct clm_cfg cfg = {0};
@@ -447,6 +455,7 @@ main(int argc, char *argv[])
 
 	const struct option opts[] = {
 		{"oneshot", required_argument, NULL, 'o'},
+		{"forever", required_argument, NULL, 'f'},
 		{"url", required_argument, NULL, 'u'},
 		{"model", required_argument, NULL, 'm'},
 		{"plugins", required_argument, NULL, 'p'},
@@ -458,10 +467,11 @@ main(int argc, char *argv[])
 		{NULL, 0, NULL, 0},
 	};
 
-	while ((opt = getopt_long(argc, argv, "a:o:u:m:p:HSVh", opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "a:o:f:u:m:p:HSVh", opts, NULL)) != -1) {
 		switch (opt) {
 		case 'a': agent_name = optarg; break;
 		case 'o': oneshot = optarg; break;
+		case 'f': forever_prompt = optarg; break;
 		case 'u': api_base = optarg; break;
 		case 'm': model = optarg; break;
 		case 'p': plugin_dir = optarg; break;
@@ -548,9 +558,9 @@ main(int argc, char *argv[])
 	if (oneshot == NULL && !headless && isatty(STDIN_FILENO) &&
 	    isatty(STDOUT_FILENO))
 #ifdef CLM_LUA
-		return tui_run(&cfg, plugin_dir, lcfg);
+		return tui_run(&cfg, plugin_dir, lcfg, forever_prompt);
 #else
-		return tui_run(&cfg, plugin_dir, NULL);
+		return tui_run(&cfg, plugin_dir, NULL, forever_prompt);
 #endif
 
 	/* Heap-allocated so the 1 KB input buffer stays off main's stack frame. */
