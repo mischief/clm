@@ -7,13 +7,19 @@ test_agent = executable('test_agent',
 test('agent', test_agent)
 
 # Lua plugin test: loads plugins from ../plugins/ and verifies tool dispatch.
-# Builds a clm_host_uv, so it links the uv layer too.
-test_lua = executable('test_lua_plugin',
-  files('test_lua_plugin.c'),
-  dependencies: [clmuv_dep],
-  include_directories: [clm_inc, include_directories('../include')],
-)
-test('lua_plugin', test_lua, workdir: meson.project_source_root())
+# Builds a clm_host_uv, so it links the uv layer too. Only built when
+# have_lua (src/meson.build) -- clmlua_dep, needed for clm_lua_env_new etc,
+# only exists in that case (lib/meson.build's clmlua split). No more
+# CLM_LUA-guarded skip-stub main() in the .c file: the target itself is now
+# the seam, not a preprocessor branch inside it.
+if have_lua
+  test_lua = executable('test_lua_plugin',
+    files('test_lua_plugin.c'),
+    dependencies: [clmuv_dep, clmlua_dep],
+    include_directories: [clm_inc, include_directories('../include')],
+  )
+  test('lua_plugin', test_lua, workdir: meson.project_source_root())
+endif
 
 # md_render unit test: pure, links only the internal md_render static library
 # (no ncurses, no libclm), so the markdown-to-runs logic is tested in isolation.
@@ -29,8 +35,9 @@ test('md', test_md, suite: 'md')
 # mock server via pyte. Uses only an already-installed python3 + pyte (global
 # or venv); if pyte is not importable the test is skipped. The build never
 # installs anything. clm_exe only exists when have_lua (src/meson.build) --
-# the desktop binary hard-requires Lua -- so this test is skipped too under
-# -Dlua=disabled rather than referencing a target that was never built.
+# the desktop binary requires the clmlua archive -- so this test is skipped
+# too under -Dlua=disabled rather than referencing a target that was never
+# built.
 pymod = import('python')
 py = pymod.find_installation('python3', required: false)
 have_pyte = py.found() and run_command(

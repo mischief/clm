@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: ISC
 /*
  * test_lua_plugin -- verify that Lua plugins load and tools get registered.
+ * Only built at all when lib/'s lua feature is enabled (test/meson.build);
+ * see the clmlua split in lib/meson.build.
  */
-#ifdef CLM_LUA
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -223,16 +223,3 @@ main(void)
 	printf("test_lua_plugin: PASS\n");
 	return 0;
 }
-
-#else /* !CLM_LUA */
-
-#include <stdio.h>
-
-int
-main(void)
-{
-	printf("test_lua_plugin: SKIPPED (CLM_LUA not enabled)\n");
-	return 0;
-}
-
-#endif
