@@ -108,10 +108,12 @@ struct mcp_tool_ctx {
 
 /* Per-HTTP-call context (HTTP transport has no persistent connection, so each
  * call carries its own context instead of using the pending list). */
+enum mcp_http_kind { MCP_HTTP_INIT, MCP_HTTP_LIST, MCP_HTTP_CALL };
+
 struct mcp_http_ctx {
 	struct clm_mcp_client *client;
 	struct clm_tool_invocation *inv; /* NULL for init/list */
-	enum { MCP_HTTP_INIT, MCP_HTTP_LIST, MCP_HTTP_CALL } kind;
+	enum mcp_http_kind kind;
 };
 
 static void mcp_send_tools_list(struct clm_mcp_client *client);
@@ -529,8 +531,8 @@ mcp_http_error(int error_code, const char *error_msg, void *user)
 }
 
 static int
-mcp_http_send(struct clm_mcp_client *client, char *body, int kind,
-    struct clm_tool_invocation *inv)
+mcp_http_send(struct clm_mcp_client *client, char *body,
+    enum mcp_http_kind kind, struct clm_tool_invocation *inv)
 {
 	struct mcp_http_ctx *hctx = malloc(sizeof(*hctx));
 	int r;
@@ -801,7 +803,7 @@ mcp_spawn(struct clm_mcp_client *client, char *const *argv)
 /* --- shared: dispatch by transport --------------------------------------- */
 
 static int
-mcp_send(struct clm_mcp_client *client, char *body, int kind,
+mcp_send(struct clm_mcp_client *client, char *body, enum mcp_http_kind kind,
     struct clm_tool_invocation *inv)
 {
 	if (client->transport == CLM_MCP_HTTP)
