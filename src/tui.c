@@ -421,10 +421,13 @@ cb_finish_reason(enum clm_finish_reason reason, void *user)
 }
 
 /*
- * Usage callback.  Records the token count carried into the next turn
- * (ctx_used) and the instantaneous generation rate for the status bar.
- * Called once per LLM response, after the completion stream finishes.
+ * Autocompact threshold checking itself lives in agent.c now
+ * (clm_agent_over_autocompact_threshold), shared with
+ * clm_agent_tools_done()'s own mid-chain check so both use the exact same
+ * calc. tui.c's cb_usage below still needs to feed the agent a live usage
+ * number for that shared check to have anything current to look at.
  */
+
 static void
 cb_usage(const struct clm_usage *usage, void *user)
 {
@@ -445,6 +448,31 @@ cb_usage(const struct clm_usage *usage, void *user)
 static void
 cb_state(enum clm_agent_state st, void *user)
 {
+	struct ui *u = user;
+
+	/* A mid-chain autocompact (triggered internally between tool
+	 * batches, not by tui.c's own end-of-turn check further down) has
+	 * no on_turn_done to piggyback a message on -- the whole point is
+	 * that the interrupted tool chain resumes silently rather than
+	 * ending the turn. Every state transition passes through here
+	 * though, including the THINKING transition right after a mid-chain
+	 * resume, so poll for a just-failed attempt on every callback. */
+	if (clm_agent_take_mid_chain_compact_started(u->agent)) {
+		ui_push(u, ST_META,
+		    "\n[context over threshold, auto-compacting...]\n");
+		u->dirty = true;
+	}
+	if (clm_agent_take_mid_chain_compact_succeeded(u->agent)) {
+		ui_push(u, ST_META, "[autocompact complete, resuming]\n");
+		u->dirty = true;
+	}
+	if (clm_agent_take_mid_chain_compact_error(u->agent)) {
+		ui_push(u, ST_META, "\n[autocompact failed, continuing anyway: ");
+		ui_push(u, ST_META, clm_agent_get_last_error(u->agent));
+		ui_push(u, ST_META, "]\n");
+		u->dirty = true;
+	}
+
 	ui_set_state(user, st);
 }
 

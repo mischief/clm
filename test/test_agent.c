@@ -278,6 +278,78 @@ test_tool_call(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/*
+ * (b2) Mid-chain autocompact: if usage crosses the threshold on a response
+ * that itself requests another tool call (i.e. the turn is NOT done yet),
+ * clm_agent_tools_done() must trigger clm_agent_compact() itself right then
+ * -- not wait for the whole turn to finish first, which is what tui.c's own
+ * end-of-turn check does and why this needed a second, earlier check inside
+ * agent.c (see clm_agent_tools_done). ctx_max is never probed against the
+ * canned server (no /props), so this exercises the absolute-token fallback
+ * path, not the percentage one -- both share the same
+ * clm_agent_over_autocompact_threshold(), so covering one covers the calc
+ * for both.
+ *
+ * Reply sequence: (1) tool call, with usage already over
+ * CLM_AUTOCOMPACT_FALLBACK_TOKENS -- clm_agent_tools_done sees this once the
+ * tool finishes and, instead of proceeding straight to the next LLM call,
+ * fires off (2) a compaction request. (3) is the resumed turn's real next
+ * LLM call, which must still happen automatically -- if the mid-chain
+ * compact swallowed the turn instead of resuming it, turn_done would never
+ * fire and run_until_done would hang instead of completing.
+ */
+static void
+test_autocompact_mid_chain(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	/* (1) Tool call, usage already past the 100000-token fallback. */
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":"
+	    "[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":"
+	    "\"echo_hello\",\"arguments\":\"{}\"}}]}}],"
+	    "\"usage\":{\"prompt_tokens\":99000,\"completion_tokens\":2000,"
+	    "\"total_tokens\":101000}}");
+	/* (2) Compaction's own summarization request. */
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"SUMMARY\"}}]}");
+	/* (3) Resumed turn's real next call -- must still happen automatically. */
+	canned_reply(srv, final_reply);
+
+	st.agent = make_agent(&st, canned_port(srv));
+
+	def.name = "echo_hello";
+	def.description = "echo hello";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_hello;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "clm_tool_add");
+
+	CHECK(clm_agent_submit(st.agent, "use the tool") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "mid-chain compact: turn still completes");
+	CHECK(strstr(st.assistant, "done") != NULL,
+	    "mid-chain compact: resumed chain delivers final answer");
+	CHECK(canned_request_count(srv) == 3,
+	    "mid-chain compact: tool call + compaction + resumed call");
+	/* After a successful compact, usage is reset to 0 (see
+	 * clm_agent_tools_done) until the next real LLM call reports a fresh
+	 * figure -- confirm it's no longer sitting over threshold from the
+	 * pre-compaction reading. */
+	CHECK(!clm_agent_over_autocompact_threshold(st.agent),
+	    "mid-chain compact: threshold cleared after compacting");
+
+	teardown(&st, srv);
+}
+
 /* (c) Real write_file then read_file builtins against a temp sandbox. */
 static void
 test_file_tools(uv_loop_t *loop)
@@ -843,6 +915,7 @@ main(void)
 	uv_loop_init(&loop);
 	test_text_reply(&loop);
 	test_tool_call(&loop);
+	test_autocompact_mid_chain(&loop);
 	test_file_tools(&loop);
 	test_shell_exec(&loop);
 	test_stream_text(&loop);

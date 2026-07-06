@@ -336,9 +336,9 @@ clm_agent_get_ctx_max(const struct clm_agent *agent)
 
 /*
  * True if context usage (tracked in emit_usage() below) is at/above the
- * autocompact threshold. Lives in the library so every frontend check
- * uses exactly the same calc instead of keeping a second copy in sync
- * by hand.
+ * autocompact threshold. Shared by clm_agent_tools_done()'s mid-chain
+ * check and tui.c's own end-of-turn check, so both use exactly the same
+ * calc instead of tui.c keeping a second copy in sync by hand.
  */
 bool
 clm_agent_over_autocompact_threshold(const struct clm_agent *agent)
@@ -357,6 +357,45 @@ clm_agent_get_last_error(const struct clm_agent *agent)
 	if (agent == NULL || agent->last_error == NULL)
 		return "";
 	return agent->last_error;
+}
+
+bool
+clm_agent_take_mid_chain_compact_error(struct clm_agent *agent)
+{
+	bool failed;
+
+	if (agent == NULL)
+		return false;
+
+	failed = agent->mid_chain_compact_failed;
+	agent->mid_chain_compact_failed = false;
+	return failed;
+}
+
+bool
+clm_agent_take_mid_chain_compact_started(struct clm_agent *agent)
+{
+	bool started;
+
+	if (agent == NULL)
+		return false;
+
+	started = agent->mid_chain_compact_started;
+	agent->mid_chain_compact_started = false;
+	return started;
+}
+
+bool
+clm_agent_take_mid_chain_compact_succeeded(struct clm_agent *agent)
+{
+	bool succeeded;
+
+	if (agent == NULL)
+		return false;
+
+	succeeded = agent->mid_chain_compact_succeeded;
+	agent->mid_chain_compact_succeeded = false;
+	return succeeded;
 }
 
 static void clm_agent_start_turn(struct clm_agent *agent);
@@ -528,6 +567,8 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 	json_cleanup struct json_object *parsed = NULL;
 	autofree char *summary = NULL;
 	int status = resp ? resp->status_code : -1;
+	bool resume = agent->compact_resume_chain;
+	agent->compact_resume_chain = false;
 
 	agent->inflight = NULL;
 	free(agent->compact_body);
@@ -536,21 +577,68 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 	if (status != 200 || resp->body == NULL) {
 		if (resp)
 			clm_http_response_free(resp);
+		if (resume) {
+			/* Mid-chain: not fatal, just didn't shrink anything --
+			 * continue the interrupted chain as-is rather than
+			 * landing the whole turn in an error state over a
+			 * compaction hiccup. */
+			clm_agent_set_error(agent, "compaction request failed");
+			agent->mid_chain_compact_failed = true;
+			clm_agent_start_turn(agent);
+			return;
+		}
 		agent_fail(agent, "compaction request failed", -EIO);
 		return;
 	}
 	parsed = json_tokener_parse(resp->body);
+	clm_debug("compact response body: %s", resp->body);
 	clm_http_response_free(resp);
 
 	summary = parsed ? extract_message_content(parsed) : NULL;
 	if (summary == NULL || summary[0] == '\0') {
+		if (resume) {
+			clm_agent_set_error(agent, "compaction produced no summary");
+			agent->mid_chain_compact_failed = true;
+			clm_agent_start_turn(agent);
+			return;
+		}
 		agent_fail(agent, "compaction produced no summary", -EIO);
 		return;
 	}
 
 	if (clm_history_compact(&agent->history, summary,
 	    CLM_COMPACT_KEEP_RECENT) < 0) {
+		if (resume) {
+			clm_agent_set_error(agent, "compaction failed");
+			agent->mid_chain_compact_failed = true;
+			clm_agent_start_turn(agent);
+			return;
+		}
 		agent_fail(agent, "compaction failed", -ENOMEM);
+		return;
+	}
+
+	if (resume) {
+		/* Not a real turn ending -- resume the interrupted tool
+		 * chain's next LLM call directly instead of reporting
+		 * cb_on_turn_done, which the caller would otherwise mistake
+		 * for the conversational turn actually finishing.
+		 * This is the success path, so clear any stale failure flag
+		 * from an earlier mid-chain attempt. */
+		agent->mid_chain_compact_failed = false;
+		agent->mid_chain_compact_succeeded = true;
+		/* The compact request's own usage callback just set ctx_used
+		 * to the (large) token count of the compaction call itself --
+		 * that's stale and no longer reflects the actual conversation
+		 * size (which just shrank). Clear it so the next tools_done
+		 * check doesn't immediately re-trigger compaction on the
+		 * stale reading; the resumed turn's own response will report
+		 * the real (smaller) count. */
+		agent->ctx_used = 0;
+		agent->state = CLM_STATE_THINKING;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		clm_agent_start_turn(agent);
 		return;
 	}
 
@@ -565,10 +653,24 @@ static void
 compact_error_cb(int error_code, const char *error_msg, void *user)
 {
 	struct clm_agent *agent = user;
+	bool resume = agent->compact_resume_chain;
+	agent->compact_resume_chain = false;
 
 	agent->inflight = NULL;
 	free(agent->compact_body);
 	agent->compact_body = NULL;
+
+	if (resume && error_code != -ECANCELED) {
+		/* Mid-chain, non-cancel failure: same "not fatal, keep going"
+		 * handling as the success path above -- don't land the whole
+		 * turn in CLM_STATE_ERROR over a compaction hiccup. */
+		clm_agent_set_error(agent,
+		    error_msg ? error_msg : "compaction request failed");
+		agent->mid_chain_compact_failed = true;
+		clm_agent_start_turn(agent);
+		return;
+	}
+
 	if (error_code == -ECANCELED)
 		agent->state = CLM_STATE_COMPLETE;
 	else {
@@ -584,7 +686,9 @@ compact_error_cb(int error_code, const char *error_msg, void *user)
 
 /*
  * Ask the model to summarize the conversation, then fold old turns into that
- * summary (see clm_history_compact). Manual only -- there is no auto-trigger.
+ * summary (see clm_history_compact). Triggered explicitly by a caller, or
+ * internally from clm_agent_tools_done() when usage crosses the autocompact
+ * threshold mid-chain (see compact_resume_chain in internal.h).
  * The summarization request is the current history plus a one-off instruction;
  * it is not recorded in history, so only the compaction result persists.
  *
@@ -727,9 +831,9 @@ static void
 emit_usage(struct clm_agent *agent, const struct clm_usage *usage)
 {
 	/* Tokens carried into the next turn's prompt -- same calc tui.c's own
-	 * cb_usage does for its status-bar gauge, kept here too so the
-	 * autocompact threshold check has a live number without depending on
-	 * a UI layer to track it. */
+	 * cb_usage does for its status-bar gauge, kept here too now so
+	 * clm_agent_tools_done() can check the autocompact threshold itself
+	 * mid-chain without depending on a UI layer to track it. */
 	agent->ctx_used = (int64_t)usage->prompt_tokens + usage->completion_tokens;
 	if (agent->cb_on_usage)
 		agent->cb_on_usage(usage, agent->cb_user);
@@ -1504,6 +1608,46 @@ clm_agent_tools_done(struct clm_agent *agent, int status)
 		if (agent->cb_on_turn_done)
 			agent->cb_on_turn_done(-E2BIG, agent->cb_user);
 		return;
+	}
+
+	/*
+	 * Mid-chain autocompact: a single turn can chain many tool-calling
+	 * round-trips (tool result -> next LLM call -> more tool calls ->
+	 * ...) before the conversational turn actually ends, so checking the
+	 * threshold only once at full-turn completion (as tui.c's own
+	 * end-of-turn check does) can let usage overshoot badly during a
+	 * long chain. This is the safe place to catch that early: a tool
+	 * batch just finished and the next LLM call hasn't started yet, so
+	 * nothing is in flight for clm_agent_compact() to conflict with.
+	 *
+	 * clm_agent_compact() itself refuses to run while state is THINKING
+	 * or CALLING_TOOL (see its own busy check) -- land on COMPLETE first,
+	 * same as the cancel path above does, so it's willing to proceed.
+	 * compact_success_cb/compact_error_cb check compact_resume_chain and,
+	 * because it's set here, will call clm_agent_start_turn() directly
+	 * on completion instead of firing cb_on_turn_done -- this is NOT a
+	 * real turn ending, just a pause to shrink history, so a --forever
+	 * caller must not see it as one (it would otherwise submit a fresh
+	 * prompt on top of an unfinished tool chain).
+	 */
+	if (clm_agent_over_autocompact_threshold(agent)) {
+		agent->state = CLM_STATE_COMPLETE;
+		agent->compact_resume_chain = true;
+		if (clm_agent_compact(agent) == 0) {
+			agent->mid_chain_compact_started = true;
+			agent->ctx_used = 0; /* stale pre-compaction reading;
+			                      * see emit_usage() for when a
+			                      * real one replaces it */
+			if (agent->cb_on_state)
+				agent->cb_on_state(agent->state, agent->cb_user);
+			return;
+		}
+		/* Compact declined to start (shouldn't happen: state was
+		 * just set to COMPLETE) or hit an immediate local failure --
+		 * clear the flag and fall through to continue the chain
+		 * without having shrunk anything, same as tui.c's own
+		 * "not fatal, just try again next turn" handling. */
+		agent->compact_resume_chain = false;
 	}
 
 	agent->state = CLM_STATE_THINKING;

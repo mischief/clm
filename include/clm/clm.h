@@ -272,11 +272,41 @@ CLM_API int64_t clm_agent_get_ctx_max(const struct clm_agent *agent);
 CLM_API const char *clm_agent_get_last_error(const struct clm_agent *agent);
 
 /*
+ * True and clears the flag if a mid-chain autocompact (triggered internally
+ * by clm_agent_tools_done() between tool batches, not by an explicit
+ * clm_agent_compact() call) failed since the last time this was called.
+ * There is no on_turn_done/on_state event dedicated to this -- the whole
+ * point of a mid-chain compaction is that the tool chain it interrupted
+ * resumes silently rather than ending the turn -- so a UI that wants to
+ * surface "autocompact just failed, continuing anyway" (e.g. on the next
+ * cb_on_state callback) should poll this rather than expecting a callback.
+ * clm_agent_get_last_error() holds the actual error message when this
+ * returns true.
+ */
+CLM_API bool clm_agent_take_mid_chain_compact_error(struct clm_agent *agent);
+
+/*
+ * True (once) when a mid-chain autocompact has just started. The UI should
+ * print a "compacting..." message so the user knows the pause is intentional.
+ * Consuming (clears on read, same pattern as _error above).
+ */
+CLM_API bool clm_agent_take_mid_chain_compact_started(struct clm_agent *agent);
+
+/*
+ * True (once) when a mid-chain autocompact has just completed successfully
+ * and the interrupted chain is about to resume. Lets the UI print a
+ * completion message. Consuming (clears on read).
+ */
+CLM_API bool clm_agent_take_mid_chain_compact_succeeded(struct clm_agent *agent);
+
+/*
  * True if the agent's last known context usage is at/above the autocompact
  * threshold (a fixed percentage of ctx_max when known, else a fixed
  * absolute token count -- see the definition in agent.c for the exact calc
- * and rationale). Exposed so a frontend (e.g. tui.c's end-of-turn check)
- * can share the library's calc instead of keeping its own copy in sync.
+ * and rationale). clm_agent_tools_done() already checks this itself
+ * in-between tool batches to trigger compaction mid-chain; exposed here too
+ * so a frontend (e.g. tui.c's status bar) can reflect the same threshold
+ * without keeping its own separate copy of the calc.
  */
 CLM_API bool clm_agent_over_autocompact_threshold(const struct clm_agent *agent);
 
@@ -308,7 +338,8 @@ CLM_API int clm_agent_set_provider(struct clm_agent *agent,
 /*
  * Summarize the conversation and fold old turns into that summary, keeping the
  * system prologue and recent turns. Asynchronous (one model round-trip): fires
- * on_turn_done when finished. Manual only; there is no auto-compaction.
+ * on_turn_done when finished (unless triggered mid-chain from inside
+ * clm_agent_tools_done(), which resumes the interrupted tool chain instead).
  */
 CLM_API int clm_agent_compact(struct clm_agent *agent);
 

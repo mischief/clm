@@ -59,6 +59,39 @@ struct clm_agent {
 	/* The turn's in-flight HTTP request (for cancellation), else NULL. */
 	struct clm_http_call *inflight;
 	bool cancelling; /* a cancel is unwinding the current turn */
+	/* True while a clm_agent_compact() call was triggered internally
+	 * from clm_agent_tools_done() (mid-chain, between a tool batch
+	 * finishing and the next LLM call) rather than by an explicit
+	 * caller. Lets compact_success_cb/compact_error_cb tell the two
+	 * cases apart: an explicit caller (e.g. tui.c's own end-of-turn
+	 * check) expects the normal cb_on_turn_done to fire on completion,
+	 * but a mid-chain trigger is NOT a real turn ending -- the tool
+	 * chain that was interrupted to make room still needs to continue,
+	 * so completion should resume it via clm_agent_start_turn() instead
+	 * of reporting done (which would make a --forever caller think the
+	 * conversational turn finished and incorrectly submit a fresh
+	 * prompt on top of an unfinished tool chain). */
+	bool compact_resume_chain;
+
+	/* Set when a mid-chain autocompact fires (tools_done triggers it)
+	 * so the UI can print a "compacting..." message; polled/cleared
+	 * via clm_agent_take_mid_chain_compact_started(). */
+	bool mid_chain_compact_started;
+
+	/* Set when a mid-chain autocompact completes successfully (the
+	 * interrupted chain is about to resume); polled/cleared via
+	 * clm_agent_take_mid_chain_compact_succeeded(). */
+	bool mid_chain_compact_succeeded;
+
+	/* Set instead of firing any callback when a mid-chain autocompact
+	 * (see compact_resume_chain above) fails -- there's no "turn done"
+	 * event to piggyback an error message on for that path, since the
+	 * whole point is that the interrupted tool chain resumes silently.
+	 * A UI polls/checks this via clm_agent_take_mid_chain_compact_error()
+	 * on the next state-change callback instead. Cleared on a successful
+	 * mid-chain compaction too, so a stale failure from an earlier
+	 * attempt never lingers past a later success. */
+	bool mid_chain_compact_failed;
 
 	/* Event callbacks */
 	void (*cb_on_assistant_text)(const char *, void *);
