@@ -304,6 +304,53 @@ push_tool_summary(struct ui *u, const char *verb, const char *detail)
 	ui_push(u, ST_TOOL, line);
 }
 
+/* Render every field of a tool-call args object (except skip_key, if
+ * non-NULL -- used to omit a field already shown elsewhere, e.g.
+ * cdda_action's own "action" name shown as the verb) as
+ * "key=value key2=value2 ...", clamped to a max length with a trailing
+ * "..." if it would run longer -- a generic fallback so any tool
+ * (including ones with no hand-written case in cb_tool_begin below)
+ * still shows what it was actually called with, instead of a bare tool
+ * name with no arguments visible at all. Values use
+ * json_object_to_json_string for anything that isn't a plain string
+ * (numbers, bools, nested objects/arrays all render reasonably that
+ * way); string values are shown unquoted since the key= already makes
+ * the field clear without JSON's quoting noise. Writes into buf
+ * (caller-provided, of size bufsz) and returns it.
+ */
+static char *
+render_tool_args(struct json_object *obj, char *buf, size_t bufsz, const char *skip_key)
+{
+	size_t n = 0;
+	bool first = true;
+
+	buf[0] = '\0';
+	if (obj == NULL || bufsz == 0)
+		return buf;
+
+	json_object_object_foreach(obj, key, val) {
+		if (skip_key != NULL && strcmp(key, skip_key) == 0)
+			continue;
+		const char *vstr = json_object_is_type(val, json_type_string)
+		    ? json_object_get_string(val)
+		    : json_object_to_json_string(val);
+		int written = snprintf(buf + n, bufsz - n, "%s%s=%s",
+		    first ? "" : " ", key, vstr);
+		if (written < 0 || (size_t)written >= bufsz - n) {
+			/* Would overflow -- truncate with an ellipsis rather
+			 * than a partially-written garbled field. */
+			const char *ell = "...";
+			size_t ell_len = strlen(ell);
+			if (bufsz > ell_len)
+				memcpy(buf + bufsz - 1 - ell_len, ell, ell_len + 1);
+			return buf;
+		}
+		n += (size_t)written;
+		first = false;
+	}
+	return buf;
+}
+
 static void
 cb_tool_begin(const char *name, const char *args, void *user)
 {
@@ -320,8 +367,52 @@ cb_tool_begin(const char *name, const char *args, void *user)
 	} else if (strcmp(name, "write_file") == 0) {
 		push_tool_summary(u, "writing file", json_field(obj, "path"));
 		u->n_write++;
+	} else if (strcmp(name, "cdda_think") == 0) {
+		push_tool_summary(u, "thinking", json_field(obj, "thought"));
+		u->n_other++;
+	} else if (strcmp(name, "cdda_action") == 0) {
+		char buf[36]; /* 32 chars of content + room for "..." */
+		render_tool_args(obj, buf, sizeof(buf), "action");
+		char label[64];
+		snprintf(label, sizeof(label), "%s%s%s",
+		    json_field(obj, "action") ? json_field(obj, "action") : "?",
+		    strlen(buf) > 0 ? " " : "", buf);
+		push_tool_summary(u, "action", label);
+		u->n_other++;
+	} else if (strcmp(name, "cdda_state") == 0) {
+		push_tool_summary(u, "state", "");
+		u->n_other++;
+		/* just a marker that the call happened -- the raw JSON
+		 * result itself is still not shown (see cb_tool_result
+		 * below), it's noisy and adds nothing a human wants to
+		 * watch scroll by. */
+	} else if (strcmp(name, "cdda_overmap") == 0) {
+		char buf[32];
+		json_object *jr = NULL;
+		if (obj != NULL)
+			json_object_object_get_ex(obj, "radius", &jr);
+		snprintf(buf, sizeof(buf), "radius=%d",
+		    jr != NULL ? json_object_get_int(jr) : 10);
+		push_tool_summary(u, "overmap", buf);
+		u->n_other++;
+	} else if (strcmp(name, "cdda_examine") == 0) {
+		char buf[48];
+		json_object *jx = NULL, *jy = NULL, *jz = NULL;
+		if (obj != NULL) {
+			json_object_object_get_ex(obj, "x", &jx);
+			json_object_object_get_ex(obj, "y", &jy);
+			json_object_object_get_ex(obj, "z", &jz);
+		}
+		snprintf(buf, sizeof(buf), "x=%d y=%d z=%d",
+		    jx != NULL ? json_object_get_int(jx) : 0,
+		    jy != NULL ? json_object_get_int(jy) : 0,
+		    jz != NULL ? json_object_get_int(jz) : 0);
+		push_tool_summary(u, "examine", buf);
+		u->n_other++;
 	} else {
-		push_tool_summary(u, "calling tool", name);
+		char buf[36]; /* 32 chars of content + room for "..." */
+		render_tool_args(obj, buf, sizeof(buf), NULL);
+		push_tool_summary(u, name, buf);
 		u->n_other++;
 	}
 	json_object_put(obj);
@@ -333,9 +424,16 @@ cb_tool_result(const char *name, const char *content,
 {
 	struct ui *u = user;
 	size_t clen;
-	(void)name;
 	switch (outcome) {
 	case CLM_TOOL_OK:
+		/* cdda_* tool results are raw JSON state dumps -- the begin
+		 * summary already showed what matters (thought/action), so
+		 * skip echoing the body. Failures still show below. */
+		if (strcmp(name, "cdda_state") == 0 ||
+		    strcmp(name, "cdda_action") == 0 ||
+		    strcmp(name, "cdda_think") == 0 ||
+		    strcmp(name, "cdda_examine") == 0)
+			break;
 		ui_push(u, ST_TOOL_OUT, content);
 		/* Ensure exactly one trailing newline (don't double-count). */
 		clen = content ? strlen(content) : 0;
