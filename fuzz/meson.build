@@ -18,20 +18,22 @@ fuzz_tool_dispatch_exe = executable(
   files('fuzz_tool_dispatch.c') + fuzz_lib_src,
   include_directories: [clm_inc, include_directories('../include')],
   dependencies: clm_core_deps,
-  c_args: ['-fsanitize=address', '-DCLM_BUILDING', '-DCLM_LUA=1'],
+  c_args: ['-fsanitize=address', '-DCLM_BUILDING'],
   link_args: ['-fsanitize=fuzzer,address'],
   install: false,
 )
 
-# fuzz_tool_dispatch_lua: same but with Lua plugin support compiled in.
+# fuzz_tool_dispatch_lua: same but with Lua plugin support compiled in --
+# links clmlua_dep (lib/meson.build) rather than respecifying
+# lua_plugin.c/lua_json.c/lua_http.c as their own source list, now that
+# they're a proper static archive shared with the clm desktop binary.
 if lua_dep.found()
   fuzz_tool_dispatch_lua_exe = executable(
     'fuzz_tool_dispatch_lua',
-    files('fuzz_tool_dispatch.c') + fuzz_lib_src + files(
-      '../lib/lua_plugin.c', '../lib/lua_json.c', '../lib/lua_http.c'),
+    files('fuzz_tool_dispatch.c') + fuzz_lib_src,
     include_directories: [clm_inc, include_directories('../include')],
-    dependencies: [clm_core_deps, lua_dep],
-    c_args: ['-fsanitize=address', '-DCLM_BUILDING', '-DCLM_LUA=1'],
+    dependencies: [clm_core_deps, clmlua_dep],
+    c_args: ['-fsanitize=address', '-DCLM_BUILDING'],
     link_args: ['-fsanitize=fuzzer,address'],
     install: false,
   )
