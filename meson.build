@@ -90,7 +90,7 @@ subdir('man')
 
 if get_option('tests')
   subdir('test')
-  if meson.get_compiler('c').has_argument('-fsanitize=fuzzer')
+  if cc.has_argument('-fsanitize=fuzzer') and cc.has_argument('-fsanitize=address')
     subdir('fuzz')
   endif
 endif
