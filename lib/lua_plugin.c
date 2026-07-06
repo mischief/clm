@@ -18,6 +18,7 @@
 
 #include "clm/clm.h"
 #include "clm/cleanup.h"
+#include "clm/internal.h"
 #include "clm/lua_plugin.h"
 #include "clm/log.h"
 #include "useful.h"
@@ -737,6 +738,102 @@ lua_clm_write_file(lua_State *L)
 	return 1;
 }
 
+/* State for a pending clm.sleep() call. */
+struct lua_sleep_req {
+	lua_State *co;
+	lua_State *main_L;
+	int co_ref;
+	struct clm_lua_plugin *plugin;
+};
+
+static void
+lua_sleep_timer_cb(void *arg)
+{
+	struct lua_sleep_req *sr = arg;
+	lua_State *co = sr->co;
+	lua_State *L = sr->main_L;
+	int nres, rc;
+
+	if (lua_status(co) != LUA_YIELD) {
+		clm_debug("clm.sleep: coroutine not yielded, skipping resume");
+		luaL_unref(L, LUA_REGISTRYINDEX, sr->co_ref);
+		free(sr);
+		return;
+	}
+
+	nres = 0;
+	rc = lua_resume(co, L, 0, &nres);
+	if (rc == LUA_OK) {
+		clm_lua_mark_invocation_thread(L, co, 0);
+		luaL_unref(L, LUA_REGISTRYINDEX, sr->co_ref);
+		clm_lua_clear_invocation_registry(L);
+	} else if (rc != LUA_YIELD) {
+		const char *err = lua_tostring(co, -1);
+		clm_debug("clm.sleep: coroutine error on resume: %s",
+		    err ? err : "(unknown)");
+		clm_lua_mark_invocation_thread(L, co, 0);
+		luaL_unref(L, LUA_REGISTRYINDEX, sr->co_ref);
+		clm_lua_clear_invocation_registry(L);
+	}
+	/* rc == LUA_YIELD: coroutine yielded again (another sleep/http). */
+	free(sr);
+}
+
+/*
+ * clm.sleep(ms) -- yield the tool coroutine for ms milliseconds.
+ * Only callable from a tool invocation coroutine.
+ */
+static int
+lua_clm_sleep(lua_State *L)
+{
+	lua_Integer ms = luaL_checkinteger(L, 1);
+	if (ms < 0) ms = 0;
+	if (ms > 30000) ms = 30000; /* cap at 30s */
+
+	if (!clm_lua_is_invocation_thread(L)) {
+		return luaL_error(L, "clm.sleep may only be called from a "
+		    "tool invocation coroutine");
+	}
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_agent");
+	struct clm_agent *agent = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+	if (agent == NULL || agent->host == NULL || agent->host->timer_set == NULL) {
+		return luaL_error(L, "clm.sleep: no timer available");
+	}
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_plugin");
+	struct clm_lua_plugin *plugin = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	/* Get coroutine ref (same pattern as lua_http). */
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_co_ref");
+	int co_ref = (int)lua_tointeger(L, -1);
+	lua_pop(L, 1);
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_main_L");
+	lua_State *main_L = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	struct lua_sleep_req *sr = calloc(1, sizeof(*sr));
+	if (sr == NULL)
+		return luaL_error(L, "clm.sleep: out of memory");
+
+	sr->co = L;
+	sr->main_L = main_L;
+	sr->co_ref = co_ref;
+	sr->plugin = plugin;
+
+	int r = agent->host->timer_set(agent->host->ctx, (uint64_t)ms,
+	    lua_sleep_timer_cb, sr, NULL);
+	if (r < 0) {
+		free(sr);
+		return luaL_error(L, "clm.sleep: timer_set failed");
+	}
+
+	return lua_yield(L, 0);
+}
+
 static void
 sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 {
@@ -771,6 +868,8 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 	lua_setfield(L, -2, "read_file");
 	lua_pushcfunction(L, lua_clm_write_file);
 	lua_setfield(L, -2, "write_file");
+	lua_pushcfunction(L, lua_clm_sleep);
+	lua_setfield(L, -2, "sleep");
 	lua_setglobal(L, "clm");
 
 	/* Register ctx metatable. */
