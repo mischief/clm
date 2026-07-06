@@ -19,3 +19,16 @@ if mandoc.found() and not want_static
       clm_lib.full_path(), meson.current_source_dir()],
   )
 endif
+
+# Committed markdown mirrors of the man pages, in ../docs/, generated via
+# mandoc's own "-T markdown" mode (not pandoc -- see docs-sync.sh's
+# comment). `ninja -C build docs-sync`, then git add the changed files in
+# docs/ (they're real, tracked, generated-but-committed output, same as
+# e.g. a vendored lockfile -- not a build artifact to .gitignore).
+if mandoc.found()
+  run_target('docs-sync',
+    command: [find_program('docs-sync.sh'),
+      mandoc, meson.current_source_dir(),
+      meson.current_source_dir() / '../docs'],
+  )
+endif
