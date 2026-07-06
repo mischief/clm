@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "clm/clm_export.h"
+#include "clm/compress.h"
 #include "clm/host.h"
 
 struct clm_agent;
@@ -269,6 +270,19 @@ CLM_API int clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
     const struct clm_callbacks *cb, void *user, struct clm_agent **out);
 
 CLM_API void clm_agent_free(struct clm_agent *agent);
+
+/*
+ * Install an optional compressor for history content (see clm/compress.h).
+ * NULL (the default after clm_agent_new) stores/serializes history content
+ * plain, exactly as before this existed. Intended for RAM-constrained
+ * embedders (e.g. ESP32); desktop embedders have no reason to call this.
+ * cz is not copied: it must outlive the agent, or until replaced/cleared by
+ * another call. Call before submitting any turns -- switching compressors
+ * mid-history is unsupported (content already stored under the old
+ * compressor could not be read back).
+ */
+CLM_API void clm_agent_set_compressor(struct clm_agent *agent,
+    const struct clm_compressor *cz);
 
 /*
  * Submit a user turn. Returns immediately (0 on accepted, negative errno on

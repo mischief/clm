@@ -599,7 +599,7 @@ inv_finalize(struct clm_tool_invocation *inv, const char *content,
 	}
 
 	if (clm_history_add_tool_result(&agent->history, inv->id, inv->name,
-	    out) == NULL)
+	    out, agent->compressor) == NULL)
 		batch->status = -ENOMEM;
 
 	batch->done++;

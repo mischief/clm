@@ -66,6 +66,10 @@ struct clm_agent {
 	 * turn instead of a cascade of them. */
 	char *pending_notify;
 
+	/* Optional history-content compressor (NULL = store/serialize plain,
+	 * the default). See clm_agent_set_compressor. */
+	const struct clm_compressor *compressor;
+
 	/* The turn's in-flight HTTP request (for cancellation), else NULL. */
 	struct clm_http_call *inflight;
 	bool cancelling; /* a cancel is unwinding the current turn */

@@ -722,27 +722,27 @@ test_history_compact(void)
 	clm_history_init(&h);
 
 	/* system + 4 user turns; turn 2 includes a tool call/result pair. */
-	clm_history_add_system(&h, "SYSPROMPT");
+	clm_history_add_system(&h, "SYSPROMPT", NULL);
 
-	clm_history_add_user(&h, "turn1");
-	clm_history_add_assistant_text(&h, "reply1");
+	clm_history_add_user(&h, "turn1", NULL);
+	clm_history_add_assistant_text(&h, "reply1", NULL);
 
-	clm_history_add_user(&h, "turn2");
+	clm_history_add_user(&h, "turn2", NULL);
 	m = clm_history_add_assistant_tool_calls(&h);
 	tc = clm_message_add_tool_call(m, "call1", "shell_exec", "{}");
 	CHECK(tc != NULL, "compact: seed tool call");
-	clm_history_add_tool_result(&h, "call1", "shell_exec", "tool output");
-	clm_history_add_assistant_text(&h, "reply2");
+	clm_history_add_tool_result(&h, "call1", "shell_exec", "tool output", NULL);
+	clm_history_add_assistant_text(&h, "reply2", NULL);
 
-	clm_history_add_user(&h, "turn3");
-	clm_history_add_assistant_text(&h, "reply3");
+	clm_history_add_user(&h, "turn3", NULL);
+	clm_history_add_assistant_text(&h, "reply3", NULL);
 
-	clm_history_add_user(&h, "turn4");
-	clm_history_add_assistant_text(&h, "reply4");
+	clm_history_add_user(&h, "turn4", NULL);
+	clm_history_add_assistant_text(&h, "reply4", NULL);
 
 	/* Keep the last 2 user turns; summarize turns 1-2 (incl. the tool pair).
 	 * Returns the number of messages folded (> 0 here). */
-	CHECK(clm_history_compact(&h, "SUMMARY", 2) > 0, "compact: ok");
+	CHECK(clm_history_compact(&h, "SUMMARY", 2, NULL) > 0, "compact: ok");
 
 	/* System message preserved exactly once, still first and unchanged. */
 	m = TAILQ_FIRST(&h);
@@ -776,10 +776,10 @@ test_history_compact(void)
 	{
 		struct clm_history h2;
 		clm_history_init(&h2);
-		clm_history_add_system(&h2, "S");
-		clm_history_add_user(&h2, "only");
-		clm_history_add_assistant_text(&h2, "r");
-		CHECK(clm_history_compact(&h2, "SUMMARY", 2) == 0,
+		clm_history_add_system(&h2, "S", NULL);
+		clm_history_add_user(&h2, "only", NULL);
+		clm_history_add_assistant_text(&h2, "r", NULL);
+		CHECK(clm_history_compact(&h2, "SUMMARY", 2, NULL) == 0,
 		    "compact: too-short is ok");
 		{
 			int users = count_role(&h2, CLM_ROLE_USER);
@@ -806,8 +806,8 @@ test_history_compact_agentic(void)
 	struct clm_message *m;
 
 	clm_history_init(&h);
-	clm_history_add_system(&h, "SYSPROMPT");
-	clm_history_add_user(&h, "MISSION");
+	clm_history_add_system(&h, "SYSPROMPT", NULL);
+	clm_history_add_user(&h, "MISSION", NULL);
 
 	/* 4 tool exchanges, no further user messages. */
 	for (int i = 0; i < 4; i++) {
@@ -817,11 +817,11 @@ test_history_compact_agentic(void)
 		m = clm_history_add_assistant_tool_calls(&h);
 		CHECK(clm_message_add_tool_call(m, id, "local_map", "{}") != NULL,
 		    "agentic compact: seed call");
-		clm_history_add_tool_result(&h, id, "local_map", out);
+		clm_history_add_tool_result(&h, id, "local_map", out, NULL);
 	}
 
 	/* Keep the last 2 exchanges; exchanges 0-1 fold into the summary. */
-	CHECK(clm_history_compact(&h, "SUMMARY", 2) > 0,
+	CHECK(clm_history_compact(&h, "SUMMARY", 2, NULL) > 0,
 	    "agentic compact: folded");
 
 	/* Shape: system, MISSION kept verbatim, then the summary. */
@@ -861,17 +861,17 @@ test_history_compact_agentic(void)
 	{
 		struct clm_history h2;
 		clm_history_init(&h2);
-		clm_history_add_system(&h2, "S");
-		clm_history_add_user(&h2, "M");
+		clm_history_add_system(&h2, "S", NULL);
+		clm_history_add_user(&h2, "M", NULL);
 		m = clm_history_add_assistant_tool_calls(&h2);
 		CHECK(clm_message_add_tool_call(m, "c1", "t", "{}") != NULL,
 		    "agentic compact: seed short call1");
-		clm_history_add_tool_result(&h2, "c1", "t", "o1");
+		clm_history_add_tool_result(&h2, "c1", "t", "o1", NULL);
 		m = clm_history_add_assistant_tool_calls(&h2);
 		CHECK(clm_message_add_tool_call(m, "c2", "t", "{}") != NULL,
 		    "agentic compact: seed short call2");
-		clm_history_add_tool_result(&h2, "c2", "t", "o2");
-		CHECK(clm_history_compact(&h2, "SUMMARY", 2) == 0,
+		clm_history_add_tool_result(&h2, "c2", "t", "o2", NULL);
+		CHECK(clm_history_compact(&h2, "SUMMARY", 2, NULL) == 0,
 		    "agentic compact: too-short no-op");
 		CHECK(count_role(&h2, CLM_ROLE_TOOL) == 2,
 		    "agentic compact: too-short unchanged");
@@ -889,25 +889,25 @@ test_history_supersede(void)
 	const char *stub = "[superseded by newer local_map]";
 
 	clm_history_init(&h);
-	clm_history_add_system(&h, "S");
+	clm_history_add_system(&h, "S", NULL);
 
 	/* Turn 1: local_map + examine results. */
-	clm_history_add_user(&h, "turn1");
+	clm_history_add_user(&h, "turn1", NULL);
 	m = clm_history_add_assistant_tool_calls(&h);
 	clm_message_add_tool_call(m, "c1", "local_map", "{}");
 	clm_message_add_tool_call(m, "c2", "examine", "{}");
-	clm_history_add_tool_result(&h, "c1", "local_map", "MAP v1");
-	clm_history_add_tool_result(&h, "c2", "examine", "a door");
-	clm_history_add_assistant_text(&h, "r1");
+	clm_history_add_tool_result(&h, "c1", "local_map", "MAP v1", NULL);
+	clm_history_add_tool_result(&h, "c2", "examine", "a door", NULL);
+	clm_history_add_assistant_text(&h, "r1", NULL);
 
 	/* Turn 2: a fresh local_map batch (its result not yet recorded). */
-	clm_history_add_user(&h, "turn2");
+	clm_history_add_user(&h, "turn2", NULL);
 	m = clm_history_add_assistant_tool_calls(&h);
 	clm_message_add_tool_call(m, "c3", "local_map", "{}");
 
 	CHECK(clm_history_supersede_tool(&h, "local_map", stub) == 1,
 	    "supersede: one prior result stubbed");
-	clm_history_add_tool_result(&h, "c3", "local_map", "MAP v2");
+	clm_history_add_tool_result(&h, "c3", "local_map", "MAP v2", NULL);
 
 	{
 		int v1_stubbed = 0, v2_live = 0, examine_kept = 0;

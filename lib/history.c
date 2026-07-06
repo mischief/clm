@@ -83,9 +83,16 @@ clm_message_create(enum clm_role role)
  * longer than that is truncated to fit). Every insertion path routes through
  * here so content_len is never stale or left unset. A NULL content is a
  * no-op: m->content stays NULL, m->content_len stays 0.
+ *
+ * If cz is non-NULL and content is at least cz->min_len bytes, content is
+ * compressed via cz->write before storing; m->content_compressed is set and
+ * m->content_len becomes the compressed length. Falls back to plain storage
+ * (content_compressed = false) if cz is NULL, content is too short,
+ * compression fails, or the compressed result is not actually smaller.
  */
 static int
-message_set_content(struct clm_message *m, const char *content)
+message_set_content(struct clm_message *m, const char *content,
+    const struct clm_compressor *cz)
 {
 	size_t len;
 
@@ -93,12 +100,27 @@ message_set_content(struct clm_message *m, const char *content)
 		free(m->content);
 		m->content = NULL;
 		m->content_len = 0;
+		m->content_compressed = false;
 		return 0;
 	}
 
 	len = strlen(content);
 	if (len > UINT16_MAX)
 		len = UINT16_MAX;
+
+	if (cz != NULL && cz->write != NULL && len >= cz->min_len) {
+		char *packed = NULL;
+		size_t packed_len = 0;
+		if (cz->write(cz->ctx, content, len, &packed, &packed_len) == 0 &&
+		    packed_len < len && packed_len <= UINT16_MAX) {
+			free(m->content);
+			m->content = packed;
+			m->content_len = (uint16_t)packed_len;
+			m->content_compressed = true;
+			return 0;
+		}
+		free(packed); /* NULL-safe: discard a failed/unhelpful attempt */
+	}
 
 	char *copy = malloc(len + 1);
 	if (copy == NULL)
@@ -109,6 +131,7 @@ message_set_content(struct clm_message *m, const char *content)
 	free(m->content);
 	m->content = copy;
 	m->content_len = (uint16_t)len;
+	m->content_compressed = false;
 	return 0;
 }
 
@@ -146,7 +169,8 @@ message_set_content(struct clm_message *m, const char *content)
  * re-triggering compaction on an unchanged history will no-op forever.
  */
 int
-clm_history_compact(struct clm_history *h, const char *summary, size_t keep_recent)
+clm_history_compact(struct clm_history *h, const char *summary, size_t keep_recent,
+    const struct clm_compressor *cz)
 {
 	struct clm_message *m, *cut = NULL, *sys_last = NULL, *summ;
 	struct clm_message *first_nonsys, *start;
@@ -232,7 +256,7 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 	summ = clm_message_create(CLM_ROLE_USER);
 	if (summ == NULL)
 		return -ENOMEM;
-	if (message_set_content(summ, summary) < 0) {
+	if (message_set_content(summ, summary, cz) < 0) {
 		clm_message_free(summ);
 		return -ENOMEM;
 	}
@@ -253,13 +277,14 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 }
 
 struct clm_message *
-clm_history_add_system(struct clm_history *h, const char *content)
+clm_history_add_system(struct clm_history *h, const char *content,
+    const struct clm_compressor *cz)
 {
 	struct clm_message *m = clm_message_create(CLM_ROLE_SYSTEM);
 	if (m == NULL)
 		return NULL;
 
-	if (message_set_content(m, content) < 0) {
+	if (message_set_content(m, content, cz) < 0) {
 		clm_message_free(m);
 		return NULL;
 	}
@@ -269,13 +294,14 @@ clm_history_add_system(struct clm_history *h, const char *content)
 }
 
 struct clm_message *
-clm_history_add_user(struct clm_history *h, const char *content)
+clm_history_add_user(struct clm_history *h, const char *content,
+    const struct clm_compressor *cz)
 {
 	struct clm_message *m = clm_message_create(CLM_ROLE_USER);
 	if (m == NULL)
 		return NULL;
 
-	if (message_set_content(m, content) < 0) {
+	if (message_set_content(m, content, cz) < 0) {
 		clm_message_free(m);
 		return NULL;
 	}
@@ -285,13 +311,14 @@ clm_history_add_user(struct clm_history *h, const char *content)
 }
 
 struct clm_message *
-clm_history_add_assistant_text(struct clm_history *h, const char *content)
+clm_history_add_assistant_text(struct clm_history *h, const char *content,
+    const struct clm_compressor *cz)
 {
 	struct clm_message *m = clm_message_create(CLM_ROLE_ASSISTANT);
 	if (m == NULL)
 		return NULL;
 
-	if (message_set_content(m, content) < 0) {
+	if (message_set_content(m, content, cz) < 0) {
 		clm_message_free(m);
 		return NULL;
 	}
@@ -314,7 +341,7 @@ clm_history_add_assistant_tool_calls(struct clm_history *h)
 
 struct clm_message *
 clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id,
-    const char *tool_name, const char *content)
+    const char *tool_name, const char *content, const struct clm_compressor *cz)
 {
 	struct clm_message *m = clm_message_create(CLM_ROLE_TOOL);
 	if (m == NULL)
@@ -336,7 +363,7 @@ clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id,
 		}
 	}
 
-	if (message_set_content(m, content) < 0) {
+	if (message_set_content(m, content, cz) < 0) {
 		clm_message_free(m);
 		return NULL;
 	}
@@ -377,13 +404,14 @@ clm_history_supersede_tool(struct clm_history *h, const char *tool_name,
 		if (strcmp(m->tool_name, tool_name) != 0)
 			continue;
 		/* Already stubbed on an earlier pass: leave the bytes alone. */
-		if (m->content != NULL && strcmp(m->content, stub) == 0)
+		if (!m->content_compressed && m->content != NULL &&
+		    strcmp(m->content, stub) == 0)
 			continue;
-		char *dup = strdup(stub);
-		if (dup == NULL)
+		/* No compressor here: the stub is always short and plain, never
+		 * worth compressing, and re-stubbing must not leave a stale
+		 * content_compressed flag from the content it replaces. */
+		if (message_set_content(m, stub, NULL) < 0)
 			return -ENOMEM;
-		free(m->content);
-		m->content = dup;
 		stubbed++;
 	}
 
@@ -456,7 +484,7 @@ clm_tool_call_to_json(const struct clm_tool_call *tc)
 }
 
 static cJSON *
-clm_message_to_json(const struct clm_message *m)
+clm_message_to_json(const struct clm_message *m, const struct clm_compressor *cz)
 {
 	json_cleanup cJSON *msg = NULL;
 	msg = cJSON_CreateObject();
@@ -487,7 +515,24 @@ clm_message_to_json(const struct clm_message *m)
 	cJSON_AddItemToObject(msg, "role", jrole);
 
 	if (m->content) {
-		cJSON *jcontent = cJSON_CreateString(m->content);
+		char *plain = m->content;
+		bool free_plain = false;
+
+		if (m->content_compressed) {
+			/* Content was stored compressed but there is no decompressor
+			 * to reverse it -- a caller/config mismatch, not recoverable
+			 * here. */
+			ASSERT_RETURN(cz != NULL && cz->read != NULL, NULL);
+			if (cz->read(cz->ctx, m->content, m->content_len, &plain) < 0) {
+				cJSON_Delete(msg);
+				return NULL;
+			}
+			free_plain = true;
+		}
+
+		cJSON *jcontent = cJSON_CreateString(plain);
+		if (free_plain)
+			free(plain);
 		if (jcontent == NULL) {
 			cJSON_Delete(msg);
 			return NULL;
@@ -534,7 +579,7 @@ clm_message_to_json(const struct clm_message *m)
 }
 
 cJSON *
-clm_history_to_json(const struct clm_history *h)
+clm_history_to_json(const struct clm_history *h, const struct clm_compressor *cz)
 {
 	cJSON *messages_arr = cJSON_CreateArray();
 	if (messages_arr == NULL)
@@ -542,7 +587,7 @@ clm_history_to_json(const struct clm_history *h)
 
 	struct clm_message *m;
 	TAILQ_FOREACH(m, h, entries) {
-		cJSON *msg_json = clm_message_to_json(m);
+		cJSON *msg_json = clm_message_to_json(m, cz);
 		if (msg_json == NULL) {
 			cJSON_Delete(messages_arr);
 			return NULL;

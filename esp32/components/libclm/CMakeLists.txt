@@ -9,6 +9,8 @@
 #   - http_async.c  (libcurl+libuv async engine)
 #   - host_uv.c     (libuv/curl clm_host adapter)
 #   - tool_shell.c  (shell_exec via uv_spawn -- no subprocesses on-device)
+#   - mcp_client.c  (MCP client: built on http_async's uv-based engine, not
+#                    ported)
 set(CLM_ROOT ${CMAKE_CURRENT_LIST_DIR}/../../..)
 
 file(GLOB CLM_CORE_SRCS "${CLM_ROOT}/lib/*.c")
@@ -16,6 +18,7 @@ list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/lua_[^/]*\\.c$")
 list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/http_async\\.c$")
 list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/host_uv\\.c$")
 list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/tool_shell\\.c$")
+list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/mcp_client\\.c$")
 
 idf_component_register(
     SRCS ${CLM_CORE_SRCS}

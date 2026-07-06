@@ -226,7 +226,8 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 		                                       : default_system_prompt;
 		autofree char *sys = build_system_prompt(base);
 
-		if (sys == NULL || clm_history_add_system(&agent->history, sys) == NULL) {
+		if (sys == NULL ||
+		    clm_history_add_system(&agent->history, sys, agent->compressor) == NULL) {
 			clm_agent_free(agent);
 			return -ENOMEM;
 		}
@@ -302,6 +303,14 @@ clm_agent_free_ptr(struct clm_agent **agent)
 		clm_agent_free(*agent);
 		*agent = NULL;
 	}
+}
+
+void
+clm_agent_set_compressor(struct clm_agent *agent, const struct clm_compressor *cz)
+{
+	if (agent == NULL)
+		return;
+	agent->compressor = cz;
 }
 
 enum clm_agent_state
@@ -440,12 +449,13 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 			    "[context update] current time: %s\n"
 			    "(automatic context, not user input; do not acknowledge)",
 			    stamp) >= 0 && msg != NULL)
-				(void)clm_history_add_user(&agent->history, msg);
+				(void)clm_history_add_user(&agent->history, msg,
+				    agent->compressor);
 			agent->last_time_stamp = now;
 		}
 	}
 
-	if (clm_history_add_user(&agent->history, prompt) == NULL) {
+	if (clm_history_add_user(&agent->history, prompt, agent->compressor) == NULL) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
 		return -ENOMEM;
@@ -662,7 +672,7 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 
 	{
 		int folded = clm_history_compact(&agent->history, summary,
-		    CLM_COMPACT_KEEP_RECENT);
+		    CLM_COMPACT_KEEP_RECENT, agent->compressor);
 		/* folded == 0 is failure here, not success: the history had no
 		 * valid cut point, so nothing shrank and the summary we just
 		 * paid a full-history LLM call for was discarded. Reporting it
@@ -778,7 +788,7 @@ clm_agent_compact(struct clm_agent *agent)
 		return -EBUSY;
 	}
 
-	messages = clm_history_to_json(&agent->history);
+	messages = clm_history_to_json(&agent->history, agent->compressor);
 	req = cJSON_CreateObject();
 	if (messages == NULL || req == NULL) {
 		cJSON_Delete(messages);
@@ -929,7 +939,8 @@ agent_finish(struct clm_agent *agent, cJSON *tool_calls,
 
 	if (content != NULL) {
 		clm_debug("[think] %.*s", (int)(strlen(content) > 200 ? 200 : strlen(content)), content);
-		if (clm_history_add_assistant_text(&agent->history, content) == NULL) {
+		if (clm_history_add_assistant_text(&agent->history, content,
+		    agent->compressor) == NULL) {
 			agent_fail(agent, "out of memory", -ENOMEM);
 			return;
 		}
@@ -1515,7 +1526,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 	autofree char *body_str = NULL;
 	char *body;
 
-	messages = clm_history_to_json(&agent->history);
+	messages = clm_history_to_json(&agent->history, agent->compressor);
 	tools = clm_tools_build_schema(agent);
 	if (messages == NULL || tools == NULL) {
 		clm_agent_set_error(agent, "out of memory");
