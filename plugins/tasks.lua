@@ -30,22 +30,22 @@ end
 
 clm.tool_register("tasks", {
     description = "Manage the session task list. "
-        .. "Actions: add, list, done, remove.",
+        .. "Actions: add, list, done, remove, update.",
     no_prompt = true,
     params_schema = {
         type = "object",
         properties = {
             action = {
                 type = "string",
-                description = "one of: add, list, done, remove",
+                description = "one of: add, list, done, remove, update",
             },
             text = {
                 type = "string",
-                description = "task description (required for add)",
+                description = "task description (required for add and update)",
             },
             id = {
                 type = "integer",
-                description = "task id (required for done and remove)",
+                description = "task id (required for done, remove, and update)",
             },
         },
         required = { "action" },
@@ -95,9 +95,28 @@ clm.tool_register("tasks", {
             table.remove(tasks, idx)
             ctx:complete(string.format("removed task %d: %s", t.id, t.text))
 
+        elseif action == "update" then
+            local id = args.id
+            if type(id) ~= "number" then
+                ctx:fail("'update' requires an 'id' argument")
+                return
+            end
+            local text = args.text
+            if not text or text == "" then
+                ctx:fail("'update' requires a 'text' argument")
+                return
+            end
+            local t = find(id)
+            if not t then
+                ctx:fail(string.format("no task with id %d", id))
+                return
+            end
+            t.text = text
+            ctx:complete(string.format("updated task %d: %s", t.id, t.text))
+
         else
             ctx:fail("unknown action '" .. tostring(action)
-                .. "'; use add, list, done, or remove")
+                .. "'; use add, list, done, remove, or update")
         end
     end,
 })
