@@ -106,17 +106,32 @@ lua_capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {
 	struct clm_lua_plugin *p = ud;
 
+	/* For a brand-new allocation (ptr == NULL), Lua 5.4 passes the
+	 * object's type tag in `osize`, not a real previous size -- e.g.
+	 * osize=8 for a coroutine, not "8 bytes previously allocated here".
+	 * Treating that as bytes-to-subtract silently corrupts mem_used on
+	 * every single new allocation (it ends up mem_used - tag too low).
+	 * Over thousands of allocations in a long-running session this
+	 * drifts mem_used further and further below the real heap size,
+	 * until the cap approves allocations the real system can no longer
+	 * satisfy -- realloc() then genuinely fails outside any protected
+	 * Lua call, which Lua has no way to recover from (its OOM error has
+	 * nowhere to unwind to, so the default panic handler aborts()).
+	 * Only ptr != NULL (an actual resize/free of a real prior block)
+	 * carries a real previous size worth accounting for. */
+	size_t real_osize = ptr != NULL ? osize : 0;
+
 	if (nsize == 0) {
-		p->mem_used -= osize;
+		p->mem_used -= real_osize;
 		free(ptr);
 		return NULL;
 	}
-	if (p->mem_used - osize + nsize > p->mem_limit)
+	if (p->mem_used - real_osize + nsize > p->mem_limit)
 		return NULL; /* refused; Lua raises OOM */
 	void *np = realloc(ptr, nsize);
 	if (np == NULL)
 		return NULL;
-	p->mem_used = p->mem_used - osize + nsize;
+	p->mem_used = p->mem_used - real_osize + nsize;
 	if (p->mem_used > p->budget.peak_mem)
 		p->budget.peak_mem = p->mem_used;
 	return np;
