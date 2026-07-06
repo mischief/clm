@@ -2132,6 +2132,12 @@ answer_permission(struct ui *u, int ch)
 		u->perm_queue[i] = u->perm_queue[i + 1];
 	u->perm_showing = false;
 
+	/* For "always" decisions, we need the answered name before we potentially free the invocation. */
+	const char *answered_name = NULL;
+	if (d == CLM_PERM_ALLOW_ALWAYS || d == CLM_PERM_DENY_ALWAYS) {
+		answered_name = clm_permission_req_name(req);
+	}
+
 	ui_push(u, ST_PERM, "-> ");
 	ui_push(u, ST_PERM, label);
 	ui_push(u, ST_PERM, "\n");
@@ -2149,7 +2155,6 @@ answer_permission(struct ui *u, int ch)
 	/* For "always" decisions, auto-resolve remaining queued requests for
 	 * the same tool without prompting. */
 	if (d == CLM_PERM_ALLOW_ALWAYS || d == CLM_PERM_DENY_ALWAYS) {
-		const char *answered_name = clm_permission_req_name(req);
 		size_t i = 0;
 		while (i < u->perm_count) {
 			const char *qname = clm_permission_req_name(u->perm_queue[i]);
