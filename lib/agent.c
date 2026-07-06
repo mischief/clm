@@ -1525,6 +1525,12 @@ clm_agent_start_turn(struct clm_agent *agent)
 
 	json_object_object_add(req, "tools", tools);
 
+	/* Disable parallel tool calls -- a tool host that can only process
+	 * one action at a time (e.g. a game bridge advancing one action per
+	 * game turn) deadlocks on parallel dispatch, and serial calls keep
+	 * tool ordering deterministic everywhere else. */
+	json_object_object_add(req, "parallel_tool_calls",
+	    json_object_new_boolean(0));
 	body_str = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
 	if (body_str == NULL) {
 		clm_agent_set_error(agent, "out of memory");
