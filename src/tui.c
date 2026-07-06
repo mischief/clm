@@ -99,6 +99,13 @@ struct ui {
 
 	size_t
 	    scroll; /* wrapped rows scrolled up from the bottom; 0 = follow */
+	int last_total; /* wrapped row count as of the last draw_transcript
+	                  * call, so a growing transcript can adjust scroll
+	                  * to hold the viewport's absolute position steady
+	                  * (see draw_transcript) instead of scroll's
+	                  * bottom-relative distance silently letting new
+	                  * rows drag the view along with them. -1 = not
+	                  * yet painted. */
 
 	/* Input line editor (byte buffer, UTF-8; cursor is a byte offset). */
 	char input[1024];
@@ -1333,6 +1340,19 @@ draw_transcript(struct ui *u)
 
 	total = wrap_walk(u, w, h, 0, false);
 
+	/* scroll is a distance from the bottom, so on its own it re-anchors
+	 * to the new bottom whenever total grows -- which drags the viewport
+	 * forward through content that just streamed in, exactly while the
+	 * user is trying to read something further up. While actually
+	 * scrolled up (not following), grow scroll by however much total
+	 * grew since the last paint, holding the viewport's absolute
+	 * position (start, below) steady instead. Following (scroll == 0)
+	 * is deliberately left alone -- that case is supposed to track the
+	 * bottom. */
+	if (u->scroll > 0 && u->last_total >= 0 && total > u->last_total)
+		u->scroll += (size_t)(total - u->last_total);
+	u->last_total = total;
+
 	maxscroll = total - h;
 	if (maxscroll < 0)
 		maxscroll = 0;
@@ -1394,7 +1414,14 @@ do_submit(struct ui *u, const char *prompt, bool echo)
 {
 	int r;
 
-	u->scroll = 0; /* snap to the bottom so the reply is visible */
+	/* No forced "scroll = 0, snap to the bottom" here on purpose.
+	 * Someone already at the bottom (scroll == 0, the common case: typed
+	 * a prompt, hit enter) is unaffected either way. But submitting a
+	 * prompt while scrolled up reading history used to yank the
+	 * viewport back to the bottom regardless -- exactly the complaint
+	 * this fixes, same root issue as draw_transcript's own scroll-vs-
+	 * growing-transcript fix, just triggered by a new turn starting
+	 * instead of an existing one streaming. */
 	if (echo) {
 		ui_push(u, ST_USER, "\nyou> ");
 		ui_push(u, ST_USER, prompt);
@@ -2493,6 +2520,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		fprintf(stderr, "error: out of memory\n");
 		return 1;
 	}
+	u->last_total = -1; /* draw_transcript hasn't painted yet */
 
 	loop = uv_default_loop();
 	u->loop = loop;

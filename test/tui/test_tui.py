@@ -74,6 +74,56 @@ def test_scrollback(url):
         check(t.text() != scrolled, "scrollback: PgDn returns toward bottom")
 
 
+def test_scroll_stable_while_streaming(url):
+    # A short terminal so the canned reply overflows and leaves real
+    # scrollback. Regression test for a bug where scroll (stored as a
+    # distance from the bottom) silently re-anchored to the new bottom
+    # whenever the transcript grew -- so reading history while a second
+    # reply streamed in dragged the viewport forward out from under you.
+    #
+    # Compares only the transcript rows, not the whole screen: the status
+    # bar's spinner/"thinking" label legitimately animates independent of
+    # scroll, and comparing the full screen would flag that as a false
+    # positive.
+    def transcript(t):
+        return "\n".join(t.lines()[:-2])
+
+    with Tui(BIN, url, rows=10, cols=40) as t:
+        t.send(b"show me fruit\r")
+        assert t.wait_for("Colour", timeout=15), "no first response"
+        t.send(PGUP)
+        t.send(PGUP)
+        t.pump(0.4)
+        scrolled = transcript(t)
+        check("Fruit" in scrolled, "scroll-stable: scrolled up into history")
+
+        # Submit a second prompt while scrolled up; its reply streams in
+        # over several chunks (see mock_server.py's CHUNK_DELAY) -- sample
+        # the viewport partway through, before the reply finishes.
+        t.send(b"show me fruit again\r")
+        t.pump(0.3)
+        mid_stream = transcript(t)
+        check(mid_stream == scrolled,
+              "scroll-stable: viewport unchanged partway through a new "
+              "streamed reply while scrolled up")
+
+        t.pump(1.5)  # let the second reply finish streaming
+        check(transcript(t) == scrolled,
+              "scroll-stable: viewport still unchanged once the new reply "
+              "finishes streaming")
+
+        # Following (scroll == 0, the default) must still track the bottom
+        # once the user scrolls back down -- this isn't a "scroll never
+        # moves" bug, only a "scroll drifts on its own while scrolled up"
+        # one.
+        t.send(PGDN)
+        t.send(PGDN)
+        t.send(PGDN)
+        t.pump(0.4)
+        check(transcript(t) != scrolled,
+              "scroll-stable: PgDn still returns toward the bottom")
+
+
 def test_resize(url):
     with Tui(BIN, url, rows=24, cols=70) as t:
         t.send(b"show me fruit\r")
@@ -210,6 +260,7 @@ def main():
         test_agent_name(srv.url)
         test_markdown(srv.url)
         test_scrollback(srv.url)
+        test_scroll_stable_while_streaming(srv.url)
         test_resize(srv.url)
         test_editing(srv.url)
         test_history(srv.url)
