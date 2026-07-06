@@ -160,6 +160,8 @@ struct clm_cfg {
 	const char *system_prompt; /* system message; NULL uses a default */
 
 	/* Provider-specific overrides (0 = use defaults) */
+	int64_t context_size;     /* override ctx_max (tokens) */
+	int autocompact_pct;      /* override CLM_AUTOCOMPACT_PCT (1-99) */
 	int64_t rate_tokens_per_sec; /* token-bucket refill rate */
 	int64_t rate_burst;       /* token-bucket burst size */
 };
@@ -268,6 +270,15 @@ CLM_API int clm_agent_submit(struct clm_agent *agent, const char *prompt);
 CLM_API enum clm_agent_state clm_agent_get_state(const struct clm_agent *agent);
 CLM_API int64_t clm_agent_get_ctx_max(const struct clm_agent *agent);
 CLM_API const char *clm_agent_get_last_error(const struct clm_agent *agent);
+
+/*
+ * True if the agent's last known context usage is at/above the autocompact
+ * threshold (a fixed percentage of ctx_max when known, else a fixed
+ * absolute token count -- see the definition in agent.c for the exact calc
+ * and rationale). Exposed so a frontend (e.g. tui.c's end-of-turn check)
+ * can share the library's calc instead of keeping its own copy in sync.
+ */
+CLM_API bool clm_agent_over_autocompact_threshold(const struct clm_agent *agent);
 
 /*
  * Probe the API endpoint for reachability (an async GET to its /v1/models).

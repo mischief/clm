@@ -260,6 +260,12 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 		}
 	}
 
+	/* Apply provider overrides from config */
+	if (cfg->context_size > 0)
+		agent->ctx_max = cfg->context_size;
+	if (cfg->autocompact_pct > 0)
+		agent->autocompact_pct = cfg->autocompact_pct;
+
 	*out = agent;
 	return 0;
 }
@@ -307,6 +313,42 @@ int64_t
 clm_agent_get_ctx_max(const struct clm_agent *agent)
 {
 	return agent ? agent->ctx_max : 0;
+}
+
+/* Auto-compact threshold. Only meaningful as a percentage when ctx_max is
+ * known -- from probing GET /props against a llama.cpp backend, or from an
+ * explicit context_size provider override -- which hosted backends
+ * (Anthropic, OpenAI, etc.) don't expose. Against those, ctx_max stays 0,
+ * so CLM_AUTOCOMPACT_FALLBACK_TOKENS below is used instead of a percentage
+ * -- see clm_agent_over_autocompact_threshold(). */
+#define CLM_AUTOCOMPACT_PCT 70
+
+/*
+ * Absolute token fallback for backends with no known ctx_max (see above).
+ * This exists purely because a real billing incident happened without it:
+ * running an agent against a paid API with no working compaction meant
+ * every turn resent the entire accumulated history, and that cost real
+ * money fast with no ceiling in place. Picked to be comfortably small for
+ * a paid API rather than tuned to any specific model's real context
+ * window -- the whole point is capping *cost*, not maximizing context
+ * use, when the actual window size is unknown. */
+#define CLM_AUTOCOMPACT_FALLBACK_TOKENS 100000
+
+/*
+ * True if context usage (tracked in emit_usage() below) is at/above the
+ * autocompact threshold. Lives in the library so every frontend check
+ * uses exactly the same calc instead of keeping a second copy in sync
+ * by hand.
+ */
+bool
+clm_agent_over_autocompact_threshold(const struct clm_agent *agent)
+{
+	if (agent == NULL || agent->ctx_used <= 0)
+		return false;
+	if (agent->ctx_max <= 0)
+		return agent->ctx_used >= CLM_AUTOCOMPACT_FALLBACK_TOKENS;
+	int pct = agent->autocompact_pct > 0 ? agent->autocompact_pct : CLM_AUTOCOMPACT_PCT;
+	return (agent->ctx_used * 100) / agent->ctx_max >= pct;
 }
 
 const char *
@@ -684,6 +726,11 @@ extract_usage(struct json_object *root, struct clm_usage *out)
 static void
 emit_usage(struct clm_agent *agent, const struct clm_usage *usage)
 {
+	/* Tokens carried into the next turn's prompt -- same calc tui.c's own
+	 * cb_usage does for its status-bar gauge, kept here too so the
+	 * autocompact threshold check has a live number without depending on
+	 * a UI layer to track it. */
+	agent->ctx_used = (int64_t)usage->prompt_tokens + usage->completion_tokens;
 	if (agent->cb_on_usage)
 		agent->cb_on_usage(usage, agent->cb_user);
 }

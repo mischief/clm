@@ -124,6 +124,7 @@ struct ui {
 	char conn_detail[64];
 	char usage[96];
 	int64_t ctx_used; /* tokens carried forward, for the context gauge */
+	bool autocompacting; /* true while cb_turn_done re-enters for a compact attempt */
 	char batch[64];
 	int spinner;
 	bool busy;           /* a turn is in flight */
@@ -419,6 +420,11 @@ cb_finish_reason(enum clm_finish_reason reason, void *user)
 		ui_push(u, ST_META, "\n[stopped: content filter]\n");
 }
 
+/*
+ * Usage callback.  Records the token count carried into the next turn
+ * (ctx_used) and the instantaneous generation rate for the status bar.
+ * Called once per LLM response, after the completion stream finishes.
+ */
 static void
 cb_usage(const struct clm_usage *usage, void *user)
 {
@@ -458,12 +464,26 @@ static void
 cb_turn_done(int status, void *user)
 {
 	struct ui *u = user;
-	/* -ECANCELED is a user Escape; we already showed "[cancelled]". */
-	if (status != 0 && status != -ECANCELED) {
+	bool was_compacting = u->autocompacting;
+	u->autocompacting = false;
+
+	/* -ECANCELED is a user Escape; we already showed "[cancelled]". A
+	 * failed autocompact attempt (was_compacting, any other status) is
+	 * handled below -- don't show the generic error banner for it or
+	 * re-probe the connection, since a compaction failure (e.g. the
+	 * compact request itself timing/erroring out, plausible given it
+	 * ships the entire pre-compaction history as one extra LLM call)
+	 * isn't a sign the backend is actually down, just that this one
+	 * shrink attempt didn't work. */
+	if (status != 0 && status != -ECANCELED && !was_compacting) {
 		ui_push(u, ST_ERROR, "\nerror: ");
 		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->agent));
 		/* A failed turn may mean the server went away; re-probe. */
 		clm_agent_check_connection(u->agent);
+	} else if (was_compacting && status != 0 && status != -ECANCELED) {
+		ui_push(u, ST_META, "\n[autocompact failed, continuing anyway: ");
+		ui_push(u, ST_META, clm_agent_get_last_error(u->agent));
+		ui_push(u, ST_META, "]\n");
 	}
 	ui_push(u, ST_NORMAL, "\n");
 	u->busy = false;
@@ -471,6 +491,64 @@ cb_turn_done(int status, void *user)
 	u->perm_showing = false;
 	u->batch[0] = '\0';
 	u->dirty = true;
+
+	/*
+	 * Force a compaction here, before draining the queue, if usage
+	 * crossed the threshold on the turn that just finished.
+	 *
+	 * This is NOT truly mid-turn -- clm_agent_compact()/clm_agent_cancel()
+	 * only have anything to act on while an HTTP request or a tool batch
+	 * is actually in flight (checked: emit_usage() fires synchronously
+	 * right after a response lands and before the next tool dispatch or
+	 * LLM call in the same chain, so there's no live "inflight"/
+	 * "active_batch" at that instant for cancel to grab). A single
+	 * cdda-style prompt can still chain many tool-calling round-trips
+	 * before ever reaching this callback, so an agent stuck in a long
+	 * chain can overshoot the threshold before this ever runs. Catching
+	 * that earlier would need a hook inside clm_agent_tools_done() (see
+	 * agent.c) between a tool batch finishing and the next LLM call
+	 * firing -- a real library change, not a tui.c-only hack -- so this
+	 * is the honest, working version for now; the harder mid-chain
+	 * version is a real follow-up, not implemented here.
+	 *
+	 * Skipped entirely if this call is itself compaction's own
+	 * completion (was_compacting) -- whether it succeeded or failed,
+	 * don't immediately try to compact again from in here; either the
+	 * context already shrank (success) or a retry belongs on some later
+	 * turn once real usage is known again (failure), not stacked
+	 * directly on top of the failure in the same callback.
+	 */
+	if (!was_compacting && (status == 0 || status == -ECANCELED) &&
+	    clm_agent_over_autocompact_threshold(u->agent)) {
+		int rc = clm_agent_compact(u->agent);
+		if (rc == 0) {
+			u->busy = true;
+			u->autocompacting = true;
+			/* Compaction's own completion re-enters this same
+			 * callback (see compact_success_cb/compact_error_cb
+			 * in agent.c, both of which call cb_on_turn_done)
+			 * before any real usage figure for the shrunk (or
+			 * still-oversized, on failure) context is known --
+			 * clear the stale pre-compaction ctx_used now so
+			 * that re-entry doesn't see the same over-threshold
+			 * reading and try to compact again immediately. It'll
+			 * be replaced with a real number on the next actual
+			 * LLM call either way. */
+			u->ctx_used = 0;
+			ui_push(u, ST_META,
+			    "\n[context over threshold, auto-compacting...]\n");
+			return; /* re-enters this function (see above) with
+			         * was_compacting true, which then falls
+			         * through below to drain the queue regardless
+			         * of whether compaction itself succeeded or
+			         * failed. */
+		}
+		/* -EBUSY shouldn't happen here (state is idle), and any other
+		 * failure just means we fall through and keep going without
+		 * having shrunk the context -- not fatal, just try again
+		 * next turn. */
+	}
+
 	drain_queue(u); /* start the next queued prompt, if any */
 }
 
@@ -1345,6 +1423,8 @@ run_command(struct ui *u, const char *line)
 				newcfg.provider = CLM_PROVIDER_OPENAI;
 				newcfg.stream = 1;
 				if (prov) {
+					newcfg.context_size = clm_lua_cfg_provider_int(u->lcfg, prov, "context_size", 0);
+					newcfg.autocompact_pct = (int)clm_lua_cfg_provider_int(u->lcfg, prov, "autocompact_pct", 0);
 					newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
 					newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
 				}
