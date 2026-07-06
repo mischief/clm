@@ -77,6 +77,21 @@ CLM_API const char *clm_lua_cfg_get_str(struct clm_lua_cfg *cfg,
     const char *key);
 
 /*
+ * Query an array-of-strings field, checking the resolved agent config
+ * first and falling back to the top level (same precedence as
+ * clm_lua_cfg_get_str). Returns a malloc'd NULL-terminated array of
+ * malloc'd strings -- free with clm_lua_cfg_free_str_list() -- so the
+ * result outlives the cfg, unlike the borrowed get_str pointers.
+ * Non-string entries are skipped. NULL if the field is absent, not a
+ * table, or holds no strings.
+ */
+CLM_API char **clm_lua_cfg_get_str_list(struct clm_lua_cfg *cfg,
+    const char *key);
+
+/* Free a list from clm_lua_cfg_get_str_list. Safe to call with NULL. */
+CLM_API void clm_lua_cfg_free_str_list(char **list);
+
+/*
  * Query a string field from a named provider in config.providers.
  * e.g. clm_lua_cfg_provider_str(cfg, "huggingface", "url")
  * Returns NULL if not found.

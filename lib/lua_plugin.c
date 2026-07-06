@@ -1412,6 +1412,88 @@ clm_lua_cfg_get_str(struct clm_lua_cfg *cfg, const char *key)
 	return val;
 }
 
+/*
+ * Collect string entries from the array table at the top of the stack
+ * into a malloc'd NULL-terminated list. Pops nothing; returns NULL if
+ * the value is not a table or contains no strings.
+ */
+static char **
+collect_str_list(lua_State *L)
+{
+	autofreev char **list = NULL;
+	char **ret;
+	size_t n, count = 0, kept = 0;
+
+	if (!lua_istable(L, -1))
+		return NULL;
+
+	n = lua_rawlen(L, -1);
+	if (n == 0)
+		return NULL;
+
+	list = calloc(n + 1, sizeof(*list));
+	if (list == NULL)
+		return NULL;
+
+	for (count = 1; count <= n; count++) {
+		lua_rawgeti(L, -1, (lua_Integer)count);
+		/* lua_tostring would coerce numbers in place, corrupting the
+		 * table during iteration -- only accept real strings. */
+		if (lua_type(L, -1) == LUA_TSTRING) {
+			list[kept] = strdup(lua_tostring(L, -1));
+			if (list[kept] == NULL) {
+				lua_pop(L, 1);
+				return NULL;
+			}
+			kept++;
+		}
+		lua_pop(L, 1);
+	}
+
+	if (kept == 0)
+		return NULL;
+
+	ret = list;
+	list = NULL;
+	return ret;
+}
+
+CLM_API char **
+clm_lua_cfg_get_str_list(struct clm_lua_cfg *cfg, const char *key)
+{
+	lua_State *L = cfg->L;
+	char **list = NULL;
+
+	/* Agent table first, then top-level config: same precedence as
+	 * clm_lua_cfg_get_str. */
+	if (cfg->agent_ref != LUA_NOREF) {
+		lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->agent_ref);
+		lua_getfield(L, -1, key);
+		list = collect_str_list(L);
+		lua_pop(L, 2);
+		if (list != NULL)
+			return list;
+	}
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+	lua_getfield(L, -1, key);
+	list = collect_str_list(L);
+	lua_pop(L, 2);
+	return list;
+}
+
+CLM_API void
+clm_lua_cfg_free_str_list(char **list)
+{
+	char **p;
+
+	if (list == NULL)
+		return;
+	for (p = list; *p != NULL; p++)
+		free(*p);
+	free(list);
+}
+
 CLM_API const char *
 clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *key)
