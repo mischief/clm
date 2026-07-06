@@ -13,13 +13,10 @@
 #include "clm/host_uv.h"
 #include "frontend.h"
 #include "version.h"
-
-#ifdef CLM_LUA
 #include "clm/lua_plugin.h"
 #include "seed_plugins.h"
 #include "clm/cleanup.h"
 #include "mcp_setup.h"
-#endif
 
 static void
 usage(const char *prog)
@@ -61,12 +58,10 @@ struct cli_state {
 	uv_loop_t *loop;
 	struct clm_host *host;
 	struct clm_agent *agent;
-#ifdef CLM_LUA
 	struct clm_lua_env *lua_env;
 	struct clm_lua_cfg *lua_cfg;
 	struct clm_mcp_client **mcp_clients;
 	size_t mcp_client_count;
-#endif
 	uv_pipe_t stdin_pipe;
 	char prompt_line[1024];
 	size_t prompt_len;
@@ -75,14 +70,12 @@ struct cli_state {
 	int turn_status;
 };
 
-#ifdef CLM_LUA
 static void
 cb_mcp_status(const char *msg, void *user)
 {
 	(void)user;
 	fprintf(stderr, "%s\n", msg);
 }
-#endif
 
 static void
 cb_assistant_text(const char *text, void *user)
@@ -280,7 +273,6 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 	free(buf->base);
 }
 
-#ifdef CLM_LUA
 /*
  * Build a path under the XDG config dir: $XDG_CONFIG_HOME/<suffix> or
  * ~/.config/<suffix>. Returns a malloc'd string, or NULL.
@@ -428,15 +420,6 @@ run_setup(void)
 	printf("%s %s\n", cr == 1 ? "kept existing" : "wrote", cfg_path);
 	return 0;
 }
-#else
-static int
-run_setup(void)
-{
-	fprintf(stderr, "setup: built without Lua support "
-	    "(config.lua and plugins are no-ops)\n");
-	return 1;
-}
-#endif /* CLM_LUA */
 
 int
 main(int argc, char *argv[])
@@ -455,9 +438,7 @@ main(int argc, char *argv[])
 	char endpoint[256];
 	size_t baselen;
 	int opt, r;
-#ifdef CLM_LUA
 	struct clm_lua_cfg *lcfg = NULL;
-#endif
 
 	if (argc >= 2 && strcmp(argv[1], "setup") == 0)
 		return run_setup();
@@ -492,7 +473,6 @@ main(int argc, char *argv[])
 		}
 	}
 
-#ifdef CLM_LUA
 	/* Load config early so agent profile + provider inform the cfg. */
 	{
 		autofree char *cpath = xdg_config_path("clm/config.lua");
@@ -521,7 +501,6 @@ main(int argc, char *argv[])
 			cfg.rate_burst = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_burst", 0);
 		}
 	}
-#endif
 
 	/* Defaults for anything not set by config or CLI. */
 	if (api_base == NULL)
@@ -547,7 +526,6 @@ main(int argc, char *argv[])
 	cfg.model = model;
 	cfg.max_iterations = 0;
 	cfg.stream = stream;
-#ifdef CLM_LUA
 	if (lcfg != NULL) {
 		cfg.system_prompt = clm_lua_cfg_get_str(lcfg, "system_prompt");
 		/* Agent policy: fnmatch patterns for tools whose old results
@@ -557,7 +535,6 @@ main(int argc, char *argv[])
 		cfg.volatile_tools = (const char *const *)
 		    clm_lua_cfg_get_str_list(lcfg, "volatile_tools");
 	}
-#endif
 
 	/*
 	 * Default to the ncurses UI when we're interactive: no oneshot, not
@@ -566,11 +543,7 @@ main(int argc, char *argv[])
 	 */
 	if (oneshot == NULL && !headless && isatty(STDIN_FILENO) &&
 	    isatty(STDOUT_FILENO))
-#ifdef CLM_LUA
 		return tui_run(&cfg, plugin_dir, lcfg, forever_prompt);
-#else
-		return tui_run(&cfg, plugin_dir, NULL, forever_prompt);
-#endif
 
 	/* Heap-allocated so the 1 KB input buffer stays off main's stack frame. */
 	state = calloc(1, sizeof(*state));
@@ -601,7 +574,6 @@ main(int argc, char *argv[])
 	/* Desktop uv layer: add the shell_exec tool (not in the portable core). */
 	clm_tools_register_shell(state->agent);
 
-#ifdef CLM_LUA
 	if (clm_lua_env_new(state->agent, &state->lua_env) == 0) {
 		if (lcfg != NULL)
 			clm_lua_env_set_config_from(state->lua_env, lcfg);
@@ -617,16 +589,13 @@ main(int argc, char *argv[])
 	}
 	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop, lcfg,
 	    cb_mcp_status, state, &state->mcp_client_count);
-#endif
 
 	if (oneshot != NULL) {
 		r = clm_agent_submit(state->agent, oneshot);
 		if (r < 0) {
 			fprintf(stderr, "error: %s\n", clm_agent_get_last_error(state->agent));
-#ifdef CLM_LUA
 			clm_lua_env_free(state->lua_env);
 			clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
-#endif
 			clm_agent_free(state->agent);
 			clm_host_uv_free(state->host);
 			free(state);
@@ -637,10 +606,8 @@ main(int argc, char *argv[])
 			uv_run(loop, UV_RUN_ONCE);
 
 		printf("\n");
-#ifdef CLM_LUA
 		clm_lua_env_free(state->lua_env);
 		clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
-#endif
 		clm_agent_free(state->agent);
 		clm_host_uv_free(state->host);
 		r = state->turn_status;
@@ -660,10 +627,8 @@ main(int argc, char *argv[])
 
 	uv_run(loop, UV_RUN_DEFAULT);
 
-#ifdef CLM_LUA
 	clm_lua_env_free(state->lua_env);
 	clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
-#endif
 	clm_agent_free(state->agent);
 	clm_host_uv_free(state->host);
 	free(state);
