@@ -672,8 +672,9 @@ test_history_compact(void)
 	clm_history_add_user(&h, "turn4");
 	clm_history_add_assistant_text(&h, "reply4");
 
-	/* Keep the last 2 user turns; summarize turns 1-2 (incl. the tool pair). */
-	CHECK(clm_history_compact(&h, "SUMMARY", 2) == 0, "compact: ok");
+	/* Keep the last 2 user turns; summarize turns 1-2 (incl. the tool pair).
+	 * Returns the number of messages folded (> 0 here). */
+	CHECK(clm_history_compact(&h, "SUMMARY", 2) > 0, "compact: ok");
 
 	/* System message preserved exactly once, still first and unchanged. */
 	m = TAILQ_FIRST(&h);
@@ -716,6 +717,96 @@ test_history_compact(void)
 			int users = count_role(&h2, CLM_ROLE_USER);
 			CHECK(users == 1, "compact: too-short unchanged (no summary)");
 		}
+		clm_history_free(&h2);
+	}
+
+	clm_history_free(&h);
+}
+
+/*
+ * (j2) clm_history_compact fallback: a forever-mode agentic history has one
+ * user message ever (the mission) followed by a long autonomous tool-exchange
+ * chain -- no user boundary to cut at. Compaction must fall back to cutting
+ * at exchange heads, keeping the mission verbatim, instead of no-oping
+ * forever (the "compact forever" loop this guards against: over threshold ->
+ * summarize -> fold nothing -> still over threshold -> repeat).
+ */
+static void
+test_history_compact_agentic(void)
+{
+	struct clm_history h;
+	struct clm_message *m;
+
+	clm_history_init(&h);
+	clm_history_add_system(&h, "SYSPROMPT");
+	clm_history_add_user(&h, "MISSION");
+
+	/* 4 tool exchanges, no further user messages. */
+	for (int i = 0; i < 4; i++) {
+		char id[16], out[16];
+		snprintf(id, sizeof(id), "call%d", i);
+		snprintf(out, sizeof(out), "out%d", i);
+		m = clm_history_add_assistant_tool_calls(&h);
+		CHECK(clm_message_add_tool_call(m, id, "local_map", "{}") != NULL,
+		    "agentic compact: seed call");
+		clm_history_add_tool_result(&h, id, "local_map", out);
+	}
+
+	/* Keep the last 2 exchanges; exchanges 0-1 fold into the summary. */
+	CHECK(clm_history_compact(&h, "SUMMARY", 2) > 0,
+	    "agentic compact: folded");
+
+	/* Shape: system, MISSION kept verbatim, then the summary. */
+	m = TAILQ_FIRST(&h);
+	CHECK(m != NULL && m->role == CLM_ROLE_SYSTEM,
+	    "agentic compact: system first");
+	m = TAILQ_NEXT(m, entries);
+	CHECK(m != NULL && m->role == CLM_ROLE_USER &&
+	    strcmp(m->content, "MISSION") == 0, "agentic compact: mission kept");
+	m = TAILQ_NEXT(m, entries);
+	CHECK(m != NULL && m->role == CLM_ROLE_USER &&
+	    strcmp(m->content, "SUMMARY") == 0,
+	    "agentic compact: summary after mission");
+
+	/* Last 2 exchanges intact and still paired; older results folded. */
+	CHECK(count_role(&h, CLM_ROLE_TOOL) == 2,
+	    "agentic compact: 2 results kept");
+	{
+		int found_old = 0, found_recent = 0;
+		TAILQ_FOREACH(m, &h, entries) {
+			if (m->role != CLM_ROLE_TOOL || m->content == NULL)
+				continue;
+			if (strcmp(m->content, "out0") == 0 ||
+			    strcmp(m->content, "out1") == 0)
+				found_old = 1;
+			if (strcmp(m->content, "out2") == 0 ||
+			    strcmp(m->content, "out3") == 0)
+				found_recent = 1;
+		}
+		CHECK(!found_old && found_recent,
+		    "agentic compact: oldest exchanges folded");
+	}
+
+	/* <= keep_recent exchanges total: no valid cut, must report no
+	 * progress (0) with the history untouched -- the caller uses that to
+	 * distinguish a real fold from a futile summarize call. */
+	{
+		struct clm_history h2;
+		clm_history_init(&h2);
+		clm_history_add_system(&h2, "S");
+		clm_history_add_user(&h2, "M");
+		m = clm_history_add_assistant_tool_calls(&h2);
+		CHECK(clm_message_add_tool_call(m, "c1", "t", "{}") != NULL,
+		    "agentic compact: seed short call1");
+		clm_history_add_tool_result(&h2, "c1", "t", "o1");
+		m = clm_history_add_assistant_tool_calls(&h2);
+		CHECK(clm_message_add_tool_call(m, "c2", "t", "{}") != NULL,
+		    "agentic compact: seed short call2");
+		clm_history_add_tool_result(&h2, "c2", "t", "o2");
+		CHECK(clm_history_compact(&h2, "SUMMARY", 2) == 0,
+		    "agentic compact: too-short no-op");
+		CHECK(count_role(&h2, CLM_ROLE_TOOL) == 2,
+		    "agentic compact: too-short unchanged");
 		clm_history_free(&h2);
 	}
 
@@ -984,6 +1075,7 @@ main(void)
 	test_recover_after_error(&loop);
 	test_parse_props();
 	test_history_compact();
+	test_history_compact_agentic();
 	test_history_supersede();
 	test_perm_deny(&loop);
 	test_perm_no_prompt(&loop);

@@ -110,9 +110,14 @@ struct clm_tool_call *clm_message_add_tool_call(struct clm_message *m,
 
 /*
  * Replace old turns with a single summary message, keeping the leading system
- * prologue and the last keep_recent user turns verbatim. Cuts only at user
- * boundaries so tool-call/result pairs are never split. No-op (returns 0) if
- * there is nothing old enough. Negative errno on allocation failure.
+ * prologue and the last keep_recent user turns verbatim. Cuts at user
+ * boundaries so tool-call/result pairs are never split; when the history has
+ * no user boundary to cut at (a single-user-turn agentic run), falls back to
+ * cutting at tool-exchange boundaries, keeping the first user message (the
+ * mission) verbatim -- see the implementation comment for the full rationale.
+ * Returns the number of messages folded into the summary (0 = nothing folded,
+ * history unchanged -- callers must treat this as "no progress", not success)
+ * or a negative errno on allocation failure.
  */
 int clm_history_compact(struct clm_history *h, const char *summary,
     size_t keep_recent);

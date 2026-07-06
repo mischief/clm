@@ -87,17 +87,39 @@ clm_message_create(enum clm_role role)
  * the summary is injected as a framed user message right after the system
  * prologue (the chat template forbids a non-leading system message).
  *
- * Returns 0 on success (including the no-op case where there is nothing old
- * enough to compact), or a negative errno.
+ * Fallback for agentic histories: a headless/forever-mode run has ONE user
+ * message ever (the initial mission prompt) followed by an arbitrarily long
+ * autonomous chain of tool exchanges inside that single turn. The user-boundary
+ * walk above then finds no cut, and compaction is a permanent no-op -- which is
+ * how a live agent got stuck re-summarizing its entire history after every tool
+ * round-trip, discarding the summary each time (the "compact forever" loop:
+ * over threshold -> summarize full history -> fold nothing -> still over
+ * threshold). So when no user cut exists, we cut at tool-exchange boundaries
+ * instead: keep the last keep_recent assistant-with-tool_calls messages (each
+ * heads one exchange; its results follow it), fold everything older. This is
+ * equally split-safe -- a result can never precede its own call, so removing a
+ * prefix that ends just before an exchange head never orphans a result. The
+ * mission user message is treated as part of the prologue and kept verbatim:
+ * it is the only statement of what the agent is supposed to be doing, and
+ * trusting a lossy LLM summary to re-state the mission is how agents wander
+ * off-task after compaction.
+ *
+ * Returns the number of messages folded into the summary (0 = nothing old
+ * enough to compact; the history is unchanged and no summary was inserted),
+ * or a negative errno. Callers should treat 0 as "no progress", not success:
+ * re-triggering compaction on an unchanged history will no-op forever.
  */
 int
 clm_history_compact(struct clm_history *h, const char *summary, size_t keep_recent)
 {
 	struct clm_message *m, *cut = NULL, *sys_last = NULL, *summ;
-	struct clm_message *first_nonsys;
+	struct clm_message *first_nonsys, *start;
 	size_t users_seen = 0;
+	int folded = 0;
 
 	if (h == NULL || summary == NULL)
+		return -EINVAL;
+	if (keep_recent == 0)
 		return -EINVAL;
 
 	/* Find the end of the leading system prologue (kept as-is). */
@@ -109,6 +131,7 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 	first_nonsys = m; /* first message we might summarize, or NULL */
 	if (first_nonsys == NULL)
 		return 0; /* nothing but system messages */
+	start = first_nonsys; /* first message actually folded */
 
 	/*
 	 * Walk backward from the tail, counting user messages. The cut is the
@@ -117,8 +140,6 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 	 * summarized. Cutting at a user message keeps whole turns, so tool pairs
 	 * stay intact.
 	 */
-	if (keep_recent == 0)
-		return -EINVAL;
 	for (m = TAILQ_LAST(h, clm_history); m != NULL;
 	    m = TAILQ_PREV(m, clm_history, entries)) {
 		if (m == sys_last)
@@ -132,9 +153,44 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 		}
 	}
 
-	/* Nothing old enough to compact: <= keep_recent user turns present. */
-	if (cut == NULL || cut == first_nonsys)
-		return 0;
+	/*
+	 * No user-boundary cut: single-user-turn agentic history (see the
+	 * function comment). Extend the prologue through the first user
+	 * message (the mission), then cut at the keep_recent-th exchange head
+	 * (assistant message carrying tool_calls) walked back from the tail.
+	 */
+	if (cut == NULL || cut == first_nonsys) {
+		struct clm_message *mission = NULL;
+		size_t heads_seen = 0;
+
+		for (m = first_nonsys; m != NULL; m = TAILQ_NEXT(m, entries)) {
+			if (m->role == CLM_ROLE_USER) {
+				mission = m;
+				break;
+			}
+		}
+		start = mission != NULL ? TAILQ_NEXT(mission, entries)
+		                        : first_nonsys;
+		if (start == NULL)
+			return 0; /* mission is the whole tail */
+
+		cut = NULL;
+		for (m = TAILQ_LAST(h, clm_history); m != NULL && m != mission;
+		    m = TAILQ_PREV(m, clm_history, entries)) {
+			if (m == sys_last)
+				break;
+			if (m->role == CLM_ROLE_ASSISTANT &&
+			    !TAILQ_EMPTY(&m->tool_calls)) {
+				heads_seen++;
+				if (heads_seen == keep_recent) {
+					cut = m;
+					break;
+				}
+			}
+		}
+		if (cut == NULL || cut == start)
+			return 0; /* <= keep_recent exchanges: nothing to fold */
+	}
 
 	/* Build the summary message before mutating, so a failure is a no-op. */
 	summ = clm_message_create(CLM_ROLE_USER);
@@ -146,18 +202,19 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 		return -ENOMEM;
 	}
 
-	/* Remove [first_nonsys .. cut) and free them. */
-	m = first_nonsys;
+	/* Remove [start .. cut) and free them. */
+	m = start;
 	while (m != NULL && m != cut) {
 		struct clm_message *next = TAILQ_NEXT(m, entries);
 		TAILQ_REMOVE(h, m, entries);
 		clm_message_free(m);
+		folded++;
 		m = next;
 	}
 
 	/* Insert the summary where the old turns were: before the kept tail. */
 	TAILQ_INSERT_BEFORE(cut, summ, entries);
-	return 0;
+	return folded;
 }
 
 struct clm_message *

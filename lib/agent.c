@@ -608,16 +608,28 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 		return;
 	}
 
-	if (clm_history_compact(&agent->history, summary,
-	    CLM_COMPACT_KEEP_RECENT) < 0) {
-		if (resume) {
-			clm_agent_set_error(agent, "compaction failed");
-			agent->mid_chain_compact_failed = true;
-			clm_agent_start_turn(agent);
+	{
+		int folded = clm_history_compact(&agent->history, summary,
+		    CLM_COMPACT_KEEP_RECENT);
+		/* folded == 0 is failure here, not success: the history had no
+		 * valid cut point, so nothing shrank and the summary we just
+		 * paid a full-history LLM call for was discarded. Reporting it
+		 * as success is what caused the "compact forever" loop -- the
+		 * context stayed over threshold and every subsequent tool
+		 * round-trip re-triggered another futile summarize call. */
+		if (folded <= 0) {
+			const char *why = folded < 0 ? "compaction failed"
+			    : "compaction made no progress";
+			if (resume) {
+				clm_agent_set_error(agent, why);
+				agent->mid_chain_compact_failed = true;
+				clm_agent_start_turn(agent);
+				return;
+			}
+			agent_fail(agent, why,
+			    folded < 0 ? folded : -EAGAIN);
 			return;
 		}
-		agent_fail(agent, "compaction failed", -ENOMEM);
-		return;
 	}
 
 	if (resume) {
