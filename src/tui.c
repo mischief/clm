@@ -31,13 +31,10 @@
 #include "clm/cleanup.h"
 #include "clm/log.h"
 #include "clm/host_uv.h"
+#include "clm/lua_plugin.h"
 #include "frontend.h"
 #include "md_render.h"
-
-#ifdef CLM_LUA
-#include "clm/lua_plugin.h"
 #include "mcp_setup.h"
-#endif
 
 /* Style buckets, mapped to curses attributes in seg_attr(). */
 enum ui_style {
@@ -70,13 +67,11 @@ struct ui {
 	uv_loop_t *loop;
 	struct clm_host *host;
 	struct clm_agent *agent;
-#ifdef CLM_LUA
 	struct clm_lua_env *lua_env;
 	struct clm_lua_cfg *lcfg;      /* kept alive for /agent switching */
 	const char *plugin_dir;        /* NULL = use XDG default */
 	struct clm_mcp_client **mcp_clients;
 	size_t mcp_client_count;
-#endif
 
 	uv_poll_t stdin_poll;
 	uv_timer_t repaint;
@@ -225,7 +220,6 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 	u->dirty = true;
 }
 
-#ifdef CLM_LUA
 static void
 cb_mcp_status(const char *msg, void *user)
 {
@@ -237,7 +231,6 @@ cb_mcp_status(const char *msg, void *user)
 	(void)snprintf(line, sizeof(line), "%s\n", msg);
 	ui_push(u, ST_META, line);
 }
-#endif
 
 static void
 ui_set_state(struct ui *u, enum clm_agent_state st)
@@ -1456,9 +1449,7 @@ drain_queue(struct ui *u)
 	free(prompt);
 }
 
-#ifdef CLM_LUA
 static char *xdg_config_path(const char *suffix);
-#endif
 
 /* A '/word ...' line: run a UI command instead of prompting the model. */
 static void
@@ -1528,7 +1519,6 @@ run_command(struct ui *u, const char *line)
 	} else if (CMD("agent") || CMD("a")) {
 		/* /agent <name>
 		 * Switch agent: reload profile, swap provider+prompt, clear history. */
-#ifdef CLM_LUA
 		if (arg[0] == '\0') {
 			ui_push(u, ST_META, "\nusage: /agent <name>\n");
 		} else if (u->lcfg == NULL) {
@@ -1632,9 +1622,6 @@ run_command(struct ui *u, const char *line)
 				}
 			}
 		}
-#else
-		ui_push(u, ST_ERROR, "\nagents require Lua support\n");
-#endif
 	} else if (CMD("quit") || CMD("exit") || CMD("q")) {
 		u->quit = true;
 	} else {
@@ -2465,7 +2452,6 @@ on_health(uv_timer_t *t)
 	clm_agent_check_connection(u->agent);
 }
 
-#ifdef CLM_LUA
 static char *
 xdg_config_path(const char *suffix)
 {
@@ -2486,7 +2472,6 @@ xdg_config_path(const char *suffix)
 	}
 	return out;
 }
-#endif
 
 int
 tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
@@ -2508,7 +2493,6 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	u->loop = loop;
 	u->model = cfg->model;
 	u->forever_prompt = forever_prompt;
-#ifdef CLM_LUA
 	if (lcfg != NULL) {
 		const char *aname = clm_lua_cfg_get_agent_name(lcfg);
 		if (aname != NULL)
@@ -2516,13 +2500,11 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	}
 	u->lcfg = lcfg;
 	u->plugin_dir = plugin_dir;
-#endif
 	u->state = CLM_STATE_IDLE;
 	/* Default to the clean view: reasoning hidden and tool output collapsed.
 	 * Opt in with ^R / ^O (see the status-bar hints). */
 	u->show_reasoning = false;
 	u->expand_output = false;
-#ifdef CLM_LUA
 	if (lcfg != NULL) {
 		const char *sr = clm_lua_cfg_get_str(lcfg, "show_thinking");
 		if (sr != NULL && strcmp(sr, "true") == 0)
@@ -2531,7 +2513,6 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		if (eo != NULL && strcmp(eo, "true") == 0)
 			u->expand_output = true;
 	}
-#endif
 
 	r = clm_host_uv_new(loop, &u->host);
 	if (r < 0) {
@@ -2550,7 +2531,6 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	/* Desktop uv layer: add the shell_exec tool (not in the portable core). */
 	clm_tools_register_shell(u->agent);
 
-#ifdef CLM_LUA
 	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
 		if (lcfg != NULL)
 			clm_lua_env_set_config_from(u->lua_env, lcfg);
@@ -2566,7 +2546,6 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	}
 	u->mcp_clients = clm_cli_connect_mcp_servers(u->agent, loop, lcfg,
 	    cb_mcp_status, u, &u->mcp_client_count);
-#endif
 
 	initscr();
 	cbreak();
@@ -2607,10 +2586,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	uv_run(loop, UV_RUN_DEFAULT);
 
 	endwin();
-#ifdef CLM_LUA
 	clm_lua_env_free(u->lua_env);
 	clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
-#endif
 	clm_agent_free(u->agent);
 	clm_host_uv_free(u->host);
 	for (size_t i = 0; i < u->nsegs; i++)
