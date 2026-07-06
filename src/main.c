@@ -529,8 +529,15 @@ main(int argc, char *argv[])
 	cfg.max_iterations = 0;
 	cfg.stream = stream;
 #ifdef CLM_LUA
-	if (lcfg != NULL)
+	if (lcfg != NULL) {
 		cfg.system_prompt = clm_lua_cfg_get_str(lcfg, "system_prompt");
+		/* Agent policy: fnmatch patterns for tools whose old results
+		 * get stubbed once a newer one lands (see clm_cfg). Never
+		 * freed: the agent borrows it for the process lifetime, same
+		 * as lcfg itself. */
+		cfg.volatile_tools = (const char *const *)
+		    clm_lua_cfg_get_str_list(lcfg, "volatile_tools");
+	}
 #endif
 
 	/*

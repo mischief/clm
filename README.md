@@ -201,6 +201,26 @@ return {
 or other. `clm setup` writes a starter `secrets.lua` with the right
 permissions.
 
+### Volatile tools
+
+Tools whose output is a state snapshot (a map read, a status query) leave
+stale copies in the conversation as they are re-called; the history grows
+without bound and the model can act on out-of-date data. Declaring them
+volatile keeps only the newest result: when such a tool completes, every
+prior result from it is replaced in place with a short
+`[superseded by newer <tool>]` stub. Stubbed entries never change again,
+so the request prefix stays byte-stable for backend prompt caching, and
+call/result pairing is preserved (results are stubbed, never removed).
+
+`volatile_tools` is a list of `fnmatch(3)` patterns, set in `config.lua`
+or per agent profile:
+
+```lua
+return {
+    volatile_tools = { "local_map", "character_status" },
+}
+```
+
 ## Platforms
 
 - Linux (primary development)

@@ -42,6 +42,7 @@ clm_message_free(struct clm_message *m)
 	if (m) {
 		free(m->content);
 		free(m->tool_call_id);
+		free(m->tool_name);
 		struct clm_tool_call *tc, *tc_next;
 		for (tc = TAILQ_FIRST(&m->tool_calls); tc != NULL; tc = tc_next) {
 			tc_next = TAILQ_NEXT(tc, entries);
@@ -229,7 +230,8 @@ clm_history_add_assistant_tool_calls(struct clm_history *h)
 }
 
 struct clm_message *
-clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id, const char *content)
+clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id,
+    const char *tool_name, const char *content)
 {
 	struct clm_message *m = clm_message_create(CLM_ROLE_TOOL);
 	if (m == NULL)
@@ -243,9 +245,19 @@ clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id, con
 		}
 	}
 
+	if (tool_name) {
+		m->tool_name = strdup(tool_name);
+		if (m->tool_name == NULL) {
+			free(m->tool_call_id);
+			free(m);
+			return NULL;
+		}
+	}
+
 	if (content) {
 		m->content = strdup(content);
 		if (m->content == NULL) {
+			free(m->tool_name);
 			free(m->tool_call_id);
 			free(m);
 			return NULL;
@@ -254,6 +266,51 @@ clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id, con
 
 	TAILQ_INSERT_TAIL(h, m, entries);
 	return m;
+}
+
+int
+clm_history_supersede_tool(struct clm_history *h, const char *tool_name,
+    const char *stub)
+{
+	struct clm_message *m, *batch_head = NULL;
+	int stubbed = 0;
+
+	if (h == NULL || tool_name == NULL || stub == NULL)
+		return -EINVAL;
+
+	/*
+	 * Find the assistant message that opened the current batch: results
+	 * recorded after it belong to in-flight sibling invocations and must
+	 * survive (two calls to the same tool in one batch would otherwise
+	 * stub each other's fresh output).
+	 */
+	for (m = TAILQ_LAST(h, clm_history); m != NULL;
+	    m = TAILQ_PREV(m, clm_history, entries)) {
+		if (m->role == CLM_ROLE_ASSISTANT && !TAILQ_EMPTY(&m->tool_calls)) {
+			batch_head = m;
+			break;
+		}
+	}
+
+	TAILQ_FOREACH(m, h, entries) {
+		if (m == batch_head)
+			break;
+		if (m->role != CLM_ROLE_TOOL || m->tool_name == NULL)
+			continue;
+		if (strcmp(m->tool_name, tool_name) != 0)
+			continue;
+		/* Already stubbed on an earlier pass: leave the bytes alone. */
+		if (m->content != NULL && strcmp(m->content, stub) == 0)
+			continue;
+		char *dup = strdup(stub);
+		if (dup == NULL)
+			return -ENOMEM;
+		free(m->content);
+		m->content = dup;
+		stubbed++;
+	}
+
+	return stubbed;
 }
 
 struct clm_tool_call *

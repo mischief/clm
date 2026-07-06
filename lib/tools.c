@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
 #include <errno.h>
+#include <fnmatch.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -548,6 +549,27 @@ fail_wrap(const char *msg)
 	return s;
 }
 
+/*
+ * Agent policy check for clm_history_supersede_tool(): does this tool's
+ * output go stale the moment a newer one exists? Driven by the config's
+ * volatile_tools fnmatch(3) patterns (see clm_cfg), not by the tool
+ * definition -- volatility is a property of how an agent uses a tool
+ * (a map snapshot in a game loop) rather than of the tool itself.
+ */
+static bool
+tool_is_volatile(const struct clm_agent *agent, const char *name)
+{
+	const char *const *pat;
+
+	if (agent->volatile_tools == NULL || name == NULL)
+		return false;
+	for (pat = agent->volatile_tools; *pat != NULL; pat++) {
+		if (fnmatch(*pat, name, 0) == 0)
+			return true;
+	}
+	return false;
+}
+
 static void
 inv_finalize(struct clm_tool_invocation *inv, const char *content,
     enum clm_tool_outcome outcome)
@@ -579,7 +601,23 @@ inv_finalize(struct clm_tool_invocation *inv, const char *content,
 	if (agent->cb_on_tool_result)
 		agent->cb_on_tool_result(inv->name, out, outcome, agent->cb_user);
 
-	if (clm_history_add_tool_result(&agent->history, inv->id, out) == NULL)
+	/*
+	 * Stub prior results of a volatile tool before recording the fresh
+	 * one, so the serialized history carries exactly one live snapshot
+	 * per such tool. The stub text must be deterministic: identical
+	 * bytes across turns keep the already-stubbed prefix stable for
+	 * backend prompt caching.
+	 */
+	if (tool_is_volatile(agent, inv->name)) {
+		char stub[128];
+		(void)snprintf(stub, sizeof(stub),
+		    "[superseded by newer %s]", inv->name);
+		(void)clm_history_supersede_tool(&agent->history, inv->name,
+		    stub);
+	}
+
+	if (clm_history_add_tool_result(&agent->history, inv->id, inv->name,
+	    out) == NULL)
 		batch->status = -ENOMEM;
 
 	batch->done++;

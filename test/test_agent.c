@@ -663,7 +663,7 @@ test_history_compact(void)
 	m = clm_history_add_assistant_tool_calls(&h);
 	tc = clm_message_add_tool_call(m, "call1", "shell_exec", "{}");
 	CHECK(tc != NULL, "compact: seed tool call");
-	clm_history_add_tool_result(&h, "call1", "tool output");
+	clm_history_add_tool_result(&h, "call1", "shell_exec", "tool output");
 	clm_history_add_assistant_text(&h, "reply2");
 
 	clm_history_add_user(&h, "turn3");
@@ -718,6 +718,66 @@ test_history_compact(void)
 		}
 		clm_history_free(&h2);
 	}
+
+	clm_history_free(&h);
+}
+
+static void
+test_history_supersede(void)
+{
+	struct clm_history h;
+	struct clm_message *m;
+	const char *stub = "[superseded by newer local_map]";
+
+	clm_history_init(&h);
+	clm_history_add_system(&h, "S");
+
+	/* Turn 1: local_map + examine results. */
+	clm_history_add_user(&h, "turn1");
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "c1", "local_map", "{}");
+	clm_message_add_tool_call(m, "c2", "examine", "{}");
+	clm_history_add_tool_result(&h, "c1", "local_map", "MAP v1");
+	clm_history_add_tool_result(&h, "c2", "examine", "a door");
+	clm_history_add_assistant_text(&h, "r1");
+
+	/* Turn 2: a fresh local_map batch (its result not yet recorded). */
+	clm_history_add_user(&h, "turn2");
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "c3", "local_map", "{}");
+
+	CHECK(clm_history_supersede_tool(&h, "local_map", stub) == 1,
+	    "supersede: one prior result stubbed");
+	clm_history_add_tool_result(&h, "c3", "local_map", "MAP v2");
+
+	{
+		int v1_stubbed = 0, v2_live = 0, examine_kept = 0;
+		TAILQ_FOREACH(m, &h, entries) {
+			if (m->role != CLM_ROLE_TOOL || m->content == NULL)
+				continue;
+			if (strcmp(m->tool_call_id, "c1") == 0 &&
+			    strcmp(m->content, stub) == 0)
+				v1_stubbed = 1;
+			if (strcmp(m->content, "MAP v2") == 0)
+				v2_live = 1;
+			if (strcmp(m->content, "a door") == 0)
+				examine_kept = 1;
+		}
+		CHECK(v1_stubbed, "supersede: old result stubbed in place");
+		CHECK(v2_live, "supersede: fresh result untouched");
+		CHECK(examine_kept, "supersede: other tools untouched");
+	}
+	/* Message count unchanged: stubbed, never removed, so every
+	 * tool_call keeps its paired result. */
+	CHECK(count_role(&h, CLM_ROLE_TOOL) == 3, "supersede: no orphans");
+
+	/* Second pass with the same stub: idempotent, nothing re-stubbed. */
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "c4", "local_map", "{}");
+	CHECK(clm_history_supersede_tool(&h, "local_map", stub) == 1,
+	    "supersede: v2 stubbed once v3 batch opens");
+	CHECK(clm_history_supersede_tool(&h, "local_map", stub) == 0,
+	    "supersede: already-stubbed entries left alone");
 
 	clm_history_free(&h);
 }
@@ -924,6 +984,7 @@ main(void)
 	test_recover_after_error(&loop);
 	test_parse_props();
 	test_history_compact();
+	test_history_supersede();
 	test_perm_deny(&loop);
 	test_perm_no_prompt(&loop);
 	test_perm_remember(&loop);

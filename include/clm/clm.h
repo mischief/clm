@@ -164,6 +164,17 @@ struct clm_cfg {
 	int autocompact_pct;      /* override CLM_AUTOCOMPACT_PCT (1-99) */
 	int64_t rate_tokens_per_sec; /* token-bucket refill rate */
 	int64_t rate_burst;       /* token-bucket burst size */
+
+	/*
+	 * Agent policy: NULL-terminated list of fnmatch(3) patterns naming
+	 * tools whose results go stale as soon as a newer one exists (state
+	 * snapshots like a map read). When a tool matching a pattern
+	 * completes, every prior result from that same tool is stubbed in
+	 * place ("[superseded by newer <tool>]") before the new result is
+	 * recorded -- see clm_history_supersede_tool(). NULL disables.
+	 * Borrowed like the string fields above.
+	 */
+	const char *const *volatile_tools;
 };
 
 /*

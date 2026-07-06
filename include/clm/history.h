@@ -49,11 +49,17 @@ void clm_tool_result_free(struct clm_tool_result *r);
  *   CLM_ROLE_TOOL      : content (the tool output), tool_call_id
  *
  * content and tool_call_id are owned strings or NULL.
+ *
+ * tool_name (CLM_ROLE_TOOL only) records which tool produced the result.
+ * It exists for clm_history_supersede_tool() -- the wire format links a
+ * result to its call by tool_call_id alone, so serialization never emits
+ * it.
  */
 struct clm_message {
 	enum clm_role role;
 	char *content;
 	char *tool_call_id;
+	char *tool_name;
 	struct clm_tool_call_list tool_calls;
 	TAILQ_ENTRY(clm_message) entries;
 };
@@ -78,9 +84,25 @@ struct clm_message *clm_history_add_assistant_text(struct clm_history *h, const 
  */
 struct clm_message *clm_history_add_assistant_tool_calls(struct clm_history *h);
 
-/* Append a tool result, linked to a prior call by tool_call_id. */
+/*
+ * Append a tool result, linked to a prior call by tool_call_id. tool_name
+ * (may be NULL) is kept for clm_history_supersede_tool() matching only.
+ */
 struct clm_message *clm_history_add_tool_result(struct clm_history *h,
-    const char *tool_call_id, const char *content);
+    const char *tool_call_id, const char *tool_name, const char *content);
+
+/*
+ * Replace the content of every tool result from tool_name that precedes
+ * the current (latest) tool batch with the short stub string, e.g.
+ * "[superseded by newer local_map]". Messages are stubbed in place --
+ * never removed -- so each assistant tool_calls entry keeps its paired
+ * result and the wire format stays valid. Results already stubbed are
+ * left untouched, keeping earlier bytes stable for prefix caching; only
+ * the most recent prior result actually changes on a typical call.
+ * Returns the number of results stubbed, or a negative errno.
+ */
+int clm_history_supersede_tool(struct clm_history *h, const char *tool_name,
+    const char *stub);
 
 /* Attach a tool call to an assistant message. Returns the call or NULL. */
 struct clm_tool_call *clm_message_add_tool_call(struct clm_message *m,

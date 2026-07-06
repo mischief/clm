@@ -1456,6 +1456,12 @@ run_command(struct ui *u, const char *line)
 					newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
 					newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
 				}
+				/* Volatile-tool policy from the new agent profile.
+				 * Not freed on the next switch (borrowed by the
+				 * agent for its lifetime) -- same intentional
+				 * process-lifetime leak as lcfg itself. */
+				newcfg.volatile_tools = (const char *const *)
+				    clm_lua_cfg_get_str_list(u->lcfg, "volatile_tools");
 
 				r = clm_agent_new(&newcfg, u->host, &tui_callbacks, u, &u->agent);
 				if (r < 0) {

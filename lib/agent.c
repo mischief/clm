@@ -266,6 +266,8 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 	if (cfg->autocompact_pct > 0)
 		agent->autocompact_pct = cfg->autocompact_pct;
 
+	agent->volatile_tools = cfg->volatile_tools;
+
 	*out = agent;
 	return 0;
 }

@@ -37,6 +37,7 @@ struct clm_agent {
 	                           * updated in emit_usage(), read by
 	                           * clm_agent_over_autocompact_threshold() */
 	int autocompact_pct;      /* 0 = use default CLM_AUTOCOMPACT_PCT */
+	const char *const *volatile_tools; /* borrowed from cfg; see clm_cfg */
 	char *props_url;          /* llama.cpp GET /props, or NULL */
 	char *compact_body;       /* POST body for an in-flight /compact, freed on done */
 	time_t last_time_stamp; /* wall clock of the last injected time context */
