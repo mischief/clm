@@ -22,6 +22,20 @@ autoclose_fn(int *fd)
 		close(*fd);
 }
 
+/* Frees a NULL-terminated vector of malloc'd strings (char **), then the
+ * vector itself. For returning such a vector from a function, steal it out
+ * first (ret = v; v = NULL; return ret) like json_cleanup's RULE 3. */
+static inline void
+autofreev_fn(void *p)
+{
+	char **v = *(char ***)p;
+	if (v == NULL)
+		return;
+	for (char **s = v; *s != NULL; s++)
+		free(*s);
+	free(v);
+}
+
 static inline void
 autoclosefile_fn(FILE **fp)
 {
@@ -37,6 +51,7 @@ json_object_put_fn(struct json_object **obj)
 }
 
 #define autofree __attribute__((cleanup(autofree_fn)))
+#define autofreev __attribute__((cleanup(autofreev_fn)))
 #define autoclose __attribute__((cleanup(autoclose_fn)))
 #define autoclosefile __attribute__((cleanup(autoclosefile_fn)))
 
