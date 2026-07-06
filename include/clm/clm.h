@@ -140,6 +140,7 @@ enum clm_agent_state {
 	CLM_STATE_IDLE,
 	CLM_STATE_THINKING,
 	CLM_STATE_CALLING_TOOL,
+	CLM_STATE_RATE_LIMITED,
 	CLM_STATE_COMPLETE,
 	CLM_STATE_ERROR,
 };
@@ -157,6 +158,10 @@ struct clm_cfg {
 	size_t max_iterations;
 	bool stream;              /* request streamed (SSE) responses */
 	const char *system_prompt; /* system message; NULL uses a default */
+
+	/* Provider-specific overrides (0 = use defaults) */
+	int64_t rate_tokens_per_sec; /* token-bucket refill rate */
+	int64_t rate_burst;       /* token-bucket burst size */
 };
 
 /*

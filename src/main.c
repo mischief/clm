@@ -496,6 +496,8 @@ main(int argc, char *argv[])
 				model = pmodel;
 			if (pkey != NULL && getenv("CLM_API_KEY") == NULL)
 				cfg.api_key = pkey;
+			cfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_tokens_per_sec", 0);
+			cfg.rate_burst = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_burst", 0);
 		}
 	}
 #endif

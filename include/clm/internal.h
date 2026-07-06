@@ -41,6 +41,17 @@ struct clm_agent {
 	/* Token-bucket rate limiter for tool dispatch (NULL = unlimited). */
 	struct clm_ratelimit *tool_rl;
 
+	/* Token-bucket rate limiter for outgoing LLM requests (NULL =
+	 * unlimited). Separate from tool_rl: a single logical turn can chain
+	 * several LLM round-trips (tool call -> result -> another LLM call
+	 * -> ...) with no tool-dispatch rate limiting in between them at
+	 * all, so a fast tool-calling agent can burst well past a backend's
+	 * requests-per-minute limit even though tool_rl is perfectly happy.
+	 * Added after a real 429 incident against OpenAI during exactly
+	 * this pattern. */
+	struct clm_ratelimit *llm_rl;
+	struct clm_timer *llm_rl_timer; /* non-NULL while a start_turn retry is parked */
+
 	/* The turn's in-flight HTTP request (for cancellation), else NULL. */
 	struct clm_http_call *inflight;
 	bool cancelling; /* a cancel is unwinding the current turn */

@@ -244,6 +244,22 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 		return -ENOMEM;
 	}
 
+	/* LLM request rate limiter, estimated-token bucket (see llm_rl in
+	 * internal.h for why this exists separately from tool_rl). Defaults
+	 * are conservative on purpose: this has to work across very
+	 * different backend tiers (a local llama.cpp server has no real
+	 * limit; hosted APIs vary widely), and getting briefly parked is a
+	 * much smaller problem than the 429 burst it guards against.
+	 * Overridable per provider via cfg. */
+	{
+		int64_t rps = cfg->rate_tokens_per_sec > 0 ? cfg->rate_tokens_per_sec : 2000;
+		int64_t burst = cfg->rate_burst > 0 ? cfg->rate_burst : 30000;
+		if (clm_ratelimit_new(&agent->llm_rl, (size_t)rps, (size_t)burst) < 0) {
+			clm_agent_free(agent);
+			return -ENOMEM;
+		}
+	}
+
 	*out = agent;
 	return 0;
 }
@@ -263,6 +279,10 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->compact_body);
 	clm_tools_free_registry(&agent->tools);
 	clm_ratelimit_free(agent->tool_rl);
+	if (agent->llm_rl_timer != NULL && agent->host != NULL &&
+	    agent->host->timer_cancel != NULL)
+		agent->host->timer_cancel(agent->llm_rl_timer);
+	clm_ratelimit_free(agent->llm_rl);
 	free(agent);
 }
 
@@ -1197,6 +1217,75 @@ clm_agent_set_provider(struct clm_agent *agent,
 	return 0;
 }
 
+/*
+ * Rate-limit timer for llm_dispatch: fires once enough tokens have
+ * refilled in agent->llm_rl, then actually posts the turn that was
+ * parked waiting for it.
+ */
+static void
+on_llm_rl_timer(void *arg)
+{
+	struct clm_async_turn *turn = arg;
+	struct clm_agent *agent = turn->agent;
+
+	if (agent->llm_rl_timer != NULL) {
+		agent->host->timer_cancel(agent->llm_rl_timer);
+		agent->llm_rl_timer = NULL;
+	}
+
+	size_t est_tokens = strlen(turn->body) / 4;
+	if (est_tokens == 0)
+		est_tokens = 1;
+	clm_ratelimit_consume(agent->llm_rl, est_tokens);
+	agent_http_post(agent, agent->llm->base_url, turn->body,
+			    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
+			    turn->streaming ? clm_http_data_cb_wrapper : NULL,
+			    turn, &agent->inflight);
+}
+
+/*
+ * Post an already-built turn's request, or park it behind a timer if
+ * agent->llm_rl says we're going too fast. See llm_rl's comment in
+ * internal.h: without this, a single logical turn that chains several
+ * tool-calling round-trips can fire LLM requests back-to-back fast enough
+ * to blow through a hosted backend's requests-per-minute limit even
+ * though nothing else in clm paces LLM calls specifically (only tool
+ * dispatch is rate-limited). Added after a real 429 against OpenAI caused
+ * by exactly this pattern.
+ */
+static void
+llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
+{
+	/* Estimate token cost from body size (1 token ~ 4 bytes) */
+	size_t est_tokens = strlen(turn->body) / 4;
+	if (est_tokens == 0)
+		est_tokens = 1;
+
+	if (agent->llm_rl == NULL || agent->host->timer_set == NULL ||
+	    clm_ratelimit_allow(agent->llm_rl, est_tokens)) {
+		/* Unlimited, no timer available to defer with, or allowed:
+		 * dispatch now (clm_ratelimit_allow already consumed the
+		 * token in the allowed case). */
+		agent_http_post(agent, agent->llm->base_url, turn->body,
+				    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
+				    turn->streaming ? clm_http_data_cb_wrapper : NULL,
+				    turn, &agent->inflight);
+		return;
+	}
+
+	{
+		uint64_t delay_us = clm_ratelimit_delay(agent->llm_rl, est_tokens);
+		uint64_t delay_ms = delay_us / 1000;
+		if (delay_ms == 0)
+			delay_ms = 1;
+		agent->state = CLM_STATE_RATE_LIMITED;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		agent->host->timer_set(agent->host->ctx, delay_ms,
+		    on_llm_rl_timer, turn, &agent->llm_rl_timer);
+	}
+}
+
 static void
 clm_agent_start_turn(struct clm_agent *agent)
 {
@@ -1311,10 +1400,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 
 	clm_debug("posting body: %s", turn->body);
 
-	agent_http_post(agent, agent->llm->base_url, turn->body,
-			    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
-			    agent->stream ? clm_http_data_cb_wrapper : NULL,
-			    turn, &agent->inflight);
+	llm_dispatch(agent, turn);
 }
 
 /*

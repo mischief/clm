@@ -224,6 +224,8 @@ ui_set_state(struct ui *u, enum clm_agent_state st)
 {
 	u->state = st;
 	u->dirty = true;
+	if (st == CLM_STATE_RATE_LIMITED)
+		u->busy = true;
 }
 
 static void drain_queue(struct ui *u); /* runs the next queued prompt */
@@ -627,6 +629,8 @@ state_label(enum clm_agent_state st)
 		return "thinking";
 	case CLM_STATE_CALLING_TOOL:
 		return "tool";
+	case CLM_STATE_RATE_LIMITED:
+		return "waiting"; /* animated with dots in draw_status directly */
 	case CLM_STATE_COMPLETE:
 		return "done";
 	case CLM_STATE_ERROR:
@@ -681,7 +685,13 @@ draw_status(struct ui *u)
 
 	/* Live status sits on the left, next to the model, so the eye doesn't
 	 * have to travel across the width of the terminal to read it. */
-	if (u->batch[0] != '\0')
+	/* Rate-limit wait wins over the leftover batch/usage strings: while
+	 * the turn is parked nothing else is in flight, and a stale "N tok/s"
+	 * would hide the only signal that explains the silence. */
+	if (u->state == CLM_STATE_RATE_LIMITED) {
+		static const char *dots[] = {"waiting.", "waiting..", "waiting..."};
+		info = dots[((unsigned)u->spinner / 4) % 3];
+	} else if (u->batch[0] != '\0')
 		info = u->batch;
 	else if (u->usage[0] != '\0')
 		info = u->usage;
@@ -709,7 +719,8 @@ draw_status(struct ui *u)
 		break;
 	}
 
-	wprintw(u->stat, "  %c %s ", sp, info);
+	/* Fixed width so the animated waiting dots don't shift the gauge. */
+	wprintw(u->stat, "  %c %-14s", sp, info);
 
 	/* Context-window gauge, when the backend reports a window size. */
 	{
@@ -1333,6 +1344,10 @@ run_command(struct ui *u, const char *line)
 				newcfg.system_prompt = sprompt;
 				newcfg.provider = CLM_PROVIDER_OPENAI;
 				newcfg.stream = 1;
+				if (prov) {
+					newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
+					newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
+				}
 
 				r = clm_agent_new(&newcfg, u->host, &tui_callbacks, u, &u->agent);
 				if (r < 0) {
