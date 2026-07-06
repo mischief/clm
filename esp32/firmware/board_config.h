@@ -43,9 +43,11 @@
 #define LCD_SWAP_XY 1
 #define LCD_MIRROR_X 1
 #define LCD_MIRROR_Y 0
-/* 135-wide panel centered in the ST7789 240x320 RAM (M5GFX offsets). */
-#define LCD_GAP_X 52
-#define LCD_GAP_Y 40
+/* 135-wide panel in the ST7789 240x320 RAM. M5GFX's native (rotation 0) offsets
+ * are 52/40; LovyanGFX's setRotation(1) transforms them for our landscape
+ * (swap_xy + mirror_x) orientation to colstart=40, rowstart=240-(135+52)=53. */
+#define LCD_GAP_X 40
+#define LCD_GAP_Y 53
 #define BOARD_HAS_SD 0
 
 #else
