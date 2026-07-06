@@ -532,7 +532,7 @@ static struct json_object *response_message(struct json_object *parsed);
 static void agent_fail(struct clm_agent *agent, const char *msg, int err);
 
 /* Turns to keep verbatim when compacting; older ones fold into the summary. */
-#define CLM_COMPACT_KEEP_RECENT 4
+#define CLM_COMPACT_KEEP_RECENT 2
 
 /* Instruction appended to drive the summarization call. */
 static const char *compact_prompt =
