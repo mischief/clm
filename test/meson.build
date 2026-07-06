@@ -28,13 +28,15 @@ test('md', test_md, suite: 'md')
 # End-to-end TUI test: drives the real clm binary on a pty against a canned
 # mock server via pyte. Uses only an already-installed python3 + pyte (global
 # or venv); if pyte is not importable the test is skipped. The build never
-# installs anything.
+# installs anything. clm_exe only exists when have_lua (src/meson.build) --
+# the desktop binary hard-requires Lua -- so this test is skipped too under
+# -Dlua=disabled rather than referencing a target that was never built.
 pymod = import('python')
 py = pymod.find_installation('python3', required: false)
 have_pyte = py.found() and run_command(
   py, '-c', 'import pyte', check: false).returncode() == 0
 
-if have_pyte
+if have_lua and have_pyte
   test('tui',
     py,
     args: [files('tui/test_tui.py')],
@@ -43,6 +45,8 @@ if have_pyte
     suite: 'tui',
     timeout: 120,
   )
+elif not have_lua
+  message('lua disabled; skipping TUI test (needs the clm desktop binary)')
 else
   message('python3+pyte not found; skipping TUI test')
 endif
