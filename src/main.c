@@ -571,8 +571,9 @@ main(int argc, char *argv[])
 		free(state);
 		return 1;
 	}
-	/* Desktop uv layer: add the shell_exec tool (not in the portable core). */
+	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the portable core). */
 	clm_tools_register_shell(state->agent);
+	clm_tools_register_bg(state->agent);
 
 	if (clm_lua_env_new(state->agent, &state->lua_env) == 0) {
 		if (lcfg != NULL)

@@ -1614,6 +1614,7 @@ run_command(struct ui *u, const char *line)
 					ui_push(u, ST_ERROR, "\nfailed to create agent\n");
 				} else {
 					clm_tools_register_shell(u->agent);
+					clm_tools_register_bg(u->agent);
 					/* Reload plugins. */
 					if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
 						clm_lua_env_set_config_from(u->lua_env, u->lcfg);
@@ -2572,8 +2573,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		free(u);
 		return 1;
 	}
-	/* Desktop uv layer: add the shell_exec tool (not in the portable core). */
+	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the portable core). */
 	clm_tools_register_shell(u->agent);
+	clm_tools_register_bg(u->agent);
 
 	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
 		if (lcfg != NULL)

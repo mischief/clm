@@ -30,4 +30,13 @@ CLM_API void clm_host_uv_free(struct clm_host *host);
 struct clm_agent;
 CLM_API int clm_tools_register_shell(struct clm_agent *agent);
 
+/*
+ * Register the bg_exec builtin (starts a command via uv_spawn, same as
+ * shell_exec, but returns immediately -- the result arrives later via
+ * clm_agent_notify() as a fresh turn, not as this call's own result; see
+ * lib/tool_bg.c for why). Independent of clm_tools_register_shell(); a
+ * caller wanting both registers both. Returns 0 or a negative errno.
+ */
+CLM_API int clm_tools_register_bg(struct clm_agent *agent);
+
 #endif /* CLM_HOST_UV_H */

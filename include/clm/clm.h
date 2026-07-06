@@ -278,6 +278,22 @@ CLM_API void clm_agent_free(struct clm_agent *agent);
  */
 CLM_API int clm_agent_submit(struct clm_agent *agent, const char *prompt);
 
+/*
+ * Deliver text from outside the normal turn flow -- e.g. a background job
+ * (see clm_tools_register_bg in clm/host_uv.h) reporting its result well
+ * after the tool call that started it already completed and returned. If the
+ * agent is idle, this behaves exactly like clm_agent_submit(): text is added
+ * as a user turn and a new turn starts immediately. If a turn is already in
+ * flight (CLM_STATE_THINKING/CLM_STATE_CALLING_TOOL), text is queued instead
+ * and folded into a single follow-up turn once the in-flight one lands via
+ * on_turn_done -- multiple notifications arriving before that point are
+ * coalesced into one turn (blank-line separated), not one turn each, so a
+ * burst of background completions does not cascade into a burst of turns.
+ * Returns 0 on success (submitted or queued), negative errno on failure
+ * (e.g. -ENOMEM; the notification is dropped in that case).
+ */
+CLM_API int clm_agent_notify(struct clm_agent *agent, const char *text);
+
 CLM_API enum clm_agent_state clm_agent_get_state(const struct clm_agent *agent);
 CLM_API int64_t clm_agent_get_ctx_max(const struct clm_agent *agent);
 CLM_API const char *clm_agent_get_last_error(const struct clm_agent *agent);

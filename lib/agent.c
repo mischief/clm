@@ -285,6 +285,7 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->models_url);
 	free(agent->props_url);
 	free(agent->compact_body);
+	free(agent->pending_notify);
 	clm_tools_free_registry(&agent->tools);
 	clm_ratelimit_free(agent->tool_rl);
 	if (agent->llm_rl_timer != NULL && agent->host != NULL &&
@@ -460,6 +461,58 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 	clm_agent_start_turn(agent);
 
 	return 0;
+}
+
+/*
+ * Fire cb_on_turn_done for the turn that just landed, then submit any text
+ * queued by clm_agent_notify() while it was in flight. Every call site that
+ * ends a real turn (as opposed to the mid-chain compact resume path, which
+ * deliberately does not fire cb_on_turn_done at all) routes through here so
+ * a background notification queued mid-turn is never dropped and never
+ * jumps ahead of the turn already in progress.
+ *
+ * Safe to call clm_agent_submit() from here: every call site reaches this
+ * function only after agent->state has already been set to CLM_STATE_COMPLETE
+ * or CLM_STATE_ERROR (never THINKING/CALLING_TOOL), which is exactly the
+ * condition clm_agent_submit requires to accept a new prompt.
+ */
+static void
+agent_turn_done(struct clm_agent *agent, int status)
+{
+	autofree char *notify = agent->pending_notify;
+	agent->pending_notify = NULL;
+
+	if (agent->cb_on_turn_done)
+		agent->cb_on_turn_done(status, agent->cb_user);
+
+	if (notify != NULL)
+		(void)clm_agent_submit(agent, notify);
+}
+
+int
+clm_agent_notify(struct clm_agent *agent, const char *text)
+{
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(text != NULL, -EINVAL);
+
+	if (agent->state == CLM_STATE_THINKING ||
+	    agent->state == CLM_STATE_CALLING_TOOL) {
+		char *joined = NULL;
+
+		if (agent->pending_notify == NULL) {
+			joined = strdup(text);
+		} else if (asprintf(&joined, "%s\n\n%s", agent->pending_notify,
+		    text) < 0) {
+			return -ENOMEM; /* joined's contents are undefined on failure */
+		}
+		if (joined == NULL)
+			return -ENOMEM;
+		free(agent->pending_notify);
+		agent->pending_notify = joined;
+		return 0;
+	}
+
+	return clm_agent_submit(agent, text);
 }
 
 /* One assembled tool call accumulated from streamed deltas. */
@@ -659,8 +712,7 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 	agent->state = CLM_STATE_COMPLETE;
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
-	if (agent->cb_on_turn_done)
-		agent->cb_on_turn_done(0, agent->cb_user);
+	agent_turn_done(agent, 0);
 }
 
 static void
@@ -694,8 +746,7 @@ compact_error_cb(int error_code, const char *error_msg, void *user)
 	}
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
-	if (agent->cb_on_turn_done)
-		agent->cb_on_turn_done(error_code, agent->cb_user);
+	agent_turn_done(agent, error_code);
 }
 
 /*
@@ -791,8 +842,7 @@ agent_fail(struct clm_agent *agent, const char *msg, int err)
 	agent->state = CLM_STATE_ERROR;
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
-	if (agent->cb_on_turn_done)
-		agent->cb_on_turn_done(err, agent->cb_user);
+	agent_turn_done(agent, err);
 }
 
 static enum clm_finish_reason
@@ -891,8 +941,7 @@ agent_finish(struct clm_agent *agent, struct json_object *tool_calls,
 	agent->state = CLM_STATE_COMPLETE;
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
-	if (agent->cb_on_turn_done)
-		agent->cb_on_turn_done(0, agent->cb_user);
+	agent_turn_done(agent, 0);
 }
 
 /* Build a json tool_calls array from streamed accumulators, or NULL. */
@@ -1206,8 +1255,7 @@ clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
 	clm_async_turn_free(turn);
-	if (agent->cb_on_turn_done)
-		agent->cb_on_turn_done(error_code, agent->cb_user);
+	agent_turn_done(agent, error_code);
 }
 
 /* GET /props completed: parse llama.cpp context info; ignore failures (the
@@ -1470,8 +1518,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		agent_turn_done(agent, -ENOMEM);
 		return;
 	}
 
@@ -1481,8 +1528,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		agent_turn_done(agent, -ENOMEM);
 		return;
 	}
 
@@ -1492,8 +1538,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		agent_turn_done(agent, -ENOMEM);
 		return;
 	}
 	json_object_object_add(req, "model", jmodel);
@@ -1506,8 +1551,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		agent_turn_done(agent, -ENOMEM);
 		return;
 	}
 	json_object_object_add(req, "stream", jstream);
@@ -1537,8 +1581,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		agent_turn_done(agent, -ENOMEM);
 		return;
 	}
 
@@ -1548,8 +1591,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		agent_turn_done(agent, -ENOMEM);
 		return;
 	}
 
@@ -1559,8 +1601,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-ENOMEM, agent->cb_user);
+		agent_turn_done(agent, -ENOMEM);
 		return;
 	}
 
@@ -1604,8 +1645,7 @@ clm_agent_tools_done(struct clm_agent *agent, int status)
 		agent->state = CLM_STATE_COMPLETE;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-ECANCELED, agent->cb_user);
+		agent_turn_done(agent, -ECANCELED);
 		return;
 	}
 
@@ -1614,8 +1654,7 @@ clm_agent_tools_done(struct clm_agent *agent, int status)
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(status, agent->cb_user);
+		agent_turn_done(agent, status);
 		return;
 	}
 
@@ -1625,8 +1664,7 @@ clm_agent_tools_done(struct clm_agent *agent, int status)
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		if (agent->cb_on_turn_done)
-			agent->cb_on_turn_done(-E2BIG, agent->cb_user);
+		agent_turn_done(agent, -E2BIG);
 		return;
 	}
 

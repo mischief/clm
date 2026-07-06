@@ -189,6 +189,7 @@ make_agent(struct tstate *st, int port)
 	r = clm_agent_new(&cfg, st->host, &callbacks, st, &agent);
 	CHECK(r == 0, "clm_agent_new");
 	CHECK(clm_tools_register_shell(agent) == 0, "register shell");
+	CHECK(clm_tools_register_bg(agent) == 0, "register bg");
 	return agent;
 }
 
@@ -274,6 +275,70 @@ test_tool_call(uv_loop_t *loop)
 	CHECK(canned_last_request(srv) != NULL &&
 	    strstr(canned_last_request(srv), "hello") != NULL,
 	    "tool result echoed back to model");
+
+	teardown(&st, srv);
+}
+
+/*
+ * (b3) bg_exec: the model starts a real background job via bg_exec, gets
+ * back an immediate "started" result (turn 1 ends normally, no waiting on
+ * the child process), and once the process actually exits, its output must
+ * arrive as an AUTOMATIC follow-up turn via clm_agent_notify -- a third
+ * canned request the test never explicitly triggers, proving the
+ * job-exit -> notify -> clm_agent_submit chain in agent.c/tool_bg.c actually
+ * fires end to end (not just that bg_exec's own invocation completes).
+ */
+static void
+test_bg_exec(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	/* Turn 1: the model starts a background job. Turn 2 (automatic, once
+	 * the job exits): the model acknowledges the job's result. */
+	canned_tool_call(srv, "bg_exec",
+	    "{\"command\":\"printf bgoutput123\",\"label\":\"probe\"}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"started it\"}}]}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"job acknowledged\"}}]}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+
+	CHECK(clm_agent_submit(st.agent, "run a background job") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "turn 1 ok");
+	CHECK(st.tool_results == 1, "bg_exec's own invocation completed once");
+	CHECK(strstr(st.tool_content, "started background job") != NULL,
+	    "bg_exec's immediate result is a start acknowledgement, not the job's output");
+	CHECK(strstr(st.assistant, "started it") != NULL, "turn 1 final answer delivered");
+	CHECK(canned_request_count(srv) == 2, "two requests for turn 1 (call + start ack)");
+
+	/* Turn 1 is done, but the background job (a real subprocess) may not
+	 * have exited yet. Wait for the automatic follow-up turn its exit
+	 * triggers via clm_agent_notify -- run_until_done again, watching for
+	 * a second turn_done. */
+	st.turn_done = 0;
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "turn 2 (automatic) ok");
+	CHECK(strstr(st.assistant, "job acknowledged") != NULL,
+	    "turn 2's final answer delivered");
+	CHECK(canned_request_count(srv) == 3,
+	    "job exit triggered a third request automatically");
+	CHECK(canned_last_request(srv) != NULL &&
+	    strstr(canned_last_request(srv), "bgoutput123") != NULL,
+	    "the job's real output reached the model in the auto-triggered turn");
+	CHECK(canned_last_request(srv) != NULL &&
+	    strstr(canned_last_request(srv), "probe") != NULL,
+	    "the job's label reached the model in the auto-triggered turn");
 
 	teardown(&st, srv);
 }
@@ -1066,6 +1131,7 @@ main(void)
 	uv_loop_init(&loop);
 	test_text_reply(&loop);
 	test_tool_call(&loop);
+	test_bg_exec(&loop);
 	test_autocompact_mid_chain(&loop);
 	test_file_tools(&loop);
 	test_shell_exec(&loop);

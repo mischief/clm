@@ -87,7 +87,7 @@ endif
 # log.c is included here too: clm_debug is a library-internal helper (hidden in
 # libclm.so, so not visible across the .so boundary), and http_async.c uses it.
 # A private copy in the archive keeps clm_debug off the public ABI.
-clmuv_src = files('http_async.c', 'host_uv.c', 'tool_shell.c', 'mcp_client.c', 'log.c')
+clmuv_src = files('http_async.c', 'host_uv.c', 'tool_shell.c', 'tool_bg.c', 'mcp_client.c', 'log.c')
 
 clmuv_deps = [
   dependency('libcurl', kwargs: static_kw),

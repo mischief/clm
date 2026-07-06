@@ -57,6 +57,15 @@ struct clm_agent {
 	struct clm_ratelimit *llm_rl;
 	struct clm_timer *llm_rl_timer; /* non-NULL while a start_turn retry is parked */
 
+	/* Text queued by clm_agent_notify() while a turn was in flight, to be
+	 * submitted as a fresh turn once the current one lands (see
+	 * agent_turn_done() in agent.c). NULL when nothing is queued. Multiple
+	 * notifications arriving before the agent goes idle are coalesced into
+	 * one string (blank-line separated) rather than queued as separate
+	 * turns, so a burst of background completions produces one follow-up
+	 * turn instead of a cascade of them. */
+	char *pending_notify;
+
 	/* The turn's in-flight HTTP request (for cancellation), else NULL. */
 	struct clm_http_call *inflight;
 	bool cancelling; /* a cancel is unwinding the current turn */
