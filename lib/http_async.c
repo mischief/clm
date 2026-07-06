@@ -327,10 +327,18 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 		curl_easy_setopt(req->easy_handle, CURLOPT_USERAGENT, CLM_UA_BASE);
 	}
 	curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 0L);
-	/* No total timeout, but abort if the connection goes completely dead:
-	 * less than 1 byte/sec for 120 seconds means the server is gone. */
+	/* No total timeout, but abort if the connection goes completely dead.
+	 * 300s (not 120s) because a large prompt against a slow/local model
+	 * can legitimately sit silent for minutes during prefill before the
+	 * server emits its first byte -- this bit real compaction calls
+	 * (whose prompt is the whole conversation history, the largest single
+	 * request in a session) and ordinary turn calls once context grew
+	 * large: curl aborted mid-prefill on a perfectly healthy connection,
+	 * discarding 100+ seconds of already-done prefill and forcing a cold
+	 * restart on the next call. Still catches a truly dead connection,
+	 * just after a longer wait. */
 	curl_easy_setopt(req->easy_handle, CURLOPT_LOW_SPEED_LIMIT, 1L);
-	curl_easy_setopt(req->easy_handle, CURLOPT_LOW_SPEED_TIME, 120L);
+	curl_easy_setopt(req->easy_handle, CURLOPT_LOW_SPEED_TIME, 300L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
 	curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, req);
