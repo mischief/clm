@@ -84,6 +84,10 @@ CLM_API const char *clm_lua_cfg_get_str(struct clm_lua_cfg *cfg,
 CLM_API const char *clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *key);
 
+/* Same as above but for integer values. Returns fallback if not set. */
+CLM_API int64_t clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
+    const char *provider_name, const char *key, int64_t fallback);
+
 /*
  * Get the tools config as a JSON string (for clm_lua_env_set_config).
  * Caller owns the returned string (free with free()). NULL if no tools.

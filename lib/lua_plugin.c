@@ -1437,6 +1437,31 @@ clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
 	return val;
 }
 
+CLM_API int64_t
+clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
+    const char *provider_name, const char *key, int64_t fallback)
+{
+	lua_State *L = cfg->L;
+	int64_t val = fallback;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+	lua_getfield(L, -1, "providers");
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 2);
+		return fallback;
+	}
+	lua_getfield(L, -1, provider_name);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 3);
+		return fallback;
+	}
+	lua_getfield(L, -1, key);
+	if (lua_isnumber(L, -1))
+		val = (int64_t)lua_tonumber(L, -1);
+	lua_pop(L, 4);
+	return val;
+}
+
 CLM_API char *
 clm_lua_cfg_tools_json(struct clm_lua_cfg *cfg)
 {
