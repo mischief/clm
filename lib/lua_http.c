@@ -49,6 +49,23 @@ struct lua_http_req {
 	struct clm_tool_invocation *inv; /* for failing the tool on error */
 };
 
+/*
+ * Tool timeout while an http.get/post is still in flight: abort the
+ * underlying transfer so its completion callback fires now, while `inv`
+ * is still alive, instead of arriving later against a freed invocation
+ * (the batch/invocation are freed as soon as the timeout path finalizes
+ * the tool result — see on_timeout()/inv_finalize() in tools.c).
+ */
+static void
+lua_http_cancel(struct clm_tool_invocation *inv, void *user)
+{
+	struct lua_http_req *lr = user;
+	(void)inv;
+	if (lr->agent != NULL && lr->agent->host != NULL &&
+	    lr->agent->host->http_cancel != NULL && lr->req != NULL)
+		lr->agent->host->http_cancel(lr->req);
+}
+
 /* ------------------------------------------------------------------ */
 /* HTTP completion callbacks                                            */
 /* ------------------------------------------------------------------ */
@@ -375,6 +392,11 @@ lua_ctx_http_get(lua_State *L)
 		    strerror(-r));
 	}
 
+	/* If the tool times out while this request is still in flight, abort
+	 * it instead of letting it complete later against a freed inv. */
+	if (lr->inv != NULL)
+		clm_tool_invocation_set_cancel(lr->inv, lua_http_cancel, lr);
+
 	/* Yield the coroutine. The HTTP callbacks will resume it. */
 	return lua_yield(L, 0);
 }
@@ -472,6 +494,9 @@ lua_ctx_http_post(lua_State *L)
 		return luaL_error(L, "http_post: failed to start request: %s",
 		    strerror(-r));
 	}
+
+	if (lr->inv != NULL)
+		clm_tool_invocation_set_cancel(lr->inv, lua_http_cancel, lr);
 
 	return lua_yield(L, 0);
 }
