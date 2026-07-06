@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: ISC
-# Verify all exported tmpl_* symbols are documented in man pages.
+# Verify all exported clm_* symbols are documented in man pages.
 # Exits non-zero if any symbols are undocumented.
 set -e
 
@@ -16,7 +16,7 @@ TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT
 
 nm -D --defined-only "$LIBSO" | awk '/( T | D | B )/{print $3}' \
-	| grep '^tmpl_' | sed 's/@@.*//' | sort -u > "$TMPD/exported.txt"
+	| grep '^clm_' | sed 's/@@.*//' | sort -u > "$TMPD/exported.txt"
 
 grep -h '\.\(Fn\|Fo\) ' "$MANDIR"/*.3 2>/dev/null \
 	| awk '{print $2}' | sort -u > "$TMPD/documented.txt"
