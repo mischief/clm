@@ -29,6 +29,7 @@
 
 #include "clm/clm.h"
 #include "clm/cleanup.h"
+#include "clm/log.h"
 #include "clm/host_uv.h"
 #include "frontend.h"
 #include "md_render.h"
@@ -233,6 +234,7 @@ static void
 cb_assistant_text(const char *text, void *user)
 {
 	struct ui *u = user;
+	clm_debug("[content] %.*s", (int)(strlen(text) > 200 ? 200 : strlen(text)), text);
 	if (!u->started_assist) {
 		ui_push(u, ST_LABEL, "\nclm>\n");
 		u->started_assist = true;
@@ -243,6 +245,7 @@ cb_assistant_text(const char *text, void *user)
 static void
 cb_reasoning(const char *text, void *user)
 {
+	clm_debug("[reason] %.*s", (int)(strlen(text) > 200 ? 200 : strlen(text)), text);
 	ui_push(user, ST_REASON, text);
 }
 

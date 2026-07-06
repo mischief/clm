@@ -607,6 +607,9 @@ clm_tool_complete(struct clm_tool_invocation *inv, const char *content)
 {
 	if (inv == NULL || inv->completed)
 		return;
+	clm_debug("[result] %s -> %.*s", inv->name,
+	    (int)(content && strlen(content) > 150 ? 150 : (content ? strlen(content) : 0)),
+	    content ? content : "");
 	if (inv->timed_out) {
 		finalize_timeout(inv);
 		return;
@@ -832,6 +835,8 @@ clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls)
 		inv->id = strdup(id != NULL ? json_object_get_string(id) : "");
 		inv->name = strdup(name != NULL ? json_object_get_string(name) : "");
 		inv->args = strdup(args_str);
+		clm_debug("[tool] %s(%.*s)", inv->name,
+		    (int)(strlen(args_str) > 120 ? 120 : strlen(args_str)), args_str);
 		if (inv->id == NULL || inv->name == NULL || inv->args == NULL)
 			batch->status = -ENOMEM;
 

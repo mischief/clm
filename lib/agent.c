@@ -682,6 +682,8 @@ agent_finish(struct clm_agent *agent, struct json_object *tool_calls,
 	if (tool_calls != NULL && json_object_get_type(tool_calls) == json_type_array
 	    && json_object_array_length(tool_calls) > 0) {
 		int r;
+		if (content != NULL && content[0] != '\0')
+			clm_debug("[think] %.*s", (int)(strlen(content) > 200 ? 200 : strlen(content)), content);
 		agent->state = CLM_STATE_CALLING_TOOL;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
@@ -692,6 +694,7 @@ agent_finish(struct clm_agent *agent, struct json_object *tool_calls,
 	}
 
 	if (content != NULL) {
+		clm_debug("[think] %.*s", (int)(strlen(content) > 200 ? 200 : strlen(content)), content);
 		if (clm_history_add_assistant_text(&agent->history, content) == NULL) {
 			agent_fail(agent, "out of memory", -ENOMEM);
 			return;
