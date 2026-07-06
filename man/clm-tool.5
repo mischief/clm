@@ -1,0 +1,255 @@
+.\" SPDX-License-Identifier: ISC
+.Dd $Mdocdate$
+.Dt CLM-TOOL 5
+.Os
+.Sh NAME
+.Nm clm-tool
+.Nd clm Lua plugin and tool API
+.Sh DESCRIPTION
+.Xr clm 1
+loads every
+.Pa *.lua
+file in
+.Pa ~/.config/clm/plugins/
+(or a directory given with
+.Fl -plugins ,
+or an agent-specific
+.Pa ~/.config/clm/agents/ Ns Ar agent Ns Pa /
+directory) as a plugin.
+Each plugin file gets its own sandboxed
+.Xr lua 1
+state and is expected to call
+.Va clm.tool_register
+at least once, at load time, to register the tools it provides.
+.Ss Sandbox
+Only the
+.Va string , table , math ,
+and
+.Va utf8
+standard libraries are loaded;
+.Va os
+and
+.Va io
+are never loaded at all, and
+.Va dofile , loadfile , load , require ,
+and
+.Va collectgarbage
+are removed from
+.Va _G
+after loading the safe libraries.
+There is no filesystem or process access except through
+.Va clm.read_file
+and
+.Va clm.write_file
+(below), no dynamic code loading, and no way to reach any other
+plugin's state.
+.Pp
+A plugin has an 8 MiB private memory cap, a 500 ms deadline to
+finish executing its top-level (load-time) code, and a separate,
+per-tool-call CPU deadline (the
+.Va timeout_ms
+field of
+.Va clm.tool_register ,
+below; 30 s if unset), checked every 10000 VM instructions so a
+tight infinite loop cannot dodge it.
+Exceeding either deadline aborts execution of that plugin or call;
+a load-time failure is logged and that one plugin's tools are simply
+not registered; the rest of the plugin directory still loads.
+.Ss Registering a tool
+.Bd -literal -offset indent
+clm.tool_register(name, {
+    description = "...",       -- optional
+    params_schema = { ... },   -- optional, a JSON-Schema-shaped table
+    invoke = function(args, ctx)
+        ...
+        ctx:complete(result)   -- or ctx:fail(message)
+    end,
+    timeout_ms = 30000,        -- optional, overrides the default
+    no_prompt = false,         -- optional, skip the permission prompt
+    hidden = false,            -- optional, hide from the model's schema
+})
+.Ed
+.Pp
+.Va name
+must be unique across every plugin and builtin tool loaded into the
+agent.
+.Va invoke
+is called once per tool invocation with
+.Va args
+(the decoded JSON arguments the model supplied, following
+.Va params_schema )
+and
+.Va ctx ,
+described below.
+Exactly one of
+.Va ctx:complete
+or
+.Va ctx:fail
+must be called, from
+.Va invoke
+or from a coroutine it yields into (see
+.Sx HTTP requests
+below); calling either a second time is an error.
+.Pp
+By default a tool is gated behind an interactive allow/deny prompt the
+first time it is called in a session (see
+.Xr clm_agent 3 Ns 's
+.Va on_permission
+callback); set
+.Va no_prompt = true
+for a tool with no side effects worth confirming.
+.Va hidden = true
+omits the tool from the schema advertised to the model entirely, for
+a tool meant to be invoked only by other plugin code, not by the
+model itself.
+.Ss The ctx object
+.Bl -tag -width Ds
+.It Fn ctx:complete result
+Ends the invocation successfully.
+.Va result
+is a string; the model sees it as the tool's output.
+.It Fn ctx:fail message
+Ends the invocation with a failure the model sees as
+.Qq [tool failed: X]
+(where
+.Sq X
+is
+.Va message ) .
+.It Fn ctx:args_raw
+Returns the raw, undecoded JSON arguments string
+.Po Qq {}
+if the model supplied none
+.Pc .
+Most plugins use the decoded
+.Va args
+table passed to
+.Va invoke
+instead; this is for a plugin that wants to reparse or forward the
+arguments verbatim.
+.It Fn ctx:log message
+Writes
+.Va message
+to the debug log (see
+.Ev CLM_DEBUG_LOG
+in
+.Xr clm 1 ) .
+A no-op, at negligible cost, when that variable is unset.
+.It Fn ctx:http_get url headers
+.It Fn ctx:http_post url body headers
+Described under
+.Sx HTTP requests ;
+.Fa headers
+is optional in both.
+.El
+.Ss HTTP requests
+.Bd -literal -offset indent
+local resp, err = ctx:http_get(url)
+local resp, err = ctx:http_get(url, {["Authorization"] = "Bearer ..."})
+local resp, err = ctx:http_post(url, body)
+local resp, err = ctx:http_post(url, body, {["Content-Type"] = "text/plain"})
+.Ed
+.Pp
+Both yield the calling coroutine and resume it once the request
+completes, so
+.Va invoke
+does not block the agent's event loop while a request is in flight.
+Only callable directly from a tool invocation's own coroutine, not
+from a nested coroutine or at plugin load time.
+.Va headers
+is an optional table of header-name to header-value strings;
+.Fn ctx:http_post
+seeds
+.Qq Content-Type: application/json
+by default unless
+.Va headers
+overrides it.
+.Pp
+On success,
+.Va resp
+is a table with
+.Va resp.status
+(the HTTP status code) and
+.Va resp.body
+(the response body as a string);
+.Va err
+is
+.Dv nil .
+On failure,
+.Va resp
+is
+.Dv nil
+and
+.Va err
+is a string describing what went wrong.
+Up to 8 requests per plugin may be in flight concurrently, and a
+single tool call may make at most 128 requests in total; exceeding
+either limit fails the request rather than queuing it.
+.Ss Other clm module functions
+.Bl -tag -width Ds
+.It Fn clm.read_file path
+.It Fn clm.write_file path content
+Read or write a file, without the sandbox's normal lack of filesystem
+access.
+Available at any point in a plugin, not just from within
+.Va invoke .
+.It Fn clm.sleep ms
+Yield the calling coroutine for
+.Va ms
+milliseconds without blocking the event loop.
+Same coroutine restriction as
+.Sx HTTP requests
+above.
+.El
+.Ss The json module
+.Bd -literal -offset indent
+local text = json.encode(value)
+local value, err = json.decode(text)
+.Ed
+.Pp
+A global
+.Va json
+table over
+.Xr json-c 3 .
+.Va json.null
+is a sentinel light userdata value representing JSON
+.Li null ,
+distinct from Lua
+.Va nil .
+.Va json.decode
+rejects input larger than 2 MiB.
+.Ss Per-tool configuration
+If the plugin's file or tool name appears as a key under
+.Va tools
+in
+.Pa config.lua
+(see
+.Xr clm-config 5 ) ,
+that subtable is available inside the plugin as
+.Va clm.config .
+A plugin with no matching
+.Va tools
+entry sees
+.Va clm.config
+as an empty table, not
+.Dv nil .
+.Sh EXAMPLES
+.Bd -literal -offset indent
+-- ~/.config/clm/plugins/hello.lua
+clm.tool_register("hello", {
+    description = "Say hello to someone",
+    params_schema = {
+        type = "object",
+        properties = {
+            name = { type = "string", description = "who to greet" },
+        },
+        required = { "name" },
+    },
+    invoke = function(args, ctx)
+        ctx:complete("Hello, " .. args.name .. "!")
+    end,
+})
+.Ed
+.Sh SEE ALSO
+.Xr clm 1 ,
+.Xr clm_agent 3 ,
+.Xr clm-config 5

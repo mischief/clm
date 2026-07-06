@@ -1,0 +1,200 @@
+.\" SPDX-License-Identifier: ISC
+.Dd $Mdocdate$
+.Dt CLM-CONFIG 5
+.Os
+.Sh NAME
+.Nm clm-config
+.Nd clm configuration file format
+.Sh DESCRIPTION
+.Xr clm 1
+reads its configuration from
+.Pa ~/.config/clm/config.lua
+(or
+.Ev XDG_CONFIG_HOME Ns Pa /clm/config.lua
+if that variable is set).
+The file is plain Lua: it must
+.Ic return
+a table, evaluated once at startup by a long-lived interpreter that
+also backs agent profile loading and the
+.Va clm.secrets
+table
+.Pq Xr clm-tool 5 .
+.Pp
+Top-level keys:
+.Bl -tag -width Ds
+.It Va agent
+Name of the default agent profile to load from
+.Pa ~/.config/clm/agents/ Ns Ar name Ns Pa .lua .
+Overridden by
+.Xr clm 1 Ns 's
+.Fl -agent
+flag.
+If neither is set, the top-level
+.Va provider
+and
+.Va system_prompt
+below apply directly with no named profile.
+.It Va provider
+Name of the entry in
+.Va providers
+(below) to use.
+.It Va providers
+A table of provider definitions, keyed by name.
+Each entry may set:
+.Bl -tag -width Ds
+.It Va url
+Base API endpoint, e.g.
+.Qq http://127.0.0.1:8081/v1 .
+.Pa /chat/completions
+is appended automatically.
+.It Va model
+Model name to request.
+.It Va api_key
+Bearer token.
+Prefer
+.Va clm.secrets.*
+.Pq see Xr clm-tool 5
+over a literal key here, since
+.Pa config.lua
+often ends up shared or checked into dotfiles.
+Overridden by the
+.Ev CLM_API_KEY
+environment variable if set.
+.It Va context_size
+Override the context window size (tokens) the agent assumes, instead
+of learning it from the backend.
+.It Va autocompact_pct
+Override the percentage of the context window that triggers automatic
+conversation summarization.
+.It Va rate_tokens_per_sec , Va rate_burst
+Token-bucket rate limiter parameters for tool dispatch.
+.El
+.It Va system_prompt
+The system message sent to the model.
+A built-in default is used if unset.
+.It Va tools
+Per-plugin configuration, keyed by tool/plugin name.
+Each plugin sees only its own subtable, as
+.Va clm.config
+(see
+.Xr clm-tool 5 ) .
+.It Va volatile_tools
+A list of
+.Xr fnmatch 3
+patterns naming tools whose results go stale as soon as a newer
+result exists (a map read, a status query).
+When a matching tool completes, every prior result from that same
+tool is replaced in place with a short stub of the form
+.Qq [superseded by newer X]
+(where
+.Sq X
+is the tool's name)
+before the new result is recorded, keeping the request prefix
+byte-stable for backend prompt caching while bounding history growth.
+.It Va mcp_servers
+A list of
+.Lk https://modelcontextprotocol.io MCP
+server definitions to connect to at startup.
+Each entry is a table with:
+.Bl -tag -width Ds
+.It Va name
+Used to namespace the server's tools as
+.Qq mcp__X__Y
+(where
+.Sq X
+is this
+.Va name
+and
+.Sq Y
+is the tool's own name),
+matching the scheme Claude Code uses for MCP-sourced tools, so
+identically-named tools from different servers, or from a builtin
+tool, never collide.
+.It Va transport
+Either
+.Qq stdio
+(the default if omitted) or
+.Qq http .
+.It Va command
+For
+.Qq stdio :
+an argv array; the server is spawned as a subprocess and speaks
+JSON-RPC over its stdin/stdout.
+A crashing stdio server is automatically restarted, with a small
+backoff budget so a genuine crash loop does not turn into a
+fork/exec storm; its tools disappear from the model's view while it
+is down and reappear once it is back.
+.It Va url
+For
+.Qq http :
+the server's endpoint.
+One JSON-RPC POST per call, no persistent connection.
+This transport is newer and less exercised than
+.Qq stdio ;
+it expects a plain JSON response per call, not an SSE-streamed one.
+.It Va api_key
+Optional bearer token for an
+.Qq http
+server.
+.It Va timeout_ms
+Optional per-call deadline for either transport.
+Defaults to 30000 (30s).
+.El
+.El
+.Pp
+Agent profile files under
+.Pa ~/.config/clm/agents/
+share the same schema as the top level (they are merged over it,
+profile values winning) and may set any of the same keys except
+.Va agent
+itself.
+.Sh SECRETS
+.Pa ~/.config/clm/secrets.lua ,
+mode 0600, is loaded automatically (if present) alongside
+.Pa config.lua
+and exposed as the global
+.Va clm.secrets
+table to
+.Pa config.lua
+and to agent profile files, letting them write
+.Va api_key = clm.secrets.provider_name
+instead of a literal key.
+It must also
+.Ic return
+a table; there is no required schema beyond that, since keys are
+referenced by whatever name the rest of the configuration expects.
+.Xr clm 1
+warns, via
+.Ev CLM_DEBUG_LOG ,
+if this file is readable by group or other.
+.Sh EXAMPLES
+A minimal single-provider configuration:
+.Bd -literal -offset indent
+return {
+    provider = "ollama",
+    providers = {
+        ollama = {
+            url = "http://127.0.0.1:8081/v1",
+            model = "qwen3-32b",
+            api_key = clm.secrets.ollama,
+        },
+    },
+    tools = {
+        web_search = { api_key = clm.secrets.tavily },
+        weather = { units = "metric" },
+    },
+    volatile_tools = { "local_map", "character_status" },
+}
+.Ed
+.Pp
+The corresponding
+.Pa secrets.lua :
+.Bd -literal -offset indent
+return {
+    tavily = "tvly-...",
+    ollama = "...",
+}
+.Ed
+.Sh SEE ALSO
+.Xr clm 1 ,
+.Xr clm-tool 5

@@ -1,0 +1,169 @@
+.\" SPDX-License-Identifier: ISC
+.Dd $Mdocdate$
+.Dt CLM 1
+.Os
+.Sh NAME
+.Nm clm
+.Nd LLM agent with a Lua plugin system
+.Sh SYNOPSIS
+.Nm
+.Cm setup
+.Nm
+.Op Fl H | Fl -headless
+.Op Fl S | Fl -no-stream
+.Op Fl V | Fl -version
+.Op Fl a Ar name | Fl -agent Ar name
+.Op Fl f Ar prompt | Fl -forever Ar prompt
+.Op Fl m Ar name | Fl -model Ar name
+.Op Fl o Ar prompt | Fl -oneshot Ar prompt
+.Op Fl p Ar dir | Fl -plugins Ar dir
+.Op Fl u Ar base | Fl -url Ar base
+.Sh DESCRIPTION
+.Nm
+runs a conversational LLM agent against any OpenAI-compatible chat
+completions endpoint (llama.cpp, Ollama, OpenAI, Anthropic's
+OpenAI-compatible endpoint), with a Lua plugin system for custom
+tools; see
+.Xr clm-tool 5 .
+With no options, and when both standard input and standard output are
+a terminal,
+.Nm
+runs its interactive
+.Xr curses 3
+UI.
+Otherwise it falls back to a plain line-oriented REPL on standard
+input/output, which is also what
+.Fl -oneshot
+uses.
+.Pp
+.Nm Cm setup
+writes a starter
+.Pa config.lua
+and
+.Pa secrets.lua
+into
+.Ev XDG_CONFIG_HOME Ns Pa /clm
+(or
+.Pa ~/.config/clm
+if
+.Ev XDG_CONFIG_HOME
+is unset) and seeds the builtin plugins into its
+.Pa plugins
+subdirectory; see
+.Xr clm-config 5 .
+Safe to re-run: it never overwrites a file that already exists.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl a Ar name , Fl -agent Ar name
+Use the agent profile named
+.Ar name
+.Po
+.Pa ~/.config/clm/agents/ Ns Ar name Ns Pa .lua
+.Pc .
+If omitted, the
+.Va agent
+key in
+.Pa config.lua
+is used, or otherwise the top-level provider settings apply directly
+with no named profile.
+.It Fl f Ar prompt , Fl -forever Ar prompt
+Interactive UI mode only.
+Submit
+.Ar prompt
+immediately, then automatically resubmit it every time a turn
+completes with nothing else queued, so the agent keeps going without
+a human re-prompting it each turn.
+.It Fl H , Fl -headless
+Force the plain stdio REPL even when standard input and standard
+output are both a terminal.
+.It Fl m Ar name , Fl -model Ar name
+Model name to request from the endpoint.
+Overrides whatever the active provider (CLI, agent profile, or
+.Pa config.lua Ns 's
+top-level provider) would otherwise supply.
+.It Fl o Ar prompt , Fl -oneshot Ar prompt
+Run a single prompt headlessly and exit, printing only the assistant's
+reply (plus any tool-call/error lines) to standard output.
+The process exits 0 if the turn completed successfully, or 1 otherwise.
+.It Fl p Ar dir , Fl -plugins Ar dir
+Load Lua plugins from
+.Ar dir
+instead of the default
+.Ev XDG_CONFIG_HOME Ns Pa /clm/plugins .
+.It Fl S , Fl -no-stream
+Request non-streamed responses instead of the default
+server-sent-events streaming.
+.It Fl u Ar base , Fl -url Ar base
+Base API endpoint.
+.Pa /chat/completions
+is appended automatically; do not include it in
+.Ar base .
+Defaults to
+.Pa http://127.0.0.1:8081/v1 .
+.It Fl V , Fl -version
+Print the version number and exit.
+.It Fl h , Fl -help
+Print usage and exit.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev CLM_API_KEY
+Bearer token sent as
+.Li Authorization: Bearer Ar key
+on every request to the configured endpoint.
+Takes precedence over any
+.Va api_key
+set in
+.Pa config.lua
+or an agent profile.
+Servers that need no authentication (most local llama.cpp/Ollama
+setups) can leave this unset.
+.It Ev XDG_CONFIG_HOME
+Base directory for
+.Pa clm/config.lua ,
+.Pa clm/secrets.lua ,
+.Pa clm/plugins/ ,
+and
+.Pa clm/agents/ .
+Defaults to
+.Pa ~/.config
+if unset.
+.It Ev CLM_DEBUG_LOG
+Path to a file that internal debug logging is appended to.
+Unset (the default) disables logging entirely, nothing is written,
+and the check is cheap enough to leave alone in production.
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.config/clm/config.lua
+Provider, agent, and per-tool plugin configuration; see
+.Xr clm-config 5 .
+.It Pa ~/.config/clm/secrets.lua
+API keys and other secrets, kept separate from
+.Pa config.lua
+so the latter can be shared or checked into dotfiles.
+Mode 0600;
+.Nm
+warns (via
+.Ev CLM_DEBUG_LOG )
+if it is readable by group or other.
+.It Pa ~/.config/clm/agents/*.lua
+Per-agent profiles, each overriding or extending
+.Pa config.lua Ns 's
+settings; see
+.Xr clm-config 5 .
+.It Pa ~/.config/clm/plugins/*.lua
+Lua plugins, each registering one or more tools; see
+.Xr clm-tool 5 .
+.El
+.Sh EXIT STATUS
+.Ex -std
+Under
+.Fl -oneshot ,
+the exit status instead reflects whether that single turn completed
+successfully (0) or not (1).
+.Sh SEE ALSO
+.Xr clm_agent 3 ,
+.Xr clm-config 5 ,
+.Xr clm-tool 5

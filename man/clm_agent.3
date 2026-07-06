@@ -1,0 +1,307 @@
+.\" SPDX-License-Identifier: ISC
+.Dd $Mdocdate$
+.Dt CLM_AGENT 3
+.Os
+.Sh NAME
+.Nm clm_agent_new ,
+.Nm clm_agent_free ,
+.Nm clm_agent_free_ptr ,
+.Nm clm_agent_submit ,
+.Nm clm_agent_cancel ,
+.Nm clm_agent_compact ,
+.Nm clm_agent_check_connection ,
+.Nm clm_agent_set_provider ,
+.Nm clm_agent_get_state ,
+.Nm clm_agent_get_ctx_max ,
+.Nm clm_agent_get_last_error ,
+.Nm clm_agent_over_autocompact_threshold ,
+.Nm clm_agent_take_mid_chain_compact_started ,
+.Nm clm_agent_take_mid_chain_compact_succeeded ,
+.Nm clm_agent_take_mid_chain_compact_error
+.Nd create and drive a clm agent
+.Sh SYNOPSIS
+.In clm/clm.h
+.Ft int
+.Fo clm_agent_new
+.Fa "const struct clm_cfg *cfg"
+.Fa "struct clm_host *host"
+.Fa "const struct clm_callbacks *cb"
+.Fa "void *user"
+.Fa "struct clm_agent **out"
+.Fc
+.Ft void
+.Fn clm_agent_free "struct clm_agent *agent"
+.Ft void
+.Fn clm_agent_free_ptr "struct clm_agent **agent"
+.Ft int
+.Fn clm_agent_submit "struct clm_agent *agent" "const char *prompt"
+.Ft int
+.Fn clm_agent_cancel "struct clm_agent *agent"
+.Ft int
+.Fn clm_agent_compact "struct clm_agent *agent"
+.Ft int
+.Fn clm_agent_check_connection "struct clm_agent *agent"
+.Ft int
+.Fo clm_agent_set_provider
+.Fa "struct clm_agent *agent"
+.Fa "const char *base_url"
+.Fa "const char *api_key"
+.Fa "const char *model"
+.Fc
+.Ft "enum clm_agent_state"
+.Fn clm_agent_get_state "const struct clm_agent *agent"
+.Ft int64_t
+.Fn clm_agent_get_ctx_max "const struct clm_agent *agent"
+.Ft "const char *"
+.Fn clm_agent_get_last_error "const struct clm_agent *agent"
+.Ft bool
+.Fn clm_agent_over_autocompact_threshold "const struct clm_agent *agent"
+.Ft bool
+.Fn clm_agent_take_mid_chain_compact_started "struct clm_agent *agent"
+.Ft bool
+.Fn clm_agent_take_mid_chain_compact_succeeded "struct clm_agent *agent"
+.Ft bool
+.Fn clm_agent_take_mid_chain_compact_error "struct clm_agent *agent"
+.Sh DESCRIPTION
+A
+.Vt struct clm_agent
+is a single conversational agent: an OpenAI-compatible chat loop, a tool
+registry, and conversation history, all driven asynchronously through a
+caller-supplied
+.Vt struct clm_host
+(transport and timers; see
+.Xr clm_host 3 ) .
+.Pp
+.Fn clm_agent_new
+creates an agent bound to
+.Fa host
+and returns it in
+.Fa out .
+.Fa cfg
+is copied at the call, so the caller does not need to keep it alive
+afterward
+.Em but
+every string field inside it
+.Po
+.Va api_key ,
+.Va base_url ,
+.Va model ,
+.Va system_prompt ,
+.Va volatile_tools
+.Pc
+is
+.Em borrowed ,
+not copied, and must stay valid for the life of the agent.
+.Fa cb
+may be
+.Dv NULL
+if the caller wants no events at all; otherwise every field in it is
+optional, since the library checks each callback pointer before calling
+it, so a minimal caller can set only
+.Va on_turn_done .
+.Fa user
+is an opaque pointer passed back to every callback.
+The caller owns
+.Fa host
+and whatever it wraps (e.g. an event loop);
+.Fn clm_agent_new
+never tears it down.
+.Pp
+.Fn clm_agent_free
+releases an agent and everything it owns: the tool registry, conversation
+history, and any turn state.
+Does not touch the
+.Vt clm_host
+it was created with.
+.Pp
+.Fn clm_agent_free_ptr
+calls
+.Fn clm_agent_free
+on
+.Fa *agent
+and sets
+.Fa *agent
+to
+.Dv NULL .
+It is intended for use with the
+.Dv _cleanup_clm_
+attribute, which arranges for automatic release when a variable goes out
+of scope:
+.Bd -literal -offset indent
+_cleanup_clm_ struct clm_agent *agent = NULL;
+int r;
+
+r = clm_agent_new(&cfg, host, &cb, NULL, &agent);
+if (r < 0) {
+        errno = -r;
+        err(1, "clm_agent_new");
+}
+/* agent is released automatically on all exit paths */
+.Ed
+.Pp
+.Fn clm_agent_submit
+starts a user turn.
+It returns immediately; the turn itself runs asynchronously as the
+caller drives
+.Fa host Ns 's
+event loop, emitting events through the callbacks passed to
+.Fn clm_agent_new
+and ending with
+.Va on_turn_done .
+Callers must not submit a new turn until
+.Va on_turn_done
+has fired for the previous one.
+.Pp
+.Fn clm_agent_cancel
+aborts whatever is in flight for the current turn (the model request
+itself, or any running tool calls) and ends the turn via
+.Va on_turn_done
+with status
+.Er ECANCELED .
+Safe to call from inside a callback, e.g. a UI's key handler.
+.Pp
+.Fn clm_agent_compact
+summarizes the conversation so far and folds older turns into that
+summary, keeping the system prompt and the most recent turns intact.
+This is one extra asynchronous model round-trip; it fires
+.Va on_turn_done
+when it finishes, unless it was triggered internally, mid-chain,
+between tool batches, in which case the interrupted tool chain simply
+resumes instead of ending a turn.
+.Pp
+.Fn clm_agent_check_connection
+probes the configured endpoint for reachability with an asynchronous
+.Li GET /v1/models .
+The result arrives later through the
+.Va on_connection
+callback.
+Safe to call at any time, including while a turn is already in flight.
+.Pp
+.Fn clm_agent_set_provider
+reconfigures the LLM provider on a live agent, swapping the endpoint,
+API key, and model.
+Safe to call between turns, not while one is in flight.
+.Fa base_url
+is the full chat completions URL (e.g.
+.Qq http://host/v1/chat/completions ) .
+.Fa api_key
+may be
+.Dv NULL
+for a server that requires no authentication.
+.Pp
+.Fn clm_agent_get_state
+returns the agent's current
+.Vt enum clm_agent_state
+( Dv CLM_STATE_IDLE , CLM_STATE_THINKING , CLM_STATE_CALLING_TOOL ,
+.Dv CLM_STATE_RATE_LIMITED , CLM_STATE_COMPLETE ,
+or
+.Dv CLM_STATE_ERROR ) .
+.Pp
+.Fn clm_agent_get_ctx_max
+returns the context window size in tokens, as learned from the backend
+(e.g. llama.cpp's
+.Pa /props
+endpoint), or a non-positive value if it is not yet known.
+.Pp
+.Fn clm_agent_get_last_error
+returns a description of the most recent failure, valid until the next
+call that can fail.
+.Pp
+.Fn clm_agent_over_autocompact_threshold
+reports whether the agent's last known context usage is at or above the
+autocompaction threshold.
+.Fn clm_agent_tools_done
+already checks this internally between tool batches to trigger
+compaction mid-chain; it is exposed here too so a frontend (e.g. a
+status bar) can reflect the same threshold without keeping its own
+separate copy of the calculation.
+.Pp
+.Fn clm_agent_take_mid_chain_compact_started ,
+.Fn clm_agent_take_mid_chain_compact_succeeded ,
+and
+.Fn clm_agent_take_mid_chain_compact_error
+each report, once, whether a mid-chain autocompaction (one triggered
+internally between tool batches, not by an explicit
+.Fn clm_agent_compact
+call) has just started, just succeeded, or just failed, respectively.
+Every one of these is consuming: it clears its flag on read, so
+calling it twice in a row without an intervening event returns
+.Dv false
+the second time.
+There is no dedicated event for any of this
+.Po
+the whole point of a mid-chain compaction is that the tool chain it
+interrupted resumes silently rather than ending the turn
+.Pc ,
+so a caller that wants to
+surface
+.Qq compacting...
+or
+.Qq autocompact failed, continuing anyway
+messages should poll these, for instance from the
+.Va on_state
+callback, rather than expecting a dedicated event.
+.Fn clm_agent_get_last_error
+holds the actual error message when
+.Fn clm_agent_take_mid_chain_compact_error
+returns
+.Dv true .
+.Sh RETURN VALUES
+.Fn clm_agent_new ,
+.Fn clm_agent_submit ,
+.Fn clm_agent_cancel ,
+.Fn clm_agent_compact ,
+.Fn clm_agent_check_connection ,
+and
+.Fn clm_agent_set_provider
+return 0 on success, or a negative
+.Xr errno 2
+value on failure.
+A negative return from any of these means the action itself never
+started; it is not a report of the turn's own eventual outcome, which
+always arrives later through
+.Va on_turn_done .
+.Pp
+.Fn clm_agent_free
+and
+.Fn clm_agent_free_ptr
+return nothing.
+.Pp
+.Fn clm_agent_get_state
+returns the agent's current state.
+.Fn clm_agent_get_ctx_max
+returns the context window size in tokens, or a non-positive value if
+unknown.
+.Fn clm_agent_get_last_error
+returns a borrowed string describing the most recent failure.
+.Pp
+.Fn clm_agent_over_autocompact_threshold ,
+.Fn clm_agent_take_mid_chain_compact_started ,
+.Fn clm_agent_take_mid_chain_compact_succeeded ,
+and
+.Fn clm_agent_take_mid_chain_compact_error
+return
+.Dv true
+or
+.Dv false .
+.Sh ERRORS
+.Bl -tag -width Er
+.It Bq Er ENOMEM
+.Fn clm_agent_new
+failed to allocate memory.
+.It Bq Er ECANCELED
+.Fn clm_agent_cancel
+successfully cancelled a turn that was in flight; this is reported to
+.Va on_turn_done
+as the turn's status, not returned directly by
+.Fn clm_agent_cancel
+itself.
+.It Bq Er EBUSY
+.Fn clm_agent_submit
+or
+.Fn clm_agent_compact
+was called while a turn was already in flight.
+.El
+.Sh SEE ALSO
+.Xr clm_host 3 ,
+.Xr clm_tool_add 3
