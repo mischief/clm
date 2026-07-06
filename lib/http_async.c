@@ -236,7 +236,8 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
     struct clm_http_request **out_req)
 {
 	struct clm_http_request *req;
-	char auth_header[512];
+	char *auth_header;
+	size_t auth_header_len;
 
 	clm_debug("starting");
 
@@ -283,16 +284,19 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	clm_debug("curl_easy_init success");
 
 	if (api_key != NULL && api_key[0] != '\0') {
-		if (strlen(api_key) + sizeof("Authorization: Bearer ") >= sizeof(auth_header)) {
-			clm_debug("auth_header too long");
+		auth_header_len = sizeof("Authorization: Bearer ") + strlen(api_key);
+		auth_header = malloc(auth_header_len);
+		if (auth_header == NULL) {
+			clm_debug("auth_header alloc failed");
 			curl_easy_cleanup(req->easy_handle);
 			curl_multi_cleanup(req->multi_handle);
 			free(req);
-			return -EINVAL;
+			return -ENOMEM;
 		}
-		(void)snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", api_key);
+		(void)snprintf(auth_header, auth_header_len, "Authorization: Bearer %s", api_key);
 		req->headers = curl_slist_append(NULL, "Content-Type: application/json");
 		req->headers = curl_slist_append(req->headers, auth_header);
+		free(auth_header);
 	} else {
 		req->headers = NULL;
 	}
