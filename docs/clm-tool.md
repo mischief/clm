@@ -274,4 +274,4 @@ clm(1),
 clm\_agent(3),
 clm-config(5)
 
-Debian - July 6, 2026
+clm - July 6, 2026

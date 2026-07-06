@@ -235,4 +235,4 @@ The corresponding
 clm(1),
 clm-tool(5)
 
-Debian - July 6, 2026
+clm - July 6, 2026

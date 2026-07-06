@@ -19,6 +19,11 @@ for page in "$MANDIR"/*.[1-9]; do
 	base=$(basename "$page")
 	name=${base%.*}
 	out="$DOCSDIR/$name.md"
-	"$MANDOC" -T markdown "$page" > "$out"
+	# -I os=clm: pin the .Os trailer instead of letting it default to
+	# whatever uname()/os-release the machine running this happens to
+	# report (Debian here, OpenBSD elsewhere, etc) -- otherwise every
+	# re-sync from a different machine would diff on nothing but that,
+	# with no real content change.
+	"$MANDOC" -I os=clm -T markdown "$page" > "$out"
 	echo "wrote $out"
 done
