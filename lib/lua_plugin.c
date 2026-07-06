@@ -32,6 +32,11 @@ int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
 void clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on);
 int clm_lua_is_invocation_thread(lua_State *L);
 
+/* Clears the per-invocation registry stash (_clm_co_ref/_clm_tool_name/
+ * _clm_inv, set in lua_tool_invoke below) once a coroutine is truly done.
+ * Called from both here and lua_http.c's async completion callbacks. */
+void clm_lua_clear_invocation_registry(lua_State *L);
+
 #define CLM_LUA_MEM_LIMIT (8 * 1024 * 1024) /* 8 MiB per plugin */
 #define CLM_LUA_EXEC_TIMEOUT_MS 30000u     /* default: 30s CPU timeout */
 #define CLM_LUA_LOAD_TIMEOUT_MS 500u       /* plugin load must be quick */
@@ -304,6 +309,33 @@ clm_lua_is_invocation_thread(lua_State *L)
 }
 
 /*
+ * lua_tool_invoke stashes _clm_co_ref/_clm_tool_name/_clm_inv in the
+ * (shared, coroutine-and-main-state-wide) registry so http.get/post can
+ * retrieve them from an async callback. They were only ever being
+ * overwritten by the next invocation, never explicitly cleared -- so
+ * between calls the registry held a stale _clm_inv lightuserdata pointing
+ * at an already-freed clm_tool_invocation, and kept the previous call's
+ * tool-name string rooted for no reason. Call this once a coroutine is
+ * truly finished (same terminal points as the co_ref unref).
+ */
+void
+clm_lua_clear_invocation_registry(lua_State *L)
+{
+	lua_pushnil(L);
+	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_co_ref");
+	lua_pushnil(L);
+	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_tool_name");
+	lua_pushnil(L);
+	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_inv");
+	/* Nudge the collector now rather than waiting for its own pacing to
+	 * notice -- an incremental step is cheap and reclaims the coroutine
+	 * (now genuinely unreferenced) and its stack contents promptly
+	 * instead of letting several turns' worth of garbage pile up under
+	 * the plugin's tight memory cap before the GC gets around to it. */
+	lua_gc(L, LUA_GCSTEP, 0);
+}
+
+/*
  * Log resource peaks for this plugin after a tool call completes.
  */
 void
@@ -477,6 +509,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
+		clm_lua_clear_invocation_registry(L);
 	} else if (rc == LUA_YIELD) {
 		/* Coroutine yielded (waiting for async op like HTTP).
 		 * Clear the hook while suspended — the plugin isn't running
@@ -494,6 +527,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
+		clm_lua_clear_invocation_registry(L);
 	}
 }
 

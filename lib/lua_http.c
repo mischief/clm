@@ -35,6 +35,7 @@ void clm_lua_budget_report(struct clm_lua_plugin *plugin, const char *name);
  * unwinds to clm's C-level lua_resume. */
 int clm_lua_is_invocation_thread(lua_State *L);
 void clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on);
+void clm_lua_clear_invocation_registry(lua_State *L);
 
 /* State for one in-flight Lua HTTP request. */
 struct lua_http_req {
@@ -64,6 +65,57 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 	lua_State *L = lr->main_L;
 	int nres, rc;
 
+	/* Guard: if the coroutine is no longer suspended (already finished
+	 * or errored out via another path), resuming it would crash in
+	 * lua's unroll() with a NULL ci.  Clean up and bail. */
+	if (lua_status(co) != LUA_YIELD) {
+		clm_debug("lua http: coroutine not yielded (status=%d), "
+		    "skipping resume", lua_status(co));
+		free(resp->body);
+		resp->body = NULL;
+		clm_lua_mark_invocation_thread(L, co, 0);
+		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
+		clm_lua_clear_invocation_registry(L);
+		clm_lua_http_done(lr->plugin);
+		free(lr);
+		return;
+	}
+
+	/* Second guard: verify the coroutine's internal state is sane.
+	 * A yielded coroutine with lua_gettop < 0 or absurdly high means
+	 * the state was corrupted (e.g. by a concurrent error on a shared
+	 * main state). Bail rather than crash in lua_newtable. */
+	int top = lua_gettop(co);
+	if (top < 0 || top > 500) {
+		clm_debug("lua http: coroutine stack corrupt (top=%d), "
+		    "skipping resume", top);
+		free(resp->body);
+		resp->body = NULL;
+		clm_lua_mark_invocation_thread(L, co, 0);
+		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
+		clm_lua_clear_invocation_registry(L);
+		clm_lua_http_done(lr->plugin);
+		free(lr);
+		return;
+	}
+
+	/* Third guard: verify co_ref still resolves to the same coroutine.
+	 * If the ref was freed and reused, it could point to a different
+	 * object, meaning our lr->co is stale. */
+	lua_rawgeti(L, LUA_REGISTRYINDEX, lr->co_ref);
+	lua_State *ref_co = lua_tothread(L, -1);
+	lua_pop(L, 1);
+	if (ref_co != co) {
+		clm_debug("lua http: co_ref %d no longer points to original "
+		    "coroutine (got %p, expected %p), skipping resume",
+		    lr->co_ref, (void *)ref_co, (void *)co);
+		free(resp->body);
+		resp->body = NULL;
+		clm_lua_http_done(lr->plugin);
+		free(lr);
+		return;
+	}
+
 	/* Push result table onto coroutine stack. */
 	lua_newtable(co);
 	lua_pushinteger(co, resp->status_code);
@@ -83,6 +135,7 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 	if (rc == LUA_OK) {
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
+		clm_lua_clear_invocation_registry(L);
 		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
 	} else if (rc == LUA_YIELD) {
 		/* Yielded again (e.g. another HTTP request in the same tool).
@@ -96,6 +149,7 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 			clm_tool_fail(lr->inv, err ? err : "Lua runtime error");
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
+		clm_lua_clear_invocation_registry(L);
 		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
 	}
 
@@ -114,6 +168,18 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 	lua_State *L = lr->main_L;
 	int nres, rc;
 
+	/* Guard: coroutine already finished, don't resume. */
+	if (lua_status(co) != LUA_YIELD) {
+		clm_debug("lua http error: coroutine not yielded (status=%d), "
+		    "skipping resume", lua_status(co));
+		clm_lua_mark_invocation_thread(L, co, 0);
+		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
+		clm_lua_clear_invocation_registry(L);
+		clm_lua_http_done(lr->plugin);
+		free(lr);
+		return;
+	}
+
 	/* Push nil + error string. */
 	lua_pushnil(co);
 	lua_pushstring(co, error_msg ? error_msg : "unknown HTTP error");
@@ -123,6 +189,7 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 	if (rc == LUA_OK) {
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
+		clm_lua_clear_invocation_registry(L);
 		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
 	} else if (rc == LUA_YIELD) {
 		/* Yielded again. */
@@ -134,6 +201,7 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 			clm_tool_fail(lr->inv, err ? err : "Lua runtime error");
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
+		clm_lua_clear_invocation_registry(L);
 		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
 	}
 
