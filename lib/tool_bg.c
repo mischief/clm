@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"
@@ -43,14 +43,12 @@
  * depends only on libclm's public API; tool_shell.c has its own copy for the
  * same reason). */
 static char *
-bg_arg_string(struct json_object *args, const char *key)
+bg_arg_string(cJSON *args, const char *key)
 {
-	struct json_object *v = NULL;
-	if (!json_object_object_get_ex(args, key, &v))
+	cJSON *v = cJSON_GetObjectItemCaseSensitive(args, key);
+	if (v == NULL || !cJSON_IsString(v))
 		return NULL;
-	if (json_object_get_type(v) != json_type_string)
-		return NULL;
-	return strdup(json_object_get_string(v));
+	return strdup(cJSON_GetStringValue(v));
 }
 
 struct clm_bg_job {
@@ -178,8 +176,8 @@ static void
 tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 {
 	struct clm_agent *agent = user;
-	json_cleanup struct json_object *args =
-	    json_tokener_parse(clm_tool_invocation_args(inv));
+	json_cleanup cJSON *args =
+	    cJSON_Parse(clm_tool_invocation_args(inv));
 	autofree char *command = NULL;
 	autofree char *label = NULL;
 	autofree char *started_msg = NULL;
@@ -191,7 +189,7 @@ tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 	char *argv[4];
 	int r;
 
-	if (args == NULL || json_object_get_type(args) != json_type_object) {
+	if (args == NULL || !cJSON_IsObject(args)) {
 		clm_tool_fail(inv, "invalid arguments");
 		return;
 	}
