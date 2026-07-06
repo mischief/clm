@@ -386,6 +386,23 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	plugin->budget.http_total = 0;
 	plugin->budget.call_start_ns = clock_ns();
 
+	/* lua_newthread() is a bare C-API call, not wrapped in lua_pcall (it
+	 * can't be -- there's no Lua frame to unwind into yet). If the
+	 * capped allocator refuses this allocation, Lua's OOM error has
+	 * nowhere protected to longjmp to, so its default panic handler
+	 * calls abort() and takes the whole process down -- lua_newthread()
+	 * does NOT return NULL on OOM the way the check below assumes; it
+	 * never returns at all. Refuse proactively instead, with a safety
+	 * margin covering what one invocation typically needs (the
+	 * coroutine object itself, its stack, the decoded args table, and
+	 * response bodies), so we fail this one tool call cleanly via
+	 * clm_tool_fail() instead of crashing every in-flight turn. */
+	if (plugin->mem_used + 262144 > plugin->mem_limit) {
+		clm_tool_fail(inv, "plugin is low on memory, refusing to start "
+		    "a new invocation to avoid crashing");
+		return;
+	}
+
 	/* Create a coroutine for this invocation. */
 	co = lua_newthread(L);
 	if (co == NULL) {
