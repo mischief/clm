@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: ISC
 /*
- * Lua JSON bindings over json-c. Exposes a global "json" table with:
+ * Lua JSON bindings over cJSON. Exposes a global "json" table with:
  *   json.encode(value) -> string
  *   json.decode(string) -> value
  *   json.null          -> lightuserdata sentinel
  */
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 
 #include <lua.h>
 #include <lauxlib.h>
@@ -20,9 +21,9 @@
 /* Prototype — called from lua_plugin.c. */
 int clm_lua_json_open(lua_State *L);
 
-/* Push a json-c object as a Lua value (table/string/number/etc).
+/* Push a cJSON object as a Lua value (table/string/number/etc).
  * Called from lua_plugin.c to decode tool args without a Lua hop. */
-void clm_lua_push_json_value(lua_State *L, struct json_object *obj);
+void clm_lua_push_json_value(lua_State *L, cJSON *obj);
 
 /* Sentinel for JSON null. */
 static char json_null_sentinel;
@@ -32,63 +33,73 @@ static char json_null_sentinel;
 /* ------------------------------------------------------------------ */
 
 void
-clm_lua_push_json_value(lua_State *L, struct json_object *obj)
+clm_lua_push_json_value(lua_State *L, cJSON *obj)
 {
 	if (obj == NULL) {
 		lua_pushlightuserdata(L, &json_null_sentinel);
 		return;
 	}
 
-	switch (json_object_get_type(obj)) {
-	case json_type_null:
+	if (cJSON_IsNull(obj)) {
 		lua_pushlightuserdata(L, &json_null_sentinel);
-		break;
-	case json_type_boolean:
-		lua_pushboolean(L, json_object_get_boolean(obj));
-		break;
-	case json_type_int:
-		lua_pushinteger(L, (lua_Integer)json_object_get_int64(obj));
-		break;
-	case json_type_double:
-		lua_pushnumber(L, json_object_get_double(obj));
-		break;
-	case json_type_string:
-		lua_pushlstring(L, json_object_get_string(obj),
-		    (size_t)json_object_get_string_len(obj));
-		break;
-	case json_type_array: {
-		size_t len = json_object_array_length(obj);
-		lua_createtable(L, (int)len, 0);
-		for (size_t i = 0; i < len; i++) {
-			clm_lua_push_json_value(L, json_object_array_get_idx(obj, i));
-			lua_rawseti(L, -2, (lua_Integer)(i + 1));
-		}
-		break;
+		return;
 	}
-	case json_type_object: {
+	if (cJSON_IsBool(obj)) {
+		lua_pushboolean(L, cJSON_IsTrue(obj));
+		return;
+	}
+	if (cJSON_IsNumber(obj)) {
+		double val = obj->valuedouble;
+		lua_Integer ival = (lua_Integer)val;
+		/* Exact round-trip check is intentional: only take the integer
+		 * fast path when the double truly has no fractional part. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfloat-equal"
+		if ((double)ival == val) {
+#pragma GCC diagnostic pop
+			lua_pushinteger(L, ival);
+		} else {
+			lua_pushnumber(L, (lua_Number)val);
+		}
+		return;
+	}
+	if (cJSON_IsString(obj)) {
+		lua_pushlstring(L, obj->valuestring, strlen(obj->valuestring));
+		return;
+	}
+	if (cJSON_IsArray(obj)) {
+		int size = cJSON_GetArraySize(obj);
+		lua_createtable(L, size, 0);
+		for (int i = 0; i < size; i++) {
+			cJSON *item = cJSON_GetArrayItem(obj, i);
+			clm_lua_push_json_value(L, item);
+			lua_rawseti(L, -2, i + 1);
+		}
+		return;
+	}
+	if (cJSON_IsObject(obj)) {
 		lua_newtable(L);
-		struct json_object_iterator it = json_object_iter_begin(obj);
-		struct json_object_iterator end = json_object_iter_end(obj);
-		while (!json_object_iter_equal(&it, &end)) {
-			const char *key = json_object_iter_peek_name(&it);
-			struct json_object *val = json_object_iter_peek_value(&it);
-			lua_pushstring(L, key);
-			clm_lua_push_json_value(L, val);
+		for (cJSON *child = obj->child; child != NULL; child = child->next) {
+			lua_pushstring(L, child->string);
+			clm_lua_push_json_value(L, child);
 			lua_rawset(L, -3);
-			json_object_iter_next(&it);
 		}
-		break;
+		return;
 	}
-	}
+	/* Should not reach here */
+	lua_pushliteral(L, "[invalid JSON type]");
 }
+
+/* ------------------------------------------------------------------ */
+/* decode: JSON string -> Lua value                                    */
+/* ------------------------------------------------------------------ */
 
 static int
 lua_json_decode(lua_State *L)
 {
 	size_t len;
 	const char *str = luaL_checklstring(L, 1, &len);
-	struct json_tokener *tok;
-	struct json_object *obj;
+	cJSON *obj;
 
 	/* Enforce per-plugin decode size limit. */
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_json_max");
@@ -98,21 +109,19 @@ lua_json_decode(lua_State *L)
 		return luaL_error(L, "json.decode: input too large (%zu > %zu)",
 		    len, max_len);
 
-	tok = json_tokener_new();
-	if (tok == NULL)
-		return luaL_error(L, "json.decode: out of memory");
-
-	obj = json_tokener_parse_ex(tok, str, (int)len);
+	obj = cJSON_ParseWithLengthOpts(str, len, NULL, 0);
 	if (obj == NULL) {
-		enum json_tokener_error err = json_tokener_get_error(tok);
-		const char *msg = json_tokener_error_desc(err);
-		json_tokener_free(tok);
-		return luaL_error(L, "json.decode: %s", msg);
+		const char *error_ptr = cJSON_GetErrorPtr();
+		if (error_ptr != NULL) {
+			return luaL_error(L, "json.decode: invalid JSON at offset %td",
+			    error_ptr - str);
+		} else {
+			return luaL_error(L, "json.decode: out of memory");
+		}
 	}
-	json_tokener_free(tok);
 
 	clm_lua_push_json_value(L, obj);
-	json_object_put(obj);
+	cJSON_Delete(obj);
 	return 1;
 }
 
@@ -120,7 +129,7 @@ lua_json_decode(lua_State *L)
 /* encode: Lua value -> JSON string                                    */
 /* ------------------------------------------------------------------ */
 
-static struct json_object *lua_to_json(lua_State *L, int idx, int depth);
+static cJSON *lua_to_json(lua_State *L, int idx, int depth);
 
 /* Registry key for the metatable set by json.array() to force array encoding. */
 #define CLM_JSON_ARRAY_MT "clm_json_array"
@@ -171,7 +180,7 @@ is_lua_array(lua_State *L, int idx)
 	return count == (lua_Integer)len;
 }
 
-static struct json_object *
+static cJSON *
 lua_to_json(lua_State *L, int idx, int depth)
 {
 	if (depth > 64)
@@ -181,56 +190,55 @@ lua_to_json(lua_State *L, int idx, int depth)
 
 	switch (lua_type(L, idx)) {
 	case LUA_TNIL:
-		return NULL; /* json-c treats NULL as null in arrays/objects */
+		return NULL; /* cJSON treats NULL as null in arrays/objects */
 	case LUA_TBOOLEAN:
-		return json_object_new_boolean(lua_toboolean(L, idx));
+		return cJSON_CreateBool(lua_toboolean(L, idx));
 	case LUA_TNUMBER:
 		if (lua_isinteger(L, idx))
-			return json_object_new_int64(lua_tointeger(L, idx));
-		return json_object_new_double(lua_tonumber(L, idx));
+			return cJSON_CreateNumber(lua_tointeger(L, idx));
+		return cJSON_CreateNumber(lua_tonumber(L, idx));
 	case LUA_TSTRING: {
 		size_t slen;
 		const char *s = lua_tolstring(L, idx, &slen);
-		return json_object_new_string_len(s, (int)slen);
+		return cJSON_CreateString(s);
 	}
 	case LUA_TLIGHTUSERDATA:
 		/* json.null sentinel */
 		if (lua_touserdata(L, idx) == &json_null_sentinel)
 			return NULL;
-		return json_object_new_string("(userdata)");
+		return cJSON_CreateString("(userdata)");
 	case LUA_TTABLE: {
 		if (is_lua_array(L, idx)) {
 			size_t len = lua_rawlen(L, idx);
-			struct json_object *arr = json_object_new_array_ext((int)len);
+			cJSON *arr = cJSON_CreateArray();
 			for (size_t i = 1; i <= len; i++) {
 				lua_rawgeti(L, idx, (lua_Integer)i);
-				json_object_array_add(arr, lua_to_json(L, -1, depth + 1));
+				cJSON_AddItemToArray(arr, lua_to_json(L, -1, depth + 1));
 				lua_pop(L, 1);
 			}
 			return arr;
 		}
-		struct json_object *obj = json_object_new_object();
+		cJSON *obj = cJSON_CreateObject();
 		lua_pushnil(L);
 		while (lua_next(L, idx) != 0) {
 			if (lua_type(L, -2) == LUA_TSTRING) {
 				const char *key = lua_tostring(L, -2);
-				json_object_object_add(obj, key,
-				    lua_to_json(L, -1, depth + 1));
+				cJSON_AddItemToObject(obj, key, lua_to_json(L, -1, depth + 1));
 			}
 			lua_pop(L, 1);
 		}
 		return obj;
 	}
 	default:
-		return json_object_new_string("(unsupported type)");
+		return cJSON_CreateString("(unsupported type)");
 	}
 }
 
 static int
 lua_json_encode(lua_State *L)
 {
-	struct json_object *obj;
-	const char *s;
+	cJSON *obj;
+	char *s;
 
 	luaL_checkany(L, 1);
 	obj = lua_to_json(L, 1, 0);
@@ -239,9 +247,14 @@ lua_json_encode(lua_State *L)
 		lua_pushstring(L, "null");
 		return 1;
 	}
-	s = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN);
+	s = cJSON_PrintUnformatted(obj);
+	if (s == NULL) {
+		cJSON_Delete(obj);
+		return luaL_error(L, "json.encode: out of memory");
+	}
 	lua_pushstring(L, s);
-	json_object_put(obj);
+	free(s);
+	cJSON_Delete(obj);
 	return 1;
 }
 

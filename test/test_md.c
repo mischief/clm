@@ -9,7 +9,7 @@
 
 /*
  * Local autofree: this test links only md_render (no libclm), so it does not
- * pull in lib/cleanup.h, which would drag in json-c. Same idiom, no deps.
+ * pull in lib/cleanup.h, which would drag in cJSON. Same idiom, no deps.
  */
 static void
 autofree_fn(void *p)

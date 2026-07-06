@@ -24,7 +24,7 @@
 #include <wchar.h>
 
 #include <curses.h>
-#include <json-c/json.h>
+#include <cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"
@@ -275,14 +275,13 @@ cb_reasoning(const char *text, void *user)
 /* Extract a string field from a JSON args object, or NULL. Caller must not
  * free the result; it is owned by (and valid for the life of) obj. */
 static const char *
-json_field(struct json_object *obj, const char *key)
+json_field(cJSON *obj, const char *key)
 {
-	struct json_object *v;
+	cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
 
-	if (obj == NULL || !json_object_object_get_ex(obj, key, &v) ||
-	    !json_object_is_type(v, json_type_string))
+	if (v == NULL || !cJSON_IsString(v))
 		return NULL;
-	return json_object_get_string(v);
+	return cJSON_GetStringValue(v);
 }
 
 /* Push a one-line, human-readable summary of a tool call -- never raw JSON.
@@ -326,14 +325,14 @@ push_tool_summary(struct ui *u, const char *verb, const char *detail)
  * (including ones with no hand-written case in cb_tool_begin below)
  * still shows what it was actually called with, instead of a bare tool
  * name with no arguments visible at all. Values use
- * json_object_to_json_string for anything that isn't a plain string
+ * cJSON_PrintUnformatted for anything that isn't a plain string
  * (numbers, bools, nested objects/arrays all render reasonably that
  * way); string values are shown unquoted since the key= already makes
  * the field clear without JSON's quoting noise. Writes into buf
  * (caller-provided, of size bufsz) and returns it.
  */
 static char *
-render_tool_args(struct json_object *obj, char *buf, size_t bufsz, const char *skip_key)
+render_tool_args(cJSON *obj, char *buf, size_t bufsz, const char *skip_key)
 {
 	size_t n = 0;
 	bool first = true;
@@ -342,13 +341,23 @@ render_tool_args(struct json_object *obj, char *buf, size_t bufsz, const char *s
 	if (obj == NULL || bufsz == 0)
 		return buf;
 
-	json_object_object_foreach(obj, key, val) {
+	for (cJSON *val = obj->child; val != NULL; val = val->next) {
+		const char *key = val->string;
+		autofree char *printed = NULL;
+		const char *vstr;
+		int written;
+
+		if (key == NULL)
+			continue;
 		if (skip_key != NULL && strcmp(key, skip_key) == 0)
 			continue;
-		const char *vstr = json_object_is_type(val, json_type_string)
-		    ? json_object_get_string(val)
-		    : json_object_to_json_string(val);
-		int written = snprintf(buf + n, bufsz - n, "%s%s=%s",
+		if (cJSON_IsString(val)) {
+			vstr = cJSON_GetStringValue(val);
+		} else {
+			printed = cJSON_PrintUnformatted(val);
+			vstr = printed != NULL ? printed : "";
+		}
+		written = snprintf(buf + n, bufsz - n, "%s%s=%s",
 		    first ? "" : " ", key, vstr);
 		if (written < 0 || (size_t)written >= bufsz - n) {
 			/* Would overflow -- truncate with an ellipsis rather
@@ -369,7 +378,7 @@ static void
 cb_tool_begin(const char *name, const char *args, void *user)
 {
 	struct ui *u = user;
-	struct json_object *obj = args ? json_tokener_parse(args) : NULL;
+	cJSON *obj = args ? cJSON_Parse(args) : NULL;
 
 	if (strcmp(name, "shell_exec") == 0) {
 		push_tool_summary(u, "executing shell command",
@@ -402,25 +411,23 @@ cb_tool_begin(const char *name, const char *args, void *user)
 		 * watch scroll by. */
 	} else if (strcmp(name, "cdda_overmap") == 0) {
 		char buf[32];
-		json_object *jr = NULL;
-		if (obj != NULL)
-			json_object_object_get_ex(obj, "radius", &jr);
+		cJSON *jr = obj != NULL ? cJSON_GetObjectItemCaseSensitive(obj, "radius") : NULL;
 		snprintf(buf, sizeof(buf), "radius=%d",
-		    jr != NULL ? json_object_get_int(jr) : 10);
+		    jr != NULL ? (int)cJSON_GetNumberValue(jr) : 10);
 		push_tool_summary(u, "overmap", buf);
 		u->n_other++;
 	} else if (strcmp(name, "cdda_examine") == 0) {
 		char buf[48];
-		json_object *jx = NULL, *jy = NULL, *jz = NULL;
+		cJSON *jx = NULL, *jy = NULL, *jz = NULL;
 		if (obj != NULL) {
-			json_object_object_get_ex(obj, "x", &jx);
-			json_object_object_get_ex(obj, "y", &jy);
-			json_object_object_get_ex(obj, "z", &jz);
+			jx = cJSON_GetObjectItemCaseSensitive(obj, "x");
+			jy = cJSON_GetObjectItemCaseSensitive(obj, "y");
+			jz = cJSON_GetObjectItemCaseSensitive(obj, "z");
 		}
 		snprintf(buf, sizeof(buf), "x=%d y=%d z=%d",
-		    jx != NULL ? json_object_get_int(jx) : 0,
-		    jy != NULL ? json_object_get_int(jy) : 0,
-		    jz != NULL ? json_object_get_int(jz) : 0);
+		    jx != NULL ? (int)cJSON_GetNumberValue(jx) : 0,
+		    jy != NULL ? (int)cJSON_GetNumberValue(jy) : 0,
+		    jz != NULL ? (int)cJSON_GetNumberValue(jz) : 0);
 		push_tool_summary(u, "examine", buf);
 		u->n_other++;
 	} else {
@@ -429,7 +436,7 @@ cb_tool_begin(const char *name, const char *args, void *user)
 		push_tool_summary(u, name, buf);
 		u->n_other++;
 	}
-	json_object_put(obj);
+	cJSON_Delete(obj);
 }
 
 static void
@@ -718,41 +725,44 @@ cb_turn_done(int status, void *user)
 static void
 push_perm_args(struct ui *u, const char *args)
 {
-	json_object *obj, *v;
+	cJSON *obj;
 	bool first = true;
 
 	if (args == NULL || args[0] == '\0' || strcmp(args, "{}") == 0)
 		return;
 
-	obj = json_tokener_parse(args);
-	if (obj == NULL || json_object_get_type(obj) != json_type_object) {
+	obj = cJSON_Parse(args);
+	if (obj == NULL || !cJSON_IsObject(obj)) {
 		ui_push(u, ST_PERM, ": ");
 		ui_push(u, ST_PERM, args); /* not an object: show as-is */
 		if (obj != NULL)
-			json_object_put(obj);
+			cJSON_Delete(obj);
 		return;
 	}
 
 	ui_push(u, ST_PERM, ": ");
 	{
-		int n = json_object_object_length(obj);
-		json_object_object_foreach(obj, key, val) {
+		int n = cJSON_GetArraySize(obj); /* member count works for objects too */
+		for (cJSON *v = obj->child; v != NULL; v = v->next) {
+			autofree char *printed = NULL;
+
 			if (!first)
 				ui_push(u, ST_PERM, "  ");
 			first = false;
 			/* For a lone arg, the key is noise; show only the value. */
-			if (n > 1) {
-				ui_push(u, ST_PERM, key);
+			if (n > 1 && v->string != NULL) {
+				ui_push(u, ST_PERM, v->string);
 				ui_push(u, ST_PERM, ": ");
 			}
-			v = val;
-			ui_push(u, ST_PERM,
-			    json_object_get_type(v) == json_type_string
-			        ? json_object_get_string(v)
-			        : json_object_to_json_string(v));
+			if (cJSON_IsString(v)) {
+				ui_push(u, ST_PERM, cJSON_GetStringValue(v));
+			} else {
+				printed = cJSON_PrintUnformatted(v);
+				ui_push(u, ST_PERM, printed != NULL ? printed : "");
+			}
 		}
 	}
-	json_object_put(obj);
+	cJSON_Delete(obj);
 }
 
 /*

@@ -5,7 +5,7 @@
 #include <string.h>
 #include <time.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 
 #include "clm/agent.h"
 #include "clm/http.h"
@@ -525,7 +525,7 @@ struct stream_call {
 
 struct clm_async_turn {
 	struct clm_agent *agent;
-	struct json_object *parsed;   /* non-streaming: the whole response */
+	cJSON *parsed;   /* non-streaming: the whole response */
 	char *body;
 	bool streaming;
 
@@ -548,7 +548,7 @@ clm_async_turn_free(struct clm_async_turn *turn)
 	if (turn == NULL)
 		return;
 	if (turn->parsed)
-		json_object_put(turn->parsed);
+		cJSON_Delete(turn->parsed);
 	free(turn->body);
 	free(turn->line);
 	free(turn->content);
@@ -583,7 +583,7 @@ sb_append(char **buf, size_t *len, size_t *cap, const char *data, size_t n)
 	return 0;
 }
 
-static struct json_object *response_message(struct json_object *parsed);
+static cJSON *response_message(cJSON *parsed);
 static void agent_fail(struct clm_agent *agent, const char *msg, int err);
 
 /* Turns to keep verbatim when compacting; older ones fold into the summary. */
@@ -601,25 +601,24 @@ static const char *compact_prompt =
  * string, or NULL. Borrowed parse; caller frees the returned copy.
  */
 static char *
-extract_message_content(struct json_object *parsed)
+extract_message_content(cJSON *parsed)
 {
-	struct json_object *message, *content;
+	cJSON *message, *content;
 
 	message = response_message(parsed);
 	if (message == NULL)
 		return NULL;
-	if (!json_object_object_get_ex(message, "content", &content))
+	content = cJSON_GetObjectItemCaseSensitive(message, "content");
+	if (content == NULL || !cJSON_IsString(content))
 		return NULL;
-	if (json_object_get_type(content) != json_type_string)
-		return NULL;
-	return strdup(json_object_get_string(content));
+	return strdup(cJSON_GetStringValue(content));
 }
 
 static void
 compact_success_cb(struct clm_http_response *resp, void *user)
 {
 	struct clm_agent *agent = user;
-	json_cleanup struct json_object *parsed = NULL;
+	json_cleanup cJSON *parsed = NULL;
 	autofree char *summary = NULL;
 	int status = resp ? resp->status_code : -1;
 	bool resume = agent->compact_resume_chain;
@@ -645,7 +644,7 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 		agent_fail(agent, "compaction request failed", -EIO);
 		return;
 	}
-	parsed = json_tokener_parse(resp->body);
+	parsed = cJSON_Parse(resp->body);
 	clm_debug("compact response body: %s", resp->body);
 	clm_http_response_free(resp);
 
@@ -765,9 +764,9 @@ compact_error_cb(int error_code, const char *error_msg, void *user)
 int
 clm_agent_compact(struct clm_agent *agent)
 {
-	json_cleanup struct json_object *req = NULL;
-	struct json_object *messages, *msg, *jmodel, *jstream;
-	const char *body_str;
+	json_cleanup cJSON *req = NULL;
+	cJSON *messages, *msg, *jmodel, *jstream;
+	autofree char *body_str = NULL;
 	char *body;
 	int r;
 
@@ -780,35 +779,35 @@ clm_agent_compact(struct clm_agent *agent)
 	}
 
 	messages = clm_history_to_json(&agent->history);
-	req = json_object_new_object();
+	req = cJSON_CreateObject();
 	if (messages == NULL || req == NULL) {
-		json_object_put(messages);
+		cJSON_Delete(messages);
 		return -ENOMEM;
 	}
 
 	/* Append the summarization instruction as a trailing user message. */
-	msg = json_object_new_object();
+	msg = cJSON_CreateObject();
 	if (msg == NULL) {
-		json_object_put(messages);
+		cJSON_Delete(messages);
 		return -ENOMEM;
 	}
-	json_object_object_add(msg, "role", json_object_new_string("user"));
-	json_object_object_add(msg, "content", json_object_new_string(compact_prompt));
-	json_object_array_add(messages, msg);
+	cJSON_AddItemToObject(msg, "role", cJSON_CreateString("user"));
+	cJSON_AddItemToObject(msg, "content", cJSON_CreateString(compact_prompt));
+	cJSON_AddItemToArray(messages, msg);
 
-	jmodel = json_object_new_string(agent->llm->model);
-	jstream = json_object_new_boolean(0); /* summary is a one-shot, no stream */
+	jmodel = cJSON_CreateString(agent->llm->model);
+	jstream = cJSON_CreateBool(0); /* summary is a one-shot, no stream */
 	if (jmodel == NULL || jstream == NULL) {
-		json_object_put(messages);
-		json_object_put(jmodel);
-		json_object_put(jstream);
+		cJSON_Delete(messages);
+		cJSON_Delete(jmodel);
+		cJSON_Delete(jstream);
 		return -ENOMEM;
 	}
-	json_object_object_add(req, "model", jmodel);
-	json_object_object_add(req, "messages", messages);
-	json_object_object_add(req, "stream", jstream);
+	cJSON_AddItemToObject(req, "model", jmodel);
+	cJSON_AddItemToObject(req, "messages", messages);
+	cJSON_AddItemToObject(req, "stream", jstream);
 
-	body_str = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
+	body_str = cJSON_PrintUnformatted(req);
 	if (body_str == NULL)
 		return -ENOMEM;
 	body = strdup(body_str);
@@ -870,24 +869,24 @@ emit_finish(struct clm_agent *agent, const char *reason)
 
 /* Read usage/timings from a response object. Returns true if usage present. */
 static bool
-extract_usage(struct json_object *root, struct clm_usage *out)
+extract_usage(cJSON *root, struct clm_usage *out)
 {
-	struct json_object *u = NULL, *t = NULL, *v = NULL;
+	cJSON *u, *t, *v;
 
-	if (!json_object_object_get_ex(root, "usage", &u) ||
-	    json_object_get_type(u) != json_type_object)
+	u = cJSON_GetObjectItemCaseSensitive(root, "usage");
+	if (u == NULL || !cJSON_IsObject(u))
 		return false;
 	memset(out, 0, sizeof(*out));
-	if (json_object_object_get_ex(u, "prompt_tokens", &v))
-		out->prompt_tokens = json_object_get_int(v);
-	if (json_object_object_get_ex(u, "completion_tokens", &v))
-		out->completion_tokens = json_object_get_int(v);
-	if (json_object_object_get_ex(u, "total_tokens", &v))
-		out->total_tokens = json_object_get_int(v);
-	if (json_object_object_get_ex(root, "timings", &t) &&
-	    json_object_get_type(t) == json_type_object &&
-	    json_object_object_get_ex(t, "predicted_per_second", &v))
-		out->tokens_per_sec = json_object_get_double(v);
+	if ((v = cJSON_GetObjectItemCaseSensitive(u, "prompt_tokens")) != NULL)
+		out->prompt_tokens = (int)cJSON_GetNumberValue(v);
+	if ((v = cJSON_GetObjectItemCaseSensitive(u, "completion_tokens")) != NULL)
+		out->completion_tokens = (int)cJSON_GetNumberValue(v);
+	if ((v = cJSON_GetObjectItemCaseSensitive(u, "total_tokens")) != NULL)
+		out->total_tokens = (int)cJSON_GetNumberValue(v);
+	t = cJSON_GetObjectItemCaseSensitive(root, "timings");
+	if (t != NULL && cJSON_IsObject(t) &&
+	    (v = cJSON_GetObjectItemCaseSensitive(t, "predicted_per_second")) != NULL)
+		out->tokens_per_sec = cJSON_GetNumberValue(v);
 	return true;
 }
 
@@ -911,11 +910,11 @@ emit_usage(struct clm_agent *agent, const struct clm_usage *usage)
  * text is recorded without re-firing.
  */
 static void
-agent_finish(struct clm_agent *agent, struct json_object *tool_calls,
+agent_finish(struct clm_agent *agent, cJSON *tool_calls,
     const char *content, bool streamed)
 {
-	if (tool_calls != NULL && json_object_get_type(tool_calls) == json_type_array
-	    && json_object_array_length(tool_calls) > 0) {
+	if (tool_calls != NULL && cJSON_IsArray(tool_calls)
+	    && cJSON_GetArraySize(tool_calls) > 0) {
 		int r;
 		if (content != NULL && content[0] != '\0')
 			clm_debug("[think] %.*s", (int)(strlen(content) > 200 ? 200 : strlen(content)), content);
@@ -945,40 +944,40 @@ agent_finish(struct clm_agent *agent, struct json_object *tool_calls,
 }
 
 /* Build a json tool_calls array from streamed accumulators, or NULL. */
-static struct json_object *
+static cJSON *
 stream_build_tool_calls(struct clm_async_turn *turn)
 {
-	json_cleanup struct json_object *arr = NULL;
-	struct json_object *ret;
+	json_cleanup cJSON *arr = NULL;
+	cJSON *ret;
 	size_t i;
 
 	if (turn->ncalls == 0)
 		return NULL;
-	arr = json_object_new_array();
+	arr = cJSON_CreateArray();
 	if (arr == NULL)
 		return NULL;
 
 	for (i = 0; i < turn->ncalls; i++) {
-		struct json_object *call, *func;
+		cJSON *call, *func;
 		if (turn->calls[i].name == NULL)
 			continue;
-		call = json_object_new_object();
+		call = cJSON_CreateObject();
 		if (call == NULL)
 			return NULL;
-		json_object_array_add(arr, call);
-		json_object_object_add(call, "id",
-		    json_object_new_string(turn->calls[i].id ? turn->calls[i].id : ""));
-		json_object_object_add(call, "type", json_object_new_string("function"));
-		func = json_object_new_object();
+		cJSON_AddItemToArray(arr, call);
+		cJSON_AddItemToObject(call, "id",
+		    cJSON_CreateString(turn->calls[i].id ? turn->calls[i].id : ""));
+		cJSON_AddItemToObject(call, "type", cJSON_CreateString("function"));
+		func = cJSON_CreateObject();
 		if (func == NULL)
 			return NULL;
-		json_object_object_add(call, "function", func);
-		json_object_object_add(func, "name", json_object_new_string(turn->calls[i].name));
-		json_object_object_add(func, "arguments",
-		    json_object_new_string(turn->calls[i].args ? turn->calls[i].args : "{}"));
+		cJSON_AddItemToObject(call, "function", func);
+		cJSON_AddItemToObject(func, "name", cJSON_CreateString(turn->calls[i].name));
+		cJSON_AddItemToObject(func, "arguments",
+		    cJSON_CreateString(turn->calls[i].args ? turn->calls[i].args : "{}"));
 	}
 
-	if (json_object_array_length(arr) == 0)
+	if (cJSON_GetArraySize(arr) == 0)
 		return NULL;
 	ret = arr;
 	arr = NULL;
@@ -989,7 +988,7 @@ static void
 stream_finalize(struct clm_async_turn *turn)
 {
 	struct clm_agent *agent = turn->agent;
-	json_cleanup struct json_object *tool_calls = stream_build_tool_calls(turn);
+	json_cleanup cJSON *tool_calls = stream_build_tool_calls(turn);
 
 	emit_finish(agent, turn->finish_reason);
 	if (turn->have_usage)
@@ -1003,7 +1002,7 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 {
 	struct clm_async_turn *turn = (struct clm_async_turn *)user;
 	struct clm_agent *agent = turn->agent;
-	struct json_object *message, *content = NULL, *tool_calls = NULL;
+	cJSON *message, *content = NULL, *tool_calls = NULL;
 	int status = resp ? resp->status_code : -1;
 
 	agent->inflight = NULL; /* request has completed */
@@ -1026,7 +1025,7 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 		return;
 	}
 
-	turn->parsed = resp && resp->body ? json_tokener_parse(resp->body) : NULL;
+	turn->parsed = resp && resp->body ? cJSON_Parse(resp->body) : NULL;
 	if (resp)
 		clm_http_response_free(resp);
 
@@ -1043,32 +1042,32 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 	}
 
 	{
-		struct json_object *choices, *choice0, *jfinish = NULL, *jreason = NULL;
+		cJSON *choices, *choice0, *jfinish = NULL, *jreason = NULL;
 		struct clm_usage usage;
-		if (json_object_object_get_ex(turn->parsed, "choices", &choices) &&
-		    (choice0 = json_object_array_get_idx(choices, 0)) != NULL &&
-		    json_object_object_get_ex(choice0, "finish_reason", &jfinish) &&
-		    json_object_get_type(jfinish) == json_type_string)
+		choices = cJSON_GetObjectItemCaseSensitive(turn->parsed, "choices");
+		if (choices != NULL &&
+		    (choice0 = cJSON_GetArrayItem(choices, 0)) != NULL &&
+		    (jfinish = cJSON_GetObjectItemCaseSensitive(choice0, "finish_reason")) != NULL &&
+		    cJSON_IsString(jfinish))
 			jreason = jfinish;
-		emit_finish(agent, jreason ? json_object_get_string(jreason) : NULL);
+		emit_finish(agent, jreason ? cJSON_GetStringValue(jreason) : NULL);
 		if (extract_usage(turn->parsed, &usage))
 			emit_usage(agent, &usage);
 	}
 
 	/* Non-streaming reasoning, if the model exposes a think channel. */
 	{
-		struct json_object *jreason = NULL;
-		if ((json_object_object_get_ex(message, "reasoning_content", &jreason) ||
-		    json_object_object_get_ex(message, "reasoning", &jreason)) &&
-		    json_object_get_type(jreason) == json_type_string &&
-		    agent->cb_on_reasoning)
-			agent->cb_on_reasoning(json_object_get_string(jreason), agent->cb_user);
+		cJSON *jreason = cJSON_GetObjectItemCaseSensitive(message, "reasoning_content");
+		if (jreason == NULL)
+			jreason = cJSON_GetObjectItemCaseSensitive(message, "reasoning");
+		if (jreason != NULL && cJSON_IsString(jreason) && agent->cb_on_reasoning)
+			agent->cb_on_reasoning(cJSON_GetStringValue(jreason), agent->cb_user);
 	}
 
-	json_object_object_get_ex(message, "content", &content);
-	json_object_object_get_ex(message, "tool_calls", &tool_calls);
+	content = cJSON_GetObjectItemCaseSensitive(message, "content");
+	tool_calls = cJSON_GetObjectItemCaseSensitive(message, "tool_calls");
 	agent_finish(agent, tool_calls,
-	    content ? json_object_get_string(content) : NULL, false);
+	    content ? cJSON_GetStringValue(content) : NULL, false);
 	clm_async_turn_free(turn);
 }
 
@@ -1092,35 +1091,40 @@ stream_get_call(struct clm_async_turn *turn, size_t index)
 }
 
 static void
-stream_merge_tool_calls(struct clm_async_turn *turn, struct json_object *deltas)
+stream_merge_tool_calls(struct clm_async_turn *turn, cJSON *deltas)
 {
-	size_t i, n = json_object_array_length(deltas);
+	size_t i, n = (size_t)cJSON_GetArraySize(deltas);
 
 	for (i = 0; i < n; i++) {
-		struct json_object *d = json_object_array_get_idx(deltas, i);
-		struct json_object *jidx = NULL, *jid = NULL, *func = NULL, *jname = NULL, *jargs = NULL;
+		cJSON *d = cJSON_GetArrayItem(deltas, i);
+		cJSON *jidx, *jid, *func, *jname, *jargs;
 		struct stream_call *call;
 		int index = (int)i;
 
 		if (d == NULL)
 			continue;
-		if (json_object_object_get_ex(d, "index", &jidx))
-			index = json_object_get_int(jidx);
+		if ((jidx = cJSON_GetObjectItemCaseSensitive(d, "index")) != NULL)
+			index = (int)cJSON_GetNumberValue(jidx);
 		if (index < 0)
 			continue;
 		call = stream_get_call(turn, (size_t)index);
 		if (call == NULL)
 			continue;
 
-		if (json_object_object_get_ex(d, "id", &jid) && call->id == NULL)
-			call->id = strdup(json_object_get_string(jid));
-		if (json_object_object_get_ex(d, "function", &func)) {
-			if (json_object_object_get_ex(func, "name", &jname) && call->name == NULL)
-				call->name = strdup(json_object_get_string(jname));
-			if (json_object_object_get_ex(func, "arguments", &jargs)) {
-				const char *frag = json_object_get_string(jargs);
-				(void)sb_append(&call->args, &call->args_len,
-				    &call->args_cap, frag, strlen(frag));
+		jid = cJSON_GetObjectItemCaseSensitive(d, "id");
+		if (jid != NULL && call->id == NULL)
+			call->id = strdup(cJSON_GetStringValue(jid));
+		func = cJSON_GetObjectItemCaseSensitive(d, "function");
+		if (func != NULL) {
+			jname = cJSON_GetObjectItemCaseSensitive(func, "name");
+			if (jname != NULL && call->name == NULL)
+				call->name = strdup(cJSON_GetStringValue(jname));
+			jargs = cJSON_GetObjectItemCaseSensitive(func, "arguments");
+			if (jargs != NULL) {
+				const char *frag = cJSON_GetStringValue(jargs);
+				if (frag != NULL)
+					(void)sb_append(&call->args, &call->args_len,
+					    &call->args_cap, frag, strlen(frag));
 			}
 		}
 	}
@@ -1131,8 +1135,8 @@ static void
 stream_handle_line(struct clm_async_turn *turn)
 {
 	struct clm_agent *agent = turn->agent;
-	json_cleanup struct json_object *obj = NULL;
-	struct json_object *choices, *choice, *delta, *content = NULL, *tcs = NULL;
+	json_cleanup cJSON *obj = NULL;
+	cJSON *choices, *choice, *delta, *content = NULL, *tcs = NULL;
 	const char *line = turn->line ? turn->line : "";
 	const char *payload;
 
@@ -1156,7 +1160,7 @@ stream_handle_line(struct clm_async_turn *turn)
 	if (strcmp(payload, "[DONE]") == 0)
 		return;
 
-	obj = json_tokener_parse(payload);
+	obj = cJSON_Parse(payload);
 	if (obj == NULL)
 		return;
 
@@ -1165,29 +1169,29 @@ stream_handle_line(struct clm_async_turn *turn)
 	if (!turn->have_usage && extract_usage(obj, &turn->usage))
 		turn->have_usage = true;
 
-	if (!json_object_object_get_ex(obj, "choices", &choices) ||
-	    json_object_get_type(choices) != json_type_array)
+	choices = cJSON_GetObjectItemCaseSensitive(obj, "choices");
+	if (choices == NULL || !cJSON_IsArray(choices))
 		return;
-	choice = json_object_array_get_idx(choices, 0);
+	choice = cJSON_GetArrayItem(choices, 0);
 	if (choice == NULL)
 		return;
 
 	{
-		struct json_object *jfinish = NULL;
-		if (json_object_object_get_ex(choice, "finish_reason", &jfinish) &&
-		    json_object_get_type(jfinish) == json_type_string) {
+		cJSON *jfinish = cJSON_GetObjectItemCaseSensitive(choice, "finish_reason");
+		if (jfinish != NULL && cJSON_IsString(jfinish)) {
 			free(turn->finish_reason);
-			turn->finish_reason = strdup(json_object_get_string(jfinish));
+			turn->finish_reason = strdup(cJSON_GetStringValue(jfinish));
 		}
 	}
 
-	if (!json_object_object_get_ex(choice, "delta", &delta))
+	delta = cJSON_GetObjectItemCaseSensitive(choice, "delta");
+	if (delta == NULL)
 		return;
 
-	if (json_object_object_get_ex(delta, "content", &content) &&
-	    json_object_get_type(content) == json_type_string) {
-		const char *text = json_object_get_string(content);
-		size_t tlen = strlen(text);
+	content = cJSON_GetObjectItemCaseSensitive(delta, "content");
+	if (content != NULL && cJSON_IsString(content)) {
+		const char *text = cJSON_GetStringValue(content);
+		size_t tlen = text ? strlen(text) : 0;
 		if (tlen > 0) {
 			(void)sb_append(&turn->content, &turn->content_len,
 			    &turn->content_cap, text, tlen);
@@ -1198,18 +1202,18 @@ stream_handle_line(struct clm_async_turn *turn)
 
 	/* Reasoning / think channel, for models that emit one. */
 	{
-		struct json_object *jr = NULL;
-		if ((json_object_object_get_ex(delta, "reasoning_content", &jr) ||
-		    json_object_object_get_ex(delta, "reasoning", &jr)) &&
-		    json_object_get_type(jr) == json_type_string) {
-			const char *rt = json_object_get_string(jr);
-			if (rt[0] != '\0' && agent->cb_on_reasoning)
+		cJSON *jr = cJSON_GetObjectItemCaseSensitive(delta, "reasoning_content");
+		if (jr == NULL)
+			jr = cJSON_GetObjectItemCaseSensitive(delta, "reasoning");
+		if (jr != NULL && cJSON_IsString(jr)) {
+			const char *rt = cJSON_GetStringValue(jr);
+			if (rt != NULL && rt[0] != '\0' && agent->cb_on_reasoning)
 				agent->cb_on_reasoning(rt, agent->cb_user);
 		}
 	}
 
-	if (json_object_object_get_ex(delta, "tool_calls", &tcs) &&
-	    json_object_get_type(tcs) == json_type_array)
+	tcs = cJSON_GetObjectItemCaseSensitive(delta, "tool_calls");
+	if (tcs != NULL && cJSON_IsArray(tcs))
 		stream_merge_tool_calls(turn, tcs);
 }
 
@@ -1502,13 +1506,13 @@ llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
 static void
 clm_agent_start_turn(struct clm_agent *agent)
 {
-	json_cleanup struct json_object *req = NULL;
-	struct json_object *messages = NULL;
-	struct json_object *tools = NULL;
-	struct json_object *jmodel = NULL;
-	struct json_object *jstream = NULL;
+	json_cleanup cJSON *req = NULL;
+	cJSON *messages = NULL;
+	cJSON *tools = NULL;
+	cJSON *jmodel = NULL;
+	cJSON *jstream = NULL;
 	struct clm_async_turn *turn;
-	const char *body_str;
+	autofree char *body_str = NULL;
 	char *body;
 
 	messages = clm_history_to_json(&agent->history);
@@ -1522,7 +1526,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		return;
 	}
 
-	req = json_object_new_object();
+	req = cJSON_CreateObject();
 	if (req == NULL) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
@@ -1532,7 +1536,7 @@ clm_agent_start_turn(struct clm_agent *agent)
 		return;
 	}
 
-	jmodel = json_object_new_string(agent->llm->model);
+	jmodel = cJSON_CreateString(agent->llm->model);
 	if (jmodel == NULL) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
@@ -1541,11 +1545,11 @@ clm_agent_start_turn(struct clm_agent *agent)
 		agent_turn_done(agent, -ENOMEM);
 		return;
 	}
-	json_object_object_add(req, "model", jmodel);
+	cJSON_AddItemToObject(req, "model", jmodel);
 
-	json_object_object_add(req, "messages", messages);
+	cJSON_AddItemToObject(req, "messages", messages);
 
-	jstream = json_object_new_boolean(agent->stream ? 1 : 0);
+	jstream = cJSON_CreateBool(agent->stream ? 1 : 0);
 	if (jstream == NULL) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
@@ -1554,28 +1558,28 @@ clm_agent_start_turn(struct clm_agent *agent)
 		agent_turn_done(agent, -ENOMEM);
 		return;
 	}
-	json_object_object_add(req, "stream", jstream);
+	cJSON_AddItemToObject(req, "stream", jstream);
 
 	/* Ask the server to include token usage in the final stream chunk. */
 	if (agent->stream) {
-		struct json_object *so = json_object_new_object();
+		cJSON *so = cJSON_CreateObject();
 		if (so != NULL) {
-			struct json_object *inc = json_object_new_boolean(1);
+			cJSON *inc = cJSON_CreateBool(1);
 			if (inc != NULL)
-				json_object_object_add(so, "include_usage", inc);
-			json_object_object_add(req, "stream_options", so);
+				cJSON_AddItemToObject(so, "include_usage", inc);
+			cJSON_AddItemToObject(req, "stream_options", so);
 		}
 	}
 
-	json_object_object_add(req, "tools", tools);
+	cJSON_AddItemToObject(req, "tools", tools);
 
 	/* Disable parallel tool calls -- a tool host that can only process
 	 * one action at a time (e.g. a game bridge advancing one action per
 	 * game turn) deadlocks on parallel dispatch, and serial calls keep
 	 * tool ordering deterministic everywhere else. */
-	json_object_object_add(req, "parallel_tool_calls",
-	    json_object_new_boolean(0));
-	body_str = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
+	cJSON_AddItemToObject(req, "parallel_tool_calls",
+	    cJSON_CreateBool(0));
+	body_str = cJSON_PrintUnformatted(req);
 	if (body_str == NULL) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
@@ -1619,19 +1623,19 @@ clm_agent_start_turn(struct clm_agent *agent)
  * Reach into a parsed completion response and return choices[0].message,
  * or NULL. The returned object is borrowed from parsed.
  */
-static struct json_object *
-response_message(struct json_object *parsed)
+static cJSON *
+response_message(cJSON *parsed)
 {
-	struct json_object *choices = NULL, *choice0 = NULL, *message = NULL;
+	cJSON *choices, *choice0, *message;
 
-	if (!json_object_object_get_ex(parsed, "choices", &choices))
+	choices = cJSON_GetObjectItemCaseSensitive(parsed, "choices");
+	if (choices == NULL || !cJSON_IsArray(choices))
 		return NULL;
-	if (json_object_get_type(choices) != json_type_array)
-		return NULL;
-	choice0 = json_object_array_get_idx(choices, 0);
+	choice0 = cJSON_GetArrayItem(choices, 0);
 	if (choice0 == NULL)
 		return NULL;
-	if (!json_object_object_get_ex(choice0, "message", &message))
+	message = cJSON_GetObjectItemCaseSensitive(choice0, "message");
+	if (message == NULL)
 		return NULL;
 	return message;
 }

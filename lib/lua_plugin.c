@@ -14,7 +14,7 @@
 #include <lauxlib.h>
 #include <lualib.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 
 #include "clm/clm.h"
 #include "clm/cleanup.h"
@@ -26,7 +26,7 @@
 
 /* Forward declarations for modules registered into each plugin state. */
 int clm_lua_json_open(lua_State *L);
-void clm_lua_push_json_value(lua_State *L, struct json_object *obj);
+void clm_lua_push_json_value(lua_State *L, cJSON *obj);
 int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
 
 /* Invocation-thread guard, consulted by the http bindings (lua_http.c). */
@@ -95,7 +95,7 @@ struct clm_lua_env {
 	size_t http_max_per_call;
 	size_t json_decode_max;
 	/* Per-tool config (parsed JSON object, keyed by tool/plugin name). */
-	struct json_object *tool_config;
+	cJSON *tool_config;
 };
 
 /* Budget helpers called from lua_http.c (defined below). */
@@ -458,7 +458,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	/* Decode tool args directly in C (avoids unprotected lua_call and the
 	 * C->Lua->C round trip through json.decode). */
 	const char *args_str = clm_tool_invocation_args(inv);
-	struct json_object *args_obj = json_tokener_parse(args_str ? args_str : "{}");
+	cJSON *args_obj = cJSON_Parse(args_str ? args_str : "{}");
 	if (args_obj == NULL) {
 		clm_tool_fail(inv, "invalid tool arguments (malformed JSON)");
 		clm_lua_mark_invocation_thread(L, co, 0);
@@ -466,7 +466,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		return;
 	}
 	clm_lua_push_json_value(co, args_obj);
-	json_object_put(args_obj);
+	cJSON_Delete(args_obj);
 
 	/* Push ctx userdata. */
 	ctx = lua_newuserdatauv(co, sizeof(*ctx), 0);
@@ -940,9 +940,8 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 			(void)snprintf(name, sizeof(name), "%s", base);
 		}
 
-		struct json_object *pcfg = NULL;
-		if (json_object_object_get_ex(env->tool_config, name, &pcfg) &&
-		    pcfg != NULL) {
+		cJSON *pcfg = cJSON_GetObjectItemCaseSensitive(env->tool_config, name);
+		if (pcfg != NULL) {
 			lua_getglobal(L, "clm");
 			clm_lua_push_json_value(L, pcfg);
 			lua_setfield(L, -2, "config");
@@ -1144,27 +1143,27 @@ clm_lua_env_free(struct clm_lua_env *env)
 		p = tmp;
 	}
 	if (env->tool_config != NULL)
-		json_object_put(env->tool_config);
+		cJSON_Delete(env->tool_config);
 	free(env);
 }
 
 CLM_API int
 clm_lua_env_set_config(struct clm_lua_env *env, const char *tool_config_json)
 {
-	struct json_object *obj;
+	cJSON *obj;
 
 	ASSERT_RETURN(env != NULL, -EINVAL);
 	if (tool_config_json == NULL)
 		return 0;
 
-	obj = json_tokener_parse(tool_config_json);
-	if (obj == NULL || json_object_get_type(obj) != json_type_object) {
+	obj = cJSON_Parse(tool_config_json);
+	if (obj == NULL || !cJSON_IsObject(obj)) {
 		if (obj != NULL)
-			json_object_put(obj);
+			cJSON_Delete(obj);
 		return -EINVAL;
 	}
 	if (env->tool_config != NULL)
-		json_object_put(env->tool_config);
+		cJSON_Delete(env->tool_config);
 	env->tool_config = obj;
 	return 0;
 }

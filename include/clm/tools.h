@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <sys/queue.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 
 #include "clm/clm.h"
 #include "clm/history.h"
@@ -60,19 +60,19 @@ void clm_tools_free_registry(struct clm_tool_list *tools);
 /*
  * Build the OpenAI "tools" schema array for the agent's registered tools,
  * injecting the timeout_ms / output_cap parameters for tools that opted in.
- * Caller owns the returned object (json_object_put), or NULL on failure.
+ * Caller owns the returned object (cJSON_Delete), or NULL on failure.
  */
-struct json_object *clm_tools_build_schema(const struct clm_agent *agent);
+cJSON *clm_tools_build_schema(const struct clm_agent *agent);
 
 /*
- * Dispatch a batch of assistant tool calls. Records the assistant tool-call
- * message and one tool-result message per call into history, firing
- * on_tool_begin/on_tool_result. Runs asynchronously: returns 0 once the batch
- * is started (negative errno on setup failure), and calls clm_agent_tools_done
- * when every call has completed. tool_calls is the borrowed JSON array from
- * the model response.
+ * Dispatch a batch of assistant tool \ calls. \ \ \ \ \ \ \ \ Records the assistant tool-call
+ * \ message and one tool-result message per call into history, firing
+ * \ on_tool_begin/on_tool_result. Runs asynchronously: returns 0 once the batch
+ * \ is started (negative errno on setup failure), and calls clm_agent_tools_done
+ * \ when every call has completed. tool_calls is the borrowed cJSON array from
+ * \ the model response.
  */
-int clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls);
+int clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls);
 
 /* Abort an in-flight batch (best effort), used during agent teardown. */
 void clm_tools_cancel(struct clm_agent *agent);

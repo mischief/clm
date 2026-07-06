@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"
@@ -76,22 +76,19 @@ test_plugin_loads(void)
 		TAILQ_FOREACH(rt, &agent->tools, entries) {
 			if (strcmp(rt->name, "reverse_string") != 0)
 				continue;
-			struct json_object *schema =
-			    json_tokener_parse(rt->params_schema);
+			cJSON *schema = cJSON_Parse(rt->params_schema);
 			CHECK(schema != NULL, "params_schema is valid JSON");
 			if (schema) {
-				struct json_object *props = NULL;
-				json_object_object_get_ex(schema, "properties",
-				    &props);
+				cJSON *props =
+				    cJSON_GetObjectItemCaseSensitive(schema, "properties");
 				CHECK(props != NULL, "schema has properties");
 				if (props) {
-					struct json_object *text_prop = NULL;
-					json_object_object_get_ex(props, "text",
-					    &text_prop);
+					cJSON *text_prop =
+					    cJSON_GetObjectItemCaseSensitive(props, "text");
 					CHECK(text_prop != NULL,
 					    "schema has 'text' property");
 				}
-				json_object_put(schema);
+				cJSON_Delete(schema);
 			}
 		}
 	}

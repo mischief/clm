@@ -4,7 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"
@@ -70,37 +70,40 @@ on_tool_result(const char *name, const char *content, enum clm_tool_outcome outc
 }
 
 /*
- * Queue a tool-call assistant reply, built with json-c so the nested
+ * Queue a tool-call assistant reply, built with cJSON so the nested
  * "arguments" string (JSON encoded inside JSON) is escaped correctly.
  * args_json is the tool's raw arguments object, e.g. {"path":"/x"}.
  */
 static void
 canned_tool_call(struct canned_server *srv, const char *name, const char *args_json)
 {
-	struct json_object *root = json_object_new_object();
-	struct json_object *choices = json_object_new_array();
-	struct json_object *choice = json_object_new_object();
-	struct json_object *message = json_object_new_object();
-	struct json_object *calls = json_object_new_array();
-	struct json_object *call = json_object_new_object();
-	struct json_object *func = json_object_new_object();
+	cJSON *root = cJSON_CreateObject();
+	cJSON *choices = cJSON_CreateArray();
+	cJSON *choice = cJSON_CreateObject();
+	cJSON *message = cJSON_CreateObject();
+	cJSON *calls = cJSON_CreateArray();
+	cJSON *call = cJSON_CreateObject();
+	cJSON *func = cJSON_CreateObject();
+	char *printed;
 
-	json_object_object_add(func, "name", json_object_new_string(name));
-	json_object_object_add(func, "arguments", json_object_new_string(args_json));
-	json_object_object_add(call, "id", json_object_new_string("c1"));
-	json_object_object_add(call, "type", json_object_new_string("function"));
-	json_object_object_add(call, "function", func);
-	json_object_array_add(calls, call);
-	json_object_object_add(message, "role", json_object_new_string("assistant"));
-	json_object_object_add(message, "content", json_object_new_string(""));
-	json_object_object_add(message, "tool_calls", calls);
-	json_object_object_add(choice, "finish_reason", json_object_new_string("tool_calls"));
-	json_object_object_add(choice, "message", message);
-	json_object_array_add(choices, choice);
-	json_object_object_add(root, "choices", choices);
+	cJSON_AddItemToObject(func, "name", cJSON_CreateString(name));
+	cJSON_AddItemToObject(func, "arguments", cJSON_CreateString(args_json));
+	cJSON_AddItemToObject(call, "id", cJSON_CreateString("c1"));
+	cJSON_AddItemToObject(call, "type", cJSON_CreateString("function"));
+	cJSON_AddItemToObject(call, "function", func);
+	cJSON_AddItemToArray(calls, call);
+	cJSON_AddItemToObject(message, "role", cJSON_CreateString("assistant"));
+	cJSON_AddItemToObject(message, "content", cJSON_CreateString(""));
+	cJSON_AddItemToObject(message, "tool_calls", calls);
+	cJSON_AddItemToObject(choice, "finish_reason", cJSON_CreateString("tool_calls"));
+	cJSON_AddItemToObject(choice, "message", message);
+	cJSON_AddItemToArray(choices, choice);
+	cJSON_AddItemToObject(root, "choices", choices);
 
-	canned_reply(srv, json_object_to_json_string(root));
-	json_object_put(root);
+	printed = cJSON_PrintUnformatted(root);
+	canned_reply(srv, printed != NULL ? printed : "{}");
+	free(printed);
+	cJSON_Delete(root);
 }
 
 static const char *final_reply =

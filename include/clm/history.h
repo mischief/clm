@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <sys/queue.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 
 enum clm_role {
 	CLM_ROLE_SYSTEM,
@@ -123,10 +123,10 @@ int clm_history_compact(struct clm_history *h, const char *summary,
     size_t keep_recent);
 
 /*
- * Serialize the entire history into a json-c array suitable for the
+ * Serialize the entire history into a cJSON array suitable for the
  * "messages" field of a chat/completions request. Caller owns the returned
- * object (json_object_put). Returns NULL on failure.
+ * object (cJSON_Delete). Returns NULL on failure.
  */
-struct json_object *clm_history_to_json(const struct clm_history *h);
+cJSON *clm_history_to_json(const struct clm_history *h);
 
 #endif /* CLM_HISTORY_H */

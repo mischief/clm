@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 
 #include "clm/clm.h"
 #include "clm/internal.h"
@@ -92,35 +92,33 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
 	struct clm_agent *agent;
 	struct clm_cfg cfg;
-	json_cleanup struct json_object *root = NULL;
-	struct json_object *tool_calls = NULL;
+	json_cleanup cJSON *root = NULL;
+	cJSON *tool_calls = NULL;
 
 	if (size == 0)
 		return 0;
 
-	/* Parse fuzz input as JSON.  Invalid input returns NULL, which is safe. */
-	struct json_tokener *tok = json_tokener_new();
-	if (tok == NULL)
-		return 0;
-	root = json_tokener_parse_ex(tok, (const char *)data, (int)size);
-	json_tokener_free(tok);
+	/* Parse fuzz input as JSON. Invalid input returns NULL, which is safe.
+	 * require_null_terminated=0: fuzz input is not guaranteed NUL-terminated
+	 * by the harness, but we pass an explicit length either way. */
+	root = cJSON_ParseWithLengthOpts((const char *)data, size, NULL, 0);
 	if (root == NULL)
 		return 0;
 
 	/* Extract a JSON array (either top-level or nested under common keys). */
-	if (json_object_get_type(root) == json_type_array) {
+	if (cJSON_IsArray(root)) {
 		tool_calls = root;
-	} else if (json_object_get_type(root) == json_type_object) {
-		struct json_object *tc;
-		if (json_object_object_get_ex(root, "tool_calls", &tc) ||
-		    json_object_object_get_ex(root, "choices", &tc) ||
-		    json_object_object_get_ex(root, "arguments", &tc)) {
-			if (json_object_get_type(tc) == json_type_array)
-				tool_calls = tc;
-		}
+	} else if (cJSON_IsObject(root)) {
+		cJSON *tc = cJSON_GetObjectItemCaseSensitive(root, "tool_calls");
+		if (tc == NULL)
+			tc = cJSON_GetObjectItemCaseSensitive(root, "choices");
+		if (tc == NULL)
+			tc = cJSON_GetObjectItemCaseSensitive(root, "arguments");
+		if (tc != NULL && cJSON_IsArray(tc))
+			tool_calls = tc;
 	}
 
-	if (tool_calls == NULL || json_object_array_length(tool_calls) == 0)
+	if (tool_calls == NULL || cJSON_GetArraySize(tool_calls) == 0)
 		return 0;
 
 	/* Build a fresh agent per input. */

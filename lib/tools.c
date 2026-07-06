@@ -9,7 +9,7 @@
 
 #include <fcntl.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 
 #include "clm/tools.h"
 #include "clm/internal.h"
@@ -55,13 +55,13 @@ struct clm_tool_invocation {
 	void *cancel_user;
 
 	/* Permission gate: while awaiting a decision the invocation is parked
-	 * (on_permission fired, invoke deferred). perm_req is the opaque handle
-	 * the frontend answers against; it points back to this invocation. */
+ *	 * (on_permission fired, invoke deferred). perm_req is the opaque handle
+ *	 * that the frontend answers against; it points back to this invocation. */
 	bool awaiting_perm;
 	struct clm_permission_req perm_req;
 
 	/* Rate-limit deferral: when the token bucket is empty, the invocation
-	 * is parked on rl_timer and dispatched when tokens refill. */
+ *	 * is parked on rl_timer and dispatched when tokens refill. */
 	struct clm_timer *rl_timer;
 };
 
@@ -80,14 +80,14 @@ struct clm_tool_batch {
 /* ------------------------------------------------------------------ */
 
 static char *
-arg_string(struct json_object *args, const char *key)
+arg_string(cJSON *args, const char *key)
 {
-	struct json_object *v = NULL;
-	if (!json_object_object_get_ex(args, key, &v))
+	cJSON *v = NULL;
+	if (!(v = cJSON_GetObjectItemCaseSensitive(args, key)))
 		return NULL;
-	if (json_object_get_type(v) != json_type_string)
+	if (!cJSON_IsString(v))
 		return NULL;
-	return strdup(json_object_get_string(v));
+	return strdup(v->valuestring);
 }
 
 /*
@@ -103,7 +103,7 @@ expand_tilde(const char *path)
 
 	if (path == NULL)
 		return NULL;
-	if (path[0] != '~' || path[1] != '/') 
+	if (path[0] != '~' || path[1] != '/')
 		return strdup(path);
 	home = getenv("HOME");
 	if (home == NULL || home[0] == '\0')
@@ -119,14 +119,14 @@ expand_tilde(const char *path)
 }
 
 static int
-arg_int(struct json_object *args, const char *key, int dflt)
+arg_int(cJSON *args, const char *key, int dflt)
 {
-	struct json_object *v = NULL;
-	if (!json_object_object_get_ex(args, key, &v))
+	cJSON *v = NULL;
+	if (!(v = cJSON_GetObjectItemCaseSensitive(args, key)))
 		return dflt;
-	if (json_object_get_type(v) != json_type_int)
+	if (!cJSON_IsNumber(v))
 		return dflt;
-	return json_object_get_int(v);
+	return (int)v->valuedouble;
 }
 
 /* ------------------------------------------------------------------ */
@@ -229,7 +229,6 @@ clm_tools_free_registry(struct clm_tool_list *tools)
 	struct clm_tool *t, *tmp;
 	if (tools == NULL)
 		return;
-	/* glibc's sys/queue.h has no TAILQ_FOREACH_SAFE; walk manually. */
 	t = TAILQ_FIRST(tools);
 	while (t != NULL) {
 		tmp = TAILQ_NEXT(t, entries);
@@ -243,119 +242,103 @@ clm_tools_free_registry(struct clm_tool_list *tools)
 /* Schema construction                                                 */
 /* ------------------------------------------------------------------ */
 
-static struct json_object *
+static cJSON *
 int_prop(const char *desc)
 {
-	json_cleanup struct json_object *p = NULL;
-	struct json_object *v, *ret;
-
-	p = json_object_new_object();
-	ASSERT_RETURN(p != NULL, NULL);
-	v = json_object_new_string("integer");
-	ASSERT_RETURN(v != NULL, NULL);
-	json_object_object_add(p, "type", v);
-	v = json_object_new_string(desc);
-	ASSERT_RETURN(v != NULL, NULL);
-	json_object_object_add(p, "description", v);
-
-	ret = p;
-	p = NULL;
-	return ret;
+	cJSON *obj = cJSON_CreateObject();
+	if (obj == NULL)
+		return NULL;
+	cJSON_AddItemToObject(obj, "type", cJSON_CreateString("integer"));
+	cJSON_AddItemToObject(obj, "description", cJSON_CreateString(desc));
+	return obj;
 }
 
 static void
-inject_prop(struct json_object *props, const char *name, const char *desc)
+inject_prop(cJSON *props, const char *name, const char *desc)
 {
-	struct json_object *exist, *p;
-
-	if (json_object_object_get_ex(props, name, &exist)) {
+	cJSON *exist = cJSON_GetObjectItemCaseSensitive(props, name);
+	if (exist != NULL) {
 		clm_debug("schema: skip reserved param '%s' (tool defines it)", name);
 		return;
 	}
-	p = int_prop(desc);
+	cJSON *p = int_prop(desc);
 	if (p != NULL)
-		json_object_object_add(props, name, p);
+		cJSON_AddItemToObject(props, name, p);
 }
 
-static struct json_object *
+static cJSON *
 tool_schema(const struct clm_tool *t)
 {
-	json_cleanup struct json_object *tool = NULL;
-	struct json_object *func, *params, *props, *v, *ret;
+	cJSON *tool = cJSON_CreateObject();
+	cJSON *func, *params, *props;
 
-	tool = json_object_new_object();
-	ASSERT_RETURN(tool != NULL, NULL);
+	if (tool == NULL)
+		return NULL;
 
-	v = json_object_new_string("function");
-	ASSERT_RETURN(v != NULL, NULL);
-	json_object_object_add(tool, "type", v);
+	cJSON_AddItemToObject(tool, "type", cJSON_CreateString("function"));
 
-	func = json_object_new_object();
-	ASSERT_RETURN(func != NULL, NULL);
-	json_object_object_add(tool, "function", func);
+	func = cJSON_CreateObject();
+	if (func == NULL) {
+		cJSON_Delete(tool);
+		return NULL;
+	}
+	cJSON_AddItemToObject(tool, "function", func);
 
-	v = json_object_new_string(t->name);
-	ASSERT_RETURN(v != NULL, NULL);
-	json_object_object_add(func, "name", v);
-
-	v = json_object_new_string(t->description ? t->description : "");
-	ASSERT_RETURN(v != NULL, NULL);
-	json_object_object_add(func, "description", v);
+	cJSON_AddItemToObject(func, "name", cJSON_CreateString(t->name));
+	cJSON_AddItemToObject(func, "description", cJSON_CreateString(t->description ? t->description : ""));
 
 	/* Parse the tool's parameters schema, or synthesize an empty object. */
-	params = t->params_schema ? json_tokener_parse(t->params_schema) : NULL;
-	if (params == NULL || json_object_get_type(params) != json_type_object) {
+	params = t->params_schema ? cJSON_Parse(t->params_schema) : NULL;
+	if (params == NULL || cJSON_GetObjectItem(params, "type") == NULL) {
 		if (params != NULL)
-			json_object_put(params);
-		params = json_object_new_object();
-		ASSERT_RETURN(params != NULL, NULL);
+			cJSON_Delete(params);
+		params = cJSON_CreateObject();
+		if (params == NULL) {
+			cJSON_Delete(tool);
+			return NULL;
+		}
 	}
-	json_object_object_add(func, "parameters", params); /* now under cleanup */
+	cJSON_AddItemToObject(func, "parameters", params);
 
-	if (!json_object_object_get_ex(params, "type", &v)) {
-		v = json_object_new_string("object");
-		ASSERT_RETURN(v != NULL, NULL);
-		json_object_object_add(params, "type", v);
-	}
+	if (cJSON_GetObjectItemCaseSensitive(params, "type") == NULL)
+		cJSON_AddItemToObject(params, "type", cJSON_CreateString("object"));
 
-	if (!json_object_object_get_ex(params, "properties", &props)) {
-		props = json_object_new_object();
-		ASSERT_RETURN(props != NULL, NULL);
-		json_object_object_add(params, "properties", props);
+	props = cJSON_GetObjectItemCaseSensitive(params, "properties");
+	if (props == NULL) {
+		props = cJSON_CreateObject();
+		if (props == NULL) {
+			cJSON_Delete(tool);
+			return NULL;
+		}
+		cJSON_AddItemToObject(params, "properties", props);
 	}
 
 	if (t->flags & CLM_TOOL_TIMEOUT_OVERRIDABLE)
-		inject_prop(props, "timeout_ms",
-		    "optional: max milliseconds before this call is aborted");
+		inject_prop(props, "timeout_ms", "optional: max milliseconds before this call is aborted");
 	if (t->flags & CLM_TOOL_OUTPUT_CAP_OVERRIDABLE)
-		inject_prop(props, "output_cap",
-		    "optional: max bytes of output to return");
+		inject_prop(props, "output_cap", "optional: max bytes of output to return");
 
-	ret = tool;
-	tool = NULL;
-	return ret;
+	return tool;
 }
 
-struct json_object *
+cJSON *
 clm_tools_build_schema(const struct clm_agent *agent)
 {
-	struct json_object *arr;
+	cJSON *arr = cJSON_CreateArray();
 	const struct clm_tool *t;
 
 	if (agent == NULL)
 		return NULL;
 
-	arr = json_object_new_array();
 	if (arr == NULL)
 		return NULL;
 
-	/* json_object_array_add steals the reference; do not put afterwards.
-	 * HIDDEN tools stay in the registry (invocable internally) but are not
-	 * advertised to the model. Removed (zombie) tools are skipped too. */
 	TAILQ_FOREACH(t, &agent->tools, entries) {
 		if (t->removed || (t->flags & CLM_TOOL_HIDDEN))
 			continue;
-		json_object_array_add(arr, tool_schema(t));
+		cJSON *sch = tool_schema(t);
+		if (sch != NULL)
+			cJSON_AddItemToArray(arr, sch); /* steals reference */
 	}
 
 	return arr;
@@ -424,7 +407,7 @@ clm_tool_permission_respond(struct clm_agent *agent,
 	inv->awaiting_perm = false;
 
 	allow = (decision == CLM_PERM_ALLOW_ONCE ||
-	    decision == CLM_PERM_ALLOW_ALWAYS);
+	         decision == CLM_PERM_ALLOW_ALWAYS);
 
 	/* Remember _ALWAYS decisions for the rest of the session, per tool. */
 	if (decision == CLM_PERM_ALLOW_ALWAYS ||
@@ -457,7 +440,7 @@ clm_tool_invocation_timeout_ms(const struct clm_tool_invocation *inv)
 
 void
 clm_tool_invocation_set_cancel(struct clm_tool_invocation *inv,
-    void (*cancel)(struct clm_tool_invocation *inv, void *user), void *user)
+    void (*cancel)(struct clm_tool_invocation *, void *), void *user)
 {
 	if (inv == NULL)
 		return;
@@ -551,10 +534,9 @@ fail_wrap(const char *msg)
 
 /*
  * Agent policy check for clm_history_supersede_tool(): does this tool's
- * output go stale the moment a newer one exists? Driven by the config's
- * volatile_tools fnmatch(3) patterns (see clm_cfg), not by the tool
- * definition -- volatility is a property of how an agent uses a tool
- * (a map snapshot in a game loop) rather than of the tool itself.
+ * output go stale the moment a newer one exists? Driven by the config's volatile_tools fnmatch(3)
+ * patterns (see clm_cfg), not by the tool definition -- volatility is a property of
+ * how an agent uses a tool (a map snapshot in a game loop) rather than of the tool itself.
  */
 static bool
 tool_is_volatile(const struct clm_agent *agent, const char *name)
@@ -586,8 +568,8 @@ inv_finalize(struct clm_tool_invocation *inv, const char *content,
 	}
 
 	/* Release this invocation's pin on its tool node; if clm_tool_remove
-	 * already unlinked it (removed) and we were the last one holding it
-	 * alive, free it now. See struct clm_tool in clm/tools.h. */
+ *	 * already unlinked it (removed) and we were the last one holding it
+ *	 * alive, free it now. See struct clm_tool in clm/tools.h. */
 	if (inv->def != NULL) {
 		struct clm_tool *t = (struct clm_tool *)inv->def;
 		t->inflight--;
@@ -703,24 +685,25 @@ inv_compute_limits(struct clm_tool_invocation *inv)
 	uint64_t to = t != NULL ? t->timeout_ms : 0;
 
 	if (t != NULL && inv->args != NULL) {
-		json_cleanup struct json_object *a = json_tokener_parse(inv->args);
-		struct json_object *v;
-		if (a != NULL && json_object_get_type(a) == json_type_object) {
+		cJSON *a = cJSON_Parse(inv->args);
+		cJSON *v;
+		if (a != NULL && cJSON_IsObject(a)) {
 			if ((t->flags & CLM_TOOL_OUTPUT_CAP_OVERRIDABLE) &&
-			    json_object_object_get_ex(a, "output_cap", &v) &&
-			    json_object_get_type(v) == json_type_int) {
-				int64_t x = json_object_get_int64(v);
+			    (v = cJSON_GetObjectItemCaseSensitive(a, "output_cap")) &&
+			    cJSON_IsNumber(v)) {
+				int64_t x = (int64_t)v->valuedouble;
 				if (x > 0)
 					cap = (size_t)x;
 			}
 			if ((t->flags & CLM_TOOL_TIMEOUT_OVERRIDABLE) &&
-			    json_object_object_get_ex(a, "timeout_ms", &v) &&
-			    json_object_get_type(v) == json_type_int) {
-				int64_t x = json_object_get_int64(v);
+			    (v = cJSON_GetObjectItemCaseSensitive(a, "timeout_ms")) &&
+			    cJSON_IsNumber(v)) {
+				int64_t x = (int64_t)v->valuedouble;
 				if (x > 0)
 					to = (uint64_t)x;
 			}
 		}
+		cJSON_Delete(a);
 	}
 
 	if (cap > CLM_TOOL_OUTPUT_CAP_MAX)
@@ -742,7 +725,7 @@ run_invoke(struct clm_tool_invocation *inv)
 	struct clm_agent *agent = inv->batch->agent;
 
 	/* Arm the per-call timeout if the host provides timers; otherwise the
-	 * tool simply runs without one (a blocking transport enforces its own). */
+ *	 * tool simply runs without one (a blocking transport enforces its own). */
 	if (inv->timeout_ms > 0 && inv->timer == NULL &&
 	    agent->host->timer_set != NULL) {
 		agent->host->timer_set(agent->host->ctx, inv->timeout_ms,
@@ -785,12 +768,10 @@ dispatch_one(struct clm_tool_invocation *inv)
 		return;
 	}
 
-	/*
-	 * Permission gate (default-deny). NO_PROMPT tools run unconditionally.
-	 * A remembered _ALWAYS decision short-circuits. Otherwise, if a handler
-	 * is registered, park the invocation and ask; with no handler, deny --
-	 * a frontend that wires no policy runs no gated tools.
-	 */
+	/* Permission gate (default-deny). NO_PROMPT tools run unconditionally.
+ *	 * A remembered _ALWAYS decision short-circuits. Otherwise, if a handler
+ *	 * is registered, park the invocation and ask; with no handler, deny --
+ *	 * a frontend that wires no policy runs no gated tools. */
 	if (t->flags & CLM_TOOL_NO_PROMPT) {
 		run_invoke(inv);
 		return;
@@ -809,12 +790,10 @@ dispatch_one(struct clm_tool_invocation *inv)
 	inv->awaiting_perm = true;
 	inv->perm_req.inv = inv;
 	agent->cb_on_permission(&inv->perm_req, agent->cb_user);
-	/* Parked: clm_tool_permission_respond resumes it (allow -> run, deny ->
-	 * fail). The batch's pending count still holds this invocation. */
 }
 
 int
-clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls)
+clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls)
 {
 	struct clm_tool_batch *batch;
 	struct clm_message *amsg;
@@ -823,9 +802,12 @@ clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls)
 	ASSERT_RETURN(agent != NULL, -EINVAL);
 	ASSERT_RETURN(tool_calls != NULL, -EINVAL);
 
-	n = json_object_array_length(tool_calls);
-	if (n == 0)
-		return -EINVAL;
+	{
+		int arr_size = cJSON_GetArraySize(tool_calls);
+		if (arr_size <= 0)
+			return -EINVAL;
+		n = (size_t)arr_size;
+	}
 
 	amsg = clm_history_add_assistant_tool_calls(&agent->history);
 	if (amsg == NULL)
@@ -851,27 +833,31 @@ clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls)
 	/* Build invocations and mirror the calls into history. */
 	for (i = 0; i < n; i++) {
 		struct clm_tool_invocation *inv = &batch->inv[i];
-		struct json_object *tc = json_object_array_get_idx(tool_calls, i);
-		struct json_object *id = NULL, *func = NULL, *name = NULL, *args = NULL;
+		cJSON *tc = cJSON_GetArrayItem(tool_calls, i);
+		cJSON *id = NULL, *func = NULL, *name = NULL, *args = NULL;
+		autofree char *printed_args = NULL;
 		const char *args_str = "{}";
 
 		inv->batch = batch;
 
 		if (tc != NULL) {
-			json_object_object_get_ex(tc, "id", &id);
-			json_object_object_get_ex(tc, "function", &func);
+			id = cJSON_GetObjectItemCaseSensitive(tc, "id");
+			func = cJSON_GetObjectItemCaseSensitive(tc, "function");
 		}
 		if (func != NULL) {
-			json_object_object_get_ex(func, "name", &name);
-			json_object_object_get_ex(func, "arguments", &args);
+			name = cJSON_GetObjectItemCaseSensitive(func, "name");
+			args = cJSON_GetObjectItemCaseSensitive(func, "arguments");
 		}
-		if (args != NULL && json_object_get_type(args) == json_type_string)
-			args_str = json_object_get_string(args);
-		else if (args != NULL)
-			args_str = json_object_to_json_string_ext(args, JSON_C_TO_STRING_PLAIN);
+		if (args != NULL && cJSON_IsString(args)) {
+			args_str = args->valuestring;
+		} else if (args != NULL) {
+			printed_args = cJSON_PrintUnformatted(args);
+			if (printed_args != NULL)
+				args_str = printed_args;
+		}
 
-		inv->id = strdup(id != NULL ? json_object_get_string(id) : "");
-		inv->name = strdup(name != NULL ? json_object_get_string(name) : "");
+		inv->id = strdup(id != NULL ? cJSON_GetStringValue(id) : "");
+		inv->name = strdup(name != NULL ? cJSON_GetStringValue(name) : "");
 		inv->args = strdup(args_str);
 		clm_debug("[tool] %s(%.*s)", inv->name,
 		    (int)(strlen(args_str) > 120 ? 120 : strlen(args_str)), args_str);
@@ -882,17 +868,14 @@ clm_tools_dispatch(struct clm_agent *agent, struct json_object *tool_calls)
 			clm_message_add_tool_call(amsg, inv->id, inv->name, inv->args);
 
 		inv->def = find_tool(agent, inv->name ? inv->name : "");
-		/* Pin the node alive: it must survive until this invocation
-		 * finalizes, even if clm_tool_remove is called meanwhile (e.g. an
-		 * MCP server disconnecting mid-turn). See struct clm_tool in
-		 * clm/tools.h. */
 		if (inv->def != NULL)
 			((struct clm_tool *)inv->def)->inflight++;
 		inv_compute_limits(inv);
 	}
 
-	/* Dispatch. Synchronous completers (e.g. file tools) finalize inline
-	 * but cannot drop pending to zero thanks to the hold. */
+	/* Dispatch.
+ *	 * Synchronous completers (e.g. file tools) finalize inline
+ *	 * but cannot drop pending to zero thanks to the hold. */
 	for (i = 0; i < n; i++) {
 		struct clm_tool_invocation *inv = &batch->inv[i];
 		if (clm_ratelimit_allow(agent->tool_rl, 1) ||
@@ -928,9 +911,6 @@ clm_tools_cancel(struct clm_agent *agent)
 	if (agent == NULL || agent->active_batch == NULL)
 		return;
 
-	/* Best effort: ask running tools to abort. Full teardown of in-flight
-	 * uv handles during agent destruction is a known limitation; callers
-	 * should free the agent only when no turn is in flight. */
 	batch = agent->active_batch;
 	for (i = 0; i < batch->n; i++) {
 		struct clm_tool_invocation *inv = &batch->inv[i];
@@ -944,16 +924,16 @@ clm_tools_cancel(struct clm_agent *agent)
 /* Built-in tools                                                      */
 /* ------------------------------------------------------------------ */
 
-static struct json_object *
+static cJSON *
 inv_args(const struct clm_tool_invocation *inv)
 {
-	return inv->args ? json_tokener_parse(inv->args) : NULL;
+	return inv->args ? cJSON_Parse(inv->args) : NULL;
 }
 
 static void
 tool_file_read(struct clm_tool_invocation *inv, void *user)
 {
-	json_cleanup struct json_object *args = inv_args(inv);
+	json_cleanup cJSON *args = inv_args(inv);
 	autofree char *path = NULL;
 	autoclosefile FILE *fp = NULL;
 	autofree char *line = NULL;
@@ -963,7 +943,7 @@ tool_file_read(struct clm_tool_invocation *inv, void *user)
 	char footer[160];
 
 	(void)user;
-	if (args == NULL || json_object_get_type(args) != json_type_object) {
+	if (args == NULL || !cJSON_IsObject(args)) {
 		clm_tool_fail(inv, "invalid arguments");
 		return;
 	}
@@ -1056,13 +1036,13 @@ tool_file_read(struct clm_tool_invocation *inv, void *user)
 static void
 tool_file_write(struct clm_tool_invocation *inv, void *user)
 {
-	json_cleanup struct json_object *args = inv_args(inv);
+	json_cleanup cJSON *args = inv_args(inv);
 	autofree char *path = NULL;
 	autofree char *content = NULL;
 	autoclosefile FILE *fp = NULL;
 
 	(void)user;
-	if (args == NULL || json_object_get_type(args) != json_type_object) {
+	if (args == NULL || !cJSON_IsObject(args)) {
 		clm_tool_fail(inv, "invalid arguments");
 		return;
 	}

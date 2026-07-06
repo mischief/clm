@@ -17,7 +17,7 @@
 #include <string.h>
 #include <time.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"
@@ -118,7 +118,7 @@ struct mcp_http_ctx {
 
 static void mcp_send_tools_list(struct clm_mcp_client *client);
 static void mcp_handle_result(struct clm_mcp_client *client,
-    struct mcp_pending *pend, struct json_object *result, const char *err);
+    struct mcp_pending *pend, cJSON *result, const char *err);
 static void mcp_go_dead(struct clm_mcp_client *client, int status);
 static int mcp_start_handshake(struct clm_mcp_client *client);
 static int mcp_spawn(struct clm_mcp_client *client, char *const *argv);
@@ -276,48 +276,54 @@ mcp_begin_close(struct clm_mcp_client *client, enum mcp_close_intent intent)
 }
 
 static char *
-mcp_build_request(const char *method, struct json_object *params, int id)
+mcp_build_request(const char *method, cJSON *params, int id)
 {
-	json_cleanup struct json_object *req = json_object_new_object();
+	json_cleanup cJSON *req = cJSON_CreateObject();
+	autofree char *printed = NULL;
 	char *out;
 
-	if (req == NULL)
+	if (req == NULL) {
+		cJSON_Delete(params);
 		return NULL;
-	json_object_object_add(req, "jsonrpc", json_object_new_string("2.0"));
-	json_object_object_add(req, "id", json_object_new_int(id));
-	json_object_object_add(req, "method", json_object_new_string(method));
+	}
+	cJSON_AddItemToObject(req, "jsonrpc", cJSON_CreateString("2.0"));
+	cJSON_AddItemToObject(req, "id", cJSON_CreateNumber(id));
+	cJSON_AddItemToObject(req, "method", cJSON_CreateString(method));
 	if (params != NULL)
-		json_object_object_add(req, "params", params);
+		cJSON_AddItemToObject(req, "params", params);
 
-	out = strdup(json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN));
+	printed = cJSON_PrintUnformatted(req);
+	out = printed != NULL ? strdup(printed) : NULL;
 	return out;
 }
 
 static char *
 mcp_build_notification(const char *method)
 {
-	json_cleanup struct json_object *req = json_object_new_object();
+	json_cleanup cJSON *req = cJSON_CreateObject();
+	autofree char *printed = NULL;
 
 	if (req == NULL)
 		return NULL;
-	json_object_object_add(req, "jsonrpc", json_object_new_string("2.0"));
-	json_object_object_add(req, "method", json_object_new_string(method));
-	return strdup(json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN));
+	cJSON_AddItemToObject(req, "jsonrpc", cJSON_CreateString("2.0"));
+	cJSON_AddItemToObject(req, "method", cJSON_CreateString(method));
+	printed = cJSON_PrintUnformatted(req);
+	return printed != NULL ? strdup(printed) : NULL;
 }
 
-static struct json_object *
+static cJSON *
 mcp_init_params(void)
 {
-	struct json_object *params = json_object_new_object();
-	struct json_object *caps = json_object_new_object();
-	struct json_object *info = json_object_new_object();
+	cJSON *params = cJSON_CreateObject();
+	cJSON *caps = cJSON_CreateObject();
+	cJSON *info = cJSON_CreateObject();
 
-	json_object_object_add(params, "protocolVersion",
-	    json_object_new_string(MCP_PROTOCOL_VERSION));
-	json_object_object_add(params, "capabilities", caps);
-	json_object_object_add(info, "name", json_object_new_string("clm"));
-	json_object_object_add(info, "version", json_object_new_string(CLM_VERSION));
-	json_object_object_add(params, "clientInfo", info);
+	cJSON_AddItemToObject(params, "protocolVersion",
+	    cJSON_CreateString(MCP_PROTOCOL_VERSION));
+	cJSON_AddItemToObject(params, "capabilities", caps);
+	cJSON_AddItemToObject(info, "name", cJSON_CreateString("clm"));
+	cJSON_AddItemToObject(info, "version", cJSON_CreateString(CLM_VERSION));
+	cJSON_AddItemToObject(params, "clientInfo", info);
 	return params;
 }
 
@@ -372,22 +378,23 @@ mcp_track_registered(struct clm_mcp_client *client, const char *full_name,
 }
 
 static void
-mcp_register_tools(struct clm_mcp_client *client, struct json_object *tools)
+mcp_register_tools(struct clm_mcp_client *client, cJSON *tools)
 {
-	size_t n = json_object_array_length(tools);
+	size_t n = (size_t)cJSON_GetArraySize(tools);
 	size_t registered = 0;
 
 	for (size_t i = 0; i < n; i++) {
-		struct json_object *t = json_object_array_get_idx(tools, i);
-		struct json_object *jname = NULL, *jdesc = NULL, *jschema = NULL;
+		cJSON *t = cJSON_GetArrayItem(tools, i);
+		cJSON *jname, *jdesc, *jschema;
 		const char *rname;
 		char *full_name, *desc, *schema;
 		struct mcp_tool_ctx *ctx;
 		struct clm_tool_def def = {0};
 
-		if (!json_object_object_get_ex(t, "name", &jname))
+		jname = cJSON_GetObjectItemCaseSensitive(t, "name");
+		if (jname == NULL || !cJSON_IsString(jname))
 			continue;
-		rname = json_object_get_string(jname);
+		rname = cJSON_GetStringValue(jname);
 
 		/* "mcp__<server>__<tool>": matches the scheme Claude Code uses for
 		 * MCP-sourced tools (native/Lua tools stay bare -- only MCP can pull
@@ -403,14 +410,17 @@ mcp_register_tools(struct clm_mcp_client *client, struct json_object *tools)
 			    client->name, rname);
 		}
 
-		json_object_object_get_ex(t, "description", &jdesc);
-		desc = strdup(jdesc != NULL ? json_object_get_string(jdesc) : rname);
+		jdesc = cJSON_GetObjectItemCaseSensitive(t, "description");
+		desc = strdup(jdesc != NULL && cJSON_IsString(jdesc)
+		    ? cJSON_GetStringValue(jdesc) : rname);
 
-		if (json_object_object_get_ex(t, "inputSchema", &jschema))
-			schema = strdup(json_object_to_json_string_ext(jschema,
-			    JSON_C_TO_STRING_PLAIN));
-		else
+		jschema = cJSON_GetObjectItemCaseSensitive(t, "inputSchema");
+		if (jschema != NULL) {
+			autofree char *printed = cJSON_PrintUnformatted(jschema);
+			schema = printed != NULL ? strdup(printed) : NULL;
+		} else {
 			schema = strdup("{\"type\":\"object\"}");
+		}
 
 		ctx = malloc(sizeof(*ctx));
 		if (ctx == NULL) {
@@ -451,17 +461,18 @@ static void
 mcp_http_success(struct clm_http_response *resp, void *user)
 {
 	struct mcp_http_ctx *hctx = user;
-	json_cleanup struct json_object *parsed = NULL;
-	struct json_object *result = NULL, *error = NULL;
+	json_cleanup cJSON *parsed = NULL;
+	cJSON *result = NULL, *error = NULL;
 	const char *err_msg = NULL;
 
 	if (resp->body != NULL)
-		parsed = json_tokener_parse(resp->body);
+		parsed = cJSON_Parse(resp->body);
 
 	if (parsed != NULL) {
-		json_object_object_get_ex(parsed, "result", &result);
-		if (json_object_object_get_ex(parsed, "error", &error))
-			err_msg = json_object_get_string(error);
+		result = cJSON_GetObjectItemCaseSensitive(parsed, "result");
+		error = cJSON_GetObjectItemCaseSensitive(parsed, "error");
+		if (error != NULL)
+			err_msg = cJSON_GetStringValue(error);
 	}
 
 	switch (hctx->kind) {
@@ -474,29 +485,28 @@ mcp_http_success(struct clm_http_response *resp, void *user)
 		}
 		break;
 	case MCP_HTTP_LIST: {
-		struct json_object *tools = NULL;
-		if (result != NULL &&
-		    json_object_object_get_ex(result, "tools", &tools) &&
-		    json_object_get_type(tools) == json_type_array)
+		cJSON *tools = result != NULL
+		    ? cJSON_GetObjectItemCaseSensitive(result, "tools") : NULL;
+		if (tools != NULL && cJSON_IsArray(tools))
 			mcp_register_tools(hctx->client, tools);
 		else if (hctx->client->on_ready != NULL)
 			hctx->client->on_ready(-EPROTO, 0, hctx->client->user);
 		break;
 	}
 	case MCP_HTTP_CALL: {
-		struct json_object *content = NULL, *first = NULL, *text = NULL;
+		cJSON *content = NULL, *first = NULL, *text = NULL;
 		if (err_msg != NULL) {
 			clm_tool_fail(hctx->inv, err_msg);
 		} else if (result != NULL &&
-		    json_object_object_get_ex(result, "content", &content) &&
-		    json_object_get_type(content) == json_type_array &&
-		    json_object_array_length(content) > 0 &&
-		    (first = json_object_array_get_idx(content, 0)) != NULL &&
-		    json_object_object_get_ex(first, "text", &text)) {
-			clm_tool_complete(hctx->inv, json_object_get_string(text));
+		    (content = cJSON_GetObjectItemCaseSensitive(result, "content")) != NULL &&
+		    cJSON_IsArray(content) &&
+		    cJSON_GetArraySize(content) > 0 &&
+		    (first = cJSON_GetArrayItem(content, 0)) != NULL &&
+		    (text = cJSON_GetObjectItemCaseSensitive(first, "text")) != NULL) {
+			clm_tool_complete(hctx->inv, cJSON_GetStringValue(text));
 		} else if (result != NULL) {
-			clm_tool_complete(hctx->inv,
-			    json_object_to_json_string_ext(result, JSON_C_TO_STRING_PLAIN));
+			autofree char *printed = cJSON_PrintUnformatted(result);
+			clm_tool_complete(hctx->inv, printed != NULL ? printed : "{}");
 		} else {
 			clm_tool_fail(hctx->inv, "malformed MCP response");
 		}
@@ -629,21 +639,23 @@ mcp_pending_take(struct clm_mcp_client *client, int id)
 static void
 mcp_process_line(struct clm_mcp_client *client, char *line)
 {
-	json_cleanup struct json_object *parsed = json_tokener_parse(line);
-	struct json_object *jid = NULL, *result = NULL, *error = NULL;
+	json_cleanup cJSON *parsed = cJSON_Parse(line);
+	cJSON *jid, *result = NULL, *error;
 	struct mcp_pending *pend;
 	const char *err_msg = NULL;
 
-	if (parsed == NULL || !json_object_object_get_ex(parsed, "id", &jid))
+	jid = parsed != NULL ? cJSON_GetObjectItemCaseSensitive(parsed, "id") : NULL;
+	if (jid == NULL)
 		return; /* notification from the server; ignore */
 
-	pend = mcp_pending_take(client, json_object_get_int(jid));
+	pend = mcp_pending_take(client, (int)cJSON_GetNumberValue(jid));
 	if (pend == NULL)
 		return;
 
-	json_object_object_get_ex(parsed, "result", &result);
-	if (json_object_object_get_ex(parsed, "error", &error))
-		err_msg = json_object_get_string(error);
+	result = cJSON_GetObjectItemCaseSensitive(parsed, "result");
+	error = cJSON_GetObjectItemCaseSensitive(parsed, "error");
+	if (error != NULL)
+		err_msg = cJSON_GetStringValue(error);
 
 	mcp_handle_result(client, pend, result, err_msg);
 	free(pend);
@@ -651,7 +663,7 @@ mcp_process_line(struct clm_mcp_client *client, char *line)
 
 static void
 mcp_handle_result(struct clm_mcp_client *client, struct mcp_pending *pend,
-    struct json_object *result, const char *err)
+    cJSON *result, const char *err)
 {
 	switch (pend->kind) {
 	case MCP_PEND_INIT:
@@ -666,29 +678,28 @@ mcp_handle_result(struct clm_mcp_client *client, struct mcp_pending *pend,
 		}
 		break;
 	case MCP_PEND_LIST: {
-		struct json_object *tools = NULL;
-		if (result != NULL &&
-		    json_object_object_get_ex(result, "tools", &tools) &&
-		    json_object_get_type(tools) == json_type_array)
+		cJSON *tools = result != NULL
+		    ? cJSON_GetObjectItemCaseSensitive(result, "tools") : NULL;
+		if (tools != NULL && cJSON_IsArray(tools))
 			mcp_register_tools(client, tools);
 		else if (client->on_ready != NULL)
 			client->on_ready(-EPROTO, 0, client->user);
 		break;
 	}
 	case MCP_PEND_CALL: {
-		struct json_object *content = NULL, *first = NULL, *text = NULL;
+		cJSON *content = NULL, *first = NULL, *text = NULL;
 		if (err != NULL) {
 			clm_tool_fail(pend->inv, err);
 		} else if (result != NULL &&
-		    json_object_object_get_ex(result, "content", &content) &&
-		    json_object_get_type(content) == json_type_array &&
-		    json_object_array_length(content) > 0 &&
-		    (first = json_object_array_get_idx(content, 0)) != NULL &&
-		    json_object_object_get_ex(first, "text", &text)) {
-			clm_tool_complete(pend->inv, json_object_get_string(text));
+		    (content = cJSON_GetObjectItemCaseSensitive(result, "content")) != NULL &&
+		    cJSON_IsArray(content) &&
+		    cJSON_GetArraySize(content) > 0 &&
+		    (first = cJSON_GetArrayItem(content, 0)) != NULL &&
+		    (text = cJSON_GetObjectItemCaseSensitive(first, "text")) != NULL) {
+			clm_tool_complete(pend->inv, cJSON_GetStringValue(text));
 		} else if (result != NULL) {
-			clm_tool_complete(pend->inv,
-			    json_object_to_json_string_ext(result, JSON_C_TO_STRING_PLAIN));
+			autofree char *printed = cJSON_PrintUnformatted(result);
+			clm_tool_complete(pend->inv, printed != NULL ? printed : "{}");
 		} else {
 			clm_tool_fail(pend->inv, "malformed MCP response");
 		}
@@ -853,18 +864,21 @@ static void
 mcp_tool_invoke(struct clm_tool_invocation *inv, void *user)
 {
 	struct mcp_tool_ctx *ctx = user;
-	json_cleanup struct json_object *args =
-	    json_tokener_parse(clm_tool_invocation_args(inv));
-	struct json_object *params = json_object_new_object();
+	json_cleanup cJSON *args =
+	    cJSON_Parse(clm_tool_invocation_args(inv));
+	cJSON *params = cJSON_CreateObject();
 	int id;
 	char *body;
 
-	json_object_object_add(params, "name",
-	    json_object_new_string(ctx->remote_name));
-	json_object_object_add(params, "arguments",
-	    (args != NULL && json_object_get_type(args) == json_type_object)
-	        ? json_object_get(args)
-	        : json_object_new_object());
+	cJSON_AddItemToObject(params, "name",
+	    cJSON_CreateString(ctx->remote_name));
+	if (args != NULL && cJSON_IsObject(args)) {
+		cJSON *args_copy = cJSON_Duplicate(args, true);
+		cJSON_AddItemToObject(params, "arguments",
+		    args_copy != NULL ? args_copy : cJSON_CreateObject());
+	} else {
+		cJSON_AddItemToObject(params, "arguments", cJSON_CreateObject());
+	}
 
 	id = ctx->client->next_id++;
 	body = mcp_build_request("tools/call", params, id);

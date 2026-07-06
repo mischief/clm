@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: ISC
 /*
  * Parsing of llama.cpp's GET /props response. Kept in its own translation unit
- * (pure, json-c only, no libuv/curl/agent state) so it is unit-testable by
+ * (pure, cJSON only, no libuv/curl/agent state) so it is unit-testable by
  * compiling this one file into the test, without widening the public ABI.
  *
  * This is backend-specific (llama.cpp); as more backend quirks appear this is
@@ -9,7 +9,7 @@
  */
 #include <stdint.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 
 #include "clm/internal.h"
 #include "clm/cleanup.h"
@@ -17,31 +17,33 @@
 int
 clm_parse_props(const char *body, int64_t *ctx_out)
 {
-	json_cleanup struct json_object *root = NULL;
-	struct json_object *dgs = NULL, *nctx = NULL, *slots = NULL, *bi = NULL;
+	json_cleanup cJSON *root = NULL;
+	cJSON *dgs = NULL, *nctx = NULL, *slots = NULL, *bi = NULL;
 	int64_t n_ctx, n_slots;
 
 	if (body == NULL || ctx_out == NULL)
 		return -1;
-	root = json_tokener_parse(body);
-	if (root == NULL || json_object_get_type(root) != json_type_object)
+	root = cJSON_Parse(body);
+	if (root == NULL || !cJSON_IsObject(root))
 		return -1;
 
 	/* build_info is llama.cpp-specific; its absence means "not llama.cpp". */
-	if (!json_object_object_get_ex(root, "build_info", &bi))
+	bi = cJSON_GetObjectItemCaseSensitive(root, "build_info");
+	if (!bi)
 		return -1;
 
-	if (!json_object_object_get_ex(root, "default_generation_settings", &dgs) ||
-	    !json_object_object_get_ex(dgs, "n_ctx", &nctx))
+	dgs = cJSON_GetObjectItemCaseSensitive(root, "default_generation_settings");
+	if (!dgs || !(nctx = cJSON_GetObjectItemCaseSensitive(dgs, "n_ctx")))
 		return -1;
-	n_ctx = json_object_get_int64(nctx);
+	n_ctx = (int64_t)cJSON_GetNumberValue(nctx);
 	if (n_ctx <= 0)
 		return -1;
 
 	/* Context is shared across parallel slots; a conversation gets a share. */
 	n_slots = 1;
-	if (json_object_object_get_ex(root, "total_slots", &slots)) {
-		int64_t s = json_object_get_int64(slots);
+	slots = cJSON_GetObjectItemCaseSensitive(root, "total_slots");
+	if (slots) {
+		int64_t s = (int64_t)cJSON_GetNumberValue(slots);
 		if (s > 1)
 			n_slots = s;
 	}

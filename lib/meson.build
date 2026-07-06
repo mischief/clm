@@ -1,10 +1,13 @@
 # Portable core: the agent engine, tool registry, and OpenAI-compatible client.
 # Deliberately free of libuv and libcurl -- transport and timers come in through
-# a struct clm_host (see clm/host.h). The only hard dependency is json-c.
+# a struct clm_host (see clm/host.h). The only hard dependency is cJSON (ESP-IDF
+# ships cJSON built-in, so this avoids vendoring json-c into the esp32 tree).
 clm_core_src = files('agent.c', 'http.c', 'llm.c', 'log.c', 'tools.c', 'history.c', 'props.c', 'ratelimit.c')
 
+cjson_dep = dependency('libcjson', kwargs: static_kw)
+
 clm_core_deps = [
-  dependency('json-c', kwargs: static_kw),
+  cjson_dep,
 ]
 
 # lib/'s own optional feature: whether Lua plugin/agent-profile support is
@@ -92,7 +95,7 @@ clmuv_src = files('http_async.c', 'host_uv.c', 'tool_shell.c', 'tool_bg.c', 'mcp
 clmuv_deps = [
   dependency('libcurl', kwargs: static_kw),
   dependency('libuv', kwargs: static_kw),
-  dependency('json-c', kwargs: static_kw),
+  cjson_dep,
 ]
 
 clm_uv_lib = static_library('clmuv', clmuv_src,

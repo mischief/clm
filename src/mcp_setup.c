@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 
 #include "clm/clm.h"
 #include "clm/cleanup.h"
@@ -54,27 +54,25 @@ on_mcp_ready(int status, size_t tool_count, void *user)
 }
 
 static const char *
-json_str(struct json_object *obj, const char *key)
+json_str(cJSON *obj, const char *key)
 {
-	struct json_object *v;
-	if (!json_object_object_get_ex(obj, key, &v))
+	cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
+	if (v == NULL || !cJSON_IsString(v))
 		return NULL;
-	if (json_object_get_type(v) != json_type_string)
-		return NULL;
-	return json_object_get_string(v);
+	return cJSON_GetStringValue(v);
 }
 
 /* returns the connected client handle, or NULL if this entry was skipped or
  * failed to start (already reported through status_cb either way). */
 static struct clm_mcp_client *
-connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv,
+connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
     clm_cli_mcp_status_cb status_cb, void *status_user)
 {
 	const char *name = json_str(srv, "name");
 	const char *transport = json_str(srv, "transport");
 	struct clm_mcp_server_cfg server_cfg = {0};
 	struct mcp_ready_ctx *ready_ctx;
-	struct json_object *jtimeout = NULL, *jcmd = NULL;
+	cJSON *jtimeout, *jcmd;
 	autofree char **argv = NULL;
 	struct clm_mcp_client *client = NULL;
 
@@ -85,8 +83,9 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv,
 	}
 
 	server_cfg.name = name;
-	if (json_object_object_get_ex(srv, "timeout_ms", &jtimeout))
-		server_cfg.timeout_ms = (uint64_t)json_object_get_int64(jtimeout);
+	jtimeout = cJSON_GetObjectItemCaseSensitive(srv, "timeout_ms");
+	if (jtimeout != NULL && cJSON_IsNumber(jtimeout))
+		server_cfg.timeout_ms = (uint64_t)cJSON_GetNumberValue(jtimeout);
 
 	if (transport != NULL && strcmp(transport, "http") == 0) {
 		server_cfg.transport = CLM_MCP_HTTP;
@@ -103,9 +102,9 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv,
 		size_t n, i;
 
 		server_cfg.transport = CLM_MCP_STDIO;
-		if (!json_object_object_get_ex(srv, "command", &jcmd) ||
-		    json_object_get_type(jcmd) != json_type_array ||
-		    json_object_array_length(jcmd) == 0) {
+		jcmd = cJSON_GetObjectItemCaseSensitive(srv, "command");
+		if (jcmd == NULL || !cJSON_IsArray(jcmd) ||
+		    cJSON_GetArraySize(jcmd) == 0) {
 			char msg[256];
 			(void)snprintf(msg, sizeof(msg),
 			    "mcp: %s: stdio transport needs a non-empty 'command' array",
@@ -113,13 +112,13 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, struct json_object *srv,
 			emit_status(status_cb, status_user, msg);
 			return NULL;
 		}
-		n = json_object_array_length(jcmd);
+		n = (size_t)cJSON_GetArraySize(jcmd);
 		argv = calloc(n + 1, sizeof(*argv));
 		if (argv == NULL)
 			return NULL;
 		for (i = 0; i < n; i++) {
-			struct json_object *e = json_object_array_get_idx(jcmd, i);
-			argv[i] = (char *)json_object_get_string(e);
+			cJSON *e = cJSON_GetArrayItem(jcmd, i);
+			argv[i] = cJSON_GetStringValue(e);
 		}
 		server_cfg.argv = argv;
 	}
@@ -148,7 +147,7 @@ clm_cli_connect_mcp_servers(struct clm_agent *agent, uv_loop_t *loop,
     void *status_user, size_t *out_count)
 {
 	autofree char *json = NULL;
-	json_cleanup struct json_object *arr = NULL;
+	json_cleanup cJSON *arr = NULL;
 	struct clm_mcp_client **clients;
 	size_t n, i;
 
@@ -161,11 +160,11 @@ clm_cli_connect_mcp_servers(struct clm_agent *agent, uv_loop_t *loop,
 	if (json == NULL)
 		return NULL;
 
-	arr = json_tokener_parse(json);
-	if (arr == NULL || json_object_get_type(arr) != json_type_array)
+	arr = cJSON_Parse(json);
+	if (arr == NULL || !cJSON_IsArray(arr))
 		return NULL;
 
-	n = json_object_array_length(arr);
+	n = (size_t)cJSON_GetArraySize(arr);
 	if (n == 0)
 		return NULL;
 
@@ -177,7 +176,7 @@ clm_cli_connect_mcp_servers(struct clm_agent *agent, uv_loop_t *loop,
 	}
 
 	for (i = 0; i < n; i++)
-		clients[i] = connect_one(agent, loop, json_object_array_get_idx(arr, i),
+		clients[i] = connect_one(agent, loop, cJSON_GetArrayItem(arr, i),
 		    status_cb, status_user);
 
 	if (out_count != NULL)

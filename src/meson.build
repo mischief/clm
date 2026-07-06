@@ -45,9 +45,6 @@ if have_lua
   # Available in base/ports on the BSDs, Linux, and macOS.
   curses_dep = dependency('ncursesw', kwargs: static_kw)
 
-  # json-c: the TUI parses tool-call arguments to summarize them for display.
-  jsonc_dep = dependency('json-c', kwargs: static_kw)
-
   # ncurses' own macros (NCURSES_CAST) trip -Wuseless-cast; not our code.
   curses_warn = cc.get_supported_arguments('-Wno-useless-cast')
 
@@ -79,7 +76,7 @@ if have_lua
   # archive now, same shape as clmuv.
   clm_exe = executable('clm', clm_src + files('tui.c', 'mcp_setup.c') + seed_src + [version_h],
     link_with: [md_render_lib],
-    dependencies: [clmuv_dep, clmlua_dep, curses_dep, jsonc_dep],
+    dependencies: [clmuv_dep, clmlua_dep, curses_dep, cjson_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],
     c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'],
     install: true,

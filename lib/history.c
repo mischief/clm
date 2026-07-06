@@ -406,41 +406,42 @@ fail:
 	return NULL;
 }
 
-static struct json_object *
+static cJSON *
 clm_tool_call_to_json(const struct clm_tool_call *tc)
 {
-	struct json_object *tool_call = json_object_new_object();
+	cJSON *tool_call = cJSON_CreateObject();
 	if (tool_call == NULL)
 		return NULL;
 
 	if (tc->id) {
-		json_object_object_add(tool_call, "id", json_object_new_string(tc->id));
+		cJSON_AddItemToObject(tool_call, "id", cJSON_CreateString(tc->id));
 	}
-	json_object_object_add(tool_call, "type", json_object_new_string("function"));
+	cJSON_AddItemToObject(tool_call, "type", cJSON_CreateString("function"));
 
-	struct json_object *func = json_object_new_object();
+	cJSON *func = cJSON_CreateObject();
 	if (func == NULL) {
-		json_object_put(tool_call);
+		cJSON_Delete(tool_call);
 		return NULL;
 	}
 
 	if (tc->name) {
-		json_object_object_add(func, "name", json_object_new_string(tc->name));
+		cJSON_AddItemToObject(func, "name", cJSON_CreateString(tc->name));
 	}
 	if (tc->args) {
-		json_object_object_add(func, "arguments", json_object_new_string(tc->args));
+		cJSON_AddItemToObject(func, "arguments", cJSON_CreateString(tc->args));
 	}
-	json_object_object_add(tool_call, "function", func);
+	cJSON_AddItemToObject(tool_call, "function", func);
 
 	return tool_call;
 }
 
-static struct json_object *
+static cJSON *
 clm_message_to_json(const struct clm_message *m)
 {
-	json_cleanup struct json_object *msg = NULL;
-	msg = json_object_new_object();
-	ASSERT_RETURN(msg != NULL, NULL);
+	json_cleanup cJSON *msg = NULL;
+	msg = cJSON_CreateObject();
+	if (msg == NULL)
+		return NULL;
 
 	const char *role_str = NULL;
 	switch (m->role) {
@@ -458,59 +459,75 @@ clm_message_to_json(const struct clm_message *m)
 		break;
 	}
 
-	struct json_object *jrole = json_object_new_string(role_str);
-	ASSERT_RETURN(jrole != NULL, NULL);
-	json_object_object_add(msg, "role", jrole);
+	cJSON *jrole = cJSON_CreateString(role_str);
+	if (jrole == NULL) {
+		cJSON_Delete(msg);
+		return NULL;
+	}
+	cJSON_AddItemToObject(msg, "role", jrole);
 
 	if (m->content) {
-		struct json_object *jcontent = json_object_new_string(m->content);
-		ASSERT_RETURN(jcontent != NULL, NULL);
-		json_object_object_add(msg, "content", jcontent);
+		cJSON *jcontent = cJSON_CreateString(m->content);
+		if (jcontent == NULL) {
+			cJSON_Delete(msg);
+			return NULL;
+		}
+		cJSON_AddItemToObject(msg, "content", jcontent);
 	} else if (m->role == CLM_ROLE_ASSISTANT) {
-		json_object_object_add(msg, "content", json_object_new_null());
+		cJSON_AddItemToObject(msg, "content", cJSON_CreateNull());
 	}
 
 	if (m->role == CLM_ROLE_TOOL) {
 		if (m->tool_call_id) {
-			struct json_object *jtid = json_object_new_string(m->tool_call_id);
-			ASSERT_RETURN(jtid != NULL, NULL);
-			json_object_object_add(msg, "tool_call_id", jtid);
+			cJSON *jtid = cJSON_CreateString(m->tool_call_id);
+			if (jtid == NULL) {
+				cJSON_Delete(msg);
+				return NULL;
+			}
+			cJSON_AddItemToObject(msg, "tool_call_id", jtid);
 		}
 	}
 
 	if (m->role == CLM_ROLE_ASSISTANT && !TAILQ_EMPTY(&m->tool_calls)) {
-		struct json_object *tool_calls_arr = json_object_new_array();
-		ASSERT_RETURN(tool_calls_arr != NULL, NULL);
+		cJSON *tool_calls_arr = cJSON_CreateArray();
+		if (tool_calls_arr == NULL) {
+			cJSON_Delete(msg);
+			return NULL;
+		}
 
 		struct clm_tool_call *tc;
 		TAILQ_FOREACH(tc, &m->tool_calls, entries) {
-			struct json_object *tc_json = clm_tool_call_to_json(tc);
-			ASSERT_RETURN(tc_json != NULL, NULL);
-			json_object_array_add(tool_calls_arr, tc_json);
+			cJSON *tc_json = clm_tool_call_to_json(tc);
+			if (tc_json == NULL) {
+				cJSON_Delete(tool_calls_arr);
+				cJSON_Delete(msg);
+				return NULL;
+			}
+			cJSON_AddItemToArray(tool_calls_arr, tc_json);
 		}
-		json_object_object_add(msg, "tool_calls", tool_calls_arr);
+		cJSON_AddItemToObject(msg, "tool_calls", tool_calls_arr);
 	}
 
-	struct json_object *ret = msg;
+	cJSON *ret = msg;
 	msg = NULL;
 	return ret;
 }
 
-struct json_object *
+cJSON *
 clm_history_to_json(const struct clm_history *h)
 {
-	struct json_object *messages_arr = json_object_new_array();
+	cJSON *messages_arr = cJSON_CreateArray();
 	if (messages_arr == NULL)
 		return NULL;
 
 	struct clm_message *m;
 	TAILQ_FOREACH(m, h, entries) {
-		struct json_object *msg_json = clm_message_to_json(m);
+		cJSON *msg_json = clm_message_to_json(m);
 		if (msg_json == NULL) {
-			json_object_put(messages_arr);
+			cJSON_Delete(messages_arr);
 			return NULL;
 		}
-		json_object_array_add(messages_arr, msg_json);
+		cJSON_AddItemToArray(messages_arr, msg_json);
 	}
 
 	return messages_arr;

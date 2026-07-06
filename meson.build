@@ -53,9 +53,11 @@ endforeach
 
 
 # Suppress noisy warnings that don't apply cleanly across compilers.
-# -Wno-useless-cast: json-c 0.18's linkhash.h trips -Wuseless-cast under
-# gcc 14 (Debian's default) but not under every gcc/json-c combination --
-# a vendored-header quirk, not a bug in our code. (Tried include_type:
+# -Wno-useless-cast: kept as a general vendored-header safety net (originally
+# added for json-c 0.18's linkhash.h tripping -Wuseless-cast under gcc 14 --
+# Debian's default -- but not under every gcc/json-c combination; json-c
+# itself is gone now that everything uses cJSON, but a third-party header
+# quirk like that isn't a bug in our code either way). (Tried include_type:
 # 'system' on dependency() to sidestep this generally, but that hit a
 # meson 1.7.0 bug generating malformed -isystem flags; this is simpler
 # and version-independent.)

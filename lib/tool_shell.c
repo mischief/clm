@@ -15,7 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <json-c/json.h>
+#include <cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"
@@ -29,14 +29,14 @@
 /* Local copy of the core's arg_string helper (kept private so libclmuv depends
  * only on libclm's public API). */
 static char *
-sh_arg_string(struct json_object *args, const char *key)
+sh_arg_string(cJSON *args, const char *key)
 {
-	struct json_object *v = NULL;
-	if (!json_object_object_get_ex(args, key, &v))
+	cJSON *v = NULL;
+	if (!(v = cJSON_GetObjectItemCaseSensitive(args, key)))
 		return NULL;
-	if (json_object_get_type(v) != json_type_string)
+	if (!cJSON_IsString(v))
 		return NULL;
-	return strdup(json_object_get_string(v));
+	return strdup(v->valuestring);
 }
 
 /* Shell exec via uv_spawn ($SHELL -c <command>). */
@@ -172,8 +172,8 @@ shell_on_stdin_written(uv_write_t *req, int status)
 static void
 tool_shell_exec(struct clm_tool_invocation *inv, void *user)
 {
-	json_cleanup struct json_object *args =
-	    json_tokener_parse(clm_tool_invocation_args(inv));
+	json_cleanup cJSON *args =
+	    cJSON_Parse(clm_tool_invocation_args(inv));
 	autofree char *command = NULL;
 	autoclose int devnull = -1;
 	struct shell_state *s;
@@ -185,7 +185,7 @@ tool_shell_exec(struct clm_tool_invocation *inv, void *user)
 	int r;
 
 	(void)user;
-	if (args == NULL || json_object_get_type(args) != json_type_object) {
+	if (args == NULL || !cJSON_IsObject(args)) {
 		clm_tool_fail(inv, "invalid arguments");
 		return;
 	}
