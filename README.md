@@ -15,7 +15,7 @@ ISC License — see [LICENSE](LICENSE)
 - Token-bucket rate limiter on tool dispatch
 - Streaming (SSE) and non-streaming response modes
 - Portable core: transport + timers come in through a small host interface, so
-  the agent engine itself depends only on json-c (no libuv/libcurl)
+  the agent engine itself depends only on cJSON (no libuv/libcurl)
 
 ## Architecture
 
@@ -45,19 +45,19 @@ all). For example, the ESP32 port implements `clm_host` over
 
 ## Build
 
-Requires: meson ≥ 1.1, a C17 compiler, libcurl, libuv, json-c, ncursesw,
+Requires: meson ≥ 1.1, a C17 compiler, libcurl, libuv, cJSON, ncursesw,
 md4c, and Lua 5.4.
 
 **OpenBSD:**
 
 ```sh
-pkg_add lua%5.4 md4c libuv json-c curl
+pkg_add lua%5.4 md4c libuv cjson curl
 ```
 
 **Debian/Ubuntu:**
 
 ```sh
-apt install meson libcurl4-openssl-dev libuv1-dev libjson-c-dev \
+apt install meson libcurl4-openssl-dev libuv1-dev libcjson-dev \
     libncursesw5-dev libmd4c-dev liblua5.4-dev
 ```
 
@@ -240,7 +240,7 @@ return {
 
 ## Static builds
 
-`-Dstatic=true` links libclm and every third-party dependency (json-c,
+`-Dstatic=true` links libclm and every third-party dependency (cJSON,
 lua5.4, libcurl, libuv, ncursesw, md4c, and curl's own chain) as static
 archives, in one flag:
 
