@@ -90,7 +90,9 @@ subdir('man')
 
 if get_option('tests')
   subdir('test')
-  subdir('fuzz')
+  if meson.get_compiler('c').has_argument('-fsanitize=fuzzer')
+    subdir('fuzz')
+  endif
 endif
 
 cppcheck = find_program('cppcheck', required: false)
