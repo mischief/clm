@@ -603,6 +603,66 @@ test_shell_exec(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/*
+ * (d2) Regression for the use-after-free described in clm issue #3: freeing
+ * the agent while a shell_exec child process is still running must not let
+ * that process's later exit callback touch the freed agent.
+ *
+ * shell_exec's own uv_process_t keeps running after clm_agent_free() returns
+ * -- cancellation (clm_tools_detach(), invoked from clm_agent_free()) only
+ * sends SIGTERM; the process's real exit_cb (shell_on_exit -> ... ->
+ * inv_finalize) fires later, asynchronously, on the same loop. Before the
+ * clm_tools_detach() fix this dereferenced the freed agent (and its already-
+ * freed tool registry/history) from that later callback; run under ASan this
+ * reliably aborted the test binary. The fix severs the batch from the agent
+ * up front, so the delayed completion just retires quietly.
+ *
+ * The command sleeps long enough that clm_agent_free() below is guaranteed
+ * to run while the child is still alive: submit() and dispatch (loopback
+ * HTTP + uv_spawn) complete in microseconds, nowhere close to this.
+ */
+static void
+test_agent_free_during_shell_exec(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_tool_call(srv, "shell_exec", "{\"command\":\"sleep 0.2\"}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "sleep a bit") == 0, "submit");
+
+	/* Pump the loop just enough for the canned HTTP round trip and the
+	 * uv_spawn() to happen (both effectively instantaneous), but nowhere
+	 * near the 0.2s the child needs to exit. */
+	for (i = 0; i < 50; i++)
+		uv_run(loop, UV_RUN_NOWAIT);
+	CHECK(!st.turn_done, "turn must still be waiting on the shell command");
+
+	/* Simulate /agent switching mid-flight: free the agent while
+	 * shell_exec's child process is still running. */
+	clm_agent_free(st.agent);
+	st.agent = NULL;
+
+	/* Nothing will talk to the canned server again; stop it now so its
+	 * listening socket doesn't keep UV_RUN_DEFAULT below from ever going
+	 * idle. */
+	canned_stop(srv);
+
+	/* Drain until the child actually exits and its delayed completion
+	 * runs through the detached path. Reaching here without a crash
+	 * (or an ASan abort) is the test. */
+	uv_run(loop, UV_RUN_DEFAULT);
+
+	clm_host_uv_free(st.host);
+	uv_run(loop, UV_RUN_DEFAULT); /* drain pending closes */
+}
+
 /* Queue an SSE text reply split across two content deltas. */
 static void
 canned_stream_text(struct canned_server *srv, const char *a, const char *b)
@@ -1482,6 +1542,7 @@ main(void)
 	test_tools_unsupported_retry(&loop);
 	test_file_tools(&loop);
 	test_shell_exec(&loop);
+	test_agent_free_during_shell_exec(&loop);
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);

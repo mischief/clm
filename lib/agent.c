@@ -296,7 +296,7 @@ clm_agent_free(struct clm_agent *agent)
 	if (agent == NULL)
 		return;
 
-	clm_tools_cancel(agent);
+	clm_tools_detach(agent);
 	clm_llm_free(agent->llm);
 	clm_history_free(&agent->history);
 	free(agent->last_error);

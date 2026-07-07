@@ -77,4 +77,18 @@ int clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls);
 /* Abort an in-flight batch (best effort), used during agent teardown. */
 void clm_tools_cancel(struct clm_agent *agent);
 
+/*
+ * Sever the active batch (if any) from an agent that is about to be freed.
+ * Requests cancellation the same way clm_tools_cancel() does, but also
+ * retires every invocation that cannot possibly still be running (parked on
+ * a permission prompt or a rate-limit timer) and marks the batch itself as
+ * detached. A detached batch survives clm_agent_free(): any invocation still
+ * genuinely in flight (e.g. a shell/bg child process) completes later,
+ * asynchronously, and its completion callback (clm_tool_complete/_fail) sees
+ * the detached flag and retires quietly instead of touching the freed agent.
+ * Call this from clm_agent_free() in place of clm_tools_cancel(); it leaves
+ * agent->active_batch cleared.
+ */
+void clm_tools_detach(struct clm_agent *agent);
+
 #endif /* CLM_TOOLS_H */

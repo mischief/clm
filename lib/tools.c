@@ -73,6 +73,12 @@ struct clm_tool_batch {
 	size_t pending;   /* outstanding completions + a dispatch hold */
 	size_t done;      /* completed calls, for progress reporting */
 	int status;       /* first hard error encountered, else 0 */
+
+	/* Set by clm_tools_detach() when the owning agent is torn down while
+	 * this batch still has invocations genuinely in flight. Once set,
+	 * `agent` is a dead pointer: nothing on the completion path may read
+	 * through it. See inv_finalize(). */
+	bool detached;
 };
 
 /* ------------------------------------------------------------------ */
@@ -562,6 +568,21 @@ inv_finalize(struct clm_tool_invocation *inv, const char *content,
 	const char *out;
 
 	inv->completed = true;
+
+	if (batch->detached) {
+		/* The owning agent was freed while this invocation (a shell/bg
+		 * child process, most likely) was still running -- see
+		 * clm_tools_detach(). Its tool registry, history, and
+		 * callbacks are all gone with it, so there is nothing left to
+		 * record; just retire this invocation and, once the whole
+		 * batch has drained, free it. */
+		if (batch->pending > 0)
+			batch->pending--;
+		if (batch->pending == 0)
+			batch_really_free(batch);
+		return;
+	}
+
 	if (inv->timer != NULL) {
 		agent->host->timer_cancel(inv->timer);
 		inv->timer = NULL;
@@ -918,6 +939,71 @@ clm_tools_cancel(struct clm_agent *agent)
 			inv->cancel(inv, inv->cancel_user);
 	}
 	clm_debug("clm_tools_cancel: batch abandoned during teardown");
+}
+
+void
+clm_tools_detach(struct clm_agent *agent)
+{
+	struct clm_tool_batch *batch;
+	size_t i;
+
+	if (agent == NULL || agent->active_batch == NULL)
+		return;
+
+	batch = agent->active_batch;
+	batch->detached = true;
+	agent->active_batch = NULL;
+
+	for (i = 0; i < batch->n; i++) {
+		struct clm_tool_invocation *inv = &batch->inv[i];
+
+		if (inv->completed)
+			continue;
+
+		if (inv->rl_timer != NULL) {
+			/* Still parked waiting for tokens: it never actually
+			 * started, so it will never complete on its own.
+			 * Cancel the timer (agent->host outlives the agent)
+			 * and retire the invocation now. */
+			agent->host->timer_cancel(inv->rl_timer);
+			inv->rl_timer = NULL;
+			inv->completed = true;
+			if (batch->pending > 0)
+				batch->pending--;
+			continue;
+		}
+
+		if (inv->awaiting_perm) {
+			/* Parked on a permission decision nobody can answer
+			 * anymore (the UI's reference to this agent is going
+			 * away too). Drop it rather than leak the batch
+			 * forever waiting on a decision that will never
+			 * arrive. */
+			inv->awaiting_perm = false;
+			inv->completed = true;
+			if (batch->pending > 0)
+				batch->pending--;
+			continue;
+		}
+
+		if (inv->timer != NULL) {
+			agent->host->timer_cancel(inv->timer);
+			inv->timer = NULL;
+		}
+
+		/* Genuinely running (e.g. a shell/bg child process): ask it
+		 * to stop. Its real completion arrives later, asynchronously,
+		 * on the same event loop -- inv_finalize() sees batch->detached
+		 * and retires it there without touching the (by-then-freed)
+		 * agent. */
+		if (inv->cancel != NULL)
+			inv->cancel(inv, inv->cancel_user);
+	}
+
+	clm_debug("clm_tools_detach: batch detached from agent going away");
+
+	if (batch->pending == 0)
+		batch_really_free(batch);
 }
 
 /* ------------------------------------------------------------------ */

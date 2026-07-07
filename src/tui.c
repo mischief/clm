@@ -1567,7 +1567,12 @@ run_command(struct ui *u, const char *line)
 		}
 	} else if (CMD("agent") || CMD("a")) {
 		/* /agent <name>
-		 * Switch agent: reload profile, swap provider+prompt, clear history. */
+		 * Switch agent: reload profile, swap provider+prompt, clear history.
+		 * Safe even mid-turn: clm_agent_free() (via clm_tools_detach(),
+		 * lib/tools.c) severs any in-flight tool batch from the agent
+		 * before freeing it, so a shell/bg child process that is still
+		 * running gets to finish asynchronously without touching freed
+		 * memory. */
 		if (arg[0] == '\0') {
 			ui_push(u, ST_META, "\nusage: /agent <name>\n");
 		} else if (u->lcfg == NULL) {
