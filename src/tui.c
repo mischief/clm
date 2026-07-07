@@ -1495,6 +1495,282 @@ on_live_models_error(const char *emsg, void *user)
 	ui_push(u, ST_META, msg);
 }
 
+static void
+cmd_agent(struct ui *u, const char *arg)
+{
+	/* /agent <name>
+	 * Switch agent: reload profile, swap provider+prompt, clear history.
+	 * Safe even mid-turn: clm_agent_free() (via clm_tools_detach(),
+	 * lib/tools.c) severs any in-flight tool batch from the agent
+	 * before freeing it, so a shell/bg child process that is still
+	 * running gets to finish asynchronously without touching freed
+	 * memory. */
+	if (arg[0] == '\0') {
+		ui_push(u, ST_META, "\nusage: /agent <name>\n");
+	} else if (u->lcfg == NULL) {
+		ui_push(u, ST_ERROR, "\nno config loaded\n");
+	} else {
+		char *adir = xdg_config_path("clm/agents");
+		if (clm_lua_cfg_load_agent(u->lcfg, adir, arg) < 0) {
+			char msg[128];
+			(void)snprintf(msg, sizeof(msg),
+			    "\nagent '%s' not found\n", arg);
+			ui_push(u, ST_ERROR, msg);
+			free(adir);
+		} else {
+			free(adir);
+			/* Resolve the agent's model (or the top-level
+			 * default, if the profile doesn't set its own)
+			 * down to a provider connection -- same
+			 * indirection as the startup path in main.c. */
+			const char *model_name = clm_lua_cfg_get_str(u->lcfg, "model");
+			const char *prov = model_name
+			    ? clm_lua_cfg_model_str(u->lcfg, model_name, "provider")
+			    : NULL;
+			const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
+			const char *pkind = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "kind") : NULL;
+			const char *pkey = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "api_key") : NULL;
+			const char *pmodel = model_name
+			    ? clm_lua_cfg_model_str(u->lcfg, model_name, "model")
+			    : NULL;
+			const char *sprompt = clm_lua_cfg_get_str(u->lcfg, "system_prompt");
+
+			/* Tear down plugins + MCP clients (must happen while the
+			 * old agent is still alive: unregistering their tools
+			 * touches it) + agent. */
+			clm_lua_env_free(u->lua_env);
+			u->lua_env = NULL;
+			clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
+			u->mcp_clients = NULL;
+			u->mcp_client_count = 0;
+			clm_agent_free(u->agent);
+
+			/* Rebuild cfg. */
+			int r;
+			struct clm_cfg newcfg = {0};
+			char url_buf[512];
+			if (purl != NULL) {
+				size_t ulen = strlen(purl);
+				while (ulen > 0 && purl[ulen-1] == '/')
+					ulen--;
+				(void)snprintf(url_buf, sizeof(url_buf),
+				    "%.*s/chat/completions", (int)ulen, purl);
+				newcfg.base_url = url_buf;
+			} else {
+				newcfg.base_url = "http://127.0.0.1:8081/v1/chat/completions";
+			}
+			newcfg.model = pmodel ? pmodel : "local-model";
+			newcfg.api_key = pkey ? pkey : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY") : "sk-no-key-required");
+			newcfg.system_prompt = sprompt;
+			newcfg.provider = clm_provider_from_str(pkind);
+			newcfg.stream = 1;
+			if (model_name) {
+				newcfg.context_size = clm_lua_cfg_model_int(u->lcfg, model_name, "context_size", 0);
+				newcfg.autocompact_pct = (int)clm_lua_cfg_model_int(u->lcfg, model_name, "autocompact_pct", 0);
+			}
+			if (prov) {
+				newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
+				newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
+			}
+			/* Volatile-tool policy from the new agent profile.
+			 * Not freed on the next switch (borrowed by the
+			 * agent for its lifetime) -- same intentional
+			 * process-lifetime leak as lcfg itself. */
+			newcfg.volatile_tools = (const char *const *)
+			    clm_lua_cfg_get_str_list(u->lcfg, "volatile_tools");
+
+			r = clm_agent_new(&newcfg, u->host, &tui_callbacks, u, &u->agent);
+			if (r < 0) {
+				ui_push(u, ST_ERROR, "\nfailed to create agent\n");
+			} else {
+				clm_tools_register_shell(u->agent);
+				clm_tools_register_bg(u->agent);
+				/* Reload plugins. */
+				if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
+					clm_lua_env_set_config_from(u->lua_env, u->lcfg);
+					if (u->plugin_dir != NULL) {
+						clm_lua_load_plugins(u->lua_env, u->plugin_dir);
+					} else {
+						char *pp = xdg_config_path("clm/plugins");
+						if (pp != NULL) {
+							clm_lua_load_plugins(u->lua_env, pp);
+							free(pp);
+						}
+					}
+					/* Load agent-specific plugins. */
+					char *apdir = xdg_config_path("clm/agents");
+					if (apdir != NULL) {
+						char apbuf[512];
+						(void)snprintf(apbuf, sizeof(apbuf), "%s/%s", apdir, arg);
+						clm_lua_load_plugins(u->lua_env, apbuf);
+						free(apdir);
+					}
+				}
+				u->mcp_clients = clm_cli_connect_mcp_servers(u->agent,
+				    u->loop, u->lcfg, cb_mcp_status, u,
+				    &u->mcp_client_count);
+				free(u->agent_name);
+				u->agent_name = strdup(arg);
+				set_current_model(u, newcfg.model);
+				char msg[128];
+				(void)snprintf(msg, sizeof(msg),
+				    "\n[switched to agent: %s]\n", arg);
+				ui_push(u, ST_META, msg);
+				clm_agent_check_connection(u->agent);
+			}
+		}
+	}
+}
+
+static void
+cmd_model(struct ui *u, const char *arg)
+{
+	/* /model <name>: resolve config.models[name] to a provider
+	 * connection + wire model id and reconfigure the live agent
+	 * in place via clm_agent_set_provider() -- history, tools,
+	 * and MCP clients are untouched. Contrast /agent, which also
+	 * changes the system prompt/tool set and needs a full
+	 * teardown + rebuild. */
+	if (arg[0] == '\0') {
+		list_config_names(u, "models", "model", "/model");
+		(void)clm_agent_list_models(u->agent,
+		    on_live_models_result, on_live_models_error, u);
+	} else if (u->lcfg == NULL) {
+		ui_push(u, ST_ERROR, "\nno config loaded\n");
+	} else {
+		const char *prov = clm_lua_cfg_model_str(u->lcfg, arg, "provider");
+		const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
+		if (prov == NULL || purl == NULL) {
+			/* Not a config.models[] entry -- fall back to
+			 * treating it as a literal wire model id on
+			 * whatever connection is currently active
+			 * (same "config name, or literal fallback"
+			 * contract as -m/--model on the CLI in
+			 * main.c). This is what makes the live
+			 * listing above actually useful: an id the
+			 * server reports but that was never added to
+			 * models{} can still be switched to. No
+			 * context_size/autocompact_pct override
+			 * applies -- same as any other unconfigured
+			 * (provider, model) pair, it gets library
+			 * defaults. */
+			struct clm_cfg litcfg = {0};
+			const char *cur_url = clm_agent_get_base_url(u->agent);
+
+			if (cur_url == NULL) {
+				ui_push(u, ST_ERROR,
+				    "\nno active connection to switch on\n");
+			} else {
+				char msg[160];
+
+				litcfg.base_url = cur_url;
+				litcfg.api_key = clm_agent_get_api_key(u->agent);
+				litcfg.provider = clm_agent_get_provider(u->agent);
+				litcfg.model = arg;
+
+				int rc = clm_agent_set_provider(u->agent, &litcfg);
+				if (rc == 0) {
+					set_current_model(u, litcfg.model);
+					(void)snprintf(msg, sizeof(msg),
+					    "\n[switched to model: %s "
+					    "(literal, not in config.lua)]\n", arg);
+					ui_push(u, ST_META, msg);
+					clm_agent_check_connection(u->agent);
+				} else if (rc == -EBUSY) {
+					ui_push(u, ST_ERROR,
+					    "\nbusy; try again when idle\n");
+				} else {
+					ui_push(u, ST_ERROR,
+					    "\nfailed to switch model\n");
+				}
+			}
+		} else {
+			struct clm_cfg newcfg = {0};
+			char url_buf[512];
+			size_t ulen = strlen(purl);
+			while (ulen > 0 && purl[ulen-1] == '/')
+				ulen--;
+			(void)snprintf(url_buf, sizeof(url_buf),
+			    "%.*s/chat/completions", (int)ulen, purl);
+			newcfg.base_url = url_buf;
+			newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, prov, "api_key");
+			newcfg.provider = clm_provider_from_str(
+			    clm_lua_cfg_provider_str(u->lcfg, prov, "kind"));
+			const char *pmodel = clm_lua_cfg_model_str(u->lcfg, arg, "model");
+			newcfg.model = pmodel ? pmodel : "local-model";
+			newcfg.context_size = clm_lua_cfg_model_int(u->lcfg, arg, "context_size", 0);
+			newcfg.autocompact_pct = (int)clm_lua_cfg_model_int(u->lcfg, arg, "autocompact_pct", 0);
+			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
+			newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
+
+			int rc = clm_agent_set_provider(u->agent, &newcfg);
+			if (rc == 0) {
+				set_current_model(u, newcfg.model);
+				char msg[128];
+				(void)snprintf(msg, sizeof(msg),
+				    "\n[switched to model: %s]\n", arg);
+				ui_push(u, ST_META, msg);
+				clm_agent_check_connection(u->agent);
+			} else if (rc == -EBUSY) {
+				ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+			} else {
+				ui_push(u, ST_ERROR, "\nfailed to switch model\n");
+			}
+		}
+	}
+}
+
+static void
+cmd_provider(struct ui *u, const char *arg)
+{
+	/* /provider <name>: like /model, but overrides only the
+	 * provider connection (endpoint, key, wire dialect, rate
+	 * limits) backing whichever model is currently active, e.g.
+	 * to fail over to a mirror endpoint without changing which
+	 * model is requested. */
+	if (arg[0] == '\0') {
+		list_config_names(u, "providers", "provider", "/provider");
+	} else if (u->lcfg == NULL) {
+		ui_push(u, ST_ERROR, "\nno config loaded\n");
+	} else {
+		const char *purl = clm_lua_cfg_provider_str(u->lcfg, arg, "url");
+		if (purl == NULL) {
+			char msg[128];
+			(void)snprintf(msg, sizeof(msg),
+			    "\nprovider '%s' not found\n", arg);
+			ui_push(u, ST_ERROR, msg);
+		} else {
+			struct clm_cfg newcfg = {0};
+			char url_buf[512];
+			size_t ulen = strlen(purl);
+			while (ulen > 0 && purl[ulen-1] == '/')
+				ulen--;
+			(void)snprintf(url_buf, sizeof(url_buf),
+			    "%.*s/chat/completions", (int)ulen, purl);
+			newcfg.base_url = url_buf;
+			newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, arg, "api_key");
+			newcfg.provider = clm_provider_from_str(
+			    clm_lua_cfg_provider_str(u->lcfg, arg, "kind"));
+			newcfg.model = u->model; /* keep the currently active model */
+			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, arg, "rate_tokens_per_sec", 0);
+			newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, arg, "rate_burst", 0);
+
+			int rc = clm_agent_set_provider(u->agent, &newcfg);
+			if (rc == 0) {
+				char msg[128];
+				(void)snprintf(msg, sizeof(msg),
+				    "\n[switched to provider: %s]\n", arg);
+				ui_push(u, ST_META, msg);
+				clm_agent_check_connection(u->agent);
+			} else if (rc == -EBUSY) {
+				ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+			} else {
+				ui_push(u, ST_ERROR, "\nfailed to switch provider\n");
+			}
+		}
+	}
+}
+
 /* A '/word ...' line: run a UI command instead of prompting the model. */
 static void
 run_command(struct ui *u, const char *line)
@@ -1566,269 +1842,11 @@ run_command(struct ui *u, const char *line)
 			ui_push(u, ST_ERROR, "\ncompaction failed to start\n");
 		}
 	} else if (CMD("agent") || CMD("a")) {
-		/* /agent <name>
-		 * Switch agent: reload profile, swap provider+prompt, clear history.
-		 * Safe even mid-turn: clm_agent_free() (via clm_tools_detach(),
-		 * lib/tools.c) severs any in-flight tool batch from the agent
-		 * before freeing it, so a shell/bg child process that is still
-		 * running gets to finish asynchronously without touching freed
-		 * memory. */
-		if (arg[0] == '\0') {
-			ui_push(u, ST_META, "\nusage: /agent <name>\n");
-		} else if (u->lcfg == NULL) {
-			ui_push(u, ST_ERROR, "\nno config loaded\n");
-		} else {
-			char *adir = xdg_config_path("clm/agents");
-			if (clm_lua_cfg_load_agent(u->lcfg, adir, arg) < 0) {
-				char msg[128];
-				(void)snprintf(msg, sizeof(msg),
-				    "\nagent '%s' not found\n", arg);
-				ui_push(u, ST_ERROR, msg);
-				free(adir);
-			} else {
-				free(adir);
-				/* Resolve the agent's model (or the top-level
-				 * default, if the profile doesn't set its own)
-				 * down to a provider connection -- same
-				 * indirection as the startup path in main.c. */
-				const char *model_name = clm_lua_cfg_get_str(u->lcfg, "model");
-				const char *prov = model_name
-				    ? clm_lua_cfg_model_str(u->lcfg, model_name, "provider")
-				    : NULL;
-				const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
-				const char *pkind = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "kind") : NULL;
-				const char *pkey = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "api_key") : NULL;
-				const char *pmodel = model_name
-				    ? clm_lua_cfg_model_str(u->lcfg, model_name, "model")
-				    : NULL;
-				const char *sprompt = clm_lua_cfg_get_str(u->lcfg, "system_prompt");
-
-				/* Tear down plugins + MCP clients (must happen while the
-				 * old agent is still alive: unregistering their tools
-				 * touches it) + agent. */
-				clm_lua_env_free(u->lua_env);
-				u->lua_env = NULL;
-				clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
-				u->mcp_clients = NULL;
-				u->mcp_client_count = 0;
-				clm_agent_free(u->agent);
-
-				/* Rebuild cfg. */
-				int r;
-				struct clm_cfg newcfg = {0};
-				char url_buf[512];
-				if (purl != NULL) {
-					size_t ulen = strlen(purl);
-					while (ulen > 0 && purl[ulen-1] == '/')
-						ulen--;
-					(void)snprintf(url_buf, sizeof(url_buf),
-					    "%.*s/chat/completions", (int)ulen, purl);
-					newcfg.base_url = url_buf;
-				} else {
-					newcfg.base_url = "http://127.0.0.1:8081/v1/chat/completions";
-				}
-				newcfg.model = pmodel ? pmodel : "local-model";
-				newcfg.api_key = pkey ? pkey : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY") : "sk-no-key-required");
-				newcfg.system_prompt = sprompt;
-				newcfg.provider = clm_provider_from_str(pkind);
-				newcfg.stream = 1;
-				if (model_name) {
-					newcfg.context_size = clm_lua_cfg_model_int(u->lcfg, model_name, "context_size", 0);
-					newcfg.autocompact_pct = (int)clm_lua_cfg_model_int(u->lcfg, model_name, "autocompact_pct", 0);
-				}
-				if (prov) {
-					newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
-					newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
-				}
-				/* Volatile-tool policy from the new agent profile.
-				 * Not freed on the next switch (borrowed by the
-				 * agent for its lifetime) -- same intentional
-				 * process-lifetime leak as lcfg itself. */
-				newcfg.volatile_tools = (const char *const *)
-				    clm_lua_cfg_get_str_list(u->lcfg, "volatile_tools");
-
-				r = clm_agent_new(&newcfg, u->host, &tui_callbacks, u, &u->agent);
-				if (r < 0) {
-					ui_push(u, ST_ERROR, "\nfailed to create agent\n");
-				} else {
-					clm_tools_register_shell(u->agent);
-					clm_tools_register_bg(u->agent);
-					/* Reload plugins. */
-					if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
-						clm_lua_env_set_config_from(u->lua_env, u->lcfg);
-						if (u->plugin_dir != NULL) {
-							clm_lua_load_plugins(u->lua_env, u->plugin_dir);
-						} else {
-							char *pp = xdg_config_path("clm/plugins");
-							if (pp != NULL) {
-								clm_lua_load_plugins(u->lua_env, pp);
-								free(pp);
-							}
-						}
-						/* Load agent-specific plugins. */
-						char *apdir = xdg_config_path("clm/agents");
-						if (apdir != NULL) {
-							char apbuf[512];
-							(void)snprintf(apbuf, sizeof(apbuf), "%s/%s", apdir, arg);
-							clm_lua_load_plugins(u->lua_env, apbuf);
-							free(apdir);
-						}
-					}
-					u->mcp_clients = clm_cli_connect_mcp_servers(u->agent,
-					    u->loop, u->lcfg, cb_mcp_status, u,
-					    &u->mcp_client_count);
-					free(u->agent_name);
-					u->agent_name = strdup(arg);
-					set_current_model(u, newcfg.model);
-					char msg[128];
-					(void)snprintf(msg, sizeof(msg),
-					    "\n[switched to agent: %s]\n", arg);
-					ui_push(u, ST_META, msg);
-					clm_agent_check_connection(u->agent);
-				}
-			}
-		}
+		cmd_agent(u, arg);
 	} else if (CMD("model")) {
-		/* /model <name>: resolve config.models[name] to a provider
-		 * connection + wire model id and reconfigure the live agent
-		 * in place via clm_agent_set_provider() -- history, tools,
-		 * and MCP clients are untouched. Contrast /agent, which also
-		 * changes the system prompt/tool set and needs a full
-		 * teardown + rebuild. */
-		if (arg[0] == '\0') {
-			list_config_names(u, "models", "model", "/model");
-			(void)clm_agent_list_models(u->agent,
-			    on_live_models_result, on_live_models_error, u);
-		} else if (u->lcfg == NULL) {
-			ui_push(u, ST_ERROR, "\nno config loaded\n");
-		} else {
-			const char *prov = clm_lua_cfg_model_str(u->lcfg, arg, "provider");
-			const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
-			if (prov == NULL || purl == NULL) {
-				/* Not a config.models[] entry -- fall back to
-				 * treating it as a literal wire model id on
-				 * whatever connection is currently active
-				 * (same "config name, or literal fallback"
-				 * contract as -m/--model on the CLI in
-				 * main.c). This is what makes the live
-				 * listing above actually useful: an id the
-				 * server reports but that was never added to
-				 * models{} can still be switched to. No
-				 * context_size/autocompact_pct override
-				 * applies -- same as any other unconfigured
-				 * (provider, model) pair, it gets library
-				 * defaults. */
-				struct clm_cfg litcfg = {0};
-				const char *cur_url = clm_agent_get_base_url(u->agent);
-
-				if (cur_url == NULL) {
-					ui_push(u, ST_ERROR,
-					    "\nno active connection to switch on\n");
-				} else {
-					char msg[160];
-
-					litcfg.base_url = cur_url;
-					litcfg.api_key = clm_agent_get_api_key(u->agent);
-					litcfg.provider = clm_agent_get_provider(u->agent);
-					litcfg.model = arg;
-
-					int rc = clm_agent_set_provider(u->agent, &litcfg);
-					if (rc == 0) {
-						set_current_model(u, litcfg.model);
-						(void)snprintf(msg, sizeof(msg),
-						    "\n[switched to model: %s "
-						    "(literal, not in config.lua)]\n", arg);
-						ui_push(u, ST_META, msg);
-						clm_agent_check_connection(u->agent);
-					} else if (rc == -EBUSY) {
-						ui_push(u, ST_ERROR,
-						    "\nbusy; try again when idle\n");
-					} else {
-						ui_push(u, ST_ERROR,
-						    "\nfailed to switch model\n");
-					}
-				}
-			} else {
-				struct clm_cfg newcfg = {0};
-				char url_buf[512];
-				size_t ulen = strlen(purl);
-				while (ulen > 0 && purl[ulen-1] == '/')
-					ulen--;
-				(void)snprintf(url_buf, sizeof(url_buf),
-				    "%.*s/chat/completions", (int)ulen, purl);
-				newcfg.base_url = url_buf;
-				newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, prov, "api_key");
-				newcfg.provider = clm_provider_from_str(
-				    clm_lua_cfg_provider_str(u->lcfg, prov, "kind"));
-				const char *pmodel = clm_lua_cfg_model_str(u->lcfg, arg, "model");
-				newcfg.model = pmodel ? pmodel : "local-model";
-				newcfg.context_size = clm_lua_cfg_model_int(u->lcfg, arg, "context_size", 0);
-				newcfg.autocompact_pct = (int)clm_lua_cfg_model_int(u->lcfg, arg, "autocompact_pct", 0);
-				newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
-				newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
-
-				int rc = clm_agent_set_provider(u->agent, &newcfg);
-				if (rc == 0) {
-					set_current_model(u, newcfg.model);
-					char msg[128];
-					(void)snprintf(msg, sizeof(msg),
-					    "\n[switched to model: %s]\n", arg);
-					ui_push(u, ST_META, msg);
-					clm_agent_check_connection(u->agent);
-				} else if (rc == -EBUSY) {
-					ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
-				} else {
-					ui_push(u, ST_ERROR, "\nfailed to switch model\n");
-				}
-			}
-		}
+		cmd_model(u, arg);
 	} else if (CMD("provider")) {
-		/* /provider <name>: like /model, but overrides only the
-		 * provider connection (endpoint, key, wire dialect, rate
-		 * limits) backing whichever model is currently active, e.g.
-		 * to fail over to a mirror endpoint without changing which
-		 * model is requested. */
-		if (arg[0] == '\0') {
-			list_config_names(u, "providers", "provider", "/provider");
-		} else if (u->lcfg == NULL) {
-			ui_push(u, ST_ERROR, "\nno config loaded\n");
-		} else {
-			const char *purl = clm_lua_cfg_provider_str(u->lcfg, arg, "url");
-			if (purl == NULL) {
-				char msg[128];
-				(void)snprintf(msg, sizeof(msg),
-				    "\nprovider '%s' not found\n", arg);
-				ui_push(u, ST_ERROR, msg);
-			} else {
-				struct clm_cfg newcfg = {0};
-				char url_buf[512];
-				size_t ulen = strlen(purl);
-				while (ulen > 0 && purl[ulen-1] == '/')
-					ulen--;
-				(void)snprintf(url_buf, sizeof(url_buf),
-				    "%.*s/chat/completions", (int)ulen, purl);
-				newcfg.base_url = url_buf;
-				newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, arg, "api_key");
-				newcfg.provider = clm_provider_from_str(
-				    clm_lua_cfg_provider_str(u->lcfg, arg, "kind"));
-				newcfg.model = u->model; /* keep the currently active model */
-				newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, arg, "rate_tokens_per_sec", 0);
-				newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, arg, "rate_burst", 0);
-
-				int rc = clm_agent_set_provider(u->agent, &newcfg);
-				if (rc == 0) {
-					char msg[128];
-					(void)snprintf(msg, sizeof(msg),
-					    "\n[switched to provider: %s]\n", arg);
-					ui_push(u, ST_META, msg);
-					clm_agent_check_connection(u->agent);
-				} else if (rc == -EBUSY) {
-					ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
-				} else {
-					ui_push(u, ST_ERROR, "\nfailed to switch provider\n");
-				}
-			}
-		}
+		cmd_provider(u, arg);
 	} else if (CMD("quit") || CMD("exit") || CMD("q")) {
 		u->quit = true;
 	} else {
