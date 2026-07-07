@@ -83,6 +83,7 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 		return;
 	u->segs[u->nsegs].style = style;
 	u->segs[u->nsegs].text = dup;
+	memset(u->segs[u->nsegs].cnt, 0, sizeof(u->segs[u->nsegs].cnt));
 	u->nsegs++;
 	/* A new span of a different style closes the previous line's context;
 	 * bump gen so the switch is rendered even without an embedded newline. */
@@ -341,43 +342,64 @@ cb_tool_result(const char *name, const char *content,
 	}
 }
 
-/* Emit "ran 2 commands, read 3 files, ..." from the batch tally. */
+/* Shared "ran N commands, read N files, wrote N files, called N tools" tally
+ * formatter behind both the per-batch summary line (push_batch_summary) and
+ * the collapsed-older-clusters aggregate (push_collapsed_summary). Returns
+ * false (line untouched) if every count is zero. */
+static bool
+format_tool_tally(char *line, size_t cap, const int cnt[4], const char *suffix)
+{
+	size_t n;
+	int parts = 0;
+	static const struct {
+		const char *one, *many;
+	} cats[] = {
+	    {"ran 1 command", "commands"},
+	    {"read 1 file", "files"},
+	    {"wrote 1 file", "files"},
+	    {"called 1 tool", "tools"},
+	};
+	static const char *verb[] = {"ran", "read", "wrote", "called"};
+
+	if (cnt[0] + cnt[1] + cnt[2] + cnt[3] == 0)
+		return false;
+
+	n = (size_t)snprintf(line, cap, "  -- ");
+	for (size_t i = 0; i < 4; i++) {
+		if (cnt[i] == 0)
+			continue;
+		if (parts++ > 0 && n < cap - 4)
+			n += (size_t)snprintf(line + n, cap - n, ", ");
+		if (cnt[i] == 1)
+			n += (size_t)snprintf(line + n, cap - n, "%s", cats[i].one);
+		else
+			n += (size_t)snprintf(line + n, cap - n, "%s %d %s",
+			                      verb[i], cnt[i], cats[i].many);
+	}
+	if (n < cap - 1)
+		snprintf(line + n, cap - n, "%s", suffix);
+	return true;
+}
+
+/* Emit "ran 2 commands, read 3 files, ..." from the batch tally, tagged
+ * ST_BATCH (not ST_META) and carrying the raw counts on the segment so a
+ * later, no-longer-latest cluster can still be folded into a combined
+ * aggregate once a newer one takes its place (see rebuild_render). */
 static void
 push_batch_summary(struct ui *u)
 {
 	char line[128];
-	size_t n = 0;
-	int parts = 0;
-	const struct {
-		int count;
-		const char *one, *many;
-	} cats[] = {
-	    {u->n_cmd, "ran 1 command", "commands"},
-	    {u->n_read, "read 1 file", "files"},
-	    {u->n_write, "wrote 1 file", "files"},
-	    {u->n_other, "called 1 tool", "tools"},
-	};
-	static const char *verb[] = {"ran", "read", "wrote", "called"};
+	int cnt[4] = {u->n_cmd, u->n_read, u->n_write, u->n_other};
 
-	n += (size_t)snprintf(line, sizeof(line), "  -- ");
-	for (size_t i = 0; i < sizeof(cats) / sizeof(cats[0]); i++) {
-		if (cats[i].count == 0)
-			continue;
-		if (parts++ > 0 && n < sizeof(line) - 4)
-			n += (size_t)snprintf(line + n, sizeof(line) - n, ", ");
-		if (cats[i].count == 1)
-			n += (size_t)snprintf(line + n, sizeof(line) - n, "%s",
-			                      cats[i].one);
-		else
-			n += (size_t)snprintf(line + n, sizeof(line) - n,
-			                      "%s %d %s", verb[i],
-			                      cats[i].count, cats[i].many);
-	}
-	if (parts == 0)
+	if (!format_tool_tally(line, sizeof(line), cnt, "\n"))
 		return;
-	if (n < sizeof(line) - 1)
-		snprintf(line + n, sizeof(line) - n, "\n");
-	ui_push(u, ST_META, line);
+	ui_push(u, ST_BATCH, line);
+	if (u->nsegs > 0 && u->segs[u->nsegs - 1].style == ST_BATCH) {
+		u->segs[u->nsegs - 1].cnt[0] = cnt[0];
+		u->segs[u->nsegs - 1].cnt[1] = cnt[1];
+		u->segs[u->nsegs - 1].cnt[2] = cnt[2];
+		u->segs[u->nsegs - 1].cnt[3] = cnt[3];
+	}
 }
 
 static void
@@ -732,6 +754,7 @@ seg_attr(enum ui_style style)
 	case ST_TIMEOUT:
 		return COLOR_PAIR(4);
 	case ST_META:
+	case ST_BATCH:
 		return A_DIM;
 	case ST_NORMAL:
 		break;
@@ -1134,11 +1157,27 @@ push_tool_output(struct ui *u, const char *text, bool is_latest)
 	rseg_push(u, seg_attr(ST_TOOL_OUT), hint, strlen(hint));
 }
 
+/* Render one combined "-- ran N commands, read N files, ..." line summarizing
+ * every tool-call cluster older than the most recent one, in place of their
+ * individual "executing ..."/output/tally lines. ^O (u->expand_output)
+ * bypasses this in rebuild_render, so this is only ever reached collapsed. */
+static void
+push_collapsed_summary(struct ui *u, const int cnt[4])
+{
+	char line[160];
+
+	if (format_tool_tally(line, sizeof(line), cnt, " (^O to expand)\n"))
+		rseg_push(u, seg_attr(ST_META), line, strlen(line));
+}
+
 /* Resolve the source span list into the rendered run cache for width w. */
 static void
 rebuild_render(struct ui *u, int w)
 {
 	size_t last_tool_out = (size_t)-1;
+	size_t last_batch = (size_t)-1, collapse_end = (size_t)-1;
+	int agg[4] = {0, 0, 0, 0};
+	bool aggregating = false;
 
 	for (size_t i = 0; i < u->nrsegs; i++)
 		free(u->rsegs[i].text);
@@ -1153,8 +1192,52 @@ rebuild_render(struct ui *u, int w)
 		}
 	}
 
+	/* Find the two most recent ST_BATCH segments. Everything up to and
+	 * including the second-to-last one (collapse_end) belongs to a
+	 * completed tool-call cluster older than the latest one, and gets
+	 * folded into a single aggregate below instead of rendered
+	 * individually. Skipped entirely (collapse_end left at -1) when ^O
+	 * is on, or when there's at most one completed cluster so far --
+	 * nothing older to collapse yet. */
+	if (!u->expand_output) {
+		for (size_t i = u->nsegs; i > 0; i--) {
+			if (u->segs[i - 1].style != ST_BATCH)
+				continue;
+			if (last_batch == (size_t)-1) {
+				last_batch = i - 1;
+				continue;
+			}
+			collapse_end = i - 1;
+			break;
+		}
+	}
+
 	for (size_t i = 0; i < u->nsegs; i++) {
 		const struct seg *g = &u->segs[i];
+
+		/* Mute tool-cluster segments in the collapsed range, tallying
+		 * ST_BATCH's counts as we go; anything else in that range
+		 * (e.g. assistant text interleaved between tool calls) still
+		 * renders normally, flushing any pending aggregate first so
+		 * ordering stays correct. */
+		if (collapse_end != (size_t)-1 && i <= collapse_end &&
+		    (g->style == ST_TOOL || g->style == ST_TOOL_OUT ||
+		     g->style == ST_BATCH)) {
+			if (g->style == ST_BATCH) {
+				agg[0] += g->cnt[0];
+				agg[1] += g->cnt[1];
+				agg[2] += g->cnt[2];
+				agg[3] += g->cnt[3];
+			}
+			aggregating = true;
+			continue;
+		}
+		if (aggregating) {
+			push_collapsed_summary(u, agg);
+			agg[0] = agg[1] = agg[2] = agg[3] = 0;
+			aggregating = false;
+		}
+
 		if (g->style == ST_REASON && !u->show_reasoning)
 			continue; /* think channel hidden */
 		if (g->style == ST_ASSIST && w >= 4)
@@ -1167,6 +1250,9 @@ rebuild_render(struct ui *u, int w)
 			rseg_push(u, seg_attr(g->style), g->text,
 			          strlen(g->text));
 	}
+	if (aggregating)
+		push_collapsed_summary(u, agg);
+
 	u->built_gen = u->gen;
 	u->built_width = w;
 	u->built_expand = u->expand_output;

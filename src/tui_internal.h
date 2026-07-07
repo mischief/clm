@@ -36,12 +36,22 @@ enum ui_style {
 	ST_ERROR,    /* failures */
 	ST_TIMEOUT,  /* timed-out tool */
 	ST_META,     /* dim meta notes */
+	ST_BATCH,    /* per-tool-call tally line ("-- ran 1 command"); a
+	              * distinct style from ST_META purely so rebuild_render
+	              * (tui.c) can find tool-call cluster boundaries without
+	              * guessing from other ST_META text */
 };
 
 /* One styled run of transcript source text (queued by a callback). */
 struct seg {
 	enum ui_style style;
 	char *text;
+	/* Valid only when style == ST_BATCH: the {cmd, read, write, other}
+	 * tally this segment's line was formatted from -- kept as numbers
+	 * (not just the rendered text) so several older ST_BATCH segments
+	 * can be summed into one combined aggregate line at render time (see
+	 * rebuild_render/push_collapsed_summary in tui.c). */
+	int cnt[4];
 };
 
 /* One run of rendered text with a resolved curses attribute, ready to draw. */
