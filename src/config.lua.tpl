@@ -16,13 +16,17 @@ return {
 
     -- Default model, used when no agent profile sets its own.
     -- "provider/model-id": which providers[] entry below, and which
-    -- literal wire model id to request. Groq is the fastest path to
-    -- an actually-working setup: a free key with no credit card,
-    -- ~30 seconds via GitHub/Google login, generous limits (30
-    -- requests/min, 1000/day as of this writing). Anthropic is the
-    -- strongest model but needs a paid key.
-    -- model = "groq/llama-3.3-70b-versatile",
+    -- literal wire model id to request. The free-tier providers below
+    -- (Groq, Cerebras, etc.) are real and need no credit card, but
+    -- their tokens-per-minute limits are sized for light, occasional
+    -- use -- clm's system prompt + tool schemas alone run several
+    -- thousand tokens before any conversation happens, and a request
+    -- that size plus a few turns of history is enough to 429 on more
+    -- than one of them (verified against Groq and Cerebras directly).
+    -- Fine for short, tool-light sessions; for anything more, a paid
+    -- Anthropic key is the reliable option.
     -- model = "anthropic/claude-sonnet-5",
+    -- model = "groq/llama-3.3-70b-versatile",
 
     providers = {
         anthropic = {
@@ -39,7 +43,9 @@ return {
         -- Everything below is OpenAI-compatible (kind = "openai"),
         -- differing only in url and which key it needs. All have a
         -- free tier requiring no credit card, current as of this
-        -- writing -- double check before relying on it.
+        -- writing -- double check before relying on it. Free-tier
+        -- tokens-per-minute limits are tight for a tool-heavy agent
+        -- like clm (see the `model` comment above); fine for light use.
         groq = { -- free key: https://console.groq.com/keys
             kind = "openai",
             url = "https://api.groq.com/openai/v1",
