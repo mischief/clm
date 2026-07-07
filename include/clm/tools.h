@@ -65,12 +65,12 @@ void clm_tools_free_registry(struct clm_tool_list *tools);
 cJSON *clm_tools_build_schema(const struct clm_agent *agent);
 
 /*
- * Dispatch a batch of assistant tool \ calls. \ \ \ \ \ \ \ \ Records the assistant tool-call
- * \ message and one tool-result message per call into history, firing
- * \ on_tool_begin/on_tool_result. Runs asynchronously: returns 0 once the batch
- * \ is started (negative errno on setup failure), and calls clm_agent_tools_done
- * \ when every call has completed. tool_calls is the borrowed cJSON array from
- * \ the model response.
+ * Dispatch a batch of assistant tool calls. Records the assistant tool-call
+ * message and one tool-result message per call into history, firing
+ * on_tool_begin/on_tool_result. Runs asynchronously: returns 0 once the batch
+ * is started (negative errno on setup failure), and calls clm_agent_tools_done
+ * when every call has completed. tool_calls is the borrowed cJSON array from
+ * the model response.
  */
 int clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls);
 
