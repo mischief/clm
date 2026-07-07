@@ -348,6 +348,23 @@ anthropic_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools
 	cJSON_AddItemToObject(req, "max_tokens", cJSON_CreateNumber(CLM_ANTHROPIC_MAX_TOKENS));
 	cJSON_AddItemToObject(req, "stream", cJSON_CreateBool(stream));
 
+	/* Top-level auto-caching: caches the last cacheable block (tools,
+	 * then system, then messages, in that render order) without having
+	 * to annotate individual content blocks -- works fine with system
+	 * as a plain string, no restructuring needed. clm resends the full
+	 * history every turn, so on any session long enough to matter this
+	 * turns most of that resend into ~0.1x-cost cache reads instead of
+	 * full-price input tokens. Silently a no-op below the model's
+	 * minimum cacheable prefix (~1024-4096 tokens depending on tier) --
+	 * no error, cache_creation_input_tokens just reads 0. */
+	{
+		cJSON *cache_control = cJSON_CreateObject();
+		if (cache_control != NULL) {
+			cJSON_AddItemToObject(cache_control, "type", cJSON_CreateString("ephemeral"));
+			cJSON_AddItemToObject(req, "cache_control", cache_control);
+		}
+	}
+
 	if (cJSON_GetArraySize(anth_tools) > 0) {
 		cJSON *tool_choice = cJSON_CreateObject();
 		cJSON_AddItemToObject(req, "tools", anth_tools);
