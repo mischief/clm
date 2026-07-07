@@ -1,6 +1,6 @@
 # Uses the uv host (clm_host_uv) + shell_exec, so it links the uv layer.
 test_agent = executable('test_agent',
-  files('test_agent.c', 'canned.c', '../lib/props.c', '../lib/history.c'),
+  files('test_agent.c', 'canned.c', '../lib/props.c', '../lib/history.c', '../lib/models_list.c'),
   dependencies: [clmuv_dep],
   include_directories: [include_directories('.'), clm_inc, include_directories('../include')],
 )

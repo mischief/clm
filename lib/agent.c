@@ -1021,7 +1021,35 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 
 	if (status != 200) {
 		char buf[256];
-		(void)snprintf(buf, sizeof(buf), "HTTP %d", status);
+		const char *detail = NULL;
+		json_cleanup cJSON *errjson = NULL;
+
+		/* Most OpenAI-compatible backends put the actually useful
+		 * text in {"error":{"message":...}} on a non-2xx response
+		 * (e.g. "model not found: X") -- surface that instead of a
+		 * bare status code, which tells you nothing actionable.
+		 * Falls back to a raw body snippet if it's not that shape
+		 * (or not JSON at all), and to the bare code if the body is
+		 * empty or unparseable. */
+		if (resp != NULL && resp->body != NULL) {
+			errjson = cJSON_Parse(resp->body);
+			if (errjson != NULL) {
+				cJSON *err = cJSON_GetObjectItemCaseSensitive(errjson, "error");
+				cJSON *msg = cJSON_IsObject(err)
+				    ? cJSON_GetObjectItemCaseSensitive(err, "message")
+				    : NULL;
+				if (cJSON_IsString(msg) && msg->valuestring != NULL)
+					detail = msg->valuestring;
+			}
+		}
+
+		if (detail != NULL)
+			(void)snprintf(buf, sizeof(buf), "HTTP %d: %s", status, detail);
+		else if (resp != NULL && resp->body != NULL && resp->body[0] != '\0')
+			(void)snprintf(buf, sizeof(buf), "HTTP %d: %s", status, resp->body);
+		else
+			(void)snprintf(buf, sizeof(buf), "HTTP %d", status);
+
 		if (resp)
 			clm_http_response_free(resp);
 		clm_async_turn_free(turn);
@@ -1368,6 +1396,85 @@ clm_agent_check_connection(struct clm_agent *agent)
 	 * out_req is NULL so this probe is not tracked for cancellation. */
 	return agent_http_post(agent, agent->models_url, NULL, health_success_cb,
 	    health_error_cb, NULL, agent, NULL);
+}
+
+struct models_list_ctx {
+	void (*on_models)(char **ids, void *user);
+	void (*on_error)(const char *msg, void *user);
+	void *user;
+};
+
+static void
+models_list_success_cb(struct clm_http_response *resp, void *user)
+{
+	struct models_list_ctx *ctx = user;
+	char **ids = NULL;
+
+	if (resp != NULL && resp->status_code >= 200 && resp->status_code < 300 &&
+	    resp->body != NULL)
+		ids = clm_parse_models_list(resp->body);
+
+	if (ids != NULL) {
+		if (ctx->on_models)
+			ctx->on_models(ids, ctx->user);
+		clm_free_models_list(ids);
+	} else if (ctx->on_error) {
+		char detail[80];
+		if (resp == NULL) {
+			ctx->on_error("request failed", ctx->user);
+		} else if (resp->status_code < 200 || resp->status_code >= 300) {
+			(void)snprintf(detail, sizeof(detail),
+			    "HTTP %d", resp->status_code);
+			ctx->on_error(detail, ctx->user);
+		} else {
+			ctx->on_error("unexpected response shape "
+			    "(not {\"data\":[{\"id\":...}]})", ctx->user);
+		}
+	}
+	if (resp)
+		clm_http_response_free(resp);
+	free(ctx);
+}
+
+static void
+models_list_error_cb(int error_code, const char *error_msg, void *user)
+{
+	struct models_list_ctx *ctx = user;
+	(void)error_code;
+	if (ctx->on_error)
+		ctx->on_error(error_msg ? error_msg : "request failed", ctx->user);
+	free(ctx);
+}
+
+int
+clm_agent_list_models(struct clm_agent *agent,
+    void (*on_models)(char **ids, void *user),
+    void (*on_error)(const char *msg, void *user),
+    void *user)
+{
+	struct models_list_ctx *ctx;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(agent->models_url != NULL, -EINVAL);
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (ctx == NULL)
+		return -ENOMEM;
+	ctx->on_models = on_models;
+	ctx->on_error = on_error;
+	ctx->user = user;
+
+	/* NULL body => GET. ctx (not agent) is user here since this probe's
+	 * callbacks need their own on_models/on_error/user, distinct from
+	 * the agent-wide connection callbacks health_success_cb uses;
+	 * out_req is NULL so this probe is not tracked for cancellation,
+	 * same as clm_agent_check_connection. */
+	if (agent_http_post(agent, agent->models_url, NULL,
+	    models_list_success_cb, models_list_error_cb, NULL, ctx, NULL) != 0) {
+		free(ctx);
+		return -EIO;
+	}
+	return 0;
 }
 
 int

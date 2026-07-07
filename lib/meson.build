@@ -2,7 +2,7 @@
 # Deliberately free of libuv and libcurl -- transport and timers come in through
 # a struct clm_host (see clm/host.h). The only hard dependency is cJSON (ESP-IDF
 # ships cJSON built-in, so this avoids vendoring json-c into the esp32 tree).
-clm_core_src = files('agent.c', 'http.c', 'llm.c', 'log.c', 'tools.c', 'history.c', 'props.c', 'ratelimit.c')
+clm_core_src = files('agent.c', 'http.c', 'llm.c', 'log.c', 'tools.c', 'history.c', 'props.c', 'models_list.c', 'ratelimit.c')
 
 cjson_dep = dependency('libcjson', kwargs: static_kw)
 

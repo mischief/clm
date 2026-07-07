@@ -731,6 +731,51 @@ test_parse_props(void)
 	CHECK(clm_parse_props(NULL, &ctx) < 0, "props: NULL rejected");
 }
 
+/*
+ * (i2) clm_parse_models_list: extract ids from an OpenAI-compatible GET
+ * /v1/models body, in order, skipping malformed entries; reject garbage.
+ * Pure function, no server needed.
+ */
+static void
+test_parse_models_list(void)
+{
+	char **ids;
+
+	ids = clm_parse_models_list(
+	    "{\"object\":\"list\",\"data\":["
+	    "{\"id\":\"auto\",\"object\":\"model\"},"
+	    "{\"id\":\"kimi-k2.6\",\"object\":\"model\"}]}");
+	CHECK(ids != NULL, "models_list: parses a two-entry catalog");
+	if (ids != NULL) {
+		CHECK(strcmp(ids[0], "auto") == 0, "models_list: first id in order");
+		CHECK(strcmp(ids[1], "kimi-k2.6") == 0, "models_list: second id in order");
+		CHECK(ids[2] == NULL, "models_list: NULL-terminated");
+		clm_free_models_list(ids);
+	}
+
+	/* An entry missing "id" (or with a non-string id) is skipped, not
+	 * fatal to the rest of the list. */
+	ids = clm_parse_models_list(
+	    "{\"data\":[{\"object\":\"model\"},{\"id\":\"ok\"},{\"id\":123}]}");
+	CHECK(ids != NULL, "models_list: malformed entries skipped, not fatal");
+	if (ids != NULL) {
+		CHECK(strcmp(ids[0], "ok") == 0, "models_list: only the valid entry kept");
+		CHECK(ids[1] == NULL, "models_list: skipped entries don't appear");
+		clm_free_models_list(ids);
+	}
+
+	/* Wrong shape, garbage, empty, and NULL are all rejected. */
+	CHECK(clm_parse_models_list("{\"data\":[]}") == NULL,
+	    "models_list: empty data array rejected");
+	CHECK(clm_parse_models_list("{\"object\":\"list\"}") == NULL,
+	    "models_list: missing data field rejected");
+	CHECK(clm_parse_models_list("{\"data\":\"not-an-array\"}") == NULL,
+	    "models_list: non-array data rejected");
+	CHECK(clm_parse_models_list("not json") == NULL,
+	    "models_list: garbage rejected");
+	CHECK(clm_parse_models_list(NULL) == NULL, "models_list: NULL rejected");
+}
+
 /* Count messages of a given role in a history. */
 static int
 count_role(struct clm_history *h, enum clm_role role)
@@ -1180,6 +1225,7 @@ main(void)
 	test_recover_after_error(&loop);
 	test_set_provider_after_error(&loop);
 	test_parse_props();
+	test_parse_models_list();
 	test_history_compact();
 	test_history_compact_agentic();
 	test_history_supersede();

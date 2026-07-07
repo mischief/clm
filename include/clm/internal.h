@@ -141,4 +141,16 @@ void clm_agent_tools_done(struct clm_agent *agent, int status);
  */
 int clm_parse_props(const char *body, int64_t *ctx_out);
 
+/*
+ * Parse an OpenAI-compatible GET /v1/models body ({"data":[{"id":...}]})
+ * into a malloc'd NULL-terminated list of model ids, in response order.
+ * Free with clm_free_models_list(). Returns NULL on malformed body, wrong
+ * shape, or zero usable entries. Declared here so it is unit-testable
+ * without a live server.
+ */
+char **clm_parse_models_list(const char *body);
+
+/* Free a list from clm_parse_models_list(). Safe to call with NULL. */
+void clm_free_models_list(char **ids);
+
 #endif /* CLM_INTERNAL_H */

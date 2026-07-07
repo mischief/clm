@@ -368,6 +368,25 @@ CLM_API bool clm_agent_over_autocompact_threshold(const struct clm_agent *agent)
 CLM_API int clm_agent_check_connection(struct clm_agent *agent);
 
 /*
+ * Query the currently active provider's GET /v1/models catalog (an async
+ * GET, same models_url as clm_agent_check_connection's health probe, but
+ * this one actually parses the body instead of discarding it). Returns 0
+ * once the request is enqueued, negative errno on failure to start.
+ *
+ * Exactly one of on_models/on_error fires, exactly once, from the same
+ * event-loop thread as every other agent callback (see the contract at
+ * the top of this header): on_models with a NULL-terminated array of
+ * model id strings (valid only for the duration of the call -- copy
+ * anything you need to keep), or on_error with a human-readable reason
+ * (unreachable, non-2xx, or a response that isn't the expected
+ * {"data":[{"id":...}]} shape).
+ */
+CLM_API int clm_agent_list_models(struct clm_agent *agent,
+    void (*on_models)(char **ids, void *user),
+    void (*on_error)(const char *msg, void *user),
+    void *user);
+
+/*
  * Cancel the turn in flight: aborts the model request (or running tools) and
  * ends the turn via on_turn_done with status -ECANCELED. Returns 0 if a turn
  * was cancelled, negative errno if nothing was in flight. Safe to call from a
