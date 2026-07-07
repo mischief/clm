@@ -29,6 +29,7 @@ struct tstate {
 	struct clm_host *host;
 	struct clm_agent *agent;
 	int stream;
+	enum clm_provider provider;
 	const char *system_prompt;
 	int turn_done;
 	int turn_status;
@@ -193,7 +194,7 @@ make_agent(struct tstate *st, int port)
 	    "http://127.0.0.1:%d/v1/chat/completions", port);
 	cfg.api_key = "test";
 	cfg.base_url = url;
-	cfg.provider = CLM_PROVIDER_OPENAI;
+	cfg.provider = st->provider;
 	cfg.model = "test-model";
 	cfg.stream = st->stream;
 	cfg.system_prompt = st->system_prompt;
@@ -727,6 +728,159 @@ test_stream_meta(uv_loop_t *loop)
 	CHECK(st.usage.total_tokens == 15, "usage total");
 	CHECK(st.usage.tokens_per_sec > 42.0 && st.usage.tokens_per_sec < 43.0,
 	    "usage tok/s");
+
+	teardown(&st, srv);
+}
+
+/*
+ * (g2) Anthropic Messages API: request shape (auth headers, system pulled
+ * out of messages[], max_tokens) and a non-streaming text reply translated
+ * back from Anthropic's content-block response shape.
+ */
+static void
+test_anthropic_text_reply(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *req;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	st.system_prompt = "SENTINEL_SYS_PROMPT";
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"text\",\"text\":\"hi there\"}],"
+	    "\"stop_reason\":\"end_turn\","
+	    "\"usage\":{\"input_tokens\":11,\"output_tokens\":4}}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hello") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "anthropic text turn ok");
+	CHECK(strstr(st.assistant, "hi there") != NULL, "assistant text delivered");
+	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP, "end_turn mapped to stop");
+	CHECK(st.got_usage && st.usage.prompt_tokens == 11 &&
+	    st.usage.completion_tokens == 4, "anthropic usage translated");
+
+	req = canned_last_request(srv);
+	CHECK(req != NULL && strstr(req, "x-api-key: test") != NULL,
+	    "x-api-key header sent");
+	CHECK(req != NULL && strstr(req, "anthropic-version:") != NULL,
+	    "anthropic-version header sent");
+	CHECK(req != NULL && strstr(req, "Authorization:") == NULL,
+	    "no bearer header for anthropic");
+	CHECK(req != NULL && strstr(req, "\"system\":") != NULL,
+	    "system sent as top-level field");
+	CHECK(req != NULL && strstr(req, "SENTINEL_SYS_PROMPT") != NULL,
+	    "system prompt text sent");
+	CHECK(req != NULL && strstr(req, "\"max_tokens\":") != NULL,
+	    "max_tokens sent");
+	CHECK(req != NULL && strstr(req, "\"role\":\"system\"") == NULL,
+	    "no system role left in messages[]");
+
+	teardown(&st, srv);
+}
+
+/* (g3) Anthropic tool_use in a non-streaming reply, then a tool_result fed
+ * back on the next turn. */
+static void
+test_anthropic_tool_call(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+	const char *req;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\","
+	    "\"name\":\"echo_hello\",\"input\":{}}],"
+	    "\"stop_reason\":\"tool_use\","
+	    "\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}");
+	canned_reply(srv,
+	    "{\"id\":\"msg_2\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"text\",\"text\":\"done\"}],"
+	    "\"stop_reason\":\"end_turn\","
+	    "\"usage\":{\"input_tokens\":8,\"output_tokens\":2}}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	def.name = "echo_hello";
+	def.description = "echo hello";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_hello;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "clm_tool_add");
+
+	CHECK(clm_agent_submit(st.agent, "use the tool") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "anthropic tool turn ok");
+	CHECK(st.tool_results == 1, "one tool result");
+	CHECK(st.last_outcome == CLM_TOOL_OK, "tool outcome ok");
+	CHECK(strstr(st.assistant, "done") != NULL, "final answer delivered");
+	CHECK(canned_request_count(srv) == 2, "two requests");
+
+	req = canned_last_request(srv);
+	CHECK(req != NULL && strstr(req, "\"tool_result\"") != NULL,
+	    "tool result sent as tool_result block");
+	CHECK(req != NULL && strstr(req, "\"tool_use_id\":\"toolu_1\"") != NULL,
+	    "tool_use_id round-tripped");
+
+	teardown(&st, srv);
+}
+
+/* (g4) Anthropic streaming: text deltas, a tool_use block assembled across
+ * content_block_start/content_block_delta events, and message_delta usage. */
+static void
+test_anthropic_stream(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	st.stream = 1;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "event: message_start\n"
+	    "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\","
+	    "\"usage\":{\"input_tokens\":9}}}\n\n"
+	    "event: content_block_start\n"
+	    "data: {\"type\":\"content_block_start\",\"index\":0,"
+	    "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
+	    "event: content_block_delta\n"
+	    "data: {\"type\":\"content_block_delta\",\"index\":0,"
+	    "\"delta\":{\"type\":\"text_delta\",\"text\":\"hi \"}}\n\n"
+	    "event: content_block_delta\n"
+	    "data: {\"type\":\"content_block_delta\",\"index\":0,"
+	    "\"delta\":{\"type\":\"text_delta\",\"text\":\"there\"}}\n\n"
+	    "event: content_block_stop\n"
+	    "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+	    "event: message_delta\n"
+	    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},"
+	    "\"usage\":{\"output_tokens\":3}}\n\n"
+	    "event: message_stop\n"
+	    "data: {\"type\":\"message_stop\"}\n\n");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hello") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "anthropic stream ok");
+	CHECK(strstr(st.assistant, "hi there") != NULL, "streamed deltas assembled");
+	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP, "end_turn mapped to stop");
+	CHECK(st.got_usage && st.usage.prompt_tokens == 9 &&
+	    st.usage.completion_tokens == 3, "input/output tokens combined");
 
 	teardown(&st, srv);
 }
@@ -1331,6 +1485,9 @@ main(void)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_anthropic_text_reply(&loop);
+	test_anthropic_tool_call(&loop);
+	test_anthropic_stream(&loop);
 	test_recover_after_error(&loop);
 	test_set_provider_after_error(&loop);
 	test_parse_props();
