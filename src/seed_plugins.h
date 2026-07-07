@@ -15,9 +15,11 @@ extern const struct clm_seed_plugin clm_seed_plugins[];
 
 /*
  * Write any builtin plugins into dir that aren't already present, so a
- * fresh install has a usable starter set. No-ops (returns 0) once a
- * ".seeded" marker exists in dir, so it only runs once and never
- * clobbers files the user has since edited or deleted.
+ * fresh install has a usable starter set. Per-file idempotent (like
+ * config.lua/secrets.lua in `clm setup`): a file that's already there,
+ * whether a prior seed or a user edit, is left untouched, but a builtin
+ * added to clm_seed_plugins after the user's last `clm setup` still gets
+ * written on the next run. Safe to call on every run of `clm setup`.
  */
 int clm_seed_default_plugins(const char *dir);
 

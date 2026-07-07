@@ -67,15 +67,16 @@ clm_seed_default_plugins(const char *dir)
 		return r;
 
 	size_t dirlen = strlen(dir);
-	autofree char *marker = malloc(dirlen + sizeof("/.seeded"));
-	if (marker == NULL)
-		return -ENOMEM;
-	(void)snprintf(marker, dirlen + sizeof("/.seeded"), "%s/.seeded", dir);
 
-	struct stat st;
-	if (stat(marker, &st) == 0)
-		return 0;
-
+	/* write_file() is O_EXCL, so this is naturally idempotent per file:
+	 * a plugin that's already there (whether it's the same seed from an
+	 * earlier run, or a user edit) is left untouched, and any builtin
+	 * added to clm_seed_plugins since the user's last `clm setup` still
+	 * gets written on the next run instead of being locked out forever
+	 * by a one-shot directory marker. Same contract as config.lua /
+	 * secrets.lua above. If you deliberately delete a builtin plugin
+	 * file, re-running `clm setup` will bring it back -- same tradeoff
+	 * as those two. */
 	for (const struct clm_seed_plugin *p = clm_seed_plugins;
 	    p->name != NULL; p++) {
 		autofree char *path = malloc(dirlen + 1 + strlen(p->name) + 1);
@@ -86,6 +87,5 @@ clm_seed_default_plugins(const char *dir)
 		(void)write_file(path, p->data, p->len);
 	}
 
-	(void)write_file(marker, (const unsigned char *)"", 0);
 	return 0;
 }
