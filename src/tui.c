@@ -2253,6 +2253,84 @@ is_directory(const char *path)
 }
 
 /*
+ * Slash-command names, for completing the first word on the line (e.g.
+ * "/mo<TAB>" -> "/model"). Aliases (h/?, cls, think, a, exit/q) are
+ * intentionally excluded -- completion should offer the canonical name to
+ * type out, not the shortcuts that exist for people who already know
+ * them. Kept in sync by hand with run_command()'s CMD() chain below; if
+ * you add a command there, add its name here too.
+ */
+static const char *const command_names[] = {
+	"help", "clear", "agent", "model", "provider",
+	"reasoning", "output", "compact", "quit",
+};
+#define N_COMMAND_NAMES (sizeof(command_names) / sizeof(command_names[0]))
+
+/*
+ * Complete the first word on the line against command_names when it
+ * starts with '/' -- called instead of file-path completion, which would
+ * otherwise misfire here (looks_like_path treats the leading '/' itself
+ * as "this looks like an absolute path" and tries to opendir("/")).
+ * word points at the '/'; wlen includes it. Same insert-if-one,
+ * common-prefix-if-ambiguous, list-if-no-common-prefix shape as
+ * input_complete's file-path case below, just against a fixed in-memory
+ * list instead of a directory read.
+ */
+static void
+complete_command_name(struct ui *u, size_t wstart, size_t wlen)
+{
+	const char *prefix = u->input + wstart + 1; /* skip '/' */
+	size_t plen = wlen - 1;
+	const char *candidates[N_COMMAND_NAMES];
+	size_t ncandidates = 0;
+
+	for (size_t i = 0; i < N_COMMAND_NAMES; i++) {
+		if (strncmp(command_names[i], prefix, plen) == 0)
+			candidates[ncandidates++] = command_names[i];
+	}
+	if (ncandidates == 0)
+		return;
+
+	/* Longest common prefix among matches (may just be plen itself, if
+	 * the matches diverge right after what's already typed). */
+	size_t common = strlen(candidates[0]);
+	for (size_t i = 1; i < ncandidates; i++) {
+		size_t k = 0;
+		while (k < common && candidates[i][k] == candidates[0][k])
+			k++;
+		common = k;
+	}
+
+	if (ncandidates > 1) {
+		autofree char *buf = malloc(512);
+		if (buf) {
+			int blen = snprintf(buf, 512, "\n");
+			for (size_t i = 0; i < ncandidates && (size_t)blen < 500; i++)
+				blen += snprintf(buf + blen, 512 - (size_t)blen,
+				    "  /%s\n", candidates[i]);
+			ui_push(u, ST_META, buf);
+		}
+	}
+
+	if (ncandidates == 1 || common > plen) {
+		size_t insert_len = ncandidates == 1 ? strlen(candidates[0]) : common;
+		size_t replace_start = wstart + 1; /* after '/' */
+		size_t replace_end = wstart + wlen;
+		size_t tail_len = u->input_len - replace_end;
+		size_t new_len = replace_start + insert_len + tail_len;
+
+		if (new_len < sizeof(u->input)) {
+			memmove(u->input + replace_start + insert_len,
+			    u->input + replace_end, tail_len + 1);
+			memcpy(u->input + replace_start, candidates[0], insert_len);
+			u->input_len = new_len;
+			u->input_pos = replace_start + insert_len;
+			u->dirty = true;
+		}
+	}
+}
+
+/*
  * Tab completion for file paths.
  *
  * If the word under the cursor looks like a file path:
@@ -2273,6 +2351,16 @@ input_complete(struct ui *u)
 		return;
 
 	const char *word = u->input + wstart;
+
+	/* The first word on the line starting with '/' is a slash command,
+	 * not a path -- checked before looks_like_path, which would
+	 * otherwise treat the leading '/' itself as "absolute path" and try
+	 * to opendir("/"). */
+	if (wstart == 0 && wlen > 0 && word[0] == '/') {
+		complete_command_name(u, wstart, wlen);
+		return;
+	}
+
 	if (!looks_like_path(word, wlen))
 		return;
 
