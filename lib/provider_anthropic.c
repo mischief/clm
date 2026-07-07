@@ -19,7 +19,9 @@
  *     single such user message, matching how Anthropic expects them.
  *   - "max_tokens" is required (clm has no per-request token budget config,
  *     so a fixed generous default is used -- see CLM_ANTHROPIC_MAX_TOKENS).
- *   - tool schemas use "input_schema" instead of "function.parameters".
+ *   - tool schemas use "input_schema" instead of "function.parameters",
+ *     and are tagged {"type":"custom", ...} to disambiguate from
+ *     Anthropic's built-in tool types.
  *
  * Response shape differences handled by anthropic_normalize_response() and
  * anthropic_normalize_stream_event(): a single Message with a "content"
@@ -257,7 +259,8 @@ convert_messages(cJSON *messages, char **system_out)
 
 /* Convert the canonical OpenAI-shaped tools[] array ({type:"function",
  * function:{name, description, parameters}}) into Anthropic's flatter
- * {name, description, input_schema} shape. Takes ownership of `tools`. */
+ * {type:"custom", name, description, input_schema} shape. Takes ownership
+ * of `tools`. */
 static cJSON *
 convert_tools(cJSON *tools)
 {
@@ -282,6 +285,14 @@ convert_tools(cJSON *tools)
 			cJSON_Delete(out);
 			return NULL;
 		}
+		/* "type" discriminates a user-defined tool from Anthropic's
+		 * built-in tool types (bash_20250124, text_editor_20250728,
+		 * ...). api.anthropic.com defaults a missing "type" to
+		 * "custom", but at least one Anthropic-compatible endpoint
+		 * (AWS Bedrock's Mantle client) rejects tool objects that omit
+		 * it outright ("Invalid 'tools': missing field `type`") --
+		 * send it explicitly rather than relying on the default. */
+		cJSON_AddItemToObject(out_t, "type", cJSON_CreateString("custom"));
 		jname = cJSON_GetObjectItemCaseSensitive(func, "name");
 		jdesc = cJSON_GetObjectItemCaseSensitive(func, "description");
 		cJSON_AddItemToObject(out_t, "name",
