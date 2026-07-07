@@ -1095,9 +1095,14 @@ count_lines(const char *s, size_t len)
 }
 
 /* Emit a tool-output body: full when expanded, else the first few lines plus a
- * dim "+N lines" hint the user can toggle open with ^O. */
+ * dim "+N lines" hint the user can toggle open with ^O. Older tool output
+ * (is_latest false) collapses further still, down to a single hint line with
+ * no body at all -- once a call is no longer the most recent one, its output
+ * is rarely what the user is looking at, and letting every call in a long
+ * session leave ~8 lines behind makes the transcript unscannable. ^O
+ * (u->expand_output) overrides this for every call, latest or not. */
 static void
-push_tool_output(struct ui *u, const char *text)
+push_tool_output(struct ui *u, const char *text, bool is_latest)
 {
 	enum { PREVIEW = 6 };
 	size_t len = strlen(text);
@@ -1106,8 +1111,14 @@ push_tool_output(struct ui *u, const char *text)
 	int seen;
 	char hint[64];
 
-	if (u->expand_output || total <= PREVIEW) {
+	if (u->expand_output || (is_latest && total <= PREVIEW)) {
 		rseg_push(u, seg_attr(ST_TOOL_OUT), text, len);
+		return;
+	}
+	if (!is_latest) {
+		snprintf(hint, sizeof(hint), "  ... (%d lines, ^O to expand)\n",
+		         total);
+		rseg_push(u, seg_attr(ST_TOOL_OUT), hint, strlen(hint));
 		return;
 	}
 	cut = 0;
@@ -1127,9 +1138,20 @@ push_tool_output(struct ui *u, const char *text)
 static void
 rebuild_render(struct ui *u, int w)
 {
+	size_t last_tool_out = (size_t)-1;
+
 	for (size_t i = 0; i < u->nrsegs; i++)
 		free(u->rsegs[i].text);
 	u->nrsegs = 0;
+
+	/* Find the most recent ST_TOOL_OUT segment so push_tool_output can
+	 * leave only it at full preview depth and collapse the rest. */
+	for (size_t i = u->nsegs; i > 0; i--) {
+		if (u->segs[i - 1].style == ST_TOOL_OUT) {
+			last_tool_out = i - 1;
+			break;
+		}
+	}
 
 	for (size_t i = 0; i < u->nsegs; i++) {
 		const struct seg *g = &u->segs[i];
@@ -1140,7 +1162,7 @@ rebuild_render(struct ui *u, int w)
 		else if (g->style == ST_REASON && w >= 4)
 			render_markdown(u, g->text, w, COLOR_PAIR(6), true);
 		else if (g->style == ST_TOOL_OUT)
-			push_tool_output(u, g->text);
+			push_tool_output(u, g->text, i == last_tool_out);
 		else
 			rseg_push(u, seg_attr(g->style), g->text,
 			          strlen(g->text));
