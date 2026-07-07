@@ -11,6 +11,7 @@
 
 #include "clm/clm.h"
 #include "clm/host_uv.h"
+#include "clm/provider.h"
 #include "frontend.h"
 #include "version.h"
 #include "clm/lua_plugin.h"
@@ -481,7 +482,6 @@ main(int argc, char *argv[])
 	struct cli_state *state;
 	uv_loop_t *loop;
 	char endpoint[256];
-	size_t baselen;
 	int opt, r;
 	struct clm_lua_cfg *lcfg = NULL;
 
@@ -575,16 +575,10 @@ main(int argc, char *argv[])
 	if (model_name == NULL)
 		model_name = "local-model";
 
-	/* -u takes the base endpoint; the provider-specific path is appended:
-	 * Anthropic's Messages API lives at /messages, everything else (OpenAI
-	 * and OpenAI-compatible servers, including Ollama) at
-	 * /chat/completions. */
-	baselen = strlen(api_base);
-	while (baselen > 0 && api_base[baselen - 1] == '/')
-		baselen--;
-	snprintf(endpoint, sizeof(endpoint), "%.*s/%s",
-	    (int)baselen, api_base,
-	    cfg.provider == CLM_PROVIDER_ANTHROPIC ? "messages" : "chat/completions");
+	/* -u takes the base endpoint; the provider-specific path is appended
+	 * by clm_provider_build_url() -- see clm/provider.h's endpoint_path
+	 * for why this must be the one place that logic lives. */
+	clm_provider_build_url(endpoint, sizeof(endpoint), api_base, cfg.provider);
 
 	/* API key: env > config > placeholder. */
 	if (cfg.api_key == NULL) {

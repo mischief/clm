@@ -30,6 +30,7 @@
 #include "clm/log.h"
 #include "clm/host_uv.h"
 #include "clm/lua_plugin.h"
+#include "clm/provider.h"
 #include "complete.h"
 #include "frontend.h"
 #include "md_render.h"
@@ -1865,15 +1866,19 @@ cmd_model(struct ui *u, const char *arg)
 		} else {
 			struct clm_cfg newcfg = {0};
 			char url_buf[512];
-			size_t ulen = strlen(purl);
-			while (ulen > 0 && purl[ulen-1] == '/')
-				ulen--;
-			(void)snprintf(url_buf, sizeof(url_buf),
-			    "%.*s/chat/completions", (int)ulen, purl);
+			enum clm_provider provider = clm_provider_from_str(
+			    clm_lua_cfg_provider_str(u->lcfg, spec_provider, "kind"));
+
+			/* clm_provider_build_url() is the one place the
+			 * base-url + endpoint-path logic lives -- see
+			 * clm/provider.h's endpoint_path for why that matters
+			 * (this call site used to hardcode "/chat/completions"
+			 * independently of main.c's CLI-startup path, and
+			 * drifted out of sync with it). */
+			clm_provider_build_url(url_buf, sizeof(url_buf), purl, provider);
 			newcfg.base_url = url_buf;
 			newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, spec_provider, "api_key");
-			newcfg.provider = clm_provider_from_str(
-			    clm_lua_cfg_provider_str(u->lcfg, spec_provider, "kind"));
+			newcfg.provider = provider;
 			newcfg.model = spec_model;
 			newcfg.context_size = clm_lua_cfg_provider_model_int(u->lcfg,
 			    spec_provider, spec_model, "context_size", 0);

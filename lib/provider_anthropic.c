@@ -765,4 +765,5 @@ const struct clm_provider_ops clm_provider_ops_anthropic = {
 	.build_auth_headers = anthropic_build_auth_headers,
 	.normalize_response = anthropic_normalize_response,
 	.normalize_stream_event = anthropic_normalize_stream_event,
+	.endpoint_path = "messages",
 };

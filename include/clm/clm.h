@@ -41,6 +41,23 @@ enum clm_provider {
 CLM_API enum clm_provider clm_provider_from_str(const char *kind);
 
 /*
+ * Build the full request URL for `provider` into `buf` (size `bufsz`):
+ * `base_url`, with any trailing slash(es) stripped, followed by '/' and
+ * that provider's wire-format request endpoint (see clm/provider.h's
+ * endpoint_path -- library-internal, but this wrapper is the public way
+ * to get the same answer without depending on that header directly).
+ * Truncates (per snprintf) rather than overflowing if `buf` is too
+ * small. This is the one place the base-url + endpoint-path logic
+ * lives; every call site (CLI startup in main.c, runtime /model switch
+ * in tui.c, ...) should go through it rather than reimplementing it --
+ * see the commit that introduced this function for the bug that
+ * happened when two call sites had their own copies and one was fixed
+ * without the other.
+ */
+CLM_API void clm_provider_build_url(char *buf, size_t bufsz,
+    const char *base_url, enum clm_provider provider);
+
+/*
  * The server implementation behind the API, orthogonal to clm_provider (which
  * is the wire dialect). This gates implementation-specific behaviour: e.g.
  * llama.cpp exposes GET /props with n_ctx and slot counts. GENERIC assumes

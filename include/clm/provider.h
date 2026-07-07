@@ -87,11 +87,36 @@ struct clm_provider_ops {
 	 * arrives. NULL in the vtable itself means "raw is already canonical".
 	 */
 	cJSON *(*normalize_stream_event)(cJSON *raw, void **state);
+
+	/*
+	 * The final path segment appended to a provider's configured base
+	 * URL to reach its request endpoint -- e.g. "messages" for
+	 * Anthropic's Messages API, "chat/completions" for everything
+	 * OpenAI-shaped. config.lua's providers[*].url is expected to
+	 * already include the "/v1" (or whatever) prefix up through the
+	 * segment just before this one (see clm_provider_build_url()) --
+	 * matches every existing provider entry's convention (e.g. Groq's
+	 * "https://api.groq.com/openai/v1"). Never NULL in the vtable
+	 * itself.
+	 *
+	 * This exists specifically so build_request's wire dialect and the
+	 * URL it gets POSTed to can never drift apart again: main.c's CLI
+	 * startup path and tui.c's runtime /model-switch path each used to
+	 * hardcode this suffix independently, and the latter was never
+	 * updated when the former was fixed to vary by provider -- see the
+	 * commit that added this field for the bug that caused.
+	 */
+	const char *endpoint_path;
 };
 
 /* Look up the ops for a provider. Never returns NULL: any provider without
  * a wire format of its own (currently OPENAI and OLLAMA) gets the identity
  * ops in provider_openai.c. */
 const struct clm_provider_ops *clm_provider_ops_get(enum clm_provider provider);
+
+/* clm_provider_build_url() -- the base-url + endpoint_path helper -- is
+ * declared in clm/clm.h (public, CLM_API) rather than here: this header
+ * is library-internal (hidden symbol visibility, not installed), but
+ * main.c and tui.c need to call it across the libclm.so boundary. */
 
 #endif /* CLM_PROVIDER_H */

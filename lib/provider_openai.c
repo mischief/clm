@@ -79,4 +79,5 @@ const struct clm_provider_ops clm_provider_ops_openai = {
 	.build_auth_headers = NULL,
 	.normalize_response = NULL,
 	.normalize_stream_event = NULL,
+	.endpoint_path = "chat/completions",
 };
