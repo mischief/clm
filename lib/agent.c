@@ -16,6 +16,7 @@
 #include "clm/internal.h"
 #include "clm/cleanup.h"
 #include "clm/log.h"
+#include "clm/provider.h"
 #include "useful.h"
 #include "banned.h"
 
@@ -160,6 +161,8 @@ agent_http_post(struct clm_agent *agent, const char *url, const char *body,
     clm_http_success_cb success, clm_http_error_cb error,
     clm_http_data_cb data, void *user, struct clm_http_call **out)
 {
+	const struct clm_provider_ops *ops = clm_provider_ops_get(agent->llm->provider);
+	autofreev char **auth_headers = NULL;
 	struct clm_http_req req = {
 		.url = url,
 		.api_key = agent->llm->api_key,
@@ -167,6 +170,19 @@ agent_http_post(struct clm_agent *agent, const char *url, const char *body,
 		.headers = NULL,
 		.client_suffix = NULL,
 	};
+
+	/* A provider with its own auth scheme (e.g. Anthropic's
+	 * x-api-key/anthropic-version instead of a bearer token) supplies its
+	 * own header set here and the default bearer header is suppressed --
+	 * see clm/provider.h. */
+	if (ops->build_auth_headers != NULL) {
+		auth_headers = ops->build_auth_headers(agent->llm);
+		if (auth_headers != NULL) {
+			req.api_key = NULL;
+			req.headers = (const char *const *)auth_headers;
+		}
+	}
+
 	return agent->host->http_post(agent->host->ctx, &req, success, error,
 	    data, user, out);
 }
@@ -549,6 +565,13 @@ struct clm_async_turn {
 	char *finish_reason;          /* captured from the stream */
 	struct clm_usage usage;
 	bool have_usage;
+
+	/* Opaque per-turn scratch space for the provider's
+	 * normalize_stream_event -- e.g. the Anthropic ops use this to carry
+	 * input-token usage from message_start to message_delta. Always
+	 * flat/pointer-free (see clm/provider.h), so a plain free() here is
+	 * enough. */
+	void *provider_stream_state;
 };
 
 static void
@@ -569,6 +592,7 @@ clm_async_turn_free(struct clm_async_turn *turn)
 		free(turn->calls[i].args);
 	}
 	free(turn->calls);
+	free(turn->provider_stream_state);
 	free(turn);
 }
 
@@ -1073,6 +1097,20 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 		agent_fail(agent, "could not parse llm response", -EIO);
 		return;
 	}
+
+	{
+		const struct clm_provider_ops *ops = clm_provider_ops_get(agent->llm->provider);
+		if (ops->normalize_response != NULL) {
+			cJSON *norm = ops->normalize_response(turn->parsed);
+			turn->parsed = norm; /* normalize_response always consumes its input */
+			if (turn->parsed == NULL) {
+				clm_async_turn_free(turn);
+				agent_fail(agent, "could not parse llm response", -EIO);
+				return;
+			}
+		}
+	}
+
 	message = response_message(turn->parsed);
 	if (message == NULL) {
 		clm_async_turn_free(turn);
@@ -1202,6 +1240,17 @@ stream_handle_line(struct clm_async_turn *turn)
 	obj = cJSON_Parse(payload);
 	if (obj == NULL)
 		return;
+
+	{
+		const struct clm_provider_ops *ops = clm_provider_ops_get(agent->llm->provider);
+		if (ops->normalize_stream_event != NULL) {
+			cJSON *norm = ops->normalize_stream_event(obj, &turn->provider_stream_state);
+			cJSON_Delete(obj);
+			obj = norm; /* NULL means "nothing to merge from this event" */
+			if (obj == NULL)
+				return;
+		}
+	}
 
 	/* Usage/timings arrive in a trailing chunk with an empty choices array
 	 * (when stream_options.include_usage is set), so check it first. */
@@ -1669,11 +1718,10 @@ llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
 static void
 clm_agent_start_turn(struct clm_agent *agent)
 {
+	const struct clm_provider_ops *ops = clm_provider_ops_get(agent->llm->provider);
 	json_cleanup cJSON *req = NULL;
 	cJSON *messages = NULL;
 	cJSON *tools = NULL;
-	cJSON *jmodel = NULL;
-	cJSON *jstream = NULL;
 	struct clm_async_turn *turn;
 	autofree char *body_str = NULL;
 	char *body;
@@ -1681,6 +1729,8 @@ clm_agent_start_turn(struct clm_agent *agent)
 	messages = clm_history_to_json(&agent->history, agent->compressor);
 	tools = clm_tools_build_schema(agent);
 	if (messages == NULL || tools == NULL) {
+		cJSON_Delete(messages);
+		cJSON_Delete(tools);
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
@@ -1689,7 +1739,9 @@ clm_agent_start_turn(struct clm_agent *agent)
 		return;
 	}
 
-	req = cJSON_CreateObject();
+	/* build_request always takes ownership of messages/tools, translating
+	 * them into this provider's wire format -- see clm/provider.h. */
+	req = ops->build_request(agent->llm, messages, tools, agent->stream);
 	if (req == NULL) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
@@ -1699,49 +1751,6 @@ clm_agent_start_turn(struct clm_agent *agent)
 		return;
 	}
 
-	jmodel = cJSON_CreateString(agent->llm->model);
-	if (jmodel == NULL) {
-		clm_agent_set_error(agent, "out of memory");
-		agent->state = CLM_STATE_ERROR;
-		if (agent->cb_on_state)
-			agent->cb_on_state(agent->state, agent->cb_user);
-		agent_turn_done(agent, -ENOMEM);
-		return;
-	}
-	cJSON_AddItemToObject(req, "model", jmodel);
-
-	cJSON_AddItemToObject(req, "messages", messages);
-
-	jstream = cJSON_CreateBool(agent->stream ? 1 : 0);
-	if (jstream == NULL) {
-		clm_agent_set_error(agent, "out of memory");
-		agent->state = CLM_STATE_ERROR;
-		if (agent->cb_on_state)
-			agent->cb_on_state(agent->state, agent->cb_user);
-		agent_turn_done(agent, -ENOMEM);
-		return;
-	}
-	cJSON_AddItemToObject(req, "stream", jstream);
-
-	/* Ask the server to include token usage in the final stream chunk. */
-	if (agent->stream) {
-		cJSON *so = cJSON_CreateObject();
-		if (so != NULL) {
-			cJSON *inc = cJSON_CreateBool(1);
-			if (inc != NULL)
-				cJSON_AddItemToObject(so, "include_usage", inc);
-			cJSON_AddItemToObject(req, "stream_options", so);
-		}
-	}
-
-	cJSON_AddItemToObject(req, "tools", tools);
-
-	/* Disable parallel tool calls -- a tool host that can only process
-	 * one action at a time (e.g. a game bridge advancing one action per
-	 * game turn) deadlocks on parallel dispatch, and serial calls keep
-	 * tool ordering deterministic everywhere else. */
-	cJSON_AddItemToObject(req, "parallel_tool_calls",
-	    cJSON_CreateBool(0));
 	body_str = cJSON_PrintUnformatted(req);
 	if (body_str == NULL) {
 		clm_agent_set_error(agent, "out of memory");
