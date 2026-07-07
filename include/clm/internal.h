@@ -36,6 +36,13 @@ struct clm_agent {
 	enum clm_agent_state state;
 	char *last_error;
 	struct clm_history history;
+	/* Base system prompt as given at clm_agent_new() time (cfg->system_prompt),
+	 * or NULL meaning "use the built-in default_system_prompt". Retained
+	 * (owned, strdup'd) purely so clm_agent_clear_history() can rebuild
+	 * the same system message a fresh clm_agent_new() would produce --
+	 * current-time stamp included -- without the caller having to supply
+	 * it again. */
+	char *system_prompt_base;
 	struct clm_tool_list tools;
 	size_t tool_count; /* live (non-removed) tools; diagnostics only */
 	size_t max_iterations;

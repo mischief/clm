@@ -1992,11 +1992,20 @@ run_command(struct ui *u, const char *line)
 		    "keys: ^R reasoning  ^O output  ^L redraw  "
 		    "PgUp/PgDn/wheel/End scroll\n");
 	} else if (CMD("clear") || CMD("cls")) {
-		for (size_t i = 0; i < u->nsegs; i++)
-			free(u->segs[i].text);
-		u->nsegs = 0;
-		u->scroll = 0;
-		u->gen++;
+		/* Reset the actual conversation history first -- an agent busy
+		 * mid-turn refuses (-EBUSY) and the on-screen transcript is left
+		 * alone in that case too, rather than looking cleared while the
+		 * backend history it was displaying still isn't. */
+		int rc = clm_agent_clear_history(u->agent);
+		if (rc == -EBUSY) {
+			ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+		} else {
+			for (size_t i = 0; i < u->nsegs; i++)
+				free(u->segs[i].text);
+			u->nsegs = 0;
+			u->scroll = 0;
+			u->gen++;
+		}
 	} else if (CMD("reasoning") || CMD("think")) {
 		if (strcmp(arg, "on") == 0)
 			u->show_reasoning = true;

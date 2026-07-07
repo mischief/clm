@@ -474,6 +474,15 @@ CLM_API int clm_agent_set_provider(struct clm_agent *agent,
     const struct clm_cfg *cfg);
 
 /*
+ * Reset conversation history to a fresh single-system-message state --
+ * what a new clm_agent_new() with the same system_prompt would start
+ * with (current-time stamp re-derived). Tools, MCP clients, and the
+ * provider connection are untouched. Safe to call between turns; returns
+ * -EBUSY if one is in flight.
+ */
+CLM_API int clm_agent_clear_history(struct clm_agent *agent);
+
+/*
  * Summarize the conversation and fold old turns into that summary, keeping the
  * system prologue and recent turns. Asynchronous (one model round-trip): fires
  * on_turn_done when finished (unless triggered mid-chain from inside

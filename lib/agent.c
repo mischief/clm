@@ -238,9 +238,16 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 		return r;
 	}
 
+	if (cfg->system_prompt != NULL) {
+		agent->system_prompt_base = strdup(cfg->system_prompt);
+		if (agent->system_prompt_base == NULL) {
+			clm_agent_free(agent);
+			return -ENOMEM;
+		}
+	}
 	{
-		const char *base = cfg->system_prompt ? cfg->system_prompt
-		                                       : default_system_prompt;
+		const char *base = agent->system_prompt_base ? agent->system_prompt_base
+		                                              : default_system_prompt;
 		autofree char *sys = build_system_prompt(base);
 
 		if (sys == NULL ||
@@ -298,6 +305,7 @@ clm_agent_free(struct clm_agent *agent)
 	clm_tools_detach(agent);
 	clm_llm_free(agent->llm);
 	clm_history_free(&agent->history);
+	free(agent->system_prompt_base);
 	free(agent->last_error);
 	free(agent->models_url);
 	free(agent->props_url);
@@ -1615,6 +1623,45 @@ clm_agent_cancel(struct clm_agent *agent)
 		return 0;
 	}
 	return -EINVAL; /* nothing in flight */
+}
+
+/*
+ * Reset conversation history to a fresh, single-system-message state --
+ * what a new clm_agent_new() with the same cfg->system_prompt would start
+ * with, current-time stamp re-derived. History, tools, and the provider
+ * connection are otherwise independent (contrast clm_agent_set_provider,
+ * which swaps the connection but leaves history untouched): this only
+ * ever touches agent->history.
+ */
+int
+clm_agent_clear_history(struct clm_agent *agent)
+{
+	const char *base;
+	autofree char *sys = NULL;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+
+	/* Same busy gate as clm_agent_set_provider() -- see its comment for
+	 * why IDLE/COMPLETE/ERROR are all fine to act on but a turn actually
+	 * in flight is not (history may be referenced mid-build/mid-dispatch). */
+	if (agent->state == CLM_STATE_THINKING ||
+	    agent->state == CLM_STATE_CALLING_TOOL ||
+	    agent->state == CLM_STATE_RATE_LIMITED)
+		return -EBUSY;
+
+	base = agent->system_prompt_base ? agent->system_prompt_base
+	                                  : default_system_prompt;
+	sys = build_system_prompt(base);
+	if (sys == NULL)
+		return -ENOMEM;
+
+	clm_history_free(&agent->history);
+	clm_history_init(&agent->history);
+	if (clm_history_add_system(&agent->history, sys, agent->compressor) == NULL)
+		return -ENOMEM;
+
+	agent->last_time_stamp = time(NULL);
+	return 0;
 }
 
 int
