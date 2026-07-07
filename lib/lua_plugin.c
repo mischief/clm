@@ -1568,24 +1568,175 @@ clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
 	return val;
 }
 
+/*
+ * Model entries live nested under their owning provider
+ * (config.providers[X].models[model_id]), keyed by the literal wire model
+ * id -- see clm-config(5). A model is therefore always addressed as a
+ * "provider/model-id" pair (split by src/model_spec.h's
+ * split_provider_model() at every call site that takes a model spec:
+ * config.lua's top-level `model`, -m/--model, /model), never looked up by
+ * name alone, so there is no ambiguity to search through the way an
+ * unaddressed name would need.
+ *
+ * Read config.providers[provider_name].models[model_id][key]. Leaves the
+ * stack as it found it (lua_gettop/lua_settop bracket the whole function,
+ * so an OOM or shape mismatch at any depth can't leave it unbalanced).
+ */
+static bool
+cfg_provider_model_str(lua_State *L, int cfg_ref, const char *provider_name,
+    const char *model_id, const char *key, const char **out)
+{
+	int base = lua_gettop(L);
+	bool found = false;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg_ref);
+	lua_getfield(L, -1, "providers");
+	if (lua_istable(L, -1)) {
+		lua_getfield(L, -1, provider_name);
+		if (lua_istable(L, -1)) {
+			lua_getfield(L, -1, "models");
+			if (lua_istable(L, -1)) {
+				lua_getfield(L, -1, model_id);
+				if (lua_istable(L, -1)) {
+					lua_getfield(L, -1, key);
+					if (lua_isstring(L, -1))
+						*out = lua_tostring(L, -1);
+					found = true;
+				}
+			}
+		}
+	}
+	lua_settop(L, base);
+	return found;
+}
+
+static bool
+cfg_provider_model_int(lua_State *L, int cfg_ref, const char *provider_name,
+    const char *model_id, const char *key, int64_t *out)
+{
+	int base = lua_gettop(L);
+	bool found = false;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg_ref);
+	lua_getfield(L, -1, "providers");
+	if (lua_istable(L, -1)) {
+		lua_getfield(L, -1, provider_name);
+		if (lua_istable(L, -1)) {
+			lua_getfield(L, -1, "models");
+			if (lua_istable(L, -1)) {
+				lua_getfield(L, -1, model_id);
+				if (lua_istable(L, -1)) {
+					lua_getfield(L, -1, key);
+					if (lua_isnumber(L, -1))
+						*out = (int64_t)lua_tonumber(L, -1);
+					found = true;
+				}
+			}
+		}
+	}
+	lua_settop(L, base);
+	return found;
+}
+
 CLM_API const char *
-clm_lua_cfg_model_str(struct clm_lua_cfg *cfg, const char *model_name,
-    const char *key)
+clm_lua_cfg_provider_model_str(struct clm_lua_cfg *cfg,
+    const char *provider_name, const char *model_id, const char *key)
 {
 	const char *val = NULL;
-	cfg_table_entry_str(cfg->L, cfg->cfg_ref, "models", model_name, key,
-	    &val);
+	cfg_provider_model_str(cfg->L, cfg->cfg_ref, provider_name, model_id,
+	    key, &val);
 	return val;
 }
 
 CLM_API int64_t
-clm_lua_cfg_model_int(struct clm_lua_cfg *cfg, const char *model_name,
-    const char *key, int64_t fallback)
+clm_lua_cfg_provider_model_int(struct clm_lua_cfg *cfg,
+    const char *provider_name, const char *model_id, const char *key,
+    int64_t fallback)
 {
 	int64_t val = fallback;
-	cfg_table_entry_int(cfg->L, cfg->cfg_ref, "models", model_name, key,
-	    &val);
+	cfg_provider_model_int(cfg->L, cfg->cfg_ref, provider_name, model_id,
+	    key, &val);
 	return val;
+}
+
+/*
+ * Collect every config.providers[*].models entry into one flat, malloc'd
+ * NULL-terminated list of "provider/model-id" compound strings -- the
+ * "models" case of clm_lua_cfg_list_names, matching the addressed spec
+ * format every model-taking call site expects (see split_provider_model()
+ * in src/model_spec.h). Formatted here rather than left as a bare model id
+ * since a bare id doesn't uniquely address anything once nested under more
+ * than one provider.
+ */
+static char **
+list_all_model_names(lua_State *L, int cfg_ref)
+{
+	int base = lua_gettop(L);
+	autofreev char **list = NULL;
+	size_t cap = 0, n = 0;
+	char **ret;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg_ref);
+	lua_getfield(L, -1, "providers");
+	if (!lua_istable(L, -1)) {
+		lua_settop(L, base);
+		return NULL;
+	}
+
+	lua_pushnil(L);
+	while (lua_next(L, -2) != 0) {
+		/* provider name at -2, provider table at -1 */
+		if (lua_type(L, -2) == LUA_TSTRING && lua_istable(L, -1)) {
+			const char *pname = lua_tostring(L, -2);
+
+			lua_getfield(L, -1, "models");
+			if (lua_istable(L, -1)) {
+				lua_pushnil(L);
+				while (lua_next(L, -2) != 0) {
+					/* model id at -2, model table at -1 */
+					if (lua_type(L, -2) == LUA_TSTRING) {
+						const char *mid = lua_tostring(L, -2);
+						size_t need;
+						char *spec;
+
+						if (n + 1 >= cap) {
+							size_t newcap = cap ? cap * 2 : 8;
+							char **grown = realloc(list,
+							    (newcap + 1) * sizeof(*grown));
+							if (grown == NULL) {
+								lua_settop(L, base);
+								return NULL;
+							}
+							list = grown;
+							cap = newcap;
+						}
+						need = strlen(pname) + 1 /* '/' */
+						    + strlen(mid) + 1 /* NUL */;
+						spec = malloc(need);
+						if (spec == NULL) {
+							lua_settop(L, base);
+							return NULL;
+						}
+						(void)snprintf(spec, need, "%s/%s",
+						    pname, mid);
+						list[n++] = spec;
+						list[n] = NULL;
+					}
+					lua_pop(L, 1); /* model table; keep key */
+				}
+			}
+			lua_pop(L, 1); /* models table or nil */
+		}
+		lua_pop(L, 1); /* provider table; keep key for lua_next */
+	}
+	lua_settop(L, base);
+
+	if (n == 0)
+		return NULL;
+
+	ret = list;
+	list = NULL;
+	return ret;
 }
 
 CLM_API char **
@@ -1595,6 +1746,14 @@ clm_lua_cfg_list_names(struct clm_lua_cfg *cfg, const char *table)
 	autofreev char **list = NULL;
 	size_t cap = 0, n = 0;
 	char **ret;
+
+	/* "models" no longer names a top-level config table -- entries live
+	 * nested under their owning provider (config.providers[*].models),
+	 * see the comment above list_all_model_names(). Every other table
+	 * this is called with ("providers") is still top-level, so fall
+	 * through to the plain walk below for anything else. */
+	if (strcmp(table, "models") == 0)
+		return list_all_model_names(L, cfg->cfg_ref);
 
 	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
 	lua_getfield(L, -1, table);

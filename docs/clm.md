@@ -14,7 +14,7 @@ CLM(1) - General Commands Manual
 \[**-V**&nbsp;|&nbsp;**--version**]
 \[**-a**&nbsp;*name*&nbsp;|&nbsp;**--agent**&nbsp;*name*]
 \[**-f**&nbsp;*prompt*&nbsp;|&nbsp;**--forever**&nbsp;*prompt*]
-\[**-m**&nbsp;*name*&nbsp;|&nbsp;**--model**&nbsp;*name*]
+\[**-m**&nbsp;*provider/model-id*&nbsp;|&nbsp;**--model**&nbsp;*provider/model-id*]
 \[**--provider**&nbsp;*name*]
 \[**-o**&nbsp;*prompt*&nbsp;|&nbsp;**--oneshot**&nbsp;*prompt*]
 \[**-p**&nbsp;*dir*&nbsp;|&nbsp;**--plugins**&nbsp;*dir*]
@@ -86,18 +86,32 @@ a human re-prompting it each turn.
 Force the plain stdio REPL even when standard input and standard
 output are both a terminal.
 
-**-m** *name*, **--model** *name*
+**-m** *provider/model-id*, **--model** *provider/model-id*
 
-Name of an entry in
+A
+"*provider*/*model-id*"
+spec, same form and meaning as
 *config.lua*'s
+top-level
+*model*
+([clm-config(5)](clm-config.md)):
+*provider*
+names an entry in
+*providers*
+to connect through, and
+*model-id*
+is the literal wire model id requested (also the key into that
+provider's
 *models*
-table
-([clm-config(5)](clm-config.md)),
-resolved to a wire model id and its provider connection.
-If no config is loaded or no matching entry is found,
-*name*
+subtable, if it has a matching override entry there).
+A bare
+*model-id*
+with no
+"/"
 is instead used directly as a literal model id to request from
-**--url**.
+**--url**
+(or whatever connection is otherwise active), with no provider lookup
+and no per-model overrides applied.
 Overrides whatever the active agent profile or
 *config.lua*'s
 top-level

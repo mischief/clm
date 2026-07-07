@@ -38,55 +38,40 @@ below apply directly with no named profile.
 
 *model*
 
-Name of the entry in
+A
+"*provider*/*model-id*"
+spec: which
+*providers*
+(below) entry to connect through, and the literal wire model id to
+request, which doubles as the key into that provider's own
 *models*
-(below) to use.
+subtable (if it has a matching entry there -- see below).
 Overridden by
 [clm(1)](clm.md)'s
 **--model**
-flag.
-
+flag, which takes the same
+"*provider*/*model-id*"
+form.
+A bare id with no
+"/"
+is also accepted, meaning "request this literal wire id on whatever
+connection is otherwise active" -- useful for an id a server reports
+live that was never added to any provider's
 *models*
-
-A table of model definitions, keyed by name.
-Each entry may set:
-
+table.
+There is no separate top-level
 *provider*
-
-Name of the entry in
-*providers*
-(below) supplying the connection (endpoint, key, wire dialect) this
-model is requested over.
-
-*model*
-
-Model id/string sent on the wire, e.g.
-"qwen3-32b".
-
-*context\_size*
-
-Override the context window size (tokens) the agent assumes, instead
-of learning it from the backend.
-
-*autocompact\_pct*
-
-Override the percentage of the context window that triggers automatic
-conversation summarization.
-
-*provider*
-
-Name of the entry in
-*providers*
-(below) to use directly, overriding whichever provider the selected
-*model*
-points at.
-Overridden by
+key: failing over to a different connection for the current model,
+without changing which wire model id is requested or editing
+*providers*,
+is done at runtime only, via
 [clm(1)](clm.md)'s
 **--provider**
-flag.
-Useful for failing over to a backup endpoint for the current model
-without editing
-*models*.
+flag or the TUI's
+**/provider**
+command -- both read directly from
+*providers*
+(below) by name.
 
 *providers*
 
@@ -127,6 +112,28 @@ environment variable if set.
 *rate\_tokens\_per\_sec*, *rate\_burst*
 
 Token-bucket rate limiter parameters for tool dispatch.
+
+*models*
+
+A table of per-model overrides nested under this provider, keyed by
+the literal wire model id (the same string sent on the wire and used
+as the second half of a
+*model*
+spec -- there is no separate field repeating it).
+An entry here is optional: a provider can be requested with any model
+id, configured or not, and only gets these overrides applied when one
+happens to match.
+Each entry may set:
+
+*context\_size*
+
+Override the context window size (tokens) the agent assumes, instead
+of learning it from the backend.
+
+*autocompact\_pct*
+
+Override the percentage of the context window that triggers automatic
+conversation summarization.
 
 *system\_prompt*
 
@@ -250,18 +257,12 @@ if this file is readable by group or other.
 A minimal single-provider, single-model configuration:
 
 	return {
-	    model = "ollama",
+	    model = "ollama/qwen3-32b",
 	    providers = {
 	        ollama = {
 	            kind = "ollama",
 	            url = "http://127.0.0.1:8081/v1",
 	            api_key = clm.secrets.ollama,
-	        },
-	    },
-	    models = {
-	        ollama = {
-	            provider = "ollama",
-	            model = "qwen3-32b",
 	        },
 	    },
 	    tools = {
@@ -271,35 +272,31 @@ A minimal single-provider, single-model configuration:
 	    volatile_tools = { "local_map", "character_status" },
 	}
 
-A second model sharing the same connection, plus a backup provider for
-failover
+A second model sharing the same connection, with per-model context
+overrides, plus a backup provider for failover
 ([clm(1)](clm.md)'s **--provider**, or the TUI's **/provider command**):
 
 	return {
-	    model = "ollama-small",
+	    model = "ollama/qwen3-8b",
 	    providers = {
 	        ollama = {
 	            kind = "ollama",
 	            url = "http://127.0.0.1:8081/v1",
 	            api_key = clm.secrets.ollama,
+	            models = {
+	                ["qwen3-8b"] = {
+	                    context_size = 32768,
+	                },
+	                ["qwen3-32b"] = {
+	                    context_size = 131072,
+	                    autocompact_pct = 80,
+	                },
+	            },
 	        },
 	        ollama_backup = {
 	            kind = "ollama",
 	            url = "http://10.0.0.2:8081/v1",
 	            api_key = clm.secrets.ollama,
-	        },
-	    },
-	    models = {
-	        ["ollama-small"] = {
-	            provider = "ollama",
-	            model = "qwen3-8b",
-	            context_size = 32768,
-	        },
-	        ["ollama-big"] = {
-	            provider = "ollama",
-	            model = "qwen3-32b",
-	            context_size = 131072,
-	            autocompact_pct = 80,
 	        },
 	    },
 	}

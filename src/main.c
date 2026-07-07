@@ -17,6 +17,7 @@
 #include "seed_plugins.h"
 #include "clm/cleanup.h"
 #include "mcp_setup.h"
+#include "model_spec.h"
 
 static void
 usage(const char *prog)
@@ -25,7 +26,7 @@ usage(const char *prog)
 	    "usage: %s setup\n"
 	    "       %s [-o|--oneshot PROMPT] [-f|--forever PROMPT] "
 	    "[-H|--headless] [-u|--url BASE] "
-	    "[-m|--model NAME] [--provider NAME] "
+	    "[-m|--model PROVIDER/MODEL-ID] [--provider NAME] "
 	    "[-p|--plugins DIR] [-S|--no-stream] "
 	    "[-V|--version] [-h|--help]\n",
 	    prog, prog);
@@ -43,14 +44,16 @@ usage(const char *prog)
 	    "  -u, --url BASE        base API endpoint "
 	    "(default http://127.0.0.1:8081/v1);\n"
 	    "                        \"/chat/completions\" is appended\n"
-	    "  -m, --model NAME      name of an entry in config.lua's `models` "
-	    "table,\n"
-	    "                        or a literal model name if no config or "
-	    "entry matches\n"
+	    "  -m, --model PROVIDER/MODEL-ID\n"
+	    "                        a config.lua providers[PROVIDER].models"
+	    "[MODEL-ID] entry,\n"
+	    "                        or a literal model id (no \"/\") to request "
+	    "on whatever\n"
+	    "                        connection is otherwise active\n"
 	    "  --provider NAME       name of an entry in config.lua's "
 	    "`providers` table,\n"
-	    "                        overriding the provider the model would "
-	    "otherwise use\n"
+	    "                        overriding the connection --model's "
+	    "provider half names\n"
 	    "  -p, --plugins DIR     plugin directory "
 	    "(default $XDG_CONFIG_HOME/clm/plugins)\n"
 	    "  -S, --no-stream       disable streamed (SSE) responses\n"
@@ -342,16 +345,18 @@ write_new_file(const char *path, const char *content, mode_t mode)
 static const char config_template[] =
     "-- clm configuration\n"
     "--\n"
-    "-- Uncomment and edit the sections you need. See README.md for the\n"
-    "-- full schema (providers, models, agent profiles, per-plugin tool\n"
-    "-- config).\n"
+    "-- Uncomment and edit the sections you need. See clm-config(5) for\n"
+    "-- the full schema (providers, models, agent profiles, per-plugin\n"
+    "-- tool config).\n"
     "return {\n"
     "    -- Default agent profile: an inline entry in an `agents` table\n"
     "    -- here, or a file at ~/.config/clm/agents/<name>.lua.\n"
     "    -- agent = \"default\",\n"
     "\n"
     "    -- Default model, used when no agent profile sets its own.\n"
-    "    -- model = \"default\",\n"
+    "    -- \"provider/model-id\": which providers[] entry, and which of\n"
+    "    -- its models{} it's found under (see below).\n"
+    "    -- model = \"ollama/qwen3-32b\",\n"
     "\n"
     "    -- providers = {\n"
     "    --     ollama = {\n"
@@ -361,13 +366,18 @@ static const char config_template[] =
     "    --         -- literal key here, since this file often ends up\n"
     "    --         -- checked into dotfiles.\n"
     "    --         api_key = clm.secrets.ollama,\n"
-    "    --     },\n"
-    "    -- },\n"
-    "\n"
-    "    -- models = {\n"
-    "    --     default = {\n"
-    "    --         provider = \"ollama\",\n"
-    "    --         model = \"qwen3-32b\",\n"
+    "    --\n"
+    "    --         -- Models nest under their provider, keyed by the\n"
+    "    --         -- literal wire model id -- which provider a model\n"
+    "    --         -- uses is which provider's `models` table it's\n"
+    "    --         -- listed in, not a field you set on the model\n"
+    "    --         -- itself.\n"
+    "    --         models = {\n"
+    "    --             [\"qwen3-32b\"] = {\n"
+    "    --                 -- context_size = 32768,\n"
+    "    --                 -- autocompact_pct = 70,\n"
+    "    --             },\n"
+    "    --         },\n"
     "    --     },\n"
     "    -- },\n"
     "\n"
@@ -451,8 +461,14 @@ int
 main(int argc, char *argv[])
 {
 	const char *api_base = NULL;
-	const char *model_name = NULL; /* -m/--model: a config models[] name, or a literal model id */
+	const char *model_name = NULL; /* -m/--model: a "provider/model-id" spec, or a literal wire id */
 	const char *provider_name = NULL; /* --provider: a config providers[] name override */
+	/* Owned copy of a "provider/model-id" spec's provider half (see
+	 * split_provider_model() in model_spec.h), process-lifetime like
+	 * plenty else in this function -- cfg.provider_name below may alias
+	 * it, and cfg is still read as late as tui_run()'s call at the very
+	 * end of main(), well past any block-scoped cleanup. */
+	char *spec_provider = NULL;
 	const char *plugin_dir = NULL;
 	const char *agent_name = NULL;
 	char *oneshot = NULL;
@@ -514,17 +530,19 @@ main(int argc, char *argv[])
 		clm_lua_cfg_load_agent(lcfg, adir, agent_name);
 
 		/* Resolve the model (agent profile, or top-level default,
-		 * unless -m named a models[] entry directly) down to a
-		 * provider connection. --provider overrides which provider
-		 * entry backs it (e.g. failing over to a mirror endpoint
-		 * without changing which model is requested). */
+		 * unless -m gave one directly) -- a "provider/model-id" spec,
+		 * see src/model_spec.h -- down to a provider connection.
+		 * --provider overrides which provider entry supplies the
+		 * connection (e.g. failing over to a mirror endpoint)
+		 * without changing which wire model id is requested. */
 		if (model_name == NULL)
 			model_name = clm_lua_cfg_get_str(lcfg, "model");
 
+		const char *spec_model = NULL;
+		split_provider_model(model_name, &spec_provider, &spec_model);
+
 		const char *prov_name = provider_name != NULL ? provider_name
-		    : (model_name != NULL
-		          ? clm_lua_cfg_model_str(lcfg, model_name, "provider")
-		          : NULL);
+		    : spec_provider;
 
 		if (prov_name != NULL) {
 			const char *purl = clm_lua_cfg_provider_str(lcfg, prov_name, "url");
@@ -539,15 +557,14 @@ main(int argc, char *argv[])
 			cfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_tokens_per_sec", 0);
 			cfg.rate_burst = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_burst", 0);
 		}
-		if (model_name != NULL) {
-			int64_t ctxsz = clm_lua_cfg_model_int(lcfg, model_name, "context_size", 0);
-			int acpct = (int)clm_lua_cfg_model_int(lcfg, model_name, "autocompact_pct", 0);
-			const char *pmodel = clm_lua_cfg_model_str(lcfg, model_name, "model");
-			cfg.context_size = ctxsz;
-			cfg.autocompact_pct = acpct;
-			if (pmodel != NULL)
-				model_name = pmodel;
+		if (spec_provider != NULL && spec_model != NULL) {
+			cfg.context_size = clm_lua_cfg_provider_model_int(lcfg,
+			    spec_provider, spec_model, "context_size", 0);
+			cfg.autocompact_pct = (int)clm_lua_cfg_provider_model_int(lcfg,
+			    spec_provider, spec_model, "autocompact_pct", 0);
 		}
+		if (spec_model != NULL)
+			model_name = spec_model;
 	}
 
 	/* Defaults for anything not set by config or CLI. */

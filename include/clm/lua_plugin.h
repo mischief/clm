@@ -114,29 +114,48 @@ CLM_API int64_t clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *key, int64_t fallback);
 
 /*
- * Query a string field from a named model in config.models -- which
- * provider backs it and what to call it on the wire, plus per-model
- * overrides: provider, model, context_size, autocompact_pct.
- * e.g. clm_lua_cfg_model_str(cfg, "gpt-fast", "provider")
+ * Query a string field from a model, nested under its owning provider and
+ * keyed by the literal wire model id: config.providers[provider_name].
+ * models[model_id]. The only fields expected there today are numeric
+ * (context_size, autocompact_pct -- see clm_lua_cfg_provider_model_int
+ * below); this exists for symmetry with clm_lua_cfg_provider_str and any
+ * future string-valued per-model field.
+ *
+ * A model is always addressed as an explicit (provider_name, model_id)
+ * pair -- see src/model_spec.h's split_provider_model(), which every
+ * model-taking call site (config.lua's top-level `model`, -m/--model,
+ * /model) uses to split a "provider/model-id" spec into these two
+ * arguments before calling here. There is deliberately no "look up a
+ * model by id alone" API: model_id is just a table key, and the same id
+ * could exist under more than one provider with different meaning, so an
+ * unaddressed lookup would be ambiguous by construction.
+ *
+ * e.g. clm_lua_cfg_provider_model_str(cfg, "openrouter", "gpt-fast", "kind")
  * Returns NULL if not found.
  */
-CLM_API const char *clm_lua_cfg_model_str(struct clm_lua_cfg *cfg,
-    const char *model_name, const char *key);
+CLM_API const char *clm_lua_cfg_provider_model_str(struct clm_lua_cfg *cfg,
+    const char *provider_name, const char *model_id, const char *key);
 
 /* Same as above but for integer values. Returns fallback if not set. */
-CLM_API int64_t clm_lua_cfg_model_int(struct clm_lua_cfg *cfg,
-    const char *model_name, const char *key, int64_t fallback);
+CLM_API int64_t clm_lua_cfg_provider_model_int(struct clm_lua_cfg *cfg,
+    const char *provider_name, const char *model_id, const char *key,
+    int64_t fallback);
 
 /*
- * List the entry names (keys) of a top-level config table -- "providers"
- * or "models" -- for discoverability (e.g. a TUI /model or /provider
- * command with no argument listing what's available). Names are returned
- * in the table's natural iteration order (unspecified by Lua); the caller
- * should sort if a stable display order matters.
+ * List entry names (keys) for discoverability (e.g. a TUI /model or
+ * /provider command with no argument listing what's available):
+ * table="providers" lists the top-level config.providers keys; "models"
+ * lists every model found across all providers' nested models{} tables,
+ * flattened into one list of "provider/model-id" compound strings (the
+ * same addressed spec format clm_lua_cfg_provider_model_str/int and every
+ * model-taking call site expect -- see split_provider_model() in
+ * src/model_spec.h), since a bare model id alone doesn't uniquely name
+ * anything once more than one provider is configured. Names are returned
+ * in Lua's (unspecified) iteration order; the caller should sort if a
+ * stable display order matters.
  *
  * Returns a malloc'd NULL-terminated array, free with
- * clm_lua_cfg_free_str_list(). Returns NULL if the table doesn't exist,
- * isn't a table, or has no string-keyed entries.
+ * clm_lua_cfg_free_str_list(). Returns NULL if nothing matches.
  */
 CLM_API char **clm_lua_cfg_list_names(struct clm_lua_cfg *cfg,
     const char *table);

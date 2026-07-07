@@ -34,6 +34,7 @@
 #include "frontend.h"
 #include "md_render.h"
 #include "mcp_setup.h"
+#include "model_spec.h"
 #include "tui_internal.h"
 
 /* ---- UI model mutation (called from libclm callbacks; keep cheap) ---- */
@@ -842,13 +843,18 @@ draw_status(struct ui *u)
 		info = state_label(u->state);
 
 	mvwprintw(u->stat, 0, 0, " clm");
-	/* One combined "[provider:model:agent]" tag rather than three separate
+	/* One combined "[provider/model:agent]" tag rather than three separate
 	 * bracketed fields -- picking a provider/model without changing agent
 	 * profile is the common case (see /model, /provider), so keeping them
 	 * visually grouped reads better than agent_name winning outright the
-	 * way the old agent-name-or-model fallback did. Any part not currently
-	 * known (e.g. no config.lua providers[] entry behind a literal model
-	 * switch) is just omitted, not shown as an empty field. */
+	 * way the old agent-name-or-model fallback did. '/' between
+	 * provider and model matches the "provider/model-id" addressing
+	 * spec /model, -m/--model, and config.lua's top-level `model` key
+	 * all take (see src/model_spec.h); ':' before agent since the agent
+	 * profile is a separate axis, not part of that address. Any part
+	 * not currently known (e.g. no config.lua providers[] entry behind
+	 * a literal model switch) is just omitted, not shown as an empty
+	 * field. */
 	{
 		char tag[160];
 		size_t off = 0;
@@ -862,7 +868,7 @@ draw_status(struct ui *u)
 		}
 		if (u->model != NULL) {
 			off += (size_t)snprintf(tag + off, sizeof(tag) - off,
-			    "%s%s", any ? ":" : "", u->model);
+			    "%s%s", any ? "/" : "", u->model);
 			any = true;
 		}
 		if (u->agent_name != NULL) {
@@ -1677,19 +1683,19 @@ cmd_agent(struct ui *u, const char *arg)
 		} else {
 			free(adir);
 			/* Resolve the agent's model (or the top-level
-			 * default, if the profile doesn't set its own)
-			 * down to a provider connection -- same
-			 * indirection as the startup path in main.c. */
+			 * default, if the profile doesn't set its own) --
+			 * a "provider/model-id" spec, see src/model_spec.h --
+			 * down to a provider connection, same indirection
+			 * as the startup path in main.c. */
 			const char *model_name = clm_lua_cfg_get_str(u->lcfg, "model");
-			const char *prov = model_name
-			    ? clm_lua_cfg_model_str(u->lcfg, model_name, "provider")
-			    : NULL;
+			autofree char *spec_provider = NULL;
+			const char *spec_model = NULL;
+			split_provider_model(model_name, &spec_provider, &spec_model);
+			const char *prov = spec_provider;
 			const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
 			const char *pkind = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "kind") : NULL;
 			const char *pkey = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "api_key") : NULL;
-			const char *pmodel = model_name
-			    ? clm_lua_cfg_model_str(u->lcfg, model_name, "model")
-			    : NULL;
+			const char *pmodel = spec_model;
 			const char *sprompt = clm_lua_cfg_get_str(u->lcfg, "system_prompt");
 
 			/* Tear down plugins + MCP clients (must happen while the
@@ -1721,9 +1727,11 @@ cmd_agent(struct ui *u, const char *arg)
 			newcfg.system_prompt = sprompt;
 			newcfg.provider = clm_provider_from_str(pkind);
 			newcfg.stream = 1;
-			if (model_name) {
-				newcfg.context_size = clm_lua_cfg_model_int(u->lcfg, model_name, "context_size", 0);
-				newcfg.autocompact_pct = (int)clm_lua_cfg_model_int(u->lcfg, model_name, "autocompact_pct", 0);
+			if (prov != NULL && spec_model != NULL) {
+				newcfg.context_size = clm_lua_cfg_provider_model_int(u->lcfg,
+				    prov, spec_model, "context_size", 0);
+				newcfg.autocompact_pct = (int)clm_lua_cfg_provider_model_int(u->lcfg,
+				    prov, spec_model, "autocompact_pct", 0);
 			}
 			if (prov) {
 				newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
@@ -1783,12 +1791,20 @@ cmd_agent(struct ui *u, const char *arg)
 static void
 cmd_model(struct ui *u, const char *arg)
 {
-	/* /model <name>: resolve config.models[name] to a provider
-	 * connection + wire model id and reconfigure the live agent
-	 * in place via clm_agent_set_provider() -- history, tools,
-	 * and MCP clients are untouched. Contrast /agent, which also
-	 * changes the system prompt/tool set and needs a full
-	 * teardown + rebuild. */
+	/* /model <provider/model-id>: resolve
+	 * config.providers[provider].models[model-id] to a connection +
+	 * wire model id and reconfigure the live agent in place via
+	 * clm_agent_set_provider() -- history, tools, and MCP clients are
+	 * untouched. Contrast /agent, which also changes the system
+	 * prompt/tool set and needs a full teardown + rebuild.
+	 *
+	 * A bare id with no "/" is a literal wire model id requested on
+	 * whatever connection is currently active (no context_size/
+	 * autocompact_pct override applies) -- this is what makes the live
+	 * listing below actually useful: an id the server reports but that
+	 * was never added to any provider's models{} can still be switched
+	 * to, same "config spec, or literal fallback" contract as
+	 * -m/--model on the CLI in main.c. */
 	if (arg[0] == '\0') {
 		list_config_names(u, "models", "model", "/model");
 		(void)clm_agent_list_models(u->agent,
@@ -1796,22 +1812,26 @@ cmd_model(struct ui *u, const char *arg)
 	} else if (u->lcfg == NULL) {
 		ui_push(u, ST_ERROR, "\nno config loaded\n");
 	} else {
-		const char *prov = clm_lua_cfg_model_str(u->lcfg, arg, "provider");
-		const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
-		if (prov == NULL || purl == NULL) {
-			/* Not a config.models[] entry -- fall back to
-			 * treating it as a literal wire model id on
-			 * whatever connection is currently active
-			 * (same "config name, or literal fallback"
-			 * contract as -m/--model on the CLI in
-			 * main.c). This is what makes the live
-			 * listing above actually useful: an id the
-			 * server reports but that was never added to
-			 * models{} can still be switched to. No
-			 * context_size/autocompact_pct override
-			 * applies -- same as any other unconfigured
-			 * (provider, model) pair, it gets library
-			 * defaults. */
+		autofree char *spec_provider = NULL;
+		const char *spec_model = NULL;
+		split_provider_model(arg, &spec_provider, &spec_model);
+
+		const char *purl = spec_provider != NULL
+		    ? clm_lua_cfg_provider_str(u->lcfg, spec_provider, "url")
+		    : NULL;
+
+		if (spec_provider != NULL && purl == NULL) {
+			/* A "provider/..." was typed but that provider name
+			 * doesn't exist -- an error, not a literal fallback:
+			 * silently sending "typo/model-id" itself as a wire
+			 * id would be actively misleading. */
+			char msg[128];
+			(void)snprintf(msg, sizeof(msg),
+			    "\nprovider '%s' not found\n", spec_provider);
+			ui_push(u, ST_ERROR, msg);
+		} else if (spec_provider == NULL) {
+			/* No "/" at all -- literal wire id on the current
+			 * connection. */
 			struct clm_cfg litcfg = {0};
 			const char *cur_url = clm_agent_get_base_url(u->agent);
 
@@ -1851,20 +1871,21 @@ cmd_model(struct ui *u, const char *arg)
 			(void)snprintf(url_buf, sizeof(url_buf),
 			    "%.*s/chat/completions", (int)ulen, purl);
 			newcfg.base_url = url_buf;
-			newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, prov, "api_key");
+			newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, spec_provider, "api_key");
 			newcfg.provider = clm_provider_from_str(
-			    clm_lua_cfg_provider_str(u->lcfg, prov, "kind"));
-			const char *pmodel = clm_lua_cfg_model_str(u->lcfg, arg, "model");
-			newcfg.model = pmodel ? pmodel : "local-model";
-			newcfg.context_size = clm_lua_cfg_model_int(u->lcfg, arg, "context_size", 0);
-			newcfg.autocompact_pct = (int)clm_lua_cfg_model_int(u->lcfg, arg, "autocompact_pct", 0);
-			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
-			newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
+			    clm_lua_cfg_provider_str(u->lcfg, spec_provider, "kind"));
+			newcfg.model = spec_model;
+			newcfg.context_size = clm_lua_cfg_provider_model_int(u->lcfg,
+			    spec_provider, spec_model, "context_size", 0);
+			newcfg.autocompact_pct = (int)clm_lua_cfg_provider_model_int(u->lcfg,
+			    spec_provider, spec_model, "autocompact_pct", 0);
+			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, spec_provider, "rate_tokens_per_sec", 0);
+			newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, spec_provider, "rate_burst", 0);
 
 			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {
 				set_current_model(u, newcfg.model);
-				set_current_provider(u, prov);
+				set_current_provider(u, spec_provider);
 				char msg[128];
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to model: %s]\n", arg);

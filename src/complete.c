@@ -292,23 +292,54 @@ model_live_result(char **ids, void *user)
 	/* Stale: the user has pressed another key (typed on, TAB again,
 	 * Enter, ...) since this request started. Drop it silently rather
 	 * than reaching back into an input line that's moved on. */
-	if (u->complete_generation == req->generation) {
+	if (u->complete_generation == req->generation && u->provider_name != NULL) {
 		const char *prefix = u->input + req->wstart;
 		size_t typed = req->wlen;
-		const char *matches[MAX_CANDIDATES];
-		size_t n = 0;
+		/* The server's ids are bare (no provider prefix); /model
+		 * expects "provider/model-id" (see src/model_spec.h), so
+		 * reprefix each with whatever provider this live catalog
+		 * actually came from before matching/offering it -- a bare
+		 * id here wouldn't line up with what the user is typing.
+		 * If the active provider's name isn't known (e.g. a literal
+		 * connection with no config.lua backing), there's no
+		 * well-formed spec to offer, so this is skipped entirely --
+		 * a bare id can still be typed by hand (cmd_model's literal
+		 * fallback), just not TAB-completed here.
+		 *
+		 * Heap, not two more MAX_CANDIDATES stack arrays alongside
+		 * everything else already declared here: that combination
+		 * trips -Wframe-larger-than, and this callback isn't a hot
+		 * path worth a bigger stack budget for. */
+		char **prefixed = malloc(MAX_CANDIDATES * sizeof(*prefixed));
+		const char **matches = malloc(MAX_CANDIDATES * sizeof(*matches));
+		size_t nprefixed = 0, n = 0;
 
-		for (size_t i = 0; ids[i] != NULL && n < MAX_CANDIDATES; i++) {
-			if (strncmp(ids[i], prefix, typed) == 0)
-				matches[n++] = ids[i];
+		if (prefixed != NULL && matches != NULL) {
+			for (size_t i = 0; ids[i] != NULL && nprefixed < MAX_CANDIDATES; i++) {
+				size_t need = strlen(u->provider_name) + 1 + strlen(ids[i]) + 1;
+				char *spec = malloc(need);
+				if (spec == NULL)
+					continue;
+				(void)snprintf(spec, need, "%s/%s", u->provider_name, ids[i]);
+				prefixed[nprefixed++] = spec;
+			}
+
+			for (size_t i = 0; i < nprefixed && n < MAX_CANDIDATES; i++) {
+				if (strncmp(prefixed[i], prefix, typed) == 0)
+					matches[n++] = prefixed[i];
+			}
+			if (n > 0) {
+				qsort(matches, n, sizeof(*matches), strp_cmp);
+				if (n > 1)
+					list_plain(u, "from server:", matches, n);
+				apply_insert(u, req->wstart, req->wlen, 0, matches, n,
+				    typed, '\0');
+			}
 		}
-		if (n > 0) {
-			qsort(matches, n, sizeof(*matches), strp_cmp);
-			if (n > 1)
-				list_plain(u, "from server:", matches, n);
-			apply_insert(u, req->wstart, req->wlen, 0, matches, n,
-			    typed, '\0');
-		}
+		for (size_t i = 0; i < nprefixed; i++)
+			free(prefixed[i]);
+		free(prefixed);
+		free(matches);
 	}
 	free(req);
 }
@@ -331,9 +362,11 @@ model_live_error(const char *msg, void *user)
 }
 
 /*
- * /model's argument: config.lua's models{} table completes immediately
- * (synchronous, always correct -- no network dependency), then a fresh
- * GET /v1/models against whatever connection is currently active is
+ * /model's argument: config.lua's nested providers[*].models{} entries
+ * complete immediately as "provider/model-id" compound strings
+ * (synchronous, always correct -- no network dependency; see
+ * clm_lua_cfg_list_names(cfg, "models") and src/model_spec.h), then a
+ * fresh GET /v1/models against whatever connection is currently active is
  * kicked off every time (no cache -- a cached list from a since-switched
  * provider would be actively misleading, worse than a moment's wait) to
  * extend/refine the candidates a moment later if the user pauses.
