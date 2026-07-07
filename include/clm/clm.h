@@ -13,7 +13,36 @@
 struct clm_agent;
 struct clm_cfg;
 
-/* LLM provider types. */
+/*
+ * LLM provider types.
+ *
+ * This is metadata only today, not a protocol switch: clm_provider_from_str()
+ * below parses providers[*].kind out of config.lua, but nothing downstream of
+ * that consults the result, and every request/response codepath (lib/agent.c,
+ * lib/tools.c, lib/history.c) hard-codes the OpenAI chat-completions shape --
+ * choices[0].message, {id, function: {name, arguments}} tool calls,
+ * system/user/assistant/tool message roles inline in the messages array, an
+ * SSE stream of choices[0].delta chunks, and request fields like
+ * stream_options/parallel_tool_calls. CLM_PROVIDER_OLLAMA works today only
+ * because Ollama speaks that same OpenAI-compatible dialect; a real
+ * CLM_PROVIDER_ANTHROPIC would need all of the above translated, since the
+ * Messages API has a different shape at every one of those points (a single
+ * Message with a content-block array instead of choices, {id, name, input}
+ * tool_use blocks with input as a real object rather than an encoded JSON
+ * string, no dedicated tool role, a distinct top-level system field, and a
+ * content_block_delta/message_delta event stream instead of choices[].delta).
+ *
+ * The lowest-risk path to add it is an adapter at the HTTP boundary in
+ * lib/agent.c: keep the OpenAI shape above as clm's internal canonical form,
+ * and when llm->provider == CLM_PROVIDER_ANTHROPIC, translate outgoing
+ * requests to the Messages API shape and translate incoming
+ * responses/stream events back to the canonical shape before they reach
+ * response_message()/the SSE handler/lib/tools.c's tool-call parsing. That
+ * confines the new code to one seam instead of scattering
+ * "if (provider == ANTHROPIC)" checks through parsing/tool/history code, at
+ * the cost of not exposing Anthropic-only features (thinking blocks,
+ * cache_control) as first-class concepts until/unless that's revisited.
+ */
 enum clm_provider {
 	CLM_PROVIDER_OPENAI,
 	CLM_PROVIDER_OLLAMA,
