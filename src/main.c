@@ -43,7 +43,9 @@ usage(const char *prog)
 	    "  -H, --headless        force the plain stdio REPL\n"
 	    "  -u, --url BASE        base API endpoint "
 	    "(default http://127.0.0.1:8081/v1);\n"
-	    "                        \"/chat/completions\" is appended\n"
+	    "                        \"/messages\" is appended for an anthropic "
+	    "provider,\n"
+	    "                        \"/chat/completions\" otherwise\n"
 	    "  -m, --model PROVIDER/MODEL-ID\n"
 	    "                        a config.lua providers[PROVIDER].models"
 	    "[MODEL-ID] entry,\n"
@@ -573,12 +575,16 @@ main(int argc, char *argv[])
 	if (model_name == NULL)
 		model_name = "local-model";
 
-	/* -u takes the base endpoint; /chat/completions is appended. */
+	/* -u takes the base endpoint; the provider-specific path is appended:
+	 * Anthropic's Messages API lives at /messages, everything else (OpenAI
+	 * and OpenAI-compatible servers, including Ollama) at
+	 * /chat/completions. */
 	baselen = strlen(api_base);
 	while (baselen > 0 && api_base[baselen - 1] == '/')
 		baselen--;
-	snprintf(endpoint, sizeof(endpoint), "%.*s/chat/completions",
-	    (int)baselen, api_base);
+	snprintf(endpoint, sizeof(endpoint), "%.*s/%s",
+	    (int)baselen, api_base,
+	    cfg.provider == CLM_PROVIDER_ANTHROPIC ? "messages" : "chat/completions");
 
 	/* API key: env > config > placeholder. */
 	if (cfg.api_key == NULL) {
