@@ -281,12 +281,14 @@ def test_permission(url):
 
 
 def test_agent_name(url):
-    """The status bar should show the agent name from config."""
+    """The status bar should show provider:model:agent from config."""
     with Tui(BIN, url, rows=12, cols=60) as t:
         t.wait_for("[online]", timeout=10) or t.pump(1.0)
         txt = t.text()
-        # The test config sets agent = "test"
-        check("[test]" in txt, "agent: status bar shows agent name from config")
+        # test/config/clm/config.lua resolves agent "test" -> model "mock"
+        # -> provider "mock" (wire model id "mock-model").
+        check("[mock:mock-model:test]" in txt,
+              "agent: status bar shows provider:model:agent from config")
 
 
 def main():

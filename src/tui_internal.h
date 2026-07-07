@@ -123,6 +123,8 @@ struct ui {
 	/* Status model. */
 	char *model; /* displayed in status bar (owned) */
 	char *agent_name; /* displayed in status bar (owned) */
+	char *provider_name; /* config.lua providers[] entry name, displayed in
+	                      * status bar (owned); NULL if unknown/literal */
 	enum clm_agent_state state;
 	enum clm_conn_status conn;
 	char conn_detail[64];

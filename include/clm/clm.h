@@ -176,6 +176,13 @@ struct clm_cfg {
 	enum clm_provider provider;
 	enum clm_backend backend;  /* server impl; GENERIC (0) auto-detects */
 	const char *model;
+	/* config.lua providers[] entry name this connection was resolved from
+	 * (e.g. "anthropic-work"), or NULL for a literal -u/--provider-less
+	 * connection with no config backing it. Display-only: borrowed like
+	 * the other string fields above, never consulted by request-building
+	 * or wire logic -- purely so a frontend (the TUI status bar) can show
+	 * which provider is active without re-deriving it from lcfg itself. */
+	const char *provider_name;
 	size_t max_iterations;
 	bool stream;              /* request streamed (SSE) responses */
 	const char *system_prompt; /* system message; NULL uses a default */

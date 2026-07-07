@@ -842,10 +842,37 @@ draw_status(struct ui *u)
 		info = state_label(u->state);
 
 	mvwprintw(u->stat, 0, 0, " clm");
-	if (u->agent_name != NULL)
-		wprintw(u->stat, " [%s]", u->agent_name);
-	else if (u->model != NULL)
-		wprintw(u->stat, " [%s]", u->model);
+	/* One combined "[provider:model:agent]" tag rather than three separate
+	 * bracketed fields -- picking a provider/model without changing agent
+	 * profile is the common case (see /model, /provider), so keeping them
+	 * visually grouped reads better than agent_name winning outright the
+	 * way the old agent-name-or-model fallback did. Any part not currently
+	 * known (e.g. no config.lua providers[] entry behind a literal model
+	 * switch) is just omitted, not shown as an empty field. */
+	{
+		char tag[160];
+		size_t off = 0;
+		bool any = false;
+
+		tag[0] = '\0';
+		if (u->provider_name != NULL) {
+			off += (size_t)snprintf(tag + off, sizeof(tag) - off,
+			    "%s", u->provider_name);
+			any = true;
+		}
+		if (u->model != NULL) {
+			off += (size_t)snprintf(tag + off, sizeof(tag) - off,
+			    "%s%s", any ? ":" : "", u->model);
+			any = true;
+		}
+		if (u->agent_name != NULL) {
+			off += (size_t)snprintf(tag + off, sizeof(tag) - off,
+			    "%s%s", any ? ":" : "", u->agent_name);
+			any = true;
+		}
+		if (any)
+			wprintw(u->stat, " [%s]", tag);
+	}
 
 	switch (u->conn) {
 	case CLM_CONN_CHECKING:
@@ -1496,6 +1523,21 @@ set_current_model(struct ui *u, const char *model)
 	u->model = dup;
 }
 
+/*
+ * Set u->provider_name (status bar display), replacing any prior value.
+ * Same owned-copy contract as set_current_model. NULL clears the display --
+ * used whenever a switch lands on a connection with no config.lua providers[]
+ * entry behind it (a literal model id on the currently active connection, see
+ * cmd_model's fallback path), since that connection's provider is unnamed.
+ */
+static void
+set_current_provider(struct ui *u, const char *provider)
+{
+	char *dup = provider != NULL ? strdup(provider) : NULL;
+	free(u->provider_name);
+	u->provider_name = dup;
+}
+
 static int
 strp_cmp(const void *a, const void *b)
 {
@@ -1727,6 +1769,7 @@ cmd_agent(struct ui *u, const char *arg)
 				free(u->agent_name);
 				u->agent_name = strdup(arg);
 				set_current_model(u, newcfg.model);
+				set_current_provider(u, prov);
 				char msg[128];
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to agent: %s]\n", arg);
@@ -1821,6 +1864,7 @@ cmd_model(struct ui *u, const char *arg)
 			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {
 				set_current_model(u, newcfg.model);
+				set_current_provider(u, prov);
 				char msg[128];
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to model: %s]\n", arg);
@@ -1872,6 +1916,7 @@ cmd_provider(struct ui *u, const char *arg)
 
 			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {
+				set_current_provider(u, arg);
 				char msg[128];
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to provider: %s]\n", arg);
@@ -2576,6 +2621,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	loop = uv_default_loop();
 	u->loop = loop;
 	set_current_model(u, cfg->model);
+	set_current_provider(u, cfg->provider_name);
 	u->forever_prompt = forever_prompt;
 	if (lcfg != NULL) {
 		const char *aname = clm_lua_cfg_get_agent_name(lcfg);
