@@ -10,7 +10,6 @@
  * input lines. Terminal input is read through uv_poll on stdin, so ncurses
  * shares the caller's event loop rather than blocking in getch().
  */
-#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <locale.h>
@@ -19,7 +18,6 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/queue.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #include <wchar.h>
 
@@ -32,150 +30,15 @@
 #include "clm/log.h"
 #include "clm/host_uv.h"
 #include "clm/lua_plugin.h"
+#include "complete.h"
 #include "frontend.h"
 #include "md_render.h"
 #include "mcp_setup.h"
-
-/* Style buckets, mapped to curses attributes in seg_attr(). */
-enum ui_style {
-	ST_NORMAL,
-	ST_USER,     /* the user's prompt echo */
-	ST_ASSIST,   /* assistant answer text */
-	ST_LABEL,    /* the "clm>" answer label */
-	ST_PERM,     /* tool-permission prompt (orange) */
-	ST_REASON,   /* dim "thinking" channel */
-	ST_TOOL,     /* tool invocation summary line */
-	ST_TOOL_OUT, /* tool output body (collapsible) */
-	ST_ERROR,    /* failures */
-	ST_TIMEOUT,  /* timed-out tool */
-	ST_META,     /* dim meta notes */
-};
-
-/* One styled run of transcript source text (queued by a callback). */
-struct seg {
-	enum ui_style style;
-	char *text;
-};
-
-/* One run of rendered text with a resolved curses attribute, ready to draw. */
-struct rseg {
-	int attr;
-	char *text;
-};
-
-struct ui {
-	uv_loop_t *loop;
-	struct clm_host *host;
-	struct clm_agent *agent;
-	struct clm_lua_env *lua_env;
-	struct clm_lua_cfg *lcfg;      /* kept alive for /agent switching */
-	const char *plugin_dir;        /* NULL = use XDG default */
-	struct clm_mcp_client **mcp_clients;
-	size_t mcp_client_count;
-
-	uv_poll_t stdin_poll;
-	uv_timer_t repaint;
-	uv_timer_t health;
-	uv_signal_t winch;
-
-	WINDOW *txt;  /* scrolling transcript */
-	WINDOW *stat; /* status bar */
-	WINDOW *in;   /* input box (grows upward as text wraps) */
-	int in_h;     /* current input box height in rows */
-
-	/* Transcript source: an accumulating list of styled spans (text may
-	 * contain newlines; ST_ASSIST spans hold raw markdown). */
-	struct seg *segs;
-	size_t nsegs, cap_segs;
-	unsigned gen; /* bumped whenever the source list changes */
-
-	/* Render cache: source resolved to (curses-attr, text) runs -- markdown
-	 * expanded, styles flattened. Rebuilt when gen or width changes, then
-	 * wrapped into the viewport. */
-	struct rseg *rsegs;
-	size_t nrsegs, cap_rsegs;
-	unsigned built_gen;
-	int built_width;
-
-	size_t
-	    scroll; /* wrapped rows scrolled up from the bottom; 0 = follow */
-	int last_total; /* wrapped row count as of the last draw_transcript
-	                  * call, so a growing transcript can adjust scroll
-	                  * to hold the viewport's absolute position steady
-	                  * (see draw_transcript) instead of scroll's
-	                  * bottom-relative distance silently letting new
-	                  * rows drag the view along with them. -1 = not
-	                  * yet painted. */
-
-	/* Input line editor (byte buffer, UTF-8; cursor is a byte offset). */
-	char input[1024];
-	size_t input_len;
-	size_t input_pos;
-	char kill[1024];
-	size_t kill_len;
-
-	/* Tab-completion state: cached candidates and cycling index. */
-	char **complete_candidates;
-	size_t complete_cap, complete_n, complete_idx;
-
-	/* Status model. */
-	char *model; /* displayed in status bar (owned) */
-	char *agent_name; /* displayed in status bar (owned) */
-	enum clm_agent_state state;
-	enum clm_conn_status conn;
-	char conn_detail[64];
-	char usage[96];
-	int64_t ctx_used; /* tokens carried forward, for the context gauge */
-	bool autocompacting; /* true while cb_turn_done re-enters for a compact attempt */
-	char batch[64];
-	int spinner;
-	bool busy;           /* a turn is in flight */
-	bool started_assist; /* assistant text seen this turn */
-
-	/* Permission prompt queue: requests arrive in bursts (batched tool
-	 * calls) and we present them one at a time. */
-	const struct clm_permission_req **perm_queue;
-	size_t perm_count;
-	size_t perm_cap;
-	bool perm_showing; /* true when a prompt is displayed awaiting input */
-
-	/* Tool-batch tally, for the aggregate summary line. */
-	int n_cmd, n_read, n_write, n_other;
-
-	bool
-	    expand_output; /* show full tool output vs. an ellipsized preview */
-	bool built_expand; /* expand_output value the cache was built with */
-	bool show_reasoning; /* render the dim "thinking" channel */
-	bool
-	    built_reasoning; /* show_reasoning value the cache was built with */
-
-	/* Prompts typed while a turn is in flight, run FIFO on turn-done. */
-	char **queue;
-	size_t nqueue, cap_queue;
-
-	/* --forever: NULL normally; when set, this fixed prompt is
-	 * auto-resubmitted every time a turn completes and nothing else is
-	 * queued, so the agent keeps going without a human re-prompting it. */
-	const char *forever_prompt;
-
-	/*
-	 * Submitted-prompt history for Up/Down recall. hist_pos == nhist means
-	 * "the live line"; browsing up saves the live line in hist_saved so
-	 * Down past the newest entry restores it (readline-style).
-	 */
-	char **hist;
-	size_t nhist, cap_hist;
-	size_t hist_pos;
-	char hist_saved[1024];
-
-	bool dirty;       /* repaint requested */
-	bool full_redraw; /* force an artifact-free repaint (resize / ^L) */
-	bool quit;
-};
+#include "tui_internal.h"
 
 /* ---- UI model mutation (called from libclm callbacks; keep cheap) ---- */
 
-static void
+void
 ui_push(struct ui *u, enum ui_style style, const char *text)
 {
 	if (text == NULL || *text == '\0')
@@ -2148,373 +2011,6 @@ input_yank(struct ui *u)
 	u->dirty = true;
 }
 
-/* ---- file-path tab completion ---- */
-
-/*
- * Free any cached completion candidates. (Reserved for future multi-tab
- * cycling support.)  Called as no-op from input_complete() to reset state.
- */
-static void
-complete_free(struct ui *u)
-{
-	for (size_t i = 0; i < u->complete_n; i++)
-		free(u->complete_candidates[i]);
-	u->complete_n = 0;
-	u->complete_idx = 0;
-}
-
-/*
- * Extract the "word" at the cursor position for file-path completion.
- *
- * A word is the maximal span of non-space characters ending at input_pos
- * (or input_len if the cursor is at the end).  Returns the start byte
- * offset in *wstart and the length in *wlen.  If there is no word,
- * returns false.
- */
-static bool
-extract_word(const char *input, size_t input_len, size_t input_pos,
-             size_t *wstart, size_t *wlen)
-{
-	/* end of the word: input_pos if cursor is mid-word, else input_len. */
-	size_t wend = input_pos;
-
-	/* Walk left to find the word boundary. */
-	while (wend > 0 && input[wend - 1] != ' ')
-		wend--;
-
-	/* cursor is after spaces — nothing to complete. */
-	if (wend == input_pos)
-		return false;
-
-	size_t ws = wend;
-
-	/* Walk right from cursor to find the end of the word. */
-	size_t we = input_pos;
-	while (we < input_len && input[we] != ' ')
-		we++;
-
-	*wstart = ws;
-	*wlen = we - ws;
-	return true;
-}
-
-/*
- * Check if a string looks like a file path: contains '/' or starts with '~'.
- */
-static bool
-looks_like_path(const char *s, size_t len)
-{
-	if (len == 0)
-		return false;
-	if (s[0] == '~')
-		return true;
-	for (size_t i = 0; i < len; i++)
-		if (s[i] == '/')
-			return true;
-	return false;
-}
-
-/*
- * Expand leading ~ to $HOME.  Returns a malloc'd string or NULL.
- */
-static char *
-expand_tilde(const char *s, size_t len)
-{
-	if (len > 0 && s[0] == '~') {
-		const char *home = getenv("HOME");
-		if (home) {
-			size_t hlen = strlen(home);
-			size_t n = hlen + len - 1;
-			char *out = malloc(n + 1);
-			if (out) {
-				memcpy(out, home, hlen);
-				memcpy(out + hlen, s + 1, len - 1);
-				out[n] = '\0';
-			}
-			return out;
-		}
-	}
-	char *out = malloc(len + 1);
-	if (out) {
-		memcpy(out, s, len);
-		out[len] = '\0';
-	}
-	return out;
-}
-
-/*
- * Return true if path exists and is a directory.
- */
-static bool
-is_directory(const char *path)
-{
-	struct stat st;
-	return (stat(path, &st) == 0 && S_ISDIR(st.st_mode));
-}
-
-/*
- * Slash-command names, for completing the first word on the line (e.g.
- * "/mo<TAB>" -> "/model"). Aliases (h/?, cls, think, a, exit/q) are
- * intentionally excluded -- completion should offer the canonical name to
- * type out, not the shortcuts that exist for people who already know
- * them. Kept in sync by hand with run_command()'s CMD() chain below; if
- * you add a command there, add its name here too.
- */
-static const char *const command_names[] = {
-	"help", "clear", "agent", "model", "provider",
-	"reasoning", "output", "compact", "quit",
-};
-#define N_COMMAND_NAMES (sizeof(command_names) / sizeof(command_names[0]))
-
-/*
- * Complete the first word on the line against command_names when it
- * starts with '/' -- called instead of file-path completion, which would
- * otherwise misfire here (looks_like_path treats the leading '/' itself
- * as "this looks like an absolute path" and tries to opendir("/")).
- * word points at the '/'; wlen includes it. Same insert-if-one,
- * common-prefix-if-ambiguous, list-if-no-common-prefix shape as
- * input_complete's file-path case below, just against a fixed in-memory
- * list instead of a directory read.
- */
-static void
-complete_command_name(struct ui *u, size_t wstart, size_t wlen)
-{
-	const char *prefix = u->input + wstart + 1; /* skip '/' */
-	size_t plen = wlen - 1;
-	const char *candidates[N_COMMAND_NAMES];
-	size_t ncandidates = 0;
-
-	for (size_t i = 0; i < N_COMMAND_NAMES; i++) {
-		if (strncmp(command_names[i], prefix, plen) == 0)
-			candidates[ncandidates++] = command_names[i];
-	}
-	if (ncandidates == 0)
-		return;
-
-	/* Longest common prefix among matches (may just be plen itself, if
-	 * the matches diverge right after what's already typed). */
-	size_t common = strlen(candidates[0]);
-	for (size_t i = 1; i < ncandidates; i++) {
-		size_t k = 0;
-		while (k < common && candidates[i][k] == candidates[0][k])
-			k++;
-		common = k;
-	}
-
-	if (ncandidates > 1) {
-		autofree char *buf = malloc(512);
-		if (buf) {
-			int blen = snprintf(buf, 512, "\n");
-			for (size_t i = 0; i < ncandidates && (size_t)blen < 500; i++)
-				blen += snprintf(buf + blen, 512 - (size_t)blen,
-				    "  /%s\n", candidates[i]);
-			ui_push(u, ST_META, buf);
-		}
-	}
-
-	if (ncandidates == 1 || common > plen) {
-		size_t insert_len = ncandidates == 1 ? strlen(candidates[0]) : common;
-		size_t replace_start = wstart + 1; /* after '/' */
-		size_t replace_end = wstart + wlen;
-		size_t tail_len = u->input_len - replace_end;
-		size_t new_len = replace_start + insert_len + tail_len;
-
-		if (new_len < sizeof(u->input)) {
-			memmove(u->input + replace_start + insert_len,
-			    u->input + replace_end, tail_len + 1);
-			memcpy(u->input + replace_start, candidates[0], insert_len);
-			u->input_len = new_len;
-			u->input_pos = replace_start + insert_len;
-			u->dirty = true;
-		}
-	}
-}
-
-/*
- * Tab completion for file paths.
- *
- * If the word under the cursor looks like a file path:
- *   1. Gather matching entries from the parent directory.
- *   2. If there is exactly one match, insert it.  If it is a directory,
- *      append '/' so the next TAB can complete inside it.
- *   3. If ambiguous but there is a common extension, insert that prefix.
- *      If the prefix itself is a directory, append '/'.
- *   4. Otherwise just print the candidate list (no change to the input).
- */
-static void
-input_complete(struct ui *u)
-{
-	complete_free(u);
-
-	size_t wstart, wlen;
-	if (!extract_word(u->input, u->input_len, u->input_pos, &wstart, &wlen))
-		return;
-
-	const char *word = u->input + wstart;
-
-	/* The first word on the line starting with '/' is a slash command,
-	 * not a path -- checked before looks_like_path, which would
-	 * otherwise treat the leading '/' itself as "absolute path" and try
-	 * to opendir("/"). */
-	if (wstart == 0 && wlen > 0 && word[0] == '/') {
-		complete_command_name(u, wstart, wlen);
-		return;
-	}
-
-	if (!looks_like_path(word, wlen))
-		return;
-
-	/* Expand ~ in the word for filesystem access. */
-	char *expanded = expand_tilde(word, wlen);
-	if (!expanded)
-		return;
-
-	/* Determine the directory and basename prefix. */
-	char *slash = strrchr(expanded, '/');
-
-	char *dir, *prefix;
-	size_t dir_offset; /* how much of the original word is the dir part */
-	if (slash) {
-		*slash = '\0';
-		dir = expanded[0] != '\0' ? expanded : "/";
-		prefix = slash + 1;
-		/* Find the corresponding slash in the original word. */
-		const char *orig_slash = NULL;
-		for (size_t i = wlen; i > 0; i--) {
-			if (word[i - 1] == '/') {
-				orig_slash = word + i;
-				break;
-			}
-		}
-		dir_offset = orig_slash ? (size_t)(orig_slash - word) : 0;
-	} else {
-		dir = ".";
-		prefix = expanded;
-		dir_offset = 0;
-	}
-
-	DIR *d = opendir(dir);
-	if (!d) {
-		free(expanded);
-		return;
-	}
-
-	/* Collect matching entries (cap at 32). */
-	char *candidates[32];
-	size_t ncandidates = 0;
-
-	struct dirent *ent;
-	size_t plen = strlen(prefix);
-	while (ncandidates < 32 && (ent = readdir(d)) != NULL) {
-		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-			continue;
-		if (strncmp(ent->d_name, prefix, plen) == 0) {
-			char *c = strdup(ent->d_name);
-			if (c)
-				candidates[ncandidates++] = c;
-		}
-	}
-	closedir(d);
-
-	if (ncandidates == 0) {
-		free(expanded);
-		return;
-	}
-
-	/* Sort candidates. */
-	for (size_t i = 1; i < ncandidates; i++) {
-		char *key = candidates[i];
-		size_t j = i;
-		while (j > 0 && strcmp(candidates[j - 1], key) > 0) {
-			candidates[j] = candidates[j - 1];
-			j--;
-		}
-		candidates[j] = key;
-	}
-
-	/* Find longest common prefix among candidates. */
-	size_t common = strlen(candidates[0]);
-	for (size_t i = 1; i < ncandidates; i++) {
-		size_t k = 0;
-		while (k < common && candidates[i][k] == candidates[0][k])
-			k++;
-		common = k;
-	}
-
-	/* Build the replacement: original dir prefix + completed basename. */
-	const char *basename_insert = NULL;
-	size_t basename_len = 0;
-	bool append_slash = false;
-
-	if (ncandidates == 1) {
-		basename_insert = candidates[0];
-		basename_len = strlen(candidates[0]);
-		autofree char *full = malloc(1024);
-		if (full) {
-			(void)snprintf(full, 1024, "%s/%s", dir, candidates[0]);
-			if (is_directory(full))
-				append_slash = true;
-		}
-	} else if (common > plen) {
-		basename_insert = candidates[0];
-		basename_len = common;
-	}
-
-	/* Show candidates if ambiguous, columnated. */
-	if (ncandidates > 1) {
-		autofree char *buf = malloc(1024);
-		if (buf) {
-			int blen = 0;
-
-			/* Find widest name for column padding. */
-			size_t maxw = 0;
-			for (size_t i = 0; i < ncandidates; i++) {
-				size_t n = strlen(candidates[i]);
-				if (n > maxw)
-					maxw = n;
-			}
-			maxw += 2; /* inter-column gap */
-			size_t cols = 60 / (maxw > 0 ? maxw : 1);
-			if (cols < 1) cols = 1;
-
-			blen += snprintf(buf, 1024, "\n");
-			for (size_t i = 0; i < ncandidates && (size_t)blen < 1024 - maxw - 4; i++) {
-				size_t remaining = 1024 - (size_t)blen;
-				blen += snprintf(buf + blen, remaining, "%-*s",
-				    (int)maxw, candidates[i]);
-				if ((i + 1) % cols == 0 || i + 1 == ncandidates)
-					blen += snprintf(buf + blen,
-					    1024 - (size_t)blen, "\n");
-			}
-			ui_push(u, ST_META, buf);
-		}
-	}
-
-	/* Replace the word from dir_offset onward with the completion. */
-	if (basename_insert) {
-		size_t insert_len = basename_len + (append_slash ? 1 : 0);
-		size_t replace_start = wstart + dir_offset;
-		size_t replace_end = wstart + wlen;
-		size_t tail_len = u->input_len - replace_end;
-		size_t new_len = replace_start + insert_len + tail_len;
-
-		if (new_len < sizeof(u->input)) {
-			memmove(u->input + replace_start + insert_len,
-			    u->input + replace_end, tail_len + 1);
-			memcpy(u->input + replace_start, basename_insert, basename_len);
-			if (append_slash)
-				u->input[replace_start + basename_len] = '/';
-			u->input_len = new_len;
-			u->input_pos = replace_start + insert_len;
-			u->dirty = true;
-		}
-	}
-
-	for (size_t i = 0; i < ncandidates; i++)
-		free(candidates[i]);
-	free(expanded);
-}
-
 /*
  * Answer a pending permission prompt from a keypress. Returns true if the key
  * was a recognised answer (y/n/a/d) or Escape. Escape denies and cancels the
@@ -2601,6 +2097,12 @@ handle_keys(struct ui *u)
 	int r;
 
 	while ((r = wget_wch(u->in, &wch)) != ERR) {
+		/* Every key -- including the TAB that starts a new completion
+		 * pass -- invalidates any completion request still in flight
+		 * from an earlier key (see complete_generation's doc comment
+		 * in tui_internal.h). */
+		u->complete_generation++;
+
 		/*
 		 * Permission-input mode: while a tool authorization is pending,
 		 * the next key answers it and nothing else is processed.
@@ -2766,8 +2268,8 @@ handle_keys(struct ui *u)
 			}
 			u->dirty = true;
 			break;
-		case 9: /* TAB: file-path completion */
-			input_complete(u);
+		case 9: /* TAB: completion (commands, config/live names, paths) */
+			complete_input(u, u->complete_generation);
 			break;
 		case 8:
 		case 127: /* Backspace / DEL */

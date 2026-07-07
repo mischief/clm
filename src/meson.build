@@ -74,7 +74,7 @@ if have_lua
   # have_lua, which this whole block is already gated on) since lua_plugin.c
   # et al no longer live inside libclm/clm_dep at all -- they're their own
   # archive now, same shape as clmuv.
-  clm_exe = executable('clm', clm_src + files('tui.c', 'mcp_setup.c') + seed_src + [version_h],
+  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c') + seed_src + [version_h],
     link_with: [md_render_lib],
     dependencies: [clmuv_dep, clmlua_dep, curses_dep, cjson_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],
