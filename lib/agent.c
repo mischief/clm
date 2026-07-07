@@ -1398,22 +1398,22 @@ clm_agent_cancel(struct clm_agent *agent)
 }
 
 int
-clm_agent_set_provider(struct clm_agent *agent,
-    const char *base_url, const char *api_key, const char *model)
+clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 {
 	char *new_url, *new_key, *new_model, *new_models_url, *new_props_url;
 
 	ASSERT_RETURN(agent != NULL, -EINVAL);
-	ASSERT_RETURN(base_url != NULL, -EINVAL);
+	ASSERT_RETURN(cfg != NULL, -EINVAL);
+	ASSERT_RETURN(cfg->base_url != NULL, -EINVAL);
 
 	/* Refuse while a turn is in flight. */
 	if (agent->state != CLM_STATE_IDLE)
 		return -EBUSY;
 
-	new_url = strdup(base_url);
-	new_key = (api_key != NULL && api_key[0] != '\0')
-	    ? strdup(api_key) : strdup("sk-no-key-required");
-	new_model = strdup(model != NULL ? model : "local-model");
+	new_url = strdup(cfg->base_url);
+	new_key = (cfg->api_key != NULL && cfg->api_key[0] != '\0')
+	    ? strdup(cfg->api_key) : strdup("sk-no-key-required");
+	new_model = strdup(cfg->model != NULL ? cfg->model : "local-model");
 	if (new_url == NULL || new_key == NULL || new_model == NULL) {
 		free(new_url);
 		free(new_key);
@@ -1422,8 +1422,8 @@ clm_agent_set_provider(struct clm_agent *agent,
 	}
 
 	/* Derive health/props URLs from the new base. */
-	new_models_url = clm_derive_models_url(base_url);
-	new_props_url = clm_derive_props_url(base_url);
+	new_models_url = clm_derive_models_url(cfg->base_url);
+	new_props_url = clm_derive_props_url(cfg->base_url);
 
 	/* Swap. */
 	free(agent->llm->base_url);
@@ -1432,16 +1432,33 @@ clm_agent_set_provider(struct clm_agent *agent,
 	agent->llm->base_url = new_url;
 	agent->llm->api_key = new_key;
 	agent->llm->model = new_model;
+	agent->llm->provider = cfg->provider;
 
 	free(agent->models_url);
 	free(agent->props_url);
 	agent->models_url = new_models_url;
 	agent->props_url = new_props_url;
 
-	/* Reset context info (new server may have different limits). */
-	agent->ctx_max = 0;
+	/* Reset context info: a new server/model may have different limits,
+	 * unless the new model/provider supplies an explicit override. */
+	agent->ctx_max = cfg->context_size > 0 ? cfg->context_size : 0;
+	agent->autocompact_pct = cfg->autocompact_pct > 0 ? cfg->autocompact_pct : 0;
 
-	clm_debug("provider switched: %s model=%s", base_url, new_model);
+	/* Only rebuild the LLM rate limiter if the new provider actually
+	 * overrides it; otherwise keep the bucket (and its accumulated
+	 * state) as-is rather than resetting it to the defaults. */
+	if (cfg->rate_tokens_per_sec > 0 || cfg->rate_burst > 0) {
+		int64_t rps = cfg->rate_tokens_per_sec > 0 ? cfg->rate_tokens_per_sec : 2000;
+		int64_t burst = cfg->rate_burst > 0 ? cfg->rate_burst : 30000;
+		struct clm_ratelimit *new_rl;
+
+		if (clm_ratelimit_new(&new_rl, (size_t)rps, (size_t)burst) == 0) {
+			clm_ratelimit_free(agent->llm_rl);
+			agent->llm_rl = new_rl;
+		}
+	}
+
+	clm_debug("provider switched: %s model=%s", cfg->base_url, new_model);
 	return 0;
 }
 

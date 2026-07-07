@@ -21,6 +21,14 @@ enum clm_provider {
 };
 
 /*
+ * Parse a provider "kind" string (as used in config.lua's providers[*].kind;
+ * see clm-config(5)) into the enum. Recognizes "openai", "ollama", and
+ * "anthropic"; anything else, including NULL, yields CLM_PROVIDER_OPENAI
+ * (the OpenAI-compatible dialect almost every local server also speaks).
+ */
+CLM_API enum clm_provider clm_provider_from_str(const char *kind);
+
+/*
  * The server implementation behind the API, orthogonal to clm_provider (which
  * is the wire dialect). This gates implementation-specific behaviour: e.g.
  * llama.cpp exposes GET /props with n_ctx and slot counts. GENERIC assumes
@@ -368,13 +376,25 @@ CLM_API int clm_agent_check_connection(struct clm_agent *agent);
 CLM_API int clm_agent_cancel(struct clm_agent *agent);
 
 /*
- * Reconfigure the LLM provider on a live agent. Swaps the endpoint, API key,
- * and model. Safe to call between turns (not while one is in flight).
- * base_url is the full chat completions URL (e.g. "http://host/v1/chat/completions").
- * api_key may be NULL for no-auth servers.
+ * Reconfigure the LLM provider/model on a live agent: swaps the endpoint,
+ * API key, wire dialect, model, and per-model context/rate-limit overrides,
+ * without tearing down history, tools, or MCP clients (contrast a full
+ * clm_agent_free + clm_agent_new, needed only when the system prompt or
+ * tool set also changes -- see clm-config(5)'s agents vs. models split).
+ * Safe to call between turns; returns -EBUSY if one is in flight.
+ *
+ * Only cfg->base_url, api_key, provider, model, context_size,
+ * autocompact_pct, rate_tokens_per_sec, and rate_burst are read; the rest
+ * of *cfg (system_prompt, tools, max_iterations, ...) is ignored, since
+ * this only ever changes the connection, not the agent's behaviour.
+ * cfg->base_url is the full chat completions URL (e.g.
+ * "http://host/v1/chat/completions"). cfg->api_key may be NULL for
+ * no-auth servers. context_size/autocompact_pct/rate_tokens_per_sec/
+ * rate_burst of 0 leave the library default in place, same as at
+ * clm_agent_new time.
  */
 CLM_API int clm_agent_set_provider(struct clm_agent *agent,
-    const char *base_url, const char *api_key, const char *model);
+    const struct clm_cfg *cfg);
 
 /*
  * Summarize the conversation and fold old turns into that summary, keeping the

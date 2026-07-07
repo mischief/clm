@@ -8,6 +8,18 @@
 #include "useful.h"
 #include "banned.h"
 
+enum clm_provider
+clm_provider_from_str(const char *kind)
+{
+	if (kind == NULL)
+		return CLM_PROVIDER_OPENAI;
+	if (strcmp(kind, "ollama") == 0)
+		return CLM_PROVIDER_OLLAMA;
+	if (strcmp(kind, "anthropic") == 0)
+		return CLM_PROVIDER_ANTHROPIC;
+	return CLM_PROVIDER_OPENAI;
+}
+
 int
 clm_llm_new(struct clm_llm **ret, enum clm_provider provider, const char *api_key, const char *base_url, const char *model)
 {
