@@ -25,7 +25,8 @@ usage(const char *prog)
 	    "usage: %s setup\n"
 	    "       %s [-o|--oneshot PROMPT] [-f|--forever PROMPT] "
 	    "[-H|--headless] [-u|--url BASE] "
-	    "[-m|--model NAME] [-p|--plugins DIR] [-S|--no-stream] "
+	    "[-m|--model NAME] [--provider NAME] "
+	    "[-p|--plugins DIR] [-S|--no-stream] "
 	    "[-V|--version] [-h|--help]\n",
 	    prog, prog);
 	fprintf(stderr,
@@ -42,7 +43,14 @@ usage(const char *prog)
 	    "  -u, --url BASE        base API endpoint "
 	    "(default http://127.0.0.1:8081/v1);\n"
 	    "                        \"/chat/completions\" is appended\n"
-	    "  -m, --model NAME      model name to request\n"
+	    "  -m, --model NAME      name of an entry in config.lua's `models` "
+	    "table,\n"
+	    "                        or a literal model name if no config or "
+	    "entry matches\n"
+	    "  --provider NAME       name of an entry in config.lua's "
+	    "`providers` table,\n"
+	    "                        overriding the provider the model would "
+	    "otherwise use\n"
 	    "  -p, --plugins DIR     plugin directory "
 	    "(default $XDG_CONFIG_HOME/clm/plugins)\n"
 	    "  -S, --no-stream       disable streamed (SSE) responses\n"
@@ -327,21 +335,31 @@ static const char config_template[] =
     "-- clm configuration\n"
     "--\n"
     "-- Uncomment and edit the sections you need. See README.md for the\n"
-    "-- full schema (providers, agent profiles, per-plugin tool config).\n"
+    "-- full schema (providers, models, agent profiles, per-plugin tool\n"
+    "-- config).\n"
     "return {\n"
     "    -- Default agent profile: an inline entry in an `agents` table\n"
     "    -- here, or a file at ~/.config/clm/agents/<name>.lua.\n"
     "    -- agent = \"default\",\n"
     "\n"
-    "    -- provider = \"ollama\",\n"
+    "    -- Default model, used when no agent profile sets its own.\n"
+    "    -- model = \"default\",\n"
+    "\n"
     "    -- providers = {\n"
     "    --     ollama = {\n"
+    "    --         kind = \"ollama\", -- openai | ollama | anthropic\n"
     "    --         url = \"http://127.0.0.1:8081/v1\",\n"
-    "    --         model = \"qwen3-32b\",\n"
     "    --         -- Prefer clm.secrets.* (see secrets.lua) over a\n"
     "    --         -- literal key here, since this file often ends up\n"
     "    --         -- checked into dotfiles.\n"
     "    --         api_key = clm.secrets.ollama,\n"
+    "    --     },\n"
+    "    -- },\n"
+    "\n"
+    "    -- models = {\n"
+    "    --     default = {\n"
+    "    --         provider = \"ollama\",\n"
+    "    --         model = \"qwen3-32b\",\n"
     "    --     },\n"
     "    -- },\n"
     "\n"
@@ -425,7 +443,8 @@ int
 main(int argc, char *argv[])
 {
 	const char *api_base = NULL;
-	const char *model = NULL;
+	const char *model_name = NULL; /* -m/--model: a config models[] name, or a literal model id */
+	const char *provider_name = NULL; /* --provider: a config providers[] name override */
 	const char *plugin_dir = NULL;
 	const char *agent_name = NULL;
 	char *oneshot = NULL;
@@ -443,11 +462,13 @@ main(int argc, char *argv[])
 	if (argc >= 2 && strcmp(argv[1], "setup") == 0)
 		return run_setup();
 
+	enum { OPT_PROVIDER = 256 };
 	const struct option opts[] = {
 		{"oneshot", required_argument, NULL, 'o'},
 		{"forever", required_argument, NULL, 'f'},
 		{"url", required_argument, NULL, 'u'},
 		{"model", required_argument, NULL, 'm'},
+		{"provider", required_argument, NULL, OPT_PROVIDER},
 		{"plugins", required_argument, NULL, 'p'},
 		{"agent", required_argument, NULL, 'a'},
 		{"headless", no_argument, NULL, 'H'},
@@ -463,7 +484,8 @@ main(int argc, char *argv[])
 		case 'o': oneshot = optarg; break;
 		case 'f': forever_prompt = optarg; break;
 		case 'u': api_base = optarg; break;
-		case 'm': model = optarg; break;
+		case 'm': model_name = optarg; break;
+		case OPT_PROVIDER: provider_name = optarg; break;
 		case 'p': plugin_dir = optarg; break;
 		case 'H': headless = 1; break;
 		case 'V': printf("clm %s\n", CLM_VERSION); return 0;
@@ -473,7 +495,7 @@ main(int argc, char *argv[])
 		}
 	}
 
-	/* Load config early so agent profile + provider inform the cfg. */
+	/* Load config early so agent profile + model/provider inform cfg. */
 	{
 		autofree char *cpath = xdg_config_path("clm/config.lua");
 		if (cpath != NULL)
@@ -483,30 +505,47 @@ main(int argc, char *argv[])
 		autofree char *adir = xdg_config_path("clm/agents");
 		clm_lua_cfg_load_agent(lcfg, adir, agent_name);
 
-		/* Resolve provider from agent profile. */
-		const char *prov_name = clm_lua_cfg_get_str(lcfg, "provider");
+		/* Resolve the model (agent profile, or top-level default,
+		 * unless -m named a models[] entry directly) down to a
+		 * provider connection. --provider overrides which provider
+		 * entry backs it (e.g. failing over to a mirror endpoint
+		 * without changing which model is requested). */
+		if (model_name == NULL)
+			model_name = clm_lua_cfg_get_str(lcfg, "model");
+
+		const char *prov_name = provider_name != NULL ? provider_name
+		    : (model_name != NULL
+		          ? clm_lua_cfg_model_str(lcfg, model_name, "provider")
+		          : NULL);
+
 		if (prov_name != NULL) {
 			const char *purl = clm_lua_cfg_provider_str(lcfg, prov_name, "url");
-			const char *pmodel = clm_lua_cfg_provider_str(lcfg, prov_name, "model");
 			const char *pkey = clm_lua_cfg_provider_str(lcfg, prov_name, "api_key");
+			const char *pkind = clm_lua_cfg_provider_str(lcfg, prov_name, "kind");
 			if (api_base == NULL && purl != NULL)
 				api_base = purl;
-			if (model == NULL && pmodel != NULL)
-				model = pmodel;
 			if (pkey != NULL && getenv("CLM_API_KEY") == NULL)
 				cfg.api_key = pkey;
-			cfg.context_size = clm_lua_cfg_provider_int(lcfg, prov_name, "context_size", 0);
-			cfg.autocompact_pct = (int)clm_lua_cfg_provider_int(lcfg, prov_name, "autocompact_pct", 0);
+			cfg.provider = clm_provider_from_str(pkind);
 			cfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_tokens_per_sec", 0);
 			cfg.rate_burst = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_burst", 0);
+		}
+		if (model_name != NULL) {
+			int64_t ctxsz = clm_lua_cfg_model_int(lcfg, model_name, "context_size", 0);
+			int acpct = (int)clm_lua_cfg_model_int(lcfg, model_name, "autocompact_pct", 0);
+			const char *pmodel = clm_lua_cfg_model_str(lcfg, model_name, "model");
+			cfg.context_size = ctxsz;
+			cfg.autocompact_pct = acpct;
+			if (pmodel != NULL)
+				model_name = pmodel;
 		}
 	}
 
 	/* Defaults for anything not set by config or CLI. */
 	if (api_base == NULL)
 		api_base = "http://127.0.0.1:8081/v1";
-	if (model == NULL)
-		model = "local-model";
+	if (model_name == NULL)
+		model_name = "local-model";
 
 	/* -u takes the base endpoint; /chat/completions is appended. */
 	baselen = strlen(api_base);
@@ -522,8 +561,7 @@ main(int argc, char *argv[])
 		                                              : "sk-no-key-required";
 	}
 	cfg.base_url = endpoint;
-	cfg.provider = CLM_PROVIDER_OPENAI;
-	cfg.model = model;
+	cfg.model = model_name;
 	cfg.max_iterations = 0;
 	cfg.stream = stream;
 	if (lcfg != NULL) {
