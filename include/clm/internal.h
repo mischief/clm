@@ -18,6 +18,16 @@
 /* Default maximum agent loop iterations when cfg->max_iterations is 0. */
 #define CLM_DEFAULT_MAX_ITERATIONS 25
 
+/* Fallback llm_rl rate when a provider entry doesn't set
+ * rate_tokens_per_sec/rate_burst (see struct clm_agent's llm_rl comment
+ * below for why this needs to be high enough to never bind in normal
+ * use -- it's a backstop against runaway tool-loop request storms, not
+ * a throttle). 1M tok/s * 5M burst: no real single request comes close,
+ * but a genuinely runaway loop still gets capped rather than firing
+ * unbounded requests. */
+#define CLM_DEFAULT_LLM_RL_TOKENS_PER_SEC 1000000
+#define CLM_DEFAULT_LLM_RL_BURST 5000000
+
 /* struct clm_host, clm_http_call, clm_timer come from clm/host.h (via clm.h). */
 
 struct clm_agent {
@@ -53,7 +63,19 @@ struct clm_agent {
 	 * all, so a fast tool-calling agent can burst well past a backend's
 	 * requests-per-minute limit even though tool_rl is perfectly happy.
 	 * Added after a real 429 incident against OpenAI during exactly
-	 * this pattern. */
+	 * this pattern.
+	 *
+	 * The bucket exists purely as a backstop against that pathological
+	 * request-storm case, not as a everyday-usage throttle -- so the
+	 * fallback rate below (used whenever a provider entry in config.lua
+	 * doesn't set rate_tokens_per_sec/rate_burst) is set high enough
+	 * that no realistic single request should ever hit it. It used to
+	 * default to 2000 tok/s * burst 30000, which sounds generous until
+	 * you notice llm_dispatch()'s cost estimate is the *entire*
+	 * serialized request body (strlen(turn->body) / 4) -- i.e. the
+	 * whole conversation history resent every turn, not just the new
+	 * message -- so on any long-running conversation that "safe"
+	 * default started silently throttling every single turn. */
 	struct clm_ratelimit *llm_rl;
 	struct clm_timer *llm_rl_timer; /* non-NULL while a start_turn retry is parked */
 

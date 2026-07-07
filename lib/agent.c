@@ -262,16 +262,15 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 		return -ENOMEM;
 	}
 
-	/* LLM request rate limiter, estimated-token bucket (see llm_rl in
-	 * internal.h for why this exists separately from tool_rl). Defaults
-	 * are conservative on purpose: this has to work across very
-	 * different backend tiers (a local llama.cpp server has no real
-	 * limit; hosted APIs vary widely), and getting briefly parked is a
-	 * much smaller problem than the 429 burst it guards against.
-	 * Overridable per provider via cfg. */
+	/* LLM request rate limiter, estimated-token bucket -- see llm_rl in
+	 * internal.h for why this exists separately from tool_rl, and why
+	 * the fallback rate is deliberately very high rather than
+	 * "conservative". Overridable per provider via cfg. */
 	{
-		int64_t rps = cfg->rate_tokens_per_sec > 0 ? cfg->rate_tokens_per_sec : 2000;
-		int64_t burst = cfg->rate_burst > 0 ? cfg->rate_burst : 30000;
+		int64_t rps = cfg->rate_tokens_per_sec > 0 ? cfg->rate_tokens_per_sec
+		    : CLM_DEFAULT_LLM_RL_TOKENS_PER_SEC;
+		int64_t burst = cfg->rate_burst > 0 ? cfg->rate_burst
+		    : CLM_DEFAULT_LLM_RL_BURST;
 		if (clm_ratelimit_new(&agent->llm_rl, (size_t)rps, (size_t)burst) < 0) {
 			clm_agent_free(agent);
 			return -ENOMEM;
@@ -1683,8 +1682,10 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 	 * overrides it; otherwise keep the bucket (and its accumulated
 	 * state) as-is rather than resetting it to the defaults. */
 	if (cfg->rate_tokens_per_sec > 0 || cfg->rate_burst > 0) {
-		int64_t rps = cfg->rate_tokens_per_sec > 0 ? cfg->rate_tokens_per_sec : 2000;
-		int64_t burst = cfg->rate_burst > 0 ? cfg->rate_burst : 30000;
+		int64_t rps = cfg->rate_tokens_per_sec > 0 ? cfg->rate_tokens_per_sec
+		    : CLM_DEFAULT_LLM_RL_TOKENS_PER_SEC;
+		int64_t burst = cfg->rate_burst > 0 ? cfg->rate_burst
+		    : CLM_DEFAULT_LLM_RL_BURST;
 		struct clm_ratelimit *new_rl;
 
 		if (clm_ratelimit_new(&new_rl, (size_t)rps, (size_t)burst) == 0) {
