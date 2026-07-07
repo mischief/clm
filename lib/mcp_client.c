@@ -471,8 +471,15 @@ mcp_http_success(struct clm_http_response *resp, void *user)
 	if (parsed != NULL) {
 		result = cJSON_GetObjectItemCaseSensitive(parsed, "result");
 		error = cJSON_GetObjectItemCaseSensitive(parsed, "error");
-		if (error != NULL)
-			err_msg = cJSON_GetStringValue(error);
+		if (error != NULL) {
+			/* JSON-RPC 2.0 "error" is always an object shaped
+			 * {code, message, data}, never a bare string --
+			 * cJSON_GetStringValue(error) would just return NULL
+			 * here and lose the real diagnostic. */
+			cJSON *jmsg = cJSON_GetObjectItemCaseSensitive(error, "message");
+			err_msg = jmsg != NULL && cJSON_IsString(jmsg)
+			    ? cJSON_GetStringValue(jmsg) : "MCP error";
+		}
 	}
 
 	switch (hctx->kind) {
@@ -654,8 +661,13 @@ mcp_process_line(struct clm_mcp_client *client, char *line)
 
 	result = cJSON_GetObjectItemCaseSensitive(parsed, "result");
 	error = cJSON_GetObjectItemCaseSensitive(parsed, "error");
-	if (error != NULL)
-		err_msg = cJSON_GetStringValue(error);
+	if (error != NULL) {
+		/* See the matching comment in mcp_http_success(): "error" is
+		 * always a JSON-RPC error object, never a bare string. */
+		cJSON *jmsg = cJSON_GetObjectItemCaseSensitive(error, "message");
+		err_msg = jmsg != NULL && cJSON_IsString(jmsg)
+		    ? cJSON_GetStringValue(jmsg) : "MCP error";
+	}
 
 	mcp_handle_result(client, pend, result, err_msg);
 	free(pend);
