@@ -1406,8 +1406,17 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 	ASSERT_RETURN(cfg != NULL, -EINVAL);
 	ASSERT_RETURN(cfg->base_url != NULL, -EINVAL);
 
-	/* Refuse while a turn is in flight. */
-	if (agent->state != CLM_STATE_IDLE)
+	/* Refuse only while a turn is actually in flight. IDLE, COMPLETE, and
+	 * ERROR all mean nothing is running right now -- in particular, a
+	 * failed turn leaves the agent in CLM_STATE_ERROR permanently (there
+	 * is no path back to IDLE without a new turn), so gating on == IDLE
+	 * here would permanently lock out /model, /provider, and /agent
+	 * switching after any single error: exactly the situation you want
+	 * an escape hatch for (e.g. switch away from a model that just 403'd
+	 * instead of being stuck repeating it). */
+	if (agent->state == CLM_STATE_THINKING ||
+	    agent->state == CLM_STATE_CALLING_TOOL ||
+	    agent->state == CLM_STATE_RATE_LIMITED)
 		return -EBUSY;
 
 	new_url = strdup(cfg->base_url);

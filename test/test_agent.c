@@ -656,6 +656,42 @@ test_recover_after_error(uv_loop_t *loop)
 }
 
 /*
+ * (h2) Same bug as (h) above, but for clm_agent_set_provider instead of
+ * clm_agent_submit: a turn that ends in CLM_STATE_ERROR must not
+ * permanently lock out reconfiguring the agent. Concretely, this is what
+ * let a TUI user get stuck after e.g. switching to a model their plan
+ * doesn't allow -- the turn 403's into CLM_STATE_ERROR, and every
+ * subsequent /model or /provider (both call clm_agent_set_provider) then
+ * failed with -EBUSY forever, with no way to switch to a working model
+ * short of restarting.
+ */
+static void
+test_set_provider_after_error(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct clm_cfg cfg = {0};
+
+	st.loop = loop;
+	/* Port 1 has nothing listening, so the turn fails to connect. */
+	st.agent = make_agent(&st, 1);
+
+	CHECK(clm_agent_submit(st.agent, "first") == 0, "submit accepted");
+	run_until_done(&st);
+	CHECK(st.turn_status != 0, "turn errored (no server)");
+	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_ERROR, "left in error state");
+
+	/* The real assertion: reconfiguring is not wedged by the error. */
+	cfg.base_url = "http://127.0.0.1:1/v1/chat/completions";
+	cfg.model = "some-other-model";
+	CHECK(clm_agent_set_provider(st.agent, &cfg) == 0,
+	    "set_provider accepted after error (not -EBUSY)");
+
+	clm_agent_free(st.agent);
+	clm_host_uv_free(st.host);
+	uv_run(loop, UV_RUN_DEFAULT); /* drain pending closes */
+}
+
+/*
  * (i) clm_parse_props: derive the per-conversation context budget from a
  * llama.cpp /props body, divide across slots, and reject non-llama.cpp or
  * malformed bodies. Pure function, no server needed.
@@ -1142,6 +1178,7 @@ main(void)
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
 	test_recover_after_error(&loop);
+	test_set_provider_after_error(&loop);
 	test_parse_props();
 	test_history_compact();
 	test_history_compact_agentic();
