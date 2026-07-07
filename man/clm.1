@@ -15,6 +15,7 @@
 .Op Fl a Ar name | Fl -agent Ar name
 .Op Fl f Ar prompt | Fl -forever Ar prompt
 .Op Fl m Ar name | Fl -model Ar name
+.Op Fl -provider Ar name
 .Op Fl o Ar prompt | Fl -oneshot Ar prompt
 .Op Fl p Ar dir | Fl -plugins Ar dir
 .Op Fl u Ar base | Fl -url Ar base
@@ -65,8 +66,9 @@ If omitted, the
 .Va agent
 key in
 .Pa config.lua
-is used, or otherwise the top-level provider settings apply directly
-with no named profile.
+is used, or otherwise the top-level
+.Va model
+setting applies directly with no named profile.
 .It Fl f Ar prompt , Fl -forever Ar prompt
 Interactive UI mode only.
 Submit
@@ -78,10 +80,31 @@ a human re-prompting it each turn.
 Force the plain stdio REPL even when standard input and standard
 output are both a terminal.
 .It Fl m Ar name , Fl -model Ar name
-Model name to request from the endpoint.
-Overrides whatever the active provider (CLI, agent profile, or
+Name of an entry in
 .Pa config.lua Ns 's
-top-level provider) would otherwise supply.
+.Va models
+table
+.Pq Xr clm-config 5 ,
+resolved to a wire model id and its provider connection.
+If no config is loaded or no matching entry is found,
+.Ar name
+is instead used directly as a literal model id to request from
+.Fl -url .
+Overrides whatever the active agent profile or
+.Pa config.lua Ns 's
+top-level
+.Va model
+would otherwise supply.
+.It Fl -provider Ar name
+Name of an entry in
+.Pa config.lua Ns 's
+.Va providers
+table
+.Pq Xr clm-config 5 ,
+overriding which provider connection (endpoint, key, wire dialect)
+backs the selected model, independent of
+.Fl m .
+Useful for failing over to a backup endpoint for the current model.
 .It Fl o Ar prompt , Fl -oneshot Ar prompt
 Run a single prompt headlessly and exit, printing only the assistant's
 reply (plus any tool-call/error lines) to standard output.
@@ -137,7 +160,7 @@ and the check is cheap enough to leave alone in production.
 .Sh FILES
 .Bl -tag -width Ds
 .It Pa ~/.config/clm/config.lua
-Provider, agent, and per-tool plugin configuration; see
+Provider, model, agent, and per-tool plugin configuration; see
 .Xr clm-config 5 .
 .It Pa ~/.config/clm/secrets.lua
 API keys and other secrets, kept separate from

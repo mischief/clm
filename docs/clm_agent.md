@@ -10,6 +10,7 @@ CLM\_AGENT(3) - Library Functions Manual
 **clm\_agent\_compact**,
 **clm\_agent\_check\_connection**,
 **clm\_agent\_set\_provider**,
+**clm\_provider\_from\_str**,
 **clm\_agent\_get\_state**,
 **clm\_agent\_get\_ctx\_max**,
 **clm\_agent\_get\_last\_error**,
@@ -48,10 +49,10 @@ CLM\_AGENT(3) - Library Functions Manual
 **clm\_agent\_check\_connection**(*struct clm\_agent \*agent*);
 
 *int*  
-**clm\_agent\_set\_provider**(*struct clm\_agent \*agent*,
-*const char \*base\_url*,
-*const char \*api\_key*,
-*const char \*model*);
+**clm\_agent\_set\_provider**(*struct clm\_agent \*agent*, *const struct clm\_cfg \*cfg*);
+
+*enum clm\_provider*  
+**clm\_provider\_from\_str**(*const char \*kind*);
 
 *enum clm\_agent\_state*  
 **clm\_agent\_get\_state**(*const struct clm\_agent \*agent*);
@@ -188,16 +189,61 @@ callback.
 Safe to call at any time, including while a turn is already in flight.
 
 **clm\_agent\_set\_provider**()
-reconfigures the LLM provider on a live agent, swapping the endpoint,
-API key, and model.
+reconfigures the LLM provider/model on a live agent, swapping the
+endpoint, API key, wire dialect, model, and per-model context/rate-limit
+overrides, without tearing down history, tools, or MCP clients
+(contrast a full **clm\_agent\_free**() + **clm\_agent\_new**(), needed)
+only when the system prompt or tool set also changes; see
+[clm-config(5)](clm-config.md)'s
+agents vs. models split .
 Safe to call between turns, not while one is in flight.
-*base\_url*
+Only
+*cfg-&gt;base\_url*,
+*api\_key*,
+*provider*,
+*model*,
+*context\_size*,
+*autocompact\_pct*,
+*rate\_tokens\_per\_sec*,
+and
+*rate\_burst*
+are read; the rest of
+*\*cfg*
+(*system\_prompt*, *tools*, *max\_iterations*, ...)
+is ignored, since this only ever changes the connection, not the
+agent's behavior.
+*cfg-&gt;base\_url*
 is the full chat completions URL (e.g.
 "http://host/v1/chat/completions").
-*api\_key*
+*cfg-&gt;api\_key*
 may be
 `NULL`
 for a server that requires no authentication.
+*context\_size*,
+*autocompact\_pct*,
+*rate\_tokens\_per\_sec*,
+and
+*rate\_burst*
+of 0 leave the library default in place, same as at
+**clm\_agent\_new**()
+time.
+
+**clm\_provider\_from\_str**()
+maps a
+[clm-config(5)](clm-config.md)
+provider's
+*kind*
+string
+("openai, "anthropic, or "ollama""")
+to the corresponding
+*enum clm\_provider*
+value, for use in
+*cfg-&gt;provider*.
+An unrecognized or
+`NULL`
+*kind*
+defaults to
+`CLM_PROVIDER_OPENAI`.
 
 **clm\_agent\_get\_state**()
 returns the agent's current

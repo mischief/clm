@@ -15,6 +15,7 @@ CLM(1) - General Commands Manual
 \[**-a**&nbsp;*name*&nbsp;|&nbsp;**--agent**&nbsp;*name*]
 \[**-f**&nbsp;*prompt*&nbsp;|&nbsp;**--forever**&nbsp;*prompt*]
 \[**-m**&nbsp;*name*&nbsp;|&nbsp;**--model**&nbsp;*name*]
+\[**--provider**&nbsp;*name*]
 \[**-o**&nbsp;*prompt*&nbsp;|&nbsp;**--oneshot**&nbsp;*prompt*]
 \[**-p**&nbsp;*dir*&nbsp;|&nbsp;**--plugins**&nbsp;*dir*]
 \[**-u**&nbsp;*base*&nbsp;|&nbsp;**--url**&nbsp;*base*]
@@ -67,8 +68,9 @@ If omitted, the
 *agent*
 key in
 *config.lua*
-is used, or otherwise the top-level provider settings apply directly
-with no named profile.
+is used, or otherwise the top-level
+*model*
+setting applies directly with no named profile.
 
 **-f** *prompt*, **--forever** *prompt*
 
@@ -86,10 +88,33 @@ output are both a terminal.
 
 **-m** *name*, **--model** *name*
 
-Model name to request from the endpoint.
-Overrides whatever the active provider (CLI, agent profile, or
+Name of an entry in
 *config.lua*'s
-top-level provider) would otherwise supply.
+*models*
+table
+([clm-config(5)](clm-config.md)),
+resolved to a wire model id and its provider connection.
+If no config is loaded or no matching entry is found,
+*name*
+is instead used directly as a literal model id to request from
+**--url**.
+Overrides whatever the active agent profile or
+*config.lua*'s
+top-level
+*model*
+would otherwise supply.
+
+**--provider** *name*
+
+Name of an entry in
+*config.lua*'s
+*providers*
+table
+([clm-config(5)](clm-config.md)),
+overriding which provider connection (endpoint, key, wire dialect)
+backs the selected model, independent of
+**-m**.
+Useful for failing over to a backup endpoint for the current model.
 
 **-o** *prompt*, **--oneshot** *prompt*
 
@@ -163,7 +188,7 @@ and the check is cheap enough to leave alone in production.
 
 *~/.config/clm/config.lua*
 
-Provider, agent, and per-tool plugin configuration; see
+Provider, model, agent, and per-tool plugin configuration; see
 [clm-config(5)](clm-config.md).
 
 *~/.config/clm/secrets.lua*

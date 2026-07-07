@@ -11,6 +11,7 @@
 .Nm clm_agent_compact ,
 .Nm clm_agent_check_connection ,
 .Nm clm_agent_set_provider ,
+.Nm clm_provider_from_str ,
 .Nm clm_agent_get_state ,
 .Nm clm_agent_get_ctx_max ,
 .Nm clm_agent_get_last_error ,
@@ -42,12 +43,9 @@
 .Ft int
 .Fn clm_agent_check_connection "struct clm_agent *agent"
 .Ft int
-.Fo clm_agent_set_provider
-.Fa "struct clm_agent *agent"
-.Fa "const char *base_url"
-.Fa "const char *api_key"
-.Fa "const char *model"
-.Fc
+.Fn clm_agent_set_provider "struct clm_agent *agent" "const struct clm_cfg *cfg"
+.Ft "enum clm_provider"
+.Fn clm_provider_from_str "const char *kind"
 .Ft "enum clm_agent_state"
 .Fn clm_agent_get_state "const struct clm_agent *agent"
 .Ft int64_t
@@ -178,16 +176,61 @@ callback.
 Safe to call at any time, including while a turn is already in flight.
 .Pp
 .Fn clm_agent_set_provider
-reconfigures the LLM provider on a live agent, swapping the endpoint,
-API key, and model.
+reconfigures the LLM provider/model on a live agent, swapping the
+endpoint, API key, wire dialect, model, and per-model context/rate-limit
+overrides, without tearing down history, tools, or MCP clients
+.Pq contrast a full Fn clm_agent_free No + Fn clm_agent_new , No needed
+only when the system prompt or tool set also changes; see
+.Xr clm-config 5 Ns 's
+agents vs. models split .
 Safe to call between turns, not while one is in flight.
-.Fa base_url
+Only
+.Fa cfg->base_url ,
+.Fa api_key ,
+.Fa provider ,
+.Fa model ,
+.Fa context_size ,
+.Fa autocompact_pct ,
+.Fa rate_tokens_per_sec ,
+and
+.Fa rate_burst
+are read; the rest of
+.Fa *cfg
+.Pq Va system_prompt , tools , max_iterations , No ...
+is ignored, since this only ever changes the connection, not the
+agent's behavior.
+.Fa cfg->base_url
 is the full chat completions URL (e.g.
 .Qq http://host/v1/chat/completions ) .
-.Fa api_key
+.Fa cfg->api_key
 may be
 .Dv NULL
 for a server that requires no authentication.
+.Fa context_size ,
+.Fa autocompact_pct ,
+.Fa rate_tokens_per_sec ,
+and
+.Fa rate_burst
+of 0 leave the library default in place, same as at
+.Fn clm_agent_new
+time.
+.Pp
+.Fn clm_provider_from_str
+maps a
+.Xr clm-config 5
+provider's
+.Va kind
+string
+.Pq Qq openai , Qq anthropic , No or Qq ollama
+to the corresponding
+.Vt enum clm_provider
+value, for use in
+.Fa cfg->provider .
+An unrecognized or
+.Dv NULL
+.Fa kind
+defaults to
+.Dv CLM_PROVIDER_OPENAI .
 .Pp
 .Fn clm_agent_get_state
 returns the agent's current

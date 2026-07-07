@@ -31,21 +31,78 @@ Overridden by
 **--agent**
 flag.
 If neither is set, the top-level
-*provider*
+*model*
 and
 *system\_prompt*
 below apply directly with no named profile.
+
+*model*
+
+Name of the entry in
+*models*
+(below) to use.
+Overridden by
+[clm(1)](clm.md)'s
+**--model**
+flag.
+
+*models*
+
+A table of model definitions, keyed by name.
+Each entry may set:
 
 *provider*
 
 Name of the entry in
 *providers*
-(below) to use.
+(below) supplying the connection (endpoint, key, wire dialect) this
+model is requested over.
+
+*model*
+
+Model id/string sent on the wire, e.g.
+"qwen3-32b".
+
+*context\_size*
+
+Override the context window size (tokens) the agent assumes, instead
+of learning it from the backend.
+
+*autocompact\_pct*
+
+Override the percentage of the context window that triggers automatic
+conversation summarization.
+
+*provider*
+
+Name of the entry in
+*providers*
+(below) to use directly, overriding whichever provider the selected
+*model*
+points at.
+Overridden by
+[clm(1)](clm.md)'s
+**--provider**
+flag.
+Useful for failing over to a backup endpoint for the current model
+without editing
+*models*.
 
 *providers*
 
-A table of provider definitions, keyed by name.
+A table of provider (connection) definitions, keyed by name.
 Each entry may set:
+
+*kind*
+
+Wire dialect to speak:
+"openai",
+"anthropic",
+or
+"ollama".
+Defaults to
+"openai"
+if unset.
 
 *url*
 
@@ -53,10 +110,6 @@ Base API endpoint, e.g.
 "http://127.0.0.1:8081/v1".
 */chat/completions*
 is appended automatically.
-
-*model*
-
-Model name to request.
 
 *api\_key*
 
@@ -70,16 +123,6 @@ often ends up shared or checked into dotfiles.
 Overridden by the
 `CLM_API_KEY`
 environment variable if set.
-
-*context\_size*
-
-Override the context window size (tokens) the agent assumes, instead
-of learning it from the backend.
-
-*autocompact\_pct*
-
-Override the percentage of the context window that triggers automatic
-conversation summarization.
 
 *rate\_tokens\_per\_sec*, *rate\_burst*
 
@@ -204,15 +247,21 @@ if this file is readable by group or other.
 
 # EXAMPLES
 
-A minimal single-provider configuration:
+A minimal single-provider, single-model configuration:
 
 	return {
-	    provider = "ollama",
+	    model = "ollama",
 	    providers = {
 	        ollama = {
+	            kind = "ollama",
 	            url = "http://127.0.0.1:8081/v1",
-	            model = "qwen3-32b",
 	            api_key = clm.secrets.ollama,
+	        },
+	    },
+	    models = {
+	        ollama = {
+	            provider = "ollama",
+	            model = "qwen3-32b",
 	        },
 	    },
 	    tools = {
@@ -220,6 +269,39 @@ A minimal single-provider configuration:
 	        weather = { units = "metric" },
 	    },
 	    volatile_tools = { "local_map", "character_status" },
+	}
+
+A second model sharing the same connection, plus a backup provider for
+failover
+([clm(1)](clm.md)'s **--provider**, or the TUI's **/provider command**):
+
+	return {
+	    model = "ollama-small",
+	    providers = {
+	        ollama = {
+	            kind = "ollama",
+	            url = "http://127.0.0.1:8081/v1",
+	            api_key = clm.secrets.ollama,
+	        },
+	        ollama_backup = {
+	            kind = "ollama",
+	            url = "http://10.0.0.2:8081/v1",
+	            api_key = clm.secrets.ollama,
+	        },
+	    },
+	    models = {
+	        ["ollama-small"] = {
+	            provider = "ollama",
+	            model = "qwen3-8b",
+	            context_size = 32768,
+	        },
+	        ["ollama-big"] = {
+	            provider = "ollama",
+	            model = "qwen3-32b",
+	            context_size = 131072,
+	            autocompact_pct = 80,
+	        },
+	    },
 	}
 
 The corresponding

@@ -30,25 +30,68 @@ Overridden by
 .Fl -agent
 flag.
 If neither is set, the top-level
-.Va provider
+.Va model
 and
 .Va system_prompt
 below apply directly with no named profile.
+.It Va model
+Name of the entry in
+.Va models
+(below) to use.
+Overridden by
+.Xr clm 1 Ns 's
+.Fl -model
+flag.
+.It Va models
+A table of model definitions, keyed by name.
+Each entry may set:
+.Bl -tag -width Ds
 .It Va provider
 Name of the entry in
 .Va providers
-(below) to use.
+(below) supplying the connection (endpoint, key, wire dialect) this
+model is requested over.
+.It Va model
+Model id/string sent on the wire, e.g.
+.Qq qwen3-32b .
+.It Va context_size
+Override the context window size (tokens) the agent assumes, instead
+of learning it from the backend.
+.It Va autocompact_pct
+Override the percentage of the context window that triggers automatic
+conversation summarization.
+.El
+.It Va provider
+Name of the entry in
+.Va providers
+(below) to use directly, overriding whichever provider the selected
+.Va model
+points at.
+Overridden by
+.Xr clm 1 Ns 's
+.Fl -provider
+flag.
+Useful for failing over to a backup endpoint for the current model
+without editing
+.Va models .
 .It Va providers
-A table of provider definitions, keyed by name.
+A table of provider (connection) definitions, keyed by name.
 Each entry may set:
 .Bl -tag -width Ds
+.It Va kind
+Wire dialect to speak:
+.Qq openai ,
+.Qq anthropic ,
+or
+.Qq ollama .
+Defaults to
+.Qq openai
+if unset.
 .It Va url
 Base API endpoint, e.g.
 .Qq http://127.0.0.1:8081/v1 .
 .Pa /chat/completions
 is appended automatically.
-.It Va model
-Model name to request.
 .It Va api_key
 Bearer token.
 Prefer
@@ -60,12 +103,6 @@ often ends up shared or checked into dotfiles.
 Overridden by the
 .Ev CLM_API_KEY
 environment variable if set.
-.It Va context_size
-Override the context window size (tokens) the agent assumes, instead
-of learning it from the backend.
-.It Va autocompact_pct
-Override the percentage of the context window that triggers automatic
-conversation summarization.
 .It Va rate_tokens_per_sec , Va rate_burst
 Token-bucket rate limiter parameters for tool dispatch.
 .El
@@ -168,15 +205,21 @@ warns, via
 .Ev CLM_DEBUG_LOG ,
 if this file is readable by group or other.
 .Sh EXAMPLES
-A minimal single-provider configuration:
+A minimal single-provider, single-model configuration:
 .Bd -literal -offset indent
 return {
-    provider = "ollama",
+    model = "ollama",
     providers = {
         ollama = {
+            kind = "ollama",
             url = "http://127.0.0.1:8081/v1",
-            model = "qwen3-32b",
             api_key = clm.secrets.ollama,
+        },
+    },
+    models = {
+        ollama = {
+            provider = "ollama",
+            model = "qwen3-32b",
         },
     },
     tools = {
@@ -184,6 +227,40 @@ return {
         weather = { units = "metric" },
     },
     volatile_tools = { "local_map", "character_status" },
+}
+.Ed
+.Pp
+A second model sharing the same connection, plus a backup provider for
+failover
+.Pq Xr clm 1 Ns 's Fl -provider , No or the TUI's Ic /provider command :
+.Bd -literal -offset indent
+return {
+    model = "ollama-small",
+    providers = {
+        ollama = {
+            kind = "ollama",
+            url = "http://127.0.0.1:8081/v1",
+            api_key = clm.secrets.ollama,
+        },
+        ollama_backup = {
+            kind = "ollama",
+            url = "http://10.0.0.2:8081/v1",
+            api_key = clm.secrets.ollama,
+        },
+    },
+    models = {
+        ["ollama-small"] = {
+            provider = "ollama",
+            model = "qwen3-8b",
+            context_size = 32768,
+        },
+        ["ollama-big"] = {
+            provider = "ollama",
+            model = "qwen3-32b",
+            context_size = 131072,
+            autocompact_pct = 80,
+        },
+    },
 }
 .Ed
 .Pp
