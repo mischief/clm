@@ -20,8 +20,8 @@
  *   - "max_tokens" is required (clm has no per-request token budget config,
  *     so a fixed generous default is used -- see CLM_ANTHROPIC_MAX_TOKENS).
  *   - tool schemas use "input_schema" instead of "function.parameters",
- *     and are tagged {"type":"custom", ...} to disambiguate from
- *     Anthropic's built-in tool types.
+ *     and are wrapped {"type":"custom", "custom":{name, description,
+ *     input_schema}} to disambiguate from Anthropic's built-in tool types.
  *
  * Response shape differences handled by anthropic_normalize_response() and
  * anthropic_normalize_stream_event(): a single Message with a "content"
@@ -258,9 +258,9 @@ convert_messages(cJSON *messages, char **system_out)
 }
 
 /* Convert the canonical OpenAI-shaped tools[] array ({type:"function",
- * function:{name, description, parameters}}) into Anthropic's flatter
- * {type:"custom", name, description, input_schema} shape. Takes ownership
- * of `tools`. */
+ * function:{name, description, parameters}}) into Anthropic's
+ * {type:"custom", custom:{name, description, input_schema}} shape. Takes
+ * ownership of `tools`. */
 static cJSON *
 convert_tools(cJSON *tools)
 {
@@ -276,34 +276,39 @@ convert_tools(cJSON *tools)
 	for (i = 0; i < n; i++) {
 		cJSON *t = cJSON_GetArrayItem(in, i);
 		cJSON *func = t ? cJSON_GetObjectItemCaseSensitive(t, "function") : NULL;
-		cJSON *jname, *jdesc, *params, *out_t;
+		cJSON *jname, *jdesc, *params, *out_t, *custom;
 
 		if (func == NULL)
 			continue;
 		out_t = cJSON_CreateObject();
-		if (out_t == NULL) {
+		custom = cJSON_CreateObject();
+		if (out_t == NULL || custom == NULL) {
+			cJSON_Delete(out_t);
+			cJSON_Delete(custom);
 			cJSON_Delete(out);
 			return NULL;
 		}
 		/* "type" discriminates a user-defined tool from Anthropic's
 		 * built-in tool types (bash_20250124, text_editor_20250728,
-		 * ...). api.anthropic.com defaults a missing "type" to
-		 * "custom", but at least one Anthropic-compatible endpoint
-		 * (AWS Bedrock's Mantle client) rejects tool objects that omit
-		 * it outright ("Invalid 'tools': missing field `type`") --
-		 * send it explicitly rather than relying on the default. */
+		 * ...); AWS Bedrock's Mantle endpoint (same-day Messages API
+		 * parity) rejects a tool object that omits it. Its validator
+		 * additionally expects an adjacently-tagged shape -- the
+		 * variant's own fields nested under a "custom" object, not
+		 * flattened alongside "type" -- and rejects the flat form too
+		 * ("Invalid 'tools': missing field `custom`"). */
 		cJSON_AddItemToObject(out_t, "type", cJSON_CreateString("custom"));
+		cJSON_AddItemToObject(out_t, "custom", custom);
 		jname = cJSON_GetObjectItemCaseSensitive(func, "name");
 		jdesc = cJSON_GetObjectItemCaseSensitive(func, "description");
-		cJSON_AddItemToObject(out_t, "name",
+		cJSON_AddItemToObject(custom, "name",
 		    cJSON_CreateString(cJSON_IsString(jname) ? jname->valuestring : ""));
-		cJSON_AddItemToObject(out_t, "description",
+		cJSON_AddItemToObject(custom, "description",
 		    cJSON_CreateString(cJSON_IsString(jdesc) ? jdesc->valuestring : ""));
 
 		/* Detach (not duplicate) -- this function owns `in` outright and
 		 * nothing else references the parameters subtree. */
 		params = cJSON_DetachItemFromObjectCaseSensitive(func, "parameters");
-		cJSON_AddItemToObject(out_t, "input_schema",
+		cJSON_AddItemToObject(custom, "input_schema",
 		    params != NULL ? params : cJSON_CreateObject());
 
 		cJSON_AddItemToArray(out, out_t);
