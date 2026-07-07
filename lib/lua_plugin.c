@@ -1498,28 +1498,63 @@ clm_lua_cfg_free_str_list(char **list)
 	free(list);
 }
 
+/*
+ * Shared lookup for clm_lua_cfg_{provider,model}_{str,int}: reads
+ * config.<table>[entry_name][key] off the config table at the top of the
+ * registry ref. Leaves the stack as it found it. Returns NULL/false if the
+ * table, entry, or key is missing or of the wrong shape.
+ */
+static bool
+cfg_table_entry_str(lua_State *L, int cfg_ref, const char *table,
+    const char *entry_name, const char *key, const char **out)
+{
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg_ref);
+	lua_getfield(L, -1, table);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 2);
+		return false;
+	}
+	lua_getfield(L, -1, entry_name);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 3);
+		return false;
+	}
+	lua_getfield(L, -1, key);
+	if (lua_isstring(L, -1))
+		*out = lua_tostring(L, -1);
+	lua_pop(L, 4);
+	return true;
+}
+
+static bool
+cfg_table_entry_int(lua_State *L, int cfg_ref, const char *table,
+    const char *entry_name, const char *key, int64_t *out)
+{
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg_ref);
+	lua_getfield(L, -1, table);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 2);
+		return false;
+	}
+	lua_getfield(L, -1, entry_name);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 3);
+		return false;
+	}
+	lua_getfield(L, -1, key);
+	if (lua_isnumber(L, -1))
+		*out = (int64_t)lua_tonumber(L, -1);
+	lua_pop(L, 4);
+	return true;
+}
+
 CLM_API const char *
 clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *key)
 {
-	lua_State *L = cfg->L;
 	const char *val = NULL;
-
-	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
-	lua_getfield(L, -1, "providers");
-	if (!lua_istable(L, -1)) {
-		lua_pop(L, 2);
-		return NULL;
-	}
-	lua_getfield(L, -1, provider_name);
-	if (!lua_istable(L, -1)) {
-		lua_pop(L, 3);
-		return NULL;
-	}
-	lua_getfield(L, -1, key);
-	if (lua_isstring(L, -1))
-		val = lua_tostring(L, -1);
-	lua_pop(L, 4);
+	cfg_table_entry_str(cfg->L, cfg->cfg_ref, "providers", provider_name,
+	    key, &val);
 	return val;
 }
 
@@ -1527,24 +1562,29 @@ CLM_API int64_t
 clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *key, int64_t fallback)
 {
-	lua_State *L = cfg->L;
 	int64_t val = fallback;
+	cfg_table_entry_int(cfg->L, cfg->cfg_ref, "providers", provider_name,
+	    key, &val);
+	return val;
+}
 
-	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
-	lua_getfield(L, -1, "providers");
-	if (!lua_istable(L, -1)) {
-		lua_pop(L, 2);
-		return fallback;
-	}
-	lua_getfield(L, -1, provider_name);
-	if (!lua_istable(L, -1)) {
-		lua_pop(L, 3);
-		return fallback;
-	}
-	lua_getfield(L, -1, key);
-	if (lua_isnumber(L, -1))
-		val = (int64_t)lua_tonumber(L, -1);
-	lua_pop(L, 4);
+CLM_API const char *
+clm_lua_cfg_model_str(struct clm_lua_cfg *cfg, const char *model_name,
+    const char *key)
+{
+	const char *val = NULL;
+	cfg_table_entry_str(cfg->L, cfg->cfg_ref, "models", model_name, key,
+	    &val);
+	return val;
+}
+
+CLM_API int64_t
+clm_lua_cfg_model_int(struct clm_lua_cfg *cfg, const char *model_name,
+    const char *key, int64_t fallback)
+{
+	int64_t val = fallback;
+	cfg_table_entry_int(cfg->L, cfg->cfg_ref, "models", model_name, key,
+	    &val);
 	return val;
 }
 

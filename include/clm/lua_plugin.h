@@ -101,8 +101,9 @@ CLM_API void clm_lua_cfg_free_str_list(char **list);
 CLM_API const char *clm_lua_cfg_get_agent_name(struct clm_lua_cfg *cfg);
 
 /*
- * Query a string field from a named provider in config.providers.
- * e.g. clm_lua_cfg_provider_str(cfg, "huggingface", "url")
+ * Query a string field from a named provider in config.providers -- a
+ * connection: url, api_key, kind (wire dialect), rate_tokens_per_sec,
+ * rate_burst. e.g. clm_lua_cfg_provider_str(cfg, "huggingface", "url")
  * Returns NULL if not found.
  */
 CLM_API const char *clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
@@ -111,6 +112,20 @@ CLM_API const char *clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
 /* Same as above but for integer values. Returns fallback if not set. */
 CLM_API int64_t clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *key, int64_t fallback);
+
+/*
+ * Query a string field from a named model in config.models -- which
+ * provider backs it and what to call it on the wire, plus per-model
+ * overrides: provider, model, context_size, autocompact_pct.
+ * e.g. clm_lua_cfg_model_str(cfg, "gpt-fast", "provider")
+ * Returns NULL if not found.
+ */
+CLM_API const char *clm_lua_cfg_model_str(struct clm_lua_cfg *cfg,
+    const char *model_name, const char *key);
+
+/* Same as above but for integer values. Returns fallback if not set. */
+CLM_API int64_t clm_lua_cfg_model_int(struct clm_lua_cfg *cfg,
+    const char *model_name, const char *key, int64_t fallback);
 
 /*
  * Get the tools config as a JSON string (for clm_lua_env_set_config).
