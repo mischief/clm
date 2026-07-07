@@ -46,6 +46,8 @@ struct tstate {
 	/* Permission-gate testing. */
 	int perm_prompts;                     /* times on_permission fired */
 	enum clm_permission_decision perm_decision; /* what to answer */
+	int notices;
+	char notice[256];
 };
 
 static void
@@ -137,6 +139,14 @@ on_usage(const struct clm_usage *usage, void *user)
 }
 
 static void
+on_notice(const char *text, void *user)
+{
+	struct tstate *st = user;
+	st->notices++;
+	(void)snprintf(st->notice, sizeof(st->notice), "%s", text ? text : "");
+}
+
+static void
 on_turn_done(int status, void *user)
 {
 	struct tstate *st = user;
@@ -160,6 +170,7 @@ static const struct clm_callbacks callbacks = {
 	.on_finish_reason = on_finish_reason,
 	.on_usage = on_usage,
 	.on_turn_done = on_turn_done,
+	.on_notice = on_notice,
 };
 
 /* A mock tool that completes synchronously with a fixed string. */
@@ -461,6 +472,55 @@ test_compact_reasoning_fallback(uv_loop_t *loop)
 	CHECK(st.turn_status == 0, "compact: reasoning fallback succeeds");
 	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_COMPLETE,
 	    "compact: left in complete state, not error");
+
+	teardown(&st, srv);
+}
+
+/*
+ * (b4) A model with no tool-calling support: the first turn (tools attached,
+ * since clm always registers at least the shell/bg builtins) gets ollama's
+ * real-world plain-text 400 "does not support tools" back. The turn must
+ * retry with no "tools" field and succeed, firing on_notice once, and a
+ * second turn must not attach "tools" again or re-fire the notice --
+ * confirming tools_unsupported sticks for the session.
+ */
+static void
+test_tools_unsupported_retry(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply_status(srv, 400,
+	    "registry.ollama.ai/some/model:8b does not support tools");
+	canned_reply(srv, final_reply);
+	canned_reply(srv, final_reply);
+
+	st.agent = make_agent(&st, canned_port(srv));
+
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "tools-unsupported: retry without tools succeeds");
+	CHECK(st.notices == 1, "tools-unsupported: notice fired once");
+	CHECK(canned_request_count(srv) == 2,
+	    "tools-unsupported: failed attempt + retry");
+	CHECK(strstr(canned_last_request(srv), "\"tools\"") == NULL,
+	    "tools-unsupported: retry omits tools field");
+
+	st.turn_done = 0;
+	CHECK(clm_agent_submit(st.agent, "hi again") == 0, "submit 2");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "tools-unsupported: second turn succeeds");
+	CHECK(st.notices == 1, "tools-unsupported: no repeat notice");
+	CHECK(canned_request_count(srv) == 3,
+	    "tools-unsupported: second turn is a single request, no retry");
+	CHECK(strstr(canned_last_request(srv), "\"tools\"") == NULL,
+	    "tools-unsupported: still omits tools field on later turns");
 
 	teardown(&st, srv);
 }
@@ -1265,6 +1325,7 @@ main(void)
 	test_bg_exec(&loop);
 	test_autocompact_mid_chain(&loop);
 	test_compact_reasoning_fallback(&loop);
+	test_tools_unsupported_retry(&loop);
 	test_file_tools(&loop);
 	test_shell_exec(&loop);
 	test_stream_text(&loop);

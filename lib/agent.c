@@ -208,6 +208,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 		agent->cb_on_connection = cb->on_connection;
 		agent->cb_on_state = cb->on_state;
 		agent->cb_on_turn_done = cb->on_turn_done;
+		agent->cb_on_notice = cb->on_notice;
 	}
 	agent->cb_user = user;
 
@@ -1063,6 +1064,31 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 			}
 		}
 
+		/* Ollama's signature for "this model has no tool-calling
+		 * template": a plain-text 400 body, no JSON envelope, e.g.
+		 * "registry.ollama.ai/foo/bar:8b does not support tools".
+		 * Detected live against a real ollama server -- every turn
+		 * we sent had "tools" attached (clm always registers at
+		 * least the shell/bg builtins), so a model without tool
+		 * support failed every single turn with no way to have a
+		 * plain conversation with it at all. Retry once with no
+		 * "tools" field and remember the model can't take it for
+		 * the rest of this session (see tools_unsupported), instead
+		 * of repeating the same failing request forever. */
+		if (status == 400 && !agent->tools_unsupported &&
+		    resp != NULL && resp->body != NULL &&
+		    strstr(resp->body, "does not support tools") != NULL) {
+			agent->tools_unsupported = true;
+			clm_http_response_free(resp);
+			clm_async_turn_free(turn);
+			if (agent->cb_on_notice)
+				agent->cb_on_notice(
+				    "model does not support tool calls; "
+				    "continuing without tools", agent->cb_user);
+			clm_agent_start_turn(agent);
+			return;
+		}
+
 		if (detail != NULL)
 			(void)snprintf(buf, sizeof(buf), "HTTP %d: %s", status, detail);
 		else if (resp != NULL && resp->body != NULL && resp->body[0] != '\0')
@@ -1594,6 +1620,11 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 	agent->models_url = new_models_url;
 	agent->props_url = new_props_url;
 
+	/* A different model/provider may well support tools even if the one
+	 * just switched away from didn't -- don't carry the previous
+	 * model's limitation forward onto an untested one. */
+	agent->tools_unsupported = false;
+
 	/* Reset context info: a new server/model may have different limits,
 	 * unless the new model/provider supplies an explicit override. */
 	agent->ctx_max = cfg->context_size > 0 ? cfg->context_size : 0;
@@ -1699,8 +1730,14 @@ clm_agent_start_turn(struct clm_agent *agent)
 	char *body;
 
 	messages = clm_history_to_json(&agent->history, agent->compressor);
-	tools = clm_tools_build_schema(agent);
-	if (messages == NULL || tools == NULL) {
+	/* Skip building/attaching "tools" entirely once this model/provider
+	 * has told us it doesn't support them (see clm_http_success_cb_wrapper)
+	 * -- attaching an empty or absent list is not the same signal to every
+	 * backend as never mentioning tools at all, and re-sending it every
+	 * turn would just repeat the same failing request forever. */
+	if (!agent->tools_unsupported)
+		tools = clm_tools_build_schema(agent);
+	if (messages == NULL || (!agent->tools_unsupported && tools == NULL)) {
 		clm_agent_set_error(agent, "out of memory");
 		agent->state = CLM_STATE_ERROR;
 		if (agent->cb_on_state)
@@ -1754,14 +1791,18 @@ clm_agent_start_turn(struct clm_agent *agent)
 		}
 	}
 
-	cJSON_AddItemToObject(req, "tools", tools);
+	if (tools != NULL) {
+		cJSON_AddItemToObject(req, "tools", tools);
 
-	/* Disable parallel tool calls -- a tool host that can only process
-	 * one action at a time (e.g. a game bridge advancing one action per
-	 * game turn) deadlocks on parallel dispatch, and serial calls keep
-	 * tool ordering deterministic everywhere else. */
-	cJSON_AddItemToObject(req, "parallel_tool_calls",
-	    cJSON_CreateBool(0));
+		/* Disable parallel tool calls -- a tool host that can only
+		 * process one action at a time (e.g. a game bridge advancing
+		 * one action per game turn) deadlocks on parallel dispatch,
+		 * and serial calls keep tool ordering deterministic
+		 * everywhere else. Meaningless (and some backends reject it)
+		 * without "tools" present, so it's gated the same way. */
+		cJSON_AddItemToObject(req, "parallel_tool_calls",
+		    cJSON_CreateBool(0));
+	}
 	body_str = cJSON_PrintUnformatted(req);
 	if (body_str == NULL) {
 		clm_agent_set_error(agent, "out of memory");

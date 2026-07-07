@@ -264,6 +264,14 @@ struct clm_callbacks {
 
 	/* The turn finished. status is 0 on success, negative errno on failure. */
 	void (*on_turn_done)(int status, void *user);
+
+	/* An informational notice worth showing the user, distinct from an
+	 * error: the turn is still proceeding (or already succeeded), this
+	 * is just a heads-up about something the agent adapted to on its
+	 * own. E.g. "this model doesn't support tool calls; continuing
+	 * without them for this session." Optional -- NULL is fine, the
+	 * underlying behavior happens either way. */
+	void (*on_notice)(const char *text, void *user);
 };
 
 /*

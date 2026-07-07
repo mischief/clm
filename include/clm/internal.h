@@ -107,6 +107,13 @@ struct clm_agent {
 	 * attempt never lingers past a later success. */
 	bool mid_chain_compact_failed;
 
+	/* Set once a turn's LLM call comes back with a "this model doesn't
+	 * support tools" style 400 (see clm_http_success_cb_wrapper). From
+	 * then on, until the model/provider is switched (cleared in
+	 * clm_agent_set_provider), turns are sent with no "tools" field at
+	 * all instead of repeating the same failing request every time. */
+	bool tools_unsupported;
+
 	/* Event callbacks */
 	void (*cb_on_assistant_text)(const char *, void *);
 	void (*cb_on_reasoning)(const char *, void *);
@@ -119,6 +126,7 @@ struct clm_agent {
 	void (*cb_on_connection)(enum clm_conn_status, const char *, void *);
 	void (*cb_on_state)(enum clm_agent_state, void *);
 	void (*cb_on_turn_done)(int, void *);
+	void (*cb_on_notice)(const char *, void *);
 	void *cb_user;
 
 	/* Derived from base_url: the /v1/models URL used for health probes. */

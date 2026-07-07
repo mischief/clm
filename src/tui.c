@@ -681,6 +681,17 @@ cb_permission(const struct clm_permission_req *req, void *user)
 		show_next_perm(u);
 }
 
+static void
+cb_notice(const char *text, void *user)
+{
+	struct ui *u = user;
+
+	ui_push(u, ST_META, "\n[");
+	ui_push(u, ST_META, text ? text : "notice");
+	ui_push(u, ST_META, "]\n");
+	u->dirty = true;
+}
+
 static const struct clm_callbacks tui_callbacks = {
     .on_assistant_text = cb_assistant_text,
     .on_reasoning = cb_reasoning,
@@ -693,6 +704,7 @@ static const struct clm_callbacks tui_callbacks = {
     .on_connection = cb_connection,
     .on_state = cb_state,
     .on_turn_done = cb_turn_done,
+    .on_notice = cb_notice,
 };
 
 /* ---- rendering (all drawing happens here, from the repaint timer) ---- */

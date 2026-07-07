@@ -26,6 +26,11 @@ int canned_port(const struct canned_server *s);
 /* Queue a JSON response body (copied); served FIFO, one per request. */
 void canned_reply(struct canned_server *s, const char *json_body);
 
+/* Same, but with a caller-chosen HTTP status line instead of the default
+ * "200 OK" -- for exercising error-response handling (e.g. a plain-text 400
+ * body, as some OpenAI-compatible backends send). */
+void canned_reply_status(struct canned_server *s, int status, const char *body);
+
 /* Number of requests received so far. */
 size_t canned_request_count(const struct canned_server *s);
 

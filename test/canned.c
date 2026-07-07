@@ -16,6 +16,7 @@ struct canned_server {
 	int port;
 
 	char **replies;
+	int *statuses;
 	size_t reply_head;
 	size_t reply_count;
 	size_t reply_cap;
@@ -102,11 +103,30 @@ request_complete(struct conn *c)
 }
 
 static const char *
-canned_pop(struct canned_server *srv)
+canned_pop(struct canned_server *srv, int *status_out)
 {
-	if (srv->reply_head < srv->reply_count)
-		return srv->replies[srv->reply_head++];
+	if (srv->reply_head < srv->reply_count) {
+		size_t i = srv->reply_head++;
+		*status_out = srv->statuses[i];
+		return srv->replies[i];
+	}
+	*status_out = 200;
 	return "{}";
+}
+
+static const char *
+status_line_for(int status)
+{
+	switch (status) {
+	case 200: return "200 OK";
+	case 400: return "400 Bad Request";
+	case 401: return "401 Unauthorized";
+	case 403: return "403 Forbidden";
+	case 404: return "404 Not Found";
+	case 429: return "429 Too Many Requests";
+	case 500: return "500 Internal Server Error";
+	default: return "500 Internal Server Error";
+	}
 }
 
 static void
@@ -130,13 +150,15 @@ static void
 respond(struct conn *c)
 {
 	struct canned_server *srv = c->srv;
-	const char *body = canned_pop(srv);
+	int status;
+	const char *body = canned_pop(srv, &status);
 	size_t blen = strlen(body);
 	const char *fmt =
-	    "HTTP/1.1 200 OK\r\n"
+	    "HTTP/1.1 %s\r\n"
 	    "Content-Type: application/json\r\n"
 	    "Content-Length: %zu\r\n"
 	    "Connection: close\r\n\r\n";
+	const char *status_line = status_line_for(status);
 	int hlen;
 	uv_buf_t b;
 
@@ -144,13 +166,13 @@ respond(struct conn *c)
 	srv->last_request = strdup(c->buf ? c->buf : "");
 	srv->request_count++;
 
-	hlen = snprintf(NULL, 0, fmt, blen);
+	hlen = snprintf(NULL, 0, fmt, status_line, blen);
 	c->resp = malloc((size_t)hlen + blen + 1);
 	if (c->resp == NULL) {
 		uv_close((uv_handle_t *)&c->handle, on_conn_close);
 		return;
 	}
-	(void)snprintf(c->resp, (size_t)hlen + 1, fmt, blen);
+	(void)snprintf(c->resp, (size_t)hlen + 1, fmt, status_line, blen);
 	memcpy(c->resp + hlen, body, blen + 1);
 
 	c->responded = true;
@@ -238,17 +260,29 @@ canned_port(const struct canned_server *s)
 }
 
 void
-canned_reply(struct canned_server *s, const char *json_body)
+canned_reply_status(struct canned_server *s, int status, const char *body)
 {
 	if (s->reply_count == s->reply_cap) {
 		size_t nc = s->reply_cap ? s->reply_cap * 2 : 8;
 		char **p = realloc(s->replies, nc * sizeof(*p));
+		int *sp;
 		if (p == NULL)
 			return;
 		s->replies = p;
+		sp = realloc(s->statuses, nc * sizeof(*sp));
+		if (sp == NULL)
+			return;
+		s->statuses = sp;
 		s->reply_cap = nc;
 	}
-	s->replies[s->reply_count++] = strdup(json_body);
+	s->statuses[s->reply_count] = status;
+	s->replies[s->reply_count++] = strdup(body);
+}
+
+void
+canned_reply(struct canned_server *s, const char *json_body)
+{
+	canned_reply_status(s, 200, json_body);
 }
 
 size_t
@@ -271,6 +305,7 @@ on_listener_close(uv_handle_t *handle)
 	for (i = 0; i < srv->reply_count; i++)
 		free(srv->replies[i]);
 	free(srv->replies);
+	free(srv->statuses);
 	free(srv->last_request);
 	free(srv);
 }

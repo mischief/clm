@@ -166,6 +166,13 @@ cb_state(enum clm_agent_state state, void *user)
 }
 
 static void
+cb_notice(const char *text, void *user)
+{
+	(void)user;
+	fprintf(stderr, "notice: %s\n", text ? text : "");
+}
+
+static void
 cb_turn_done(int status, void *user)
 {
 	struct cli_state *state = (struct cli_state *)user;
@@ -204,6 +211,7 @@ static const struct clm_callbacks cli_callbacks = {
 	.on_usage = cb_usage,
 	.on_state = cb_state,
 	.on_turn_done = cb_turn_done,
+	.on_notice = cb_notice,
 };
 
 static void
