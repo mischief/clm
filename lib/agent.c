@@ -609,6 +609,18 @@ static const char *compact_prompt =
 /*
  * Extract choices[0].message.content from a parsed completion into a malloc'd
  * string, or NULL. Borrowed parse; caller frees the returned copy.
+ *
+ * Falls back to the reasoning channel (reasoning_content, or reasoning --
+ * same two names checked elsewhere in this file for the streaming case) when
+ * content is missing or empty. This matters for the compaction call
+ * specifically: it re-sends the whole (near-max, since compaction only
+ * triggers close to the context limit) history, leaving a "thinking" model
+ * little completion budget left over, so it can burn the entire response on
+ * reasoning and hit finish_reason "length" before ever emitting content.
+ * A half-finished chain-of-thought is a worse summary than a real one, but
+ * it is still strictly better than failing compaction outright -- which,
+ * for a model that reasons this heavily, would mean compaction can never
+ * succeed at all, right when it's needed most.
  */
 static char *
 extract_message_content(cJSON *parsed)
@@ -619,7 +631,15 @@ extract_message_content(cJSON *parsed)
 	if (message == NULL)
 		return NULL;
 	content = cJSON_GetObjectItemCaseSensitive(message, "content");
-	if (content == NULL || !cJSON_IsString(content))
+	if (content != NULL && cJSON_IsString(content) &&
+	    cJSON_GetStringValue(content)[0] != '\0')
+		return strdup(cJSON_GetStringValue(content));
+
+	content = cJSON_GetObjectItemCaseSensitive(message, "reasoning_content");
+	if (content == NULL)
+		content = cJSON_GetObjectItemCaseSensitive(message, "reasoning");
+	if (content == NULL || !cJSON_IsString(content) ||
+	    cJSON_GetStringValue(content)[0] == '\0')
 		return NULL;
 	return strdup(cJSON_GetStringValue(content));
 }

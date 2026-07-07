@@ -418,6 +418,53 @@ test_autocompact_mid_chain(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/*
+ * (b3) Compaction summary from the reasoning channel: a "thinking" model can
+ * spend its whole completion budget on chain-of-thought and hit
+ * finish_reason "length" with an empty "content" but a non-empty
+ * "reasoning" -- seen live against a local ollama reasoning model summarizing
+ * a near-full context (exactly when compaction fires). extract_message_content
+ * must fall back to reasoning/reasoning_content instead of reporting
+ * "compaction produced no summary", or compaction can never succeed at all
+ * for such a model.
+ */
+static void
+test_compact_reasoning_fallback(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	/* A few ordinary turns so clm_history_compact has a real cut point. */
+	for (i = 0; i < 3; i++) {
+		canned_reply(srv, final_reply);
+		if (i == 0)
+			st.agent = make_agent(&st, canned_port(srv));
+		CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+		run_until_done(&st);
+		st.turn_done = 0;
+	}
+
+	/* Compaction's summarization call: empty content, reasoning only. */
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"length\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"reasoning\":\"REASONING_ONLY_SUMMARY\"}}]}");
+
+	CHECK(clm_agent_compact(st.agent) == 0, "compact: accepted");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "compact: reasoning fallback succeeds");
+	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_COMPLETE,
+	    "compact: left in complete state, not error");
+
+	teardown(&st, srv);
+}
+
 /* (c) Real write_file then read_file builtins against a temp sandbox. */
 static void
 test_file_tools(uv_loop_t *loop)
@@ -1217,6 +1264,7 @@ main(void)
 	test_tool_call(&loop);
 	test_bg_exec(&loop);
 	test_autocompact_mid_chain(&loop);
+	test_compact_reasoning_fallback(&loop);
 	test_file_tools(&loop);
 	test_shell_exec(&loop);
 	test_stream_text(&loop);
