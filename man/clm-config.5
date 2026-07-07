@@ -82,13 +82,39 @@ or
 Defaults to
 .Qq openai
 if unset.
+.Qq ollama
+is the same wire dialect as
+.Qq openai
+(every OpenAI-compatible server, Ollama included, speaks it directly);
+it exists as a separate value only to name the connection for its own
+sake.
+.Qq anthropic
+speaks Anthropic's own Messages API instead -- a structurally
+different request, response, and streaming-event shape, translated
+internally -- and gets Anthropic's
+.Pa x-api-key Ns / Ns Pa anthropic-version
+auth headers instead of a bearer token, and prompt caching enabled on
+every request automatically (a no-op below the model's minimum
+cacheable prefix, so this is free to leave on).
 .It Va url
 Base API endpoint, e.g.
 .Qq http://127.0.0.1:8081/v1 .
+Include any path prefix the endpoint itself needs (e.g. a gateway that
+routes multiple wire dialects under
+.Qq /anthropic/v1
+or
+.Qq /openai/v1 )
+up through the segment just before the request path proper, which is
+appended automatically and depends on
+.Va kind :
+.Pa /messages
+for
+.Qq anthropic ,
 .Pa /chat/completions
-is appended automatically.
+otherwise.
 .It Va api_key
-Bearer token.
+Bearer token
+.Pq Pa x-api-key No for Qq anthropic .
 Prefer
 .Va clm.secrets.*
 .Pq see Xr clm-tool 5
@@ -99,7 +125,20 @@ Overridden by the
 .Ev CLM_API_KEY
 environment variable if set.
 .It Va rate_tokens_per_sec , Va rate_burst
-Token-bucket rate limiter parameters for tool dispatch.
+Token-bucket rate limiter for outgoing LLM requests, paced by an
+estimate of each request's size (roughly one token per four bytes of
+the full serialized body -- the whole conversation history resent
+every turn, not just the newest message).
+Guards against bursting past a backend's requests- or
+tokens-per-minute limit when a single logical turn chains several
+tool-calling round-trips back to back; unrelated to tool
+.Em dispatch
+itself, which has its own small, fixed, unconfigurable limiter.
+Unset, or either left at
+.No 0 ,
+falls back to a rate high enough to never bind in normal use -- lower
+these only for a backend with a real, tight quota (a free-tier proxy,
+typically).
 .It Va models
 A table of per-model overrides nested under this provider, keyed by
 the literal wire model id (the same string sent on the wire and used
@@ -267,12 +306,28 @@ return {
 }
 .Ed
 .Pp
+Direct first-party Anthropic API access
+.Pq Va kind No = Qq anthropic :
+.Bd -literal -offset indent
+return {
+    model = "anthropic/claude-sonnet-5",
+    providers = {
+        anthropic = {
+            kind = "anthropic",
+            url = "https://api.anthropic.com/v1",
+            api_key = clm.secrets.anthropic,
+        },
+    },
+}
+.Ed
+.Pp
 The corresponding
 .Pa secrets.lua :
 .Bd -literal -offset indent
 return {
     tavily = "tvly-...",
     ollama = "...",
+    anthropic = "sk-ant-...",
 }
 .Ed
 .Sh SEE ALSO

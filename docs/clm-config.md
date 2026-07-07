@@ -88,17 +88,43 @@ or
 Defaults to
 "openai"
 if unset.
+"ollama"
+is the same wire dialect as
+"openai"
+(every OpenAI-compatible server, Ollama included, speaks it directly);
+it exists as a separate value only to name the connection for its own
+sake.
+"anthropic"
+speaks Anthropic's own Messages API instead -- a structurally
+different request, response, and streaming-event shape, translated
+internally -- and gets Anthropic's
+*x-api-key*/*anthropic-version*
+auth headers instead of a bearer token, and prompt caching enabled on
+every request automatically (a no-op below the model's minimum
+cacheable prefix, so this is free to leave on).
 
 *url*
 
 Base API endpoint, e.g.
 "http://127.0.0.1:8081/v1".
+Include any path prefix the endpoint itself needs (e.g. a gateway that
+routes multiple wire dialects under
+"/anthropic/v1"
+or
+"/openai/v1")
+up through the segment just before the request path proper, which is
+appended automatically and depends on
+*kind*:
+*/messages*
+for
+"anthropic",
 */chat/completions*
-is appended automatically.
+otherwise.
 
 *api\_key*
 
-Bearer token.
+Bearer token
+(*x-api-key* for "anthropic").
 Prefer
 *clm.secrets.\*&zwnj;*
 (see [clm-tool(5)](clm-tool.md))
@@ -111,7 +137,20 @@ environment variable if set.
 
 *rate\_tokens\_per\_sec*, *rate\_burst*
 
-Token-bucket rate limiter parameters for tool dispatch.
+Token-bucket rate limiter for outgoing LLM requests, paced by an
+estimate of each request's size (roughly one token per four bytes of
+the full serialized body -- the whole conversation history resent
+every turn, not just the newest message).
+Guards against bursting past a backend's requests- or
+tokens-per-minute limit when a single logical turn chains several
+tool-calling round-trips back to back; unrelated to tool
+*dispatch*
+itself, which has its own small, fixed, unconfigurable limiter.
+Unset, or either left at
+0,
+falls back to a rate high enough to never bind in normal use -- lower
+these only for a backend with a real, tight quota (a free-tier proxy,
+typically).
 
 *models*
 
@@ -301,12 +340,27 @@ overrides, plus a backup provider for failover
 	    },
 	}
 
+Direct first-party Anthropic API access
+(*kind* = "anthropic"):
+
+	return {
+	    model = "anthropic/claude-sonnet-5",
+	    providers = {
+	        anthropic = {
+	            kind = "anthropic",
+	            url = "https://api.anthropic.com/v1",
+	            api_key = clm.secrets.anthropic,
+	        },
+	    },
+	}
+
 The corresponding
 *secrets.lua*:
 
 	return {
 	    tavily = "tvly-...",
 	    ollama = "...",
+	    anthropic = "sk-ant-...",
 	}
 
 # SEE ALSO
