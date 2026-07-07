@@ -1477,6 +1477,25 @@ clm_agent_list_models(struct clm_agent *agent,
 	return 0;
 }
 
+const char *
+clm_agent_get_base_url(struct clm_agent *agent)
+{
+	return agent != NULL && agent->llm != NULL ? agent->llm->base_url : NULL;
+}
+
+const char *
+clm_agent_get_api_key(struct clm_agent *agent)
+{
+	return agent != NULL && agent->llm != NULL ? agent->llm->api_key : NULL;
+}
+
+enum clm_provider
+clm_agent_get_provider(struct clm_agent *agent)
+{
+	return agent != NULL && agent->llm != NULL ? agent->llm->provider
+	                                            : CLM_PROVIDER_OPENAI;
+}
+
 int
 clm_agent_cancel(struct clm_agent *agent)
 {

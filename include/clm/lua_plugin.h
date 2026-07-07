@@ -128,6 +128,20 @@ CLM_API int64_t clm_lua_cfg_model_int(struct clm_lua_cfg *cfg,
     const char *model_name, const char *key, int64_t fallback);
 
 /*
+ * List the entry names (keys) of a top-level config table -- "providers"
+ * or "models" -- for discoverability (e.g. a TUI /model or /provider
+ * command with no argument listing what's available). Names are returned
+ * in the table's natural iteration order (unspecified by Lua); the caller
+ * should sort if a stable display order matters.
+ *
+ * Returns a malloc'd NULL-terminated array, free with
+ * clm_lua_cfg_free_str_list(). Returns NULL if the table doesn't exist,
+ * isn't a table, or has no string-keyed entries.
+ */
+CLM_API char **clm_lua_cfg_list_names(struct clm_lua_cfg *cfg,
+    const char *table);
+
+/*
  * Get the tools config as a JSON string (for clm_lua_env_set_config).
  * Caller owns the returned string (free with free()). NULL if no tools.
  */

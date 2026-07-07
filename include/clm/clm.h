@@ -387,6 +387,20 @@ CLM_API int clm_agent_list_models(struct clm_agent *agent,
     void *user);
 
 /*
+ * Read-only accessors for the connection currently active on a live agent
+ * (whatever clm_agent_new/clm_agent_set_provider last set). A frontend
+ * needing to change just the model -- keeping the same endpoint/key/
+ * dialect -- without a config.lua entry to resolve them from (e.g. an ad
+ * hoc model id discovered via clm_agent_list_models) can read these and
+ * pass them straight back through clm_agent_set_provider with only
+ * cfg.model changed. Pointers are borrowed (owned by the agent) and valid
+ * until the next clm_agent_set_provider call or clm_agent_free.
+ */
+CLM_API const char *clm_agent_get_base_url(struct clm_agent *agent);
+CLM_API const char *clm_agent_get_api_key(struct clm_agent *agent);
+CLM_API enum clm_provider clm_agent_get_provider(struct clm_agent *agent);
+
+/*
  * Cancel the turn in flight: aborts the model request (or running tools) and
  * ends the turn via on_turn_done with status -ECANCELED. Returns 0 if a turn
  * was cancelled, negative errno if nothing was in flight. Safe to call from a

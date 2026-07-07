@@ -119,7 +119,7 @@ struct ui {
 	size_t complete_cap, complete_n, complete_idx;
 
 	/* Status model. */
-	const char *model;
+	char *model; /* displayed in status bar (owned) */
 	char *agent_name; /* displayed in status bar (owned) */
 	enum clm_agent_state state;
 	enum clm_conn_status conn;
@@ -1488,6 +1488,138 @@ drain_queue(struct ui *u)
 
 static char *xdg_config_path(const char *suffix);
 
+/*
+ * Set u->model (status bar display + /provider's "keep the current model"
+ * lookup), replacing any prior value. Always makes an owned copy: unlike
+ * most of this file's config-derived strings, u->model can now also come
+ * from live/ad hoc input (a model id typed straight into /model that
+ * isn't in config.lua's models{} table, see CMD("model")'s literal
+ * fallback) backed by a transient command-line buffer, not the
+ * long-lived Lua config table -- so it can never safely be borrowed.
+ * NULL is accepted (clears the display) and safe to pass.
+ */
+static void
+set_current_model(struct ui *u, const char *model)
+{
+	char *dup = model != NULL ? strdup(model) : NULL;
+	free(u->model);
+	u->model = dup;
+}
+
+static int
+strp_cmp(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/*
+ * Push a sorted, comma-joined listing of config.<table>'s entry names
+ * (e.g. "providers" or "models") for /model and /provider run with no
+ * argument -- discoverability, since otherwise the only way to see what's
+ * configured is to go read config.lua. label is the human word used in
+ * the message ("model"/"provider"); cmd is what to type ("/model
+ * <name>"/"/provider <name>").
+ */
+static void
+list_config_names(struct ui *u, const char *table, const char *label,
+    const char *cmd)
+{
+	char **names;
+	char msg[1024];
+	size_t off = 0;
+
+	if (u->lcfg == NULL) {
+		ui_push(u, ST_ERROR, "\nno config loaded\n");
+		return;
+	}
+
+	names = clm_lua_cfg_list_names(u->lcfg, table);
+	if (names == NULL) {
+		char nomsg[128];
+		(void)snprintf(nomsg, sizeof(nomsg),
+		    "\nno %ss configured\n", label);
+		ui_push(u, ST_META, nomsg);
+		return;
+	}
+
+	size_t n = 0;
+	while (names[n] != NULL)
+		n++;
+	qsort(names, n, sizeof(*names), strp_cmp);
+
+	/* snprintf's return value is how much it WOULD have written, which
+	 * can exceed the remaining space on truncation -- clamp off after
+	 * every call or "sizeof(msg) - off" underflows (size_t) on the next
+	 * one and hands snprintf a huge bogus size. */
+	int wrote = snprintf(msg + off, sizeof(msg) - off,
+	    "\navailable %ss:\n", label);
+	off += (wrote > 0) ? (size_t)wrote : 0;
+	if (off > sizeof(msg))
+		off = sizeof(msg);
+	for (size_t i = 0; i < n && off < sizeof(msg); i++) {
+		wrote = snprintf(msg + off, sizeof(msg) - off, "  %s\n", names[i]);
+		off += (wrote > 0) ? (size_t)wrote : 0;
+		if (off > sizeof(msg))
+			off = sizeof(msg);
+	}
+	if (off < sizeof(msg)) {
+		(void)snprintf(msg + off, sizeof(msg) - off,
+		    "usage: %s <name>\n", cmd);
+	}
+	ui_push(u, ST_META, msg);
+	clm_lua_cfg_free_str_list(names);
+}
+
+/*
+ * /model's live half: async GET {provider}/models against whatever
+ * connection is currently active, appended below list_config_names'
+ * "from config:" section once it resolves (config.lua's models{} table
+ * only ever tells you what YOU declared; this is what the server actually
+ * has right now -- the two can and do diverge, e.g. a multi-model router
+ * like freellmapi vs. a single-model local llama.cpp instance). ids is
+ * only valid for the duration of this call (see clm_agent_list_models);
+ * copy what's needed into msg before returning.
+ */
+static void
+on_live_models_result(char **ids, void *user)
+{
+	struct ui *u = user;
+	size_t cap = sizeof("\nfrom server:\n");
+	size_t off;
+	int wrote;
+	autofree char *msg = NULL;
+
+	/* Heap, not a stack buffer: a router like freellmapi can report 60+
+	 * ids, and sizing up front (rather than a fixed-size stack array)
+	 * also sidesteps -Wframe-larger-than on a plain char msg[N]. */
+	for (size_t i = 0; ids[i] != NULL; i++)
+		cap += strlen(ids[i]) + sizeof("  \n") - 1;
+
+	msg = malloc(cap);
+	if (msg == NULL)
+		return;
+
+	wrote = snprintf(msg, cap, "\nfrom server:\n");
+	off = (wrote > 0) ? (size_t)wrote : 0;
+	for (size_t i = 0; ids[i] != NULL && off < cap; i++) {
+		wrote = snprintf(msg + off, cap - off, "  %s\n", ids[i]);
+		off += (wrote > 0) ? (size_t)wrote : 0;
+	}
+	ui_push(u, ST_META, msg);
+}
+
+static void
+on_live_models_error(const char *emsg, void *user)
+{
+	struct ui *u = user;
+	char msg[256];
+
+	(void)snprintf(msg, sizeof(msg),
+	    "\n(couldn't query live models from the current provider: %s)\n",
+	    emsg);
+	ui_push(u, ST_META, msg);
+}
+
 /* A '/word ...' line: run a UI command instead of prompting the model. */
 static void
 run_command(struct ui *u, const char *line)
@@ -1512,10 +1644,10 @@ run_command(struct ui *u, const char *line)
 		    "  /clear             clear the transcript\n"
 		    "  /agent <name>      switch agent profile (system prompt + "
 		    "tools)\n"
-		    "  /model <name>      switch model (config.lua's `models` "
-		    "table)\n"
-		    "  /provider <name>   switch provider connection (config.lua's "
-		    "`providers` table)\n"
+		    "  /model [name]      switch model (config.lua's `models` "
+		    "table); no arg lists what's available\n"
+		    "  /provider [name]   switch provider connection (config.lua's "
+		    "`providers` table); no arg lists what's available\n"
 		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
 		    "  /output [full|short] tool output detail (^O)\n"
 		    "  /compact           summarize old turns to reclaim context\n"
@@ -1667,7 +1799,7 @@ run_command(struct ui *u, const char *line)
 					    &u->mcp_client_count);
 					free(u->agent_name);
 					u->agent_name = strdup(arg);
-					u->model = newcfg.model;
+					set_current_model(u, newcfg.model);
 					char msg[128];
 					(void)snprintf(msg, sizeof(msg),
 					    "\n[switched to agent: %s]\n", arg);
@@ -1684,17 +1816,58 @@ run_command(struct ui *u, const char *line)
 		 * changes the system prompt/tool set and needs a full
 		 * teardown + rebuild. */
 		if (arg[0] == '\0') {
-			ui_push(u, ST_META, "\nusage: /model <name>\n");
+			list_config_names(u, "models", "model", "/model");
+			(void)clm_agent_list_models(u->agent,
+			    on_live_models_result, on_live_models_error, u);
 		} else if (u->lcfg == NULL) {
 			ui_push(u, ST_ERROR, "\nno config loaded\n");
 		} else {
 			const char *prov = clm_lua_cfg_model_str(u->lcfg, arg, "provider");
 			const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
 			if (prov == NULL || purl == NULL) {
-				char msg[128];
-				(void)snprintf(msg, sizeof(msg),
-				    "\nmodel '%s' not found\n", arg);
-				ui_push(u, ST_ERROR, msg);
+				/* Not a config.models[] entry -- fall back to
+				 * treating it as a literal wire model id on
+				 * whatever connection is currently active
+				 * (same "config name, or literal fallback"
+				 * contract as -m/--model on the CLI in
+				 * main.c). This is what makes the live
+				 * listing above actually useful: an id the
+				 * server reports but that was never added to
+				 * models{} can still be switched to. No
+				 * context_size/autocompact_pct override
+				 * applies -- same as any other unconfigured
+				 * (provider, model) pair, it gets library
+				 * defaults. */
+				struct clm_cfg litcfg = {0};
+				const char *cur_url = clm_agent_get_base_url(u->agent);
+
+				if (cur_url == NULL) {
+					ui_push(u, ST_ERROR,
+					    "\nno active connection to switch on\n");
+				} else {
+					char msg[160];
+
+					litcfg.base_url = cur_url;
+					litcfg.api_key = clm_agent_get_api_key(u->agent);
+					litcfg.provider = clm_agent_get_provider(u->agent);
+					litcfg.model = arg;
+
+					int rc = clm_agent_set_provider(u->agent, &litcfg);
+					if (rc == 0) {
+						set_current_model(u, litcfg.model);
+						(void)snprintf(msg, sizeof(msg),
+						    "\n[switched to model: %s "
+						    "(literal, not in config.lua)]\n", arg);
+						ui_push(u, ST_META, msg);
+						clm_agent_check_connection(u->agent);
+					} else if (rc == -EBUSY) {
+						ui_push(u, ST_ERROR,
+						    "\nbusy; try again when idle\n");
+					} else {
+						ui_push(u, ST_ERROR,
+						    "\nfailed to switch model\n");
+					}
+				}
 			} else {
 				struct clm_cfg newcfg = {0};
 				char url_buf[512];
@@ -1716,7 +1889,7 @@ run_command(struct ui *u, const char *line)
 
 				int rc = clm_agent_set_provider(u->agent, &newcfg);
 				if (rc == 0) {
-					u->model = newcfg.model;
+					set_current_model(u, newcfg.model);
 					char msg[128];
 					(void)snprintf(msg, sizeof(msg),
 					    "\n[switched to model: %s]\n", arg);
@@ -1736,7 +1909,7 @@ run_command(struct ui *u, const char *line)
 		 * to fail over to a mirror endpoint without changing which
 		 * model is requested. */
 		if (arg[0] == '\0') {
-			ui_push(u, ST_META, "\nusage: /provider <name>\n");
+			list_config_names(u, "providers", "provider", "/provider");
 		} else if (u->lcfg == NULL) {
 			ui_push(u, ST_ERROR, "\nno config loaded\n");
 		} else {
@@ -2662,7 +2835,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 
 	loop = uv_default_loop();
 	u->loop = loop;
-	u->model = cfg->model;
+	set_current_model(u, cfg->model);
 	u->forever_prompt = forever_prompt;
 	if (lcfg != NULL) {
 		const char *aname = clm_lua_cfg_get_agent_name(lcfg);

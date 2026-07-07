@@ -1588,6 +1588,63 @@ clm_lua_cfg_model_int(struct clm_lua_cfg *cfg, const char *model_name,
 	return val;
 }
 
+CLM_API char **
+clm_lua_cfg_list_names(struct clm_lua_cfg *cfg, const char *table)
+{
+	lua_State *L = cfg->L;
+	autofreev char **list = NULL;
+	size_t cap = 0, n = 0;
+	char **ret;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+	lua_getfield(L, -1, table);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 2);
+		return NULL;
+	}
+
+	lua_pushnil(L);
+	while (lua_next(L, -2) != 0) {
+		/* key at -2, value at -1. Only string keys are named entries
+		 * (providers/models tables are keyed by name, never by
+		 * array index), so this also naturally skips any stray
+		 * array-part elements. */
+		if (lua_type(L, -2) == LUA_TSTRING) {
+			char *name;
+
+			if (n + 1 >= cap) {
+				size_t newcap = cap ? cap * 2 : 8;
+				char **grown = realloc(list,
+				    (newcap + 1) * sizeof(*grown));
+				if (grown == NULL) {
+					lua_pop(L, 2); /* value, key */
+					lua_pop(L, 2); /* table, config */
+					return NULL;
+				}
+				list = grown;
+				cap = newcap;
+			}
+			name = strdup(lua_tostring(L, -2));
+			if (name == NULL) {
+				lua_pop(L, 2); /* value, key */
+				lua_pop(L, 2); /* table, config */
+				return NULL;
+			}
+			list[n++] = name;
+			list[n] = NULL;
+		}
+		lua_pop(L, 1); /* pop value, keep key for lua_next */
+	}
+	lua_pop(L, 2); /* table, config */
+
+	if (n == 0)
+		return NULL;
+
+	ret = list;
+	list = NULL;
+	return ret;
+}
+
 CLM_API char *
 clm_lua_cfg_tools_json(struct clm_lua_cfg *cfg)
 {
