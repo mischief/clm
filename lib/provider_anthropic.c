@@ -83,12 +83,14 @@ tool_call_to_tool_use(const cJSON *tc)
 
 	jid = cJSON_GetObjectItemCaseSensitive(tc, "id");
 	cJSON_AddItemToObject(block, "id",
-	    cJSON_CreateString(cJSON_IsString(jid) ? jid->valuestring : ""));
+	    cJSON_CreateString(jid != NULL && cJSON_IsString(jid)
+	        ? jid->valuestring : ""));
 
 	func = cJSON_GetObjectItemCaseSensitive(tc, "function");
 	jname = func ? cJSON_GetObjectItemCaseSensitive(func, "name") : NULL;
 	cJSON_AddItemToObject(block, "name",
-	    cJSON_CreateString(cJSON_IsString(jname) ? jname->valuestring : ""));
+	    cJSON_CreateString(jname != NULL && cJSON_IsString(jname)
+	        ? jname->valuestring : ""));
 
 	/* function.arguments is a JSON-encoded string in the canonical shape;
 	 * Anthropic's "input" is the decoded object itself. */

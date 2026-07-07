@@ -1,8 +1,23 @@
+# -Wframe-larger-than (meson.build) is meant to catch a real library/frontend
+# function with an unreasonably large stack frame. In test drivers it just
+# fires on inlining artifacts instead: at -O2, GCC/clang can inline several
+# independent, individually-small test helpers into one caller (every
+# test_*() into main(), a canned-response builder into its one call site,
+# etc.), and the combined frame trips the limit even though none of the
+# actual functions involved are a problem. Not worth restructuring test-only
+# code around (no attributes/pragmas needed either -- this is scoped to the
+# test targets below, so it doesn't loosen the check anywhere real).
+test_cflags = []
+if cc.has_argument('-Wno-frame-larger-than')
+  test_cflags += ['-Wno-frame-larger-than']
+endif
+
 # Uses the uv host (clm_host_uv) + shell_exec, so it links the uv layer.
 test_agent = executable('test_agent',
   files('test_agent.c', 'canned.c', '../lib/props.c', '../lib/history.c', '../lib/models_list.c'),
   dependencies: [clmuv_dep],
   include_directories: [include_directories('.'), clm_inc, include_directories('../include')],
+  c_args: test_cflags,
 )
 test('agent', test_agent)
 
@@ -17,6 +32,7 @@ if have_lua
     files('test_lua_plugin.c'),
     dependencies: [clmuv_dep, clmlua_dep],
     include_directories: [clm_inc, include_directories('../include')],
+    c_args: test_cflags,
   )
   test('lua_plugin', test_lua, workdir: meson.project_source_root())
 endif

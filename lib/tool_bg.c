@@ -124,11 +124,17 @@ bg_finish(struct clm_bg_job *j)
 	if (j->started) {
 		autofree char *msg = NULL;
 
-		(void)asprintf(&msg,
+		/* asprintf's contents-of-*strp-on-failure is unspecified by
+		 * POSIX (glibc happens to leave it NULL, but that's not a
+		 * portable guarantee) -- check the return value explicitly
+		 * instead of trusting msg to still be the NULL it was
+		 * initialized to above. */
+		if (asprintf(&msg,
 		    "[background job %llu (\"%s\") finished, exit status %lld%s]\n%s",
 		    (unsigned long long)j->id, j->label, (long long)j->exit_status,
 		    j->term_signal ? ", killed by signal" : "",
-		    j->len ? j->buf : "(no output)");
+		    j->len ? j->buf : "(no output)") < 0)
+			msg = NULL;
 		/* On OOM building msg: drop the notification silently. The
 		 * process itself already ran to completion -- losing the
 		 * notification loses visibility, not correctness, and there is
@@ -262,10 +268,13 @@ tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 	uv_read_start((uv_stream_t *)&j->out, bg_alloc, bg_read);
 	uv_read_start((uv_stream_t *)&j->err, bg_alloc, bg_read);
 
-	(void)asprintf(&started_msg,
+	/* Same asprintf-failure caveat as bg_finish above: check the return
+	 * value rather than trusting started_msg to still be NULL. */
+	if (asprintf(&started_msg,
 	    "started background job %llu: %s (result will arrive later as a "
 	    "new message, not as this call's result)",
-	    (unsigned long long)j->id, j->label);
+	    (unsigned long long)j->id, j->label) < 0)
+		started_msg = NULL;
 	clm_tool_complete(inv, started_msg != NULL ? started_msg
 	                                            : "started background job");
 }

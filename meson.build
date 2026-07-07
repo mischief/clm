@@ -6,12 +6,65 @@ project('clm', 'c',
     'c_std=c17',
     'warning_level=3',
     'werror=true',
+    # debugoptimized (-O2 -g, asserts on), not plain debug (-O0): several
+    # of our own -W hardening flags below (-Wframe-larger-than via
+    # inlining, -Wnull-dereference's interprocedural analysis) and
+    # -D_FORTIFY_SOURCE=3 further down only actually do anything at -O1+.
+    # At -O0 they're silently inert, so real bugs they'd catch (two found
+    # this way: lib/tool_bg.c's asprintf-failure handling, a provable-null
+    # path in lib/provider_anthropic.c) would otherwise go untested by the
+    # default build every contributor actually runs. -O2 over -O3: this
+    # project is I/O/string-handling bound, not compute-bound, and -O3
+    # buys nothing here beyond -O2 while pulling in extra inlining that
+    # otherwise just makes the frame-size/backtrace tradeoffs below worse
+    # for no benefit.
+    'buildtype=debugoptimized',
+    # PIE hardening via meson's built-in option rather than hand-rolled
+    # -fPIE/-pie: b_pie correctly scopes -pie to executable() targets only
+    # and leaves shared_library() targets (libclm.so) alone -- unlike
+    # add_project_link_arguments, which applies everywhere and breaks
+    # linking a shared lib with "-pie" (it forces executable-style linking,
+    # which then wants a main()). Overridable with -Db_pie=false.
+    'b_pie=true',
   ])
 
 cc = meson.get_compiler('c')
 
+# -Dstatic=true is a one-flag substitute for
+# -Ddefault_library=static --prefer-static: it forces libclm itself to a
+# static archive regardless of default_library, and forces every
+# pkg-config dependency lookup below to prefer .a over .so. Read early (not
+# just where static_kw is used below) since the PIE hardening block further
+# down needs to know it too -- -fPIE/-pie and a fully static link don't mix
+# without -static-pie, which this project doesn't ask for.
+want_static = get_option('static')
+static_kw = want_static ? {'static': true} : {}
+
 add_project_arguments('-D_DEFAULT_SOURCE', language: 'c')
 add_project_arguments('-fno-omit-frame-pointer', language: 'c')
+
+# Now that the default buildtype optimizes (see debugoptimized above): a
+# tail call at -O1+ can get turned into a jump that reuses the caller's
+# stack frame instead of a real call, which quietly erases that caller from
+# every future backtrace/coredump -- the sharpest debuggability cost of
+# turning optimization on by default. Keep real call frames instead; this
+# project's few genuinely tail-recursive spots aren't hot enough to need it.
+if cc.has_argument('-fno-optimize-sibling-calls')
+  add_project_arguments('-fno-optimize-sibling-calls', language: 'c')
+endif
+
+# -finline-functions-called-once (on by default at -O1+) force-inlines any
+# static function with exactly one call site, regardless of size -- which
+# is most of test/test_agent.c's test_*() helpers, each called once from
+# main(). At -O2 that merges every inlined helper's own locals (a ~1KB
+# struct tstate apiece) into main()'s single frame, tripping
+# -Wframe-larger-than for no benefit (these aren't hot paths, and main()
+# calling them normally rather than having them flattened in is *better*
+# for reading a crash backtrace, not worse). Disabling just this heuristic
+# leaves the general inliner's normal cost-based decisions untouched.
+if cc.has_argument('-fno-inline-functions-called-once')
+  add_project_arguments('-fno-inline-functions-called-once', language: 'c')
+endif
 
 # musl has no <sys/queue.h> (a BSD/glibc extension we use for TAILQ_*).
 # compat/sys/queue.h is a vendored copy (BSD-3-Clause, from glibc, itself
@@ -51,6 +104,34 @@ foreach a : hardening_args
   endif
 endforeach
 
+# Hardening: exploit mitigations (FORTIFY_SOURCE, RELRO/BIND_NOW; PIE is
+# 'b_pie=true' in default_options above instead, see the comment there).
+# Unlike hardening_args above, none of this is known-portable yet -- it's
+# only been observed working by accident of this machine's Gentoo toolchain
+# defaulting PIE/RELRO/BIND_NOW on already (confirmed via readelf on a build
+# here; -D_FORTIFY_SOURCE wasn't on at all). RELRO/BIND_NOW below is gated
+# behind an actual link check rather than "gcc or clang", since OpenBSD's
+# ld and other non-GNU linkers may reject or no-op it differently than
+# Debian's does -- verify on both before trusting this section.
+
+# _FORTIFY_SOURCE needs at least -O1 to do anything; glibc warns (a hard
+# error under -Werror) if it's defined at -O0 -- still reachable via an
+# explicit -Dbuildtype=debug/plain override even though debugoptimized is
+# the default now. -U first: some distro gcc specs already predefine it
+# (Debian/Gentoo do, at -O1+) and redefining without undefining first is
+# itself a hard error under -Werror.
+if get_option('optimization') not in ['0', 'g']
+  add_project_arguments('-U_FORTIFY_SOURCE', '-D_FORTIFY_SOURCE=3', language: 'c')
+endif
+
+# RELRO + BIND_NOW: make the GOT read-only after startup instead of leaving
+# it writable for the process's whole lifetime. Safe on a shared library
+# too (unlike -pie), so this one is a plain add_project_link_arguments.
+foreach a : ['-Wl,-z,relro', '-Wl,-z,now']
+  if cc.has_link_argument(a)
+    add_project_link_arguments(a, language: 'c')
+  endif
+endforeach
 
 # Suppress noisy warnings that don't apply cleanly across compilers.
 # -Wno-useless-cast: kept as a general vendored-header safety net (originally
@@ -70,13 +151,6 @@ foreach a : suppress_args
 endforeach
 
 clm_inc = include_directories('.')
-
-# -Dstatic=true is a one-flag substitute for
-# -Ddefault_library=static --prefer-static: it forces libclm itself to a
-# static archive regardless of default_library, and forces every
-# pkg-config dependency lookup below to prefer .a over .so.
-want_static = get_option('static')
-static_kw = want_static ? {'static': true} : {}
 
 version_h = configure_file(
   input: 'include/clm/version.h.in',

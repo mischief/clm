@@ -676,12 +676,19 @@ canned_stream_text(struct canned_server *srv, const char *a, const char *b)
 	canned_reply(srv, body);
 }
 
-/* Queue an SSE tool-call reply with the name and arguments in separate deltas. */
+/* Queue an SSE tool-call reply with the name and arguments in separate
+ * deltas. Heap, not a stack buffer: at -O2 this otherwise gets inlined into
+ * its one call site (test_stream_tool), and the two functions' combined
+ * frame trips -Wframe-larger-than=2048 even though neither is a problem on
+ * its own -- test code, so a malloc/free here costs nothing that matters. */
 static void
 canned_stream_tool(struct canned_server *srv, const char *name)
 {
-	char body[1024];
-	(void)snprintf(body, sizeof(body),
+	enum { CAP = 1024 };
+	char *body = malloc(CAP);
+	if (body == NULL)
+		return;
+	(void)snprintf(body, CAP,
 	    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,"
 	    "\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"%s\","
 	    "\"arguments\":\"\"}}]}}]}\n\n"
@@ -690,6 +697,7 @@ canned_stream_tool(struct canned_server *srv, const char *name)
 	    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
 	    "data: [DONE]\n\n", name);
 	canned_reply(srv, body);
+	free(body);
 }
 
 /* (e) Streamed text reply, assembled from deltas. */
