@@ -68,13 +68,24 @@ if have_lua
   )
   seed_src = [files('seed_plugins.c'), seed_plugins_data]
 
+  # `clm setup`'s canned config.lua/secrets.lua: embedded the same way (see
+  # gen_templates.lua's comment for why -- a plain string literal blew past
+  # ISO C99's mandatory-support minimum for a single string literal once
+  # the provider list grew past a handful of entries).
+  template_files = files('config.lua.tpl', 'secrets.lua.tpl')
+  templates_data = custom_target('templates_data.c',
+    input: template_files,
+    output: 'templates_data.c',
+    command: [lua_bin, files('gen_templates.lua'), '@OUTPUT@', '@INPUT@'],
+  )
+
   # clmuv_dep pulls in the core (libclm) plus the uv/curl host layer and its
   # libuv/libcurl deps, so the binary gets clm_host_uv_new + shell_exec.
   # clmlua_dep is listed explicitly (lib/meson.build only declares it when
   # have_lua, which this whole block is already gated on) since lua_plugin.c
   # et al no longer live inside libclm/clm_dep at all -- they're their own
   # archive now, same shape as clmuv.
-  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c') + seed_src + [version_h],
+  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c') + seed_src + [version_h, templates_data],
     link_with: [md_render_lib],
     dependencies: [clmuv_dep, clmlua_dep, curses_dep, cjson_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],

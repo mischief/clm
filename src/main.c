@@ -19,6 +19,7 @@
 #include "clm/cleanup.h"
 #include "mcp_setup.h"
 #include "model_spec.h"
+#include "templates.h"
 
 static void
 usage(const char *prog)
@@ -345,140 +346,6 @@ write_new_file(const char *path, const char *content, mode_t mode)
 	return 0;
 }
 
-static const char config_template[] =
-    "-- clm configuration\n"
-    "--\n"
-    "-- A starter set of provider connections for most of the popular\n"
-    "-- hosted LLM APIs, each with a blank api_key until you add one to\n"
-    "-- secrets.lua -- a provider with no key just sits inert unless you\n"
-    "-- pick it via `model` below or -m/--model, so delete the ones you\n"
-    "-- don't want rather than leaving keyless clutter. A commented-out\n"
-    "-- local llama.cpp/Ollama/vLLM entry is included too (usually no key\n"
-    "-- needed at all). See clm-config(5) for the full schema (per-model\n"
-    "-- overrides, agent profiles, per-plugin tool config, MCP servers,\n"
-    "-- ...).\n"
-    "return {\n"
-    "    -- Default agent profile: an inline entry in an `agents` table\n"
-    "    -- here, or a file at ~/.config/clm/agents/<name>.lua.\n"
-    "    -- agent = \"default\",\n"
-    "\n"
-    "    -- Default model, used when no agent profile sets its own.\n"
-    "    -- \"provider/model-id\": which providers[] entry below, and which\n"
-    "    -- literal wire model id to request.\n"
-    "    -- model = \"anthropic/claude-sonnet-5\",\n"
-    "\n"
-    "    providers = {\n"
-    "        anthropic = {\n"
-    "            kind = \"anthropic\",\n"
-    "            url = \"https://api.anthropic.com/v1\",\n"
-    "            -- Prefer clm.secrets.* (see secrets.lua) over a literal\n"
-    "            -- key here, since this file often ends up checked into\n"
-    "            -- dotfiles. clm.secrets.anthropic is nil (no error)\n"
-    "            -- until you add it there.\n"
-    "            api_key = clm.secrets.anthropic,\n"
-    "        },\n"
-    "\n"
-    "        -- Everything below is OpenAI-compatible (kind = \"openai\"),\n"
-    "        -- differing only in url and which key it needs.\n"
-    "        groq = {\n"
-    "            kind = \"openai\",\n"
-    "            url = \"https://api.groq.com/openai/v1\",\n"
-    "            api_key = clm.secrets.groq,\n"
-    "        },\n"
-    "        cerebras = {\n"
-    "            kind = \"openai\",\n"
-    "            url = \"https://api.cerebras.ai/v1\",\n"
-    "            api_key = clm.secrets.cerebras,\n"
-    "        },\n"
-    "        nvidia = {\n"
-    "            kind = \"openai\",\n"
-    "            url = \"https://integrate.api.nvidia.com/v1\",\n"
-    "            api_key = clm.secrets.nvidia,\n"
-    "        },\n"
-    "        openrouter = {\n"
-    "            kind = \"openai\",\n"
-    "            url = \"https://openrouter.ai/api/v1\",\n"
-    "            api_key = clm.secrets.openrouter,\n"
-    "        },\n"
-    "        github = {\n"
-    "            kind = \"openai\",\n"
-    "            url = \"https://models.github.ai/inference\",\n"
-    "            api_key = clm.secrets.github,\n"
-    "        },\n"
-    "        ollama_cloud = {\n"
-    "            kind = \"openai\",\n"
-    "            url = \"https://ollama.com/v1\",\n"
-    "            api_key = clm.secrets.ollama_cloud,\n"
-    "        },\n"
-    "        llm7 = {\n"
-    "            kind = \"openai\",\n"
-    "            url = \"https://api.llm7.io/v1\",\n"
-    "            api_key = clm.secrets.llm7,\n"
-    "        },\n"
-    "        -- Gemini's own OpenAI-compatible shim, not freellmapi's native\n"
-    "        -- Gemini support -- clm only ever speaks the OpenAI dialect.\n"
-    "        google = {\n"
-    "            kind = \"openai\",\n"
-    "            url = \"https://generativelanguage.googleapis.com/v1beta/openai\",\n"
-    "            api_key = clm.secrets.google,\n"
-    "        },\n"
-    "\n"
-    "        -- A local llama.cpp / Ollama / vLLM server -- usually no key\n"
-    "        -- needed at all, hence commented out rather than shipped\n"
-    "        -- with a blank one (see clm-config(5)'s api_key for why an\n"
-    "        -- explicit empty key isn't the same as no key here).\n"
-    "        -- local = {\n"
-    "        --     kind = \"ollama\",\n"
-    "        --     url = \"http://127.0.0.1:8081/v1\",\n"
-    "        --     -- Models nest under their provider, keyed by the\n"
-    "        --     -- literal wire model id -- which provider a model\n"
-    "        --     -- uses is which provider's `models` table it's\n"
-    "        --     -- listed in, not a field you set on the model itself.\n"
-    "        --     models = {\n"
-    "        --         [\"qwen3-32b\"] = {\n"
-    "        --             context_size = 32768,\n"
-    "        --             autocompact_pct = 70,\n"
-    "        --         },\n"
-    "        --     },\n"
-    "        -- },\n"
-    "    },\n"
-    "\n"
-    "    -- system_prompt = \"You are a helpful assistant.\",\n"
-    "\n"
-    "    -- Per-plugin config: each plugin sees only its own section as\n"
-    "    -- clm.config.\n"
-    "    tools = {\n"
-    "        -- web_search = { api_key = clm.secrets.tavily },\n"
-    "        -- weather = { units = \"metric\" },\n"
-    "    },\n"
-    "}\n";
-
-static const char secrets_template[] =
-    "-- clm secrets: kept separate from config.lua so the latter can be\n"
-    "-- shared/checked in without leaking keys. Exposed as clm.secrets in\n"
-    "-- config.lua and in per-agent profile files (~/.config/clm/agents/).\n"
-    "--\n"
-    "-- Fill in the keys you use; clm.secrets.X is nil (harmless -- the\n"
-    "-- matching provider in config.lua just sits unusable until you set\n"
-    "-- a model on it) for any left blank or removed, so delete what you\n"
-    "-- don't need.\n"
-    "--\n"
-    "-- chmod 600 this file; clm warns (via CLM_DEBUG_LOG) if it's\n"
-    "-- readable by group or other.\n"
-    "return {\n"
-    "    anthropic = \"\",\n"
-    "    groq = \"\",\n"
-    "    cerebras = \"\",\n"
-    "    nvidia = \"\",\n"
-    "    openrouter = \"\",\n"
-    "    github = \"\",\n"
-    "    ollama_cloud = \"\",\n"
-    "    llm7 = \"\",\n"
-    "    google = \"\",\n"
-    "    -- local = \"...\", -- a local server usually needs no key at all\n"
-    "    -- tavily = \"tvly-...\",\n"
-    "}\n";
-
 /* `clm setup`: writes a starter config.lua and secrets.lua, and seeds the
  * builtin plugins, without silently doing any of that on a normal run.
  * Safe to re-run: never overwrites a config, secrets, or plugin file
@@ -515,7 +382,8 @@ run_setup(void)
 	printf("agent profiles in %s\n", agents_dir);
 
 	/* 0600: secrets.lua holds API keys, unlike config.lua. */
-	int xr = write_new_file(secrets_path, secrets_template, 0600);
+	int xr = write_new_file(secrets_path,
+	    (const char *)secrets_lua_tpl_data, 0600);
 	if (xr < 0) {
 		fprintf(stderr, "setup: writing %s: %s\n", secrets_path,
 		    strerror(-xr));
@@ -523,7 +391,7 @@ run_setup(void)
 	}
 	printf("%s %s\n", xr == 1 ? "kept existing" : "wrote", secrets_path);
 
-	int cr = write_new_file(cfg_path, config_template, 0644);
+	int cr = write_new_file(cfg_path, (const char *)config_lua_tpl_data, 0644);
 	if (cr < 0) {
 		fprintf(stderr, "setup: writing %s: %s\n", cfg_path,
 		    strerror(-cr));
