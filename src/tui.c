@@ -1510,7 +1510,12 @@ run_command(struct ui *u, const char *line)
 		    "\ncommands:\n"
 		    "  /help              this help\n"
 		    "  /clear             clear the transcript\n"
-		    "  /agent <name>      switch agent profile\n"
+		    "  /agent <name>      switch agent profile (system prompt + "
+		    "tools)\n"
+		    "  /model <name>      switch model (config.lua's `models` "
+		    "table)\n"
+		    "  /provider <name>   switch provider connection (config.lua's "
+		    "`providers` table)\n"
 		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
 		    "  /output [full|short] tool output detail (^O)\n"
 		    "  /compact           summarize old turns to reclaim context\n"
@@ -1570,11 +1575,20 @@ run_command(struct ui *u, const char *line)
 				free(adir);
 			} else {
 				free(adir);
-				/* Resolve new provider. */
-				const char *prov = clm_lua_cfg_get_str(u->lcfg, "provider");
+				/* Resolve the agent's model (or the top-level
+				 * default, if the profile doesn't set its own)
+				 * down to a provider connection -- same
+				 * indirection as the startup path in main.c. */
+				const char *model_name = clm_lua_cfg_get_str(u->lcfg, "model");
+				const char *prov = model_name
+				    ? clm_lua_cfg_model_str(u->lcfg, model_name, "provider")
+				    : NULL;
 				const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
-				const char *pmodel = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "model") : NULL;
+				const char *pkind = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "kind") : NULL;
 				const char *pkey = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "api_key") : NULL;
+				const char *pmodel = model_name
+				    ? clm_lua_cfg_model_str(u->lcfg, model_name, "model")
+				    : NULL;
 				const char *sprompt = clm_lua_cfg_get_str(u->lcfg, "system_prompt");
 
 				/* Tear down plugins + MCP clients (must happen while the
@@ -1604,11 +1618,13 @@ run_command(struct ui *u, const char *line)
 				newcfg.model = pmodel ? pmodel : "local-model";
 				newcfg.api_key = pkey ? pkey : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY") : "sk-no-key-required");
 				newcfg.system_prompt = sprompt;
-				newcfg.provider = CLM_PROVIDER_OPENAI;
+				newcfg.provider = clm_provider_from_str(pkind);
 				newcfg.stream = 1;
+				if (model_name) {
+					newcfg.context_size = clm_lua_cfg_model_int(u->lcfg, model_name, "context_size", 0);
+					newcfg.autocompact_pct = (int)clm_lua_cfg_model_int(u->lcfg, model_name, "autocompact_pct", 0);
+				}
 				if (prov) {
-					newcfg.context_size = clm_lua_cfg_provider_int(u->lcfg, prov, "context_size", 0);
-					newcfg.autocompact_pct = (int)clm_lua_cfg_provider_int(u->lcfg, prov, "autocompact_pct", 0);
 					newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
 					newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
 				}
@@ -1657,6 +1673,106 @@ run_command(struct ui *u, const char *line)
 					    "\n[switched to agent: %s]\n", arg);
 					ui_push(u, ST_META, msg);
 					clm_agent_check_connection(u->agent);
+				}
+			}
+		}
+	} else if (CMD("model")) {
+		/* /model <name>: resolve config.models[name] to a provider
+		 * connection + wire model id and reconfigure the live agent
+		 * in place via clm_agent_set_provider() -- history, tools,
+		 * and MCP clients are untouched. Contrast /agent, which also
+		 * changes the system prompt/tool set and needs a full
+		 * teardown + rebuild. */
+		if (arg[0] == '\0') {
+			ui_push(u, ST_META, "\nusage: /model <name>\n");
+		} else if (u->lcfg == NULL) {
+			ui_push(u, ST_ERROR, "\nno config loaded\n");
+		} else {
+			const char *prov = clm_lua_cfg_model_str(u->lcfg, arg, "provider");
+			const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
+			if (prov == NULL || purl == NULL) {
+				char msg[128];
+				(void)snprintf(msg, sizeof(msg),
+				    "\nmodel '%s' not found\n", arg);
+				ui_push(u, ST_ERROR, msg);
+			} else {
+				struct clm_cfg newcfg = {0};
+				char url_buf[512];
+				size_t ulen = strlen(purl);
+				while (ulen > 0 && purl[ulen-1] == '/')
+					ulen--;
+				(void)snprintf(url_buf, sizeof(url_buf),
+				    "%.*s/chat/completions", (int)ulen, purl);
+				newcfg.base_url = url_buf;
+				newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, prov, "api_key");
+				newcfg.provider = clm_provider_from_str(
+				    clm_lua_cfg_provider_str(u->lcfg, prov, "kind"));
+				const char *pmodel = clm_lua_cfg_model_str(u->lcfg, arg, "model");
+				newcfg.model = pmodel ? pmodel : "local-model";
+				newcfg.context_size = clm_lua_cfg_model_int(u->lcfg, arg, "context_size", 0);
+				newcfg.autocompact_pct = (int)clm_lua_cfg_model_int(u->lcfg, arg, "autocompact_pct", 0);
+				newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
+				newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
+
+				int rc = clm_agent_set_provider(u->agent, &newcfg);
+				if (rc == 0) {
+					u->model = newcfg.model;
+					char msg[128];
+					(void)snprintf(msg, sizeof(msg),
+					    "\n[switched to model: %s]\n", arg);
+					ui_push(u, ST_META, msg);
+					clm_agent_check_connection(u->agent);
+				} else if (rc == -EBUSY) {
+					ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+				} else {
+					ui_push(u, ST_ERROR, "\nfailed to switch model\n");
+				}
+			}
+		}
+	} else if (CMD("provider")) {
+		/* /provider <name>: like /model, but overrides only the
+		 * provider connection (endpoint, key, wire dialect, rate
+		 * limits) backing whichever model is currently active, e.g.
+		 * to fail over to a mirror endpoint without changing which
+		 * model is requested. */
+		if (arg[0] == '\0') {
+			ui_push(u, ST_META, "\nusage: /provider <name>\n");
+		} else if (u->lcfg == NULL) {
+			ui_push(u, ST_ERROR, "\nno config loaded\n");
+		} else {
+			const char *purl = clm_lua_cfg_provider_str(u->lcfg, arg, "url");
+			if (purl == NULL) {
+				char msg[128];
+				(void)snprintf(msg, sizeof(msg),
+				    "\nprovider '%s' not found\n", arg);
+				ui_push(u, ST_ERROR, msg);
+			} else {
+				struct clm_cfg newcfg = {0};
+				char url_buf[512];
+				size_t ulen = strlen(purl);
+				while (ulen > 0 && purl[ulen-1] == '/')
+					ulen--;
+				(void)snprintf(url_buf, sizeof(url_buf),
+				    "%.*s/chat/completions", (int)ulen, purl);
+				newcfg.base_url = url_buf;
+				newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, arg, "api_key");
+				newcfg.provider = clm_provider_from_str(
+				    clm_lua_cfg_provider_str(u->lcfg, arg, "kind"));
+				newcfg.model = u->model; /* keep the currently active model */
+				newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, arg, "rate_tokens_per_sec", 0);
+				newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, arg, "rate_burst", 0);
+
+				int rc = clm_agent_set_provider(u->agent, &newcfg);
+				if (rc == 0) {
+					char msg[128];
+					(void)snprintf(msg, sizeof(msg),
+					    "\n[switched to provider: %s]\n", arg);
+					ui_push(u, ST_META, msg);
+					clm_agent_check_connection(u->agent);
+				} else if (rc == -EBUSY) {
+					ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+				} else {
+					ui_push(u, ST_ERROR, "\nfailed to switch provider\n");
 				}
 			}
 		}
