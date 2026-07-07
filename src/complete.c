@@ -605,7 +605,11 @@ complete_path(struct ui *u, size_t wstart, size_t wlen)
 void
 complete_input(struct ui *u, uint64_t generation)
 {
-	size_t wstart, wlen;
+	/* Zero-initialized to pacify -Wmaybe-uninitialized: every real read
+	 * below is guarded by have_word (extract_word() always sets both
+	 * whenever it returns true), but GCC's flow analysis can't correlate
+	 * the bool with these output params across that path. */
+	size_t wstart = 0, wlen = 0;
 	bool have_word = extract_word(u->input, u->input_len, u->input_pos,
 	    &wstart, &wlen);
 
