@@ -1215,6 +1215,15 @@ rebuild_render(struct ui *u, int w)
 	for (size_t i = 0; i < u->nsegs; i++) {
 		const struct seg *g = &u->segs[i];
 
+		/* Checked before the collapse logic below: a hidden think-
+		 * channel segment is invisible either way and must not count
+		 * as an "interruption" that breaks a run of collapsed tool
+		 * clusters -- models routinely emit one of these between every
+		 * tool call, which used to flush (and restart) the aggregate
+		 * once per call, defeating the whole point of collapsing. */
+		if (g->style == ST_REASON && !u->show_reasoning)
+			continue; /* think channel hidden */
+
 		/* Mute tool-cluster segments in the collapsed range, tallying
 		 * ST_BATCH's counts as we go; anything else in that range
 		 * (e.g. assistant text interleaved between tool calls) still
@@ -1238,8 +1247,6 @@ rebuild_render(struct ui *u, int w)
 			aggregating = false;
 		}
 
-		if (g->style == ST_REASON && !u->show_reasoning)
-			continue; /* think channel hidden */
 		if (g->style == ST_ASSIST && w >= 4)
 			render_markdown(u, g->text, w, A_NORMAL, false);
 		else if (g->style == ST_REASON && w >= 4)
