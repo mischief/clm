@@ -8,40 +8,22 @@ ISC License — see [LICENSE](LICENSE)
 ## Features
 
 - Interactive ncurses TUI and headless CLI modes
-- OpenAI-compatible API (works with llama.cpp, Ollama, OpenAI, Anthropic)
+- Two wire dialects: OpenAI-compatible (works with llama.cpp, Ollama, OpenAI,
+  Groq, and most other hosted/self-hosted APIs) and Anthropic's native
+  Messages API, translated transparently at the request/response layer —
+  see [`clm-config(5)`](docs/clm-config.md)'s `kind` field
 - Built-in tools: shell exec, file read/write
 - Lua 5.4 plugin system for custom tools (sandboxed, async HTTP)
+- [MCP](https://modelcontextprotocol.io) client: pull in tools from external
+  stdio or HTTP servers
 - Per-tool permission prompts (allow once / always / deny / never)
-- Token-bucket rate limiter on tool dispatch
+- Two independent token-bucket rate limiters: a small fixed one pacing tool
+  dispatch, and a configurable one (`rate_tokens_per_sec`/`rate_burst` per
+  provider) pacing outgoing LLM requests against a backend's real quota
 - Streaming (SSE) and non-streaming response modes
 - Portable core: transport + timers come in through a small host interface, so
-  the agent engine itself depends only on cJSON (no libuv/libcurl)
-
-## Architecture
-
-The library is split into a portable core and two static add-on layers:
-
-- **`libclm`** — the agent engine, tool registry, history, and
-  OpenAI-compatible client. It has no libuv, libcurl, or Lua dependency. HTTP
-  and timers are provided by the embedder through a `struct clm_host` (see
-  `clm/host.h`): four function pointers for `http_post` / `http_cancel` /
-  `timer_set` / `timer_cancel`. `clm_agent_new()` takes a `clm_host *`. A host
-  may leave `timer_set` NULL, in which case per-tool timeouts are disabled.
-- **`libclmuv`** (static) — the desktop host: a libcurl + libuv implementation
-  of `clm_host` (`clm_host_uv_new()`), plus the `shell_exec` tool (which needs
-  `uv_spawn`, so it lives here rather than in the core:
-  `clm_tools_register_shell()`).
-- **`libclmlua`** (static) — Lua 5.4 plugin/agent-profile support
-  (`clm_lua_env_new()` etc). Only ever calls *into* `libclm` (the same
-  `clm_tool_fn` callback any tool provider uses to register a tool), never
-  the reverse, so it lives entirely outside `libclm` too. Built whenever
-  `lua5.4` is found (`-Dlua=disabled` to skip it).
-
-The `clm` binary (the ncurses TUI / headless CLI) links all three. An embedder
-targeting a different platform supplies its own `clm_host` and links only
-`libclm` (and `libclmlua`, if it wants Lua plugins with no libuv/libcurl at
-all). For example, the ESP32 port implements `clm_host` over
-`esp_http_client` (with SSE streaming) and never pulls in libuv or libcurl.
+  the agent engine itself depends only on cJSON (no libuv/libcurl) — see
+  [`esp32/README.md`](esp32/README.md) for a from-scratch embedder example
 
 ## Build
 
@@ -82,32 +64,50 @@ meson setup build -Dlua=disabled
 ## Usage
 
 ```sh
-# First run: write a starter config.lua and seed the builtin plugins into
-# $XDG_CONFIG_HOME/clm/. Safe to re-run -- never overwrites existing files.
+# First run: write a starter config.lua (a working set of popular hosted
+# providers, each just needing an API key), a secrets.lua to put those keys
+# in, and seed the builtin plugins -- all under $XDG_CONFIG_HOME/clm/. Safe
+# to re-run -- never overwrites existing files.
 clm setup
 
-# Interactive TUI (default when on a terminal)
-clm -u http://localhost:8080
+# Interactive TUI (default when on a terminal), using a config.lua
+# providers[] entry: "provider/model-id"
+clm -m anthropic/claude-sonnet-5
 
 # Headless oneshot
-clm -u http://localhost:8080 -o "what time is it?"
+clm -m groq/llama-3.3-70b-versatile -o "what time is it?"
 
-# With a specific model
-clm -u http://localhost:8080 -m qwen3-32b
+# No config.lua at all -- point straight at an endpoint (e.g. a local
+# llama.cpp server). No wire dialect to resolve without a config, so
+# this always speaks OpenAI-compatible (/chat/completions).
+clm -u http://localhost:8080/v1
 ```
 
-Options:
+See [`clm-config(5)`](docs/clm-config.md) for the full `config.lua`
+schema (providers, per-model overrides, agent profiles, MCP servers,
+per-plugin tool config) and [`clm(1)`](docs/clm.md) for the complete
+CLI reference. Options:
 
 | Flag | Description |
 |------|-------------|
-| `-u, --url BASE` | API endpoint (default `http://127.0.0.1:8081`) |
-| `-m, --model NAME` | Model name to request |
-| `-o, --oneshot PROMPT` | Run one prompt and exit |
+| `-m, --model PROVIDER/MODEL-ID` | A `config.lua` `providers[PROVIDER].models[MODEL-ID]` entry, or a literal model id (no `/`) on whatever connection is otherwise active |
+| `--provider NAME` | Override which `config.lua` `providers[]` entry supplies the connection, without changing the requested model |
+| `-u, --url BASE` | Base API endpoint (default `http://127.0.0.1:8081/v1`); the request path appended depends on the wire dialect (`/messages` for Anthropic, `/chat/completions` otherwise) |
+| `-a, --agent NAME` | Load an agent profile from `~/.config/clm/agents/<name>.lua` |
+| `-o, --oneshot PROMPT` | Run one prompt headless and exit |
+| `-f, --forever PROMPT` | TUI mode: submit `PROMPT`, then auto-resubmit it whenever a turn completes with nothing queued |
 | `-p, --plugins DIR` | Plugin directory (default `$XDG_CONFIG_HOME/clm/plugins`) |
-| `-H, --headless` | Force plain stdio REPL |
-| `-S, --no-stream` | Disable streaming |
+| `-H, --headless` | Force the plain stdio REPL |
+| `-S, --no-stream` | Disable streamed (SSE) responses |
+| `-V, --version` | Print version and exit |
 
-The API key is read from the `CLM_API_KEY` environment variable.
+With no options, `clm` runs the interactive ncurses UI on a terminal.
+
+API keys are usually set once in `secrets.lua` and referenced from
+`config.lua` as `clm.secrets.<name>` (see [Secrets](#secrets) below,
+and `clm setup`'s canned files) — this is the normal path. The
+`CLM_API_KEY` environment variable, when set, overrides whatever
+`config.lua` would otherwise use for the active connection.
 
 ## Plugins
 
@@ -237,6 +237,8 @@ return {
 
 - Linux (primary development)
 - OpenBSD (tested, runs in production)
+- ESP32-S3 — an embedder example for the portable core, no libuv/libcurl/Lua:
+  see [`esp32/README.md`](esp32/README.md)
 
 ## Static builds
 
