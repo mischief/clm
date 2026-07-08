@@ -129,10 +129,22 @@ bg_finish(struct clm_bg_job *j)
 		 * portable guarantee) -- check the return value explicitly
 		 * instead of trusting msg to still be the NULL it was
 		 * initialized to above. */
-		if (asprintf(&msg,
-		    "[background job %llu (\"%s\") finished, exit status %lld%s]\n%s",
+		/* A signal-terminated process has no real exit status (see the
+		 * matching comment in tool_shell.c's shell_finish) -- report
+		 * the actual signal instead of a misleading "exit status 0"
+		 * alongside "killed by signal" when term_signal is set. */
+		if (j->term_signal != 0) {
+			const char *signame = strsignal(j->term_signal);
+			if (asprintf(&msg,
+			    "[background job %llu (\"%s\") finished, killed by "
+			    "signal %d: %s]\n%s",
+			    (unsigned long long)j->id, j->label, j->term_signal,
+			    signame != NULL ? signame : "unknown",
+			    j->len ? j->buf : "(no output)") < 0)
+				msg = NULL;
+		} else if (asprintf(&msg,
+		    "[background job %llu (\"%s\") finished, exit status %lld]\n%s",
 		    (unsigned long long)j->id, j->label, (long long)j->exit_status,
-		    j->term_signal ? ", killed by signal" : "",
 		    j->len ? j->buf : "(no output)") < 0)
 			msg = NULL;
 		/* On OOM building msg: drop the notification silently. The

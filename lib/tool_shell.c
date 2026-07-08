@@ -103,13 +103,27 @@ shell_finish(struct shell_state *s)
 	if (s->spawn_err != NULL) {
 		clm_tool_fail(inv, s->spawn_err);
 	} else if (s->exit_status != 0 || s->term_signal != 0) {
-		size_t mlen = s->len + 80;
+		size_t mlen = s->len + 128;
 		autofree char *msg = malloc(mlen);
 		if (msg != NULL) {
-			(void)snprintf(msg, mlen, "%s%s(exit status %lld%s)",
-			    s->len ? s->buf : "", s->len ? "\n" : "",
-			    (long long)s->exit_status,
-			    s->term_signal ? ", killed by signal" : "");
+			/* A signal-terminated process has no real exit status --
+			 * uv_process_t's exit callback reports exit_status as 0
+			 * in that case, not the process's own value (there isn't
+			 * one; it never called exit()). Printing "exit status 0"
+			 * alongside "killed by signal" was actively misleading
+			 * (reads as "succeeded, but also killed?"), so show the
+			 * actual signal instead of the meaningless exit status
+			 * when term_signal is set, rather than both at once. */
+			if (s->term_signal != 0) {
+				const char *signame = strsignal(s->term_signal);
+				(void)snprintf(msg, mlen, "%s%s(killed by signal %d: %s)",
+				    s->len ? s->buf : "", s->len ? "\n" : "",
+				    s->term_signal, signame != NULL ? signame : "unknown");
+			} else {
+				(void)snprintf(msg, mlen, "%s%s(exit status %lld)",
+				    s->len ? s->buf : "", s->len ? "\n" : "",
+				    (long long)s->exit_status);
+			}
 			clm_tool_fail(inv, msg);
 		} else {
 			clm_tool_fail(inv, "command failed");
