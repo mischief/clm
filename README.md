@@ -10,12 +10,21 @@ ISC License — see [LICENSE](LICENSE)
 - Interactive ncurses TUI and headless CLI modes
 - Two wire dialects: OpenAI-compatible (works with llama.cpp, Ollama, OpenAI,
   Groq, and most other hosted/self-hosted APIs) and Anthropic's native
-  Messages API, translated transparently at the request/response layer —
-  see [`clm-config(5)`](docs/clm-config.md)'s `kind` field
+  Messages API, translated transparently at the request/response layer and
+  with automatic prompt caching on Anthropic connections — see
+  [`clm-config(5)`](docs/clm-config.md)'s `kind` field
 - Built-in tools: shell exec, file read/write
 - Lua 5.4 plugin system for custom tools (sandboxed, async HTTP)
 - [MCP](https://modelcontextprotocol.io) client: pull in tools from external
   stdio or HTTP servers
+- Agent profiles: named personas (system prompt + tool set) under
+  `~/.config/clm/agents/`, switchable with `-a`/`--agent` or the TUI's
+  `/agent`
+- Runtime hot-switching: `/provider`, `/model`, `/agent` swap the live
+  connection or persona mid-conversation — no restart, history intact
+- Context management: auto-compaction folds old turns into a summary as
+  the context window fills; `/clear` resets to a fresh conversation on
+  demand
 - Per-tool permission prompts (allow once / always / deny / never)
 - Two independent token-bucket rate limiters: a small fixed one pacing tool
   dispatch, and a configurable one (`rate_tokens_per_sec`/`rate_burst` per
