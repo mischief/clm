@@ -2489,15 +2489,24 @@ handle_keys(struct ui *u)
 			u->show_reasoning = !u->show_reasoning;
 			u->dirty = true;
 			break;
-		case 27: /* Escape: cancel a running turn, else clear the input */
-			if (clm_agent_cancel(u->agent) == 0) {
+		case 27: { /* Escape: cancel a running turn, else clear the input */
+			int cancel_rc = clm_agent_cancel(u->agent);
+			if (cancel_rc == 0) {
 				ui_push(u, ST_META, "\n[cancelled]\n");
-			} else {
+			} else if (cancel_rc != -EALREADY) {
+				/* Truly nothing in flight -- treat Escape as
+				 * clear-input instead. -EALREADY means a cancel
+				 * from an earlier Escape is still unwinding
+				 * (killed subprocesses take a moment to actually
+				 * exit); do nothing rather than spamming another
+				 * "[cancelled]" per repeat keypress or clearing
+				 * input the user hasn't finished typing yet. */
 				u->input_len = 0;
 				u->input_pos = 0;
 			}
 			u->dirty = true;
 			break;
+		}
 		case 9: /* TAB: completion (commands, config/live names, paths) */
 			complete_input(u, u->complete_generation);
 			break;

@@ -1603,6 +1603,18 @@ clm_agent_cancel(struct clm_agent *agent)
 {
 	ASSERT_RETURN(agent != NULL, -EINVAL);
 
+	/* A prior cancel is still unwinding: inflight/active_batch below stay
+	 * non-NULL until their async teardown actually completes (a killed
+	 * subprocess takes a moment to die), so without this guard a caller
+	 * that re-issues cancel while waiting (e.g. impatient repeated
+	 * Escape presses) would see success every time and re-signal an
+	 * already-cancelling batch on each call -- harmless at the tool
+	 * layer (SIGTERM twice is a no-op), but misleads a caller that
+	 * reports success as "cancelled" into printing that once per
+	 * keypress instead of once per actual cancel. */
+	if (agent->cancelling)
+		return -EALREADY;
+
 	if (agent->inflight != NULL) {
 		/* Waiting on the model: abort the request. Its error callback
 		 * fires on_turn_done(-ECANCELED) and clears inflight. Mark the

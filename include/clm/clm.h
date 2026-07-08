@@ -447,8 +447,12 @@ CLM_API enum clm_provider clm_agent_get_provider(struct clm_agent *agent);
 /*
  * Cancel the turn in flight: aborts the model request (or running tools) and
  * ends the turn via on_turn_done with status -ECANCELED. Returns 0 if a turn
- * was cancelled, negative errno if nothing was in flight. Safe to call from a
- * callback (e.g. a key handler).
+ * was cancelled, -EALREADY if a cancel is already unwinding (safe to ignore --
+ * the earlier call's on_turn_done still fires exactly once), or another
+ * negative errno if nothing was in flight. Safe to call from a callback
+ * (e.g. a key handler) -- in particular, safe to call repeatedly (e.g. a user
+ * mashing Escape while a killed subprocess takes a moment to actually exit)
+ * without re-triggering teardown or duplicating the eventual cancellation.
  */
 CLM_API int clm_agent_cancel(struct clm_agent *agent);
 
