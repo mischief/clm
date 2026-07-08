@@ -56,26 +56,37 @@ return {
             url = "https://api.cerebras.ai/v1",
             api_key = clm.secrets.cerebras,
         },
+        -- Free key: https://build.nvidia.com/explore/discover
+        -- (requires joining the NVIDIA Developer Program).
         nvidia = {
             kind = "openai",
             url = "https://integrate.api.nvidia.com/v1",
             api_key = clm.secrets.nvidia,
         },
+        -- Free key: https://openrouter.ai/keys -- only models with a
+        -- ":free" id suffix are actually free; everything else on
+        -- this connection bills the key normally.
         openrouter = {
             kind = "openai",
             url = "https://openrouter.ai/api/v1",
             api_key = clm.secrets.openrouter,
         },
+        -- Free for any GitHub account -- a Personal Access Token (no
+        -- special scopes) from https://github.com/settings/tokens
+        -- works as api_key; see https://github.com/marketplace/models.
         github = {
             kind = "openai",
             url = "https://models.github.ai/inference",
             api_key = clm.secrets.github,
         },
-        ollama_cloud = {
+        ollama_cloud = { -- free key: https://ollama.com/settings/keys
             kind = "openai",
             url = "https://ollama.com/v1",
             api_key = clm.secrets.ollama_cloud,
         },
+        -- Free key: https://token.llm7.io -- despite the "no
+        -- registration needed" pitch, currently-live models 401
+        -- without one; get a token anyway.
         llm7 = {
             kind = "openai",
             url = "https://api.llm7.io/v1",
@@ -83,6 +94,8 @@ return {
         },
         -- Gemini's own OpenAI-compatible shim, not freellmapi's native
         -- Gemini support -- clm only ever speaks the OpenAI dialect.
+        -- Free key: https://aistudio.google.com/app/apikey (free tier
+        -- unavailable in EU/UK/Switzerland as of this writing).
         google = {
             kind = "openai",
             url = "https://generativelanguage.googleapis.com/v1beta/openai",
