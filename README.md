@@ -64,24 +64,50 @@ meson setup build -Dlua=disabled
 ## Usage
 
 ```sh
-# First run: write a starter config.lua (a working set of popular hosted
-# providers, each just needing an API key), a secrets.lua to put those keys
-# in, and seed the builtin plugins -- all under $XDG_CONFIG_HOME/clm/. Safe
-# to re-run -- never overwrites existing files.
+# First run: writes a starter config.lua under $XDG_CONFIG_HOME/clm/ --
+# nine ready-to-use provider connections (Anthropic, plus eight
+# OpenAI-compatible ones with a free tier: Groq, Cerebras, NVIDIA,
+# OpenRouter, GitHub Models, Ollama Cloud, LLM7, Google) -- and a
+# matching secrets.lua with a blank slot for each key. Also seeds the
+# builtin plugins. Safe to re-run -- never overwrites existing files.
 clm setup
+```
 
-# Interactive TUI (default when on a terminal), using a config.lua
-# providers[] entry: "provider/model-id"
-clm -m anthropic/claude-sonnet-5
+The only step left is a key. Open `~/.config/clm/secrets.lua` and fill
+in one entry -- each provider in `config.lua` has a comment right above
+it linking to that service's free-key signup page, e.g.:
 
-# Headless oneshot
-clm -m groq/llama-3.3-70b-versatile -o "what time is it?"
+```lua
+-- ~/.config/clm/secrets.lua
+return {
+    groq = "gsk_...",   -- from https://console.groq.com/keys
+    ...
+}
+```
+
+A provider with no key just sits inert (`nil`, not an error) until you
+pick it via `-m`/`--model` or `config.lua`'s top-level `model` field, so
+there's no need to touch the ones you don't use. Then:
+
+```sh
+# Interactive TUI (default when on a terminal); "provider/model-id"
+# picks the config.lua connection and model to use
+clm -m groq/llama-3.3-70b-versatile
+
+# Headless oneshot -- same spec form
+clm -m anthropic/claude-sonnet-5 -o "what time is it?"
 
 # No config.lua at all -- point straight at an endpoint (e.g. a local
 # llama.cpp server). No wire dialect to resolve without a config, so
 # this always speaks OpenAI-compatible (/chat/completions).
 clm -u http://localhost:8080/v1
 ```
+
+Free-tier keys are real but rate-limited for light use, not heavy
+agentic sessions -- see the comments in the canned `config.lua` (and
+[`clm-config(5)`](docs/clm-config.md)'s `rate_tokens_per_sec` /
+`rate_burst`) before relying on one as a daily driver. Anthropic has no
+free tier but is the most dependable option once you have a key.
 
 See [`clm-config(5)`](docs/clm-config.md) for the full `config.lua`
 schema (providers, per-model overrides, agent profiles, MCP servers,
@@ -197,9 +223,10 @@ return {
 }
 ```
 
-`clm.secrets` is exposed to `config.lua` and to per-agent profile files
-under `~/.config/clm/agents/` (they share the same Lua state), so both
-can reference it instead of a literal key:
+`clm.secrets` itself (the live lookup table) is only ever visible where
+it's resolved: `config.lua` and per-agent profile files under
+`~/.config/clm/agents/`, which share one Lua state for exactly this
+reason:
 
 ```lua
 return {
@@ -208,6 +235,17 @@ return {
     },
 }
 ```
+
+Each plugin runs in its own separate, sandboxed Lua state (see
+[Plugins](#plugins) above) with no access to `clm.secrets` or to any
+other plugin's config — but the *value* a secret resolved to still
+reaches the plugin it's configured for, as plain data: `config.lua` is
+evaluated once (substituting `clm.secrets.tavily` for its real string),
+and each plugin's own slice of the resulting `tools` table is handed to
+it as `clm.config`. So `web_search`'s `invoke` function can read
+`clm.config.api_key` and get the real key, without the plugin sandbox
+ever holding a reference to `clm.secrets` or seeing any other tool's
+configuration.
 
 `clm` warns (via `CLM_DEBUG_LOG`) if `secrets.lua` is readable by group
 or other. `clm setup` writes a starter `secrets.lua` with the right
