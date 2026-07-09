@@ -87,7 +87,12 @@ add_project_arguments('-idirafter', meson.project_source_root() / 'compat',
   language: 'c')
 
 # Suppress noisy warnings that don't apply cleanly across compilers.
-suppress_args = ['-Wno-unused-parameter', '-Wno-useless-cast']
+# -Wno-zero-length-array: OpenBSD's own libuv package (system /usr/local/
+# include/uv/unix.h) computes a padding array as
+# sizeof(pthread_barrier_t) - sizeof(struct _uv_barrier*), which is 0 on
+# OpenBSD's pthread_barrier_t layout -- a system header we don't control,
+# not our own code.
+suppress_args = ['-Wno-unused-parameter', '-Wno-useless-cast', '-Wno-zero-length-array']
 
 # Hardening: warnings (from openbsd-gitea-runner)
 hardening_args = [
