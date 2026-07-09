@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <sys/queue.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #include "clm/compress.h"
 

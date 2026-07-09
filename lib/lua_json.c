@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #include <lua.h>
 #include <lauxlib.h>
@@ -59,7 +59,7 @@ clm_lua_push_json_value(lua_State *L, cJSON *obj)
 #pragma GCC diagnostic pop
 			lua_pushinteger(L, ival);
 		} else {
-			lua_pushnumber(L, (lua_Number)val);
+			lua_pushnumber(L, val);
 		}
 		return;
 	}

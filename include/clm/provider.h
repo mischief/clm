@@ -34,7 +34,7 @@
 
 #include <stdbool.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #include "clm/clm.h"
 #include "clm/llm.h"

@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"

@@ -5,7 +5,7 @@ project('clm', 'c',
   default_options: [
     'c_std=c17',
     'warning_level=3',
-    'werror=true',
+    'werror=false',  # applied only to clm targets, not subprojects
     # debugoptimized (-O2 -g, asserts on), not plain debug (-O0): several
     # of our own -W hardening flags below (-Wframe-larger-than via
     # inlining, -Wnull-dereference's interprocedural analysis) and
@@ -40,7 +40,19 @@ cc = meson.get_compiler('c')
 want_static = get_option('static')
 static_kw = want_static ? {'static': true} : {}
 
-add_project_arguments('-D_DEFAULT_SOURCE', language: 'c')
+# Feature test macros to expose POSIX/GNU extensions (strdup, asprintf,
+# getline, strsignal, struct addrinfo, pthread_rwlock_t, ...) without
+# breaking the platform's own headers. illumos/Solaris gates all of this
+# behind __EXTENSIONS__ instead of glibc's _GNU_SOURCE/_DEFAULT_SOURCE --
+# defining _GNU_SOURCE there does nothing useful, and conversely
+# __EXTENSIONS__ alone does nothing on glibc (this was tried and broke
+# strdup/asprintf/pthread_rwlock_t/struct addrinfo declarations in
+# lib/tool_bg.c, lib/mcp_client.c, lib/http_async.c on Linux).
+if host_machine.system() == 'sunos'
+  add_project_arguments('-D__EXTENSIONS__', language: 'c')
+else
+  add_project_arguments('-D_GNU_SOURCE', language: 'c')
+endif
 add_project_arguments('-fno-omit-frame-pointer', language: 'c')
 
 # Now that the default buildtype optimizes (see debugoptimized above): a
@@ -74,6 +86,9 @@ endif
 add_project_arguments('-idirafter', meson.project_source_root() / 'compat',
   language: 'c')
 
+# Suppress noisy warnings that don't apply cleanly across compilers.
+suppress_args = ['-Wno-unused-parameter', '-Wno-useless-cast']
+
 # Hardening: warnings (from openbsd-gitea-runner)
 hardening_args = [
   '-Wnull-dereference',
@@ -98,9 +113,18 @@ hardening_args = [
   '-fsanitize-trap=all',
 ]
 
+# Build a list of hardening flags that are supported by this compiler.
+# Applied to clm targets only, not to subprojects (via c_args in each target).
+clm_hardening_args = ['-Werror']  # treat warnings as errors, but only for clm
 foreach a : hardening_args
   if cc.has_argument(a)
-    add_project_arguments(a, language: 'c')
+    clm_hardening_args += [a]
+  endif
+endforeach
+# Add suppression flags only if supported (unrecognized flags break header processing)
+foreach a : suppress_args
+  if cc.has_argument(a)
+    clm_hardening_args += [a]
   endif
 endforeach
 
@@ -133,17 +157,8 @@ foreach a : ['-Wl,-z,relro', '-Wl,-z,now']
   endif
 endforeach
 
-# Suppress noisy warnings that don't apply cleanly across compilers.
-# -Wno-useless-cast: kept as a general vendored-header safety net (originally
-# added for json-c 0.18's linkhash.h tripping -Wuseless-cast under gcc 14 --
-# Debian's default -- but not under every gcc/json-c combination; json-c
-# itself is gone now that everything uses cJSON, but a third-party header
-# quirk like that isn't a bug in our code either way). (Tried include_type:
-# 'system' on dependency() to sidestep this generally, but that hit a
-# meson 1.7.0 bug generating malformed -isystem flags; this is simpler
-# and version-independent.)
-suppress_args = ['-Wno-unused-parameter', '-Wno-zero-length-array', '-Wno-useless-cast']
-
+# suppress_args already defined earlier and used in clm_hardening_args
+# Apply to all targets (including subprojects) since they're suppressions, not strict flags
 foreach a : suppress_args
   if cc.has_argument(a)
     add_project_arguments(a, language: 'c')

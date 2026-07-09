@@ -210,13 +210,15 @@ def test_commands(url):
 def test_queueing(url):
     with Tui(BIN, url, rows=20, cols=70) as t:
         t.wait_for("online", timeout=8)
-        # First prompt starts a (slow) turn; the second should queue.
+        # First prompt starts a (slow) turn; the second steers mid-turn.
         t.send(b"first\r")
         t.pump(0.15)
         t.send(b"second\r")
         t.pump(0.25)
-        check("(queued)" in t.text(),
-              "queueing: a prompt sent while busy shows (queued)")
+        # Check for steering evidence: either the queue-time message or the
+        # injection-time message depending on timing.
+        check("injects at next decision point" in t.text() or "steering:" in t.text(),
+              "queueing: a prompt sent while busy shows steering")
 
 
 def test_cancel(url):

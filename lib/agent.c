@@ -5,7 +5,7 @@
 #include <string.h>
 #include <time.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #include "clm/agent.h"
 #include "clm/http.h"
@@ -67,14 +67,16 @@ build_system_prompt(const char *base)
 {
 	char stamp[64];
 	autofree char *out = NULL;
-	int n;
+	size_t len;
 
 	fmt_rfc2822(stamp, sizeof(stamp));
 
-	n = asprintf(&out, "%s\n\ncurrent time: %s%s", base, stamp,
-	    time_context_note);
-	if (n < 0)
+	len = strlen(base) + strlen(stamp) + strlen(time_context_note) + 20;
+	out = malloc(len);
+	if (out == NULL)
 		return NULL;
+	snprintf(out, len, "%s\n\ncurrent time: %s%s", base, stamp,
+	    time_context_note);
 
 	char *ret = out;
 	out = NULL;
@@ -469,12 +471,15 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 			autofree char *msg = NULL;
 
 			fmt_rfc2822(stamp, sizeof(stamp));
-			if (asprintf(&msg,
-			    "[context update] current time: %s\n"
-			    "(automatic context, not user input; do not acknowledge)",
-			    stamp) >= 0 && msg != NULL)
+			msg = malloc(strlen(stamp) + 100);
+			if (msg != NULL) {
+				snprintf(msg, strlen(stamp) + 100,
+				    "[context update] current time: %s\n"
+				    "(automatic context, not user input; do not acknowledge)",
+				    stamp);
 				(void)clm_history_add_user(&agent->history, msg,
 				    agent->compressor);
+			}
 			agent->last_time_stamp = now;
 		}
 	}
@@ -535,9 +540,12 @@ clm_agent_notify(struct clm_agent *agent, const char *text)
 
 		if (agent->pending_notify == NULL) {
 			joined = strdup(text);
-		} else if (asprintf(&joined, "%s\n\n%s", agent->pending_notify,
-		    text) < 0) {
-			return -ENOMEM; /* joined's contents are undefined on failure */
+		} else {
+			size_t jlen = strlen(agent->pending_notify) + strlen(text) + 10;
+			joined = malloc(jlen);
+			if (joined == NULL)
+				return -ENOMEM;
+			snprintf(joined, jlen, "%s\n\n%s", agent->pending_notify, text);
 		}
 		if (joined == NULL)
 			return -ENOMEM;

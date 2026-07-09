@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <sys/queue.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #include "clm/clm.h"
 #include "clm/history.h"

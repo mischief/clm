@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 static inline void
 autofree_fn(void *p)

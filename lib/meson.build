@@ -4,7 +4,7 @@
 # ships cJSON built-in, so this avoids vendoring json-c into the esp32 tree).
 clm_core_src = files('agent.c', 'http.c', 'llm.c', 'log.c', 'tools.c', 'history.c', 'props.c', 'models_list.c', 'ratelimit.c', 'provider.c', 'provider_openai.c', 'provider_anthropic.c')
 
-cjson_dep = dependency('libcjson', kwargs: static_kw)
+cjson_dep = dependency('libcjson', fallback: ['cjson', 'libcjson_dep'], kwargs: static_kw)
 
 clm_core_deps = [
   cjson_dep,
@@ -30,7 +30,7 @@ clm_lib_inc = include_directories('.', '..', '../include')
 # no function references, so the call is duplicated rather than picked
 # via a variable.
 clm_lib_common_args = {
-  'c_args': ['-DCLM_BUILDING'],
+  'c_args': ['-DCLM_BUILDING'] + clm_hardening_args,
   'gnu_symbol_visibility': 'hidden',
   'dependencies': clm_core_deps,
   'include_directories': [clm_lib_inc, clm_inc],
@@ -41,11 +41,15 @@ if want_static
   clm_lib = static_library('clm', clm_core_src + [version_h],
     kwargs: clm_lib_common_args)
 else
+  clm_lib_link_args = []
+  if cc.has_link_argument('-Wl,--version-script=/dev/null')
+    clm_lib_link_args += ['-Wl,--version-script=' + meson.current_source_dir() / 'libclm.map']
+  endif
   clm_lib = library('clm', clm_core_src + [version_h],
     # ABI version: bump only on ABI breaks, independent of the release version.
     version: meson.project_version(),
     soversion: '0',
-    link_args: ['-Wl,--version-script=' + meson.current_source_dir() / 'libclm.map'],
+    link_args: clm_lib_link_args,
     kwargs: clm_lib_common_args)
 endif
 
@@ -70,7 +74,7 @@ clmlua_src = files('lua_plugin.c', 'lua_json.c', 'lua_http.c', 'log.c')
 
 if lua_dep.found()
   clm_lua_lib = static_library('clmlua', clmlua_src,
-    c_args: ['-DCLM_BUILDING'],
+    c_args: ['-DCLM_BUILDING'] + clm_hardening_args,
     dependencies: [lua_dep, clm_core_deps],
     include_directories: [clm_lib_inc, clm_inc],
     install: true,
@@ -94,12 +98,18 @@ clmuv_src = files('http_async.c', 'host_uv.c', 'tool_shell.c', 'tool_bg.c', 'mcp
 
 clmuv_deps = [
   dependency('libcurl', kwargs: static_kw),
-  dependency('libuv', kwargs: static_kw),
+  # build_tests/build_benchmarks off: as a fallback subproject we only want
+  # libuv_dep, and libuv's own test suite doesn't build clean on illumos
+  # (test-pipe-sendmsg.c assumes Linux's struct msghdr layout, unrelated to
+  # anything clm actually uses).
+  dependency('libuv', fallback: ['libuv', 'libuv_dep'],
+    default_options: ['build_tests=false', 'build_benchmarks=false'],
+    kwargs: static_kw),
   cjson_dep,
 ]
 
 clm_uv_lib = static_library('clmuv', clmuv_src,
-  c_args: ['-DCLM_BUILDING'],
+  c_args: ['-DCLM_BUILDING'] + clm_hardening_args,
   dependencies: clmuv_deps,
   include_directories: [clm_lib_inc, clm_inc],
   install: true,

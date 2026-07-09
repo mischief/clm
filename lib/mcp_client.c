@@ -17,7 +17,7 @@
 #include <string.h>
 #include <time.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"

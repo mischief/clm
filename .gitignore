@@ -1,5 +1,6 @@
 build/
 build-*/
+subprojects/
 .*.swp
 core.*
 fuzz/out_*
@@ -8,5 +9,4 @@ vgcore.*
 __pycache__/
 *.chat
 *.md
-*.txt
 

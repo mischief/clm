@@ -9,7 +9,7 @@
  */
 #include <stdint.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #include "clm/internal.h"
 #include "clm/cleanup.h"

@@ -22,7 +22,7 @@
 #include <wchar.h>
 
 #include <curses.h>
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"

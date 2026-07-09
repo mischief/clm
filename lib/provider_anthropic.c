@@ -35,7 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #include "clm/cleanup.h"
 #include "clm/provider.h"

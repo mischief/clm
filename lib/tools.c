@@ -9,7 +9,7 @@
 
 #include <fcntl.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #include "clm/tools.h"
 #include "clm/internal.h"

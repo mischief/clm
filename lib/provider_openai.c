@@ -8,7 +8,7 @@
  */
 #include <stdlib.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 
 #include "clm/provider.h"
 #include "banned.h"

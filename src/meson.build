@@ -2,7 +2,7 @@ clm_bin_inc = include_directories('../include')
 
 # md4c: streaming markdown parser. Confined to the md_render module below so
 # the core libclm stays free of a markdown dependency.
-md_dep = dependency('md4c', kwargs: static_kw)
+md_dep = dependency('md4c', fallback: ['md4c', 'md4c_dep'], kwargs: static_kw)
 
 # md_render: markdown -> styled runs, ncurses-free so it can be unit-tested in
 # isolation. Static, internal, not installed. Independent of Lua (see below),
@@ -13,7 +13,7 @@ md_render_lib = static_library('md_render',
   files('md_render.c'),
   dependencies: [md_dep],
   include_directories: [md_render_inc, clm_bin_inc, clm_inc],
-  c_args: ['-D_XOPEN_SOURCE=700'], # wcwidth(3) is XSI
+  c_args: ['-D_XOPEN_SOURCE=700'] + clm_hardening_args, # wcwidth(3) is XSI
 )
 
 # Unlike the portable core (lib/meson.build's `lua` feature, optional there
@@ -38,7 +38,7 @@ if have_lua
   clm_src = files('main.c')
 
   clm_bin_deps = [
-    dependency('libuv', kwargs: static_kw),
+    dependency('libuv', fallback: ['libuv', 'libuv_dep'], kwargs: static_kw),
   ]
 
   # ncurses (wide) is a hard dependency: the default frontend is the TUI.
@@ -89,7 +89,7 @@ if have_lua
     link_with: [md_render_lib],
     dependencies: [clmuv_dep, clmlua_dep, curses_dep, cjson_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],
-    c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'],
+    c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'] + clm_hardening_args,
     install: true,
   )
 endif

@@ -15,7 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 #include <uv.h>
 
 #include "clm/clm.h"
