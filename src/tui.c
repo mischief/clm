@@ -757,7 +757,7 @@ seg_attr(enum ui_style style)
 	case ST_LABEL:
 		return COLOR_PAIR(8);
 	case ST_PERM:
-		return COLOR_PAIR(9) | A_BOLD;
+		return COLOR_PAIR(9);
 	case ST_REASON:
 		return COLOR_PAIR(6);
 	case ST_TOOL:
@@ -2632,9 +2632,11 @@ init_colors(void)
 	 * confirm?" caution colour -- shares the base-8 yellow with ST_TIMEOUT
 	 * rather than reaching for ANSI 9/brred, which silently vanished on
 	 * anything without a 16-colour terminfo entry, e.g. plain "screen" over
-	 * ssh in tmux; A_BOLD on ST_PERM below is what still sets it apart from
-	 * a plain timeout notice). TODO: expose the whole role->colour map via
-	 * the theme layer.
+	 * ssh in tmux). Plain, not | A_BOLD: some terminal/terminfo
+	 * combinations render bold as a fixed bright-white override rather
+	 * than intensifying the underlying colour pair, which made this show
+	 * up as bold white instead of yellow. TODO: expose the whole
+	 * role->colour map via the theme layer.
 	 */
 	init_pair(9, COLOR_YELLOW, -1);        /* permission prompt (yellow) */
 }
