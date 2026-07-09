@@ -262,6 +262,71 @@ source_provider_names(struct ui *u, uint64_t generation, size_t wstart, size_t w
 	clm_lua_cfg_free_str_list(names);
 }
 
+static void
+source_agent_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
+{
+	(void)generation;
+	const char *prefix = u->input + wstart;
+	size_t typed = wlen;
+	const char *matches[MAX_CANDIDATES];
+	size_t nmatches = 0;
+
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	const char *home = getenv("HOME");
+	char *agents_dir = NULL;
+
+	if (xdg != NULL && xdg[0] != '\0') {
+		size_t n = strlen(xdg) + sizeof("/clm/agents");
+		agents_dir = malloc(n);
+		if (agents_dir != NULL)
+			(void)snprintf(agents_dir, n, "%s/clm/agents", xdg);
+	} else if (home != NULL && home[0] != '\0') {
+		size_t n = strlen(home) + sizeof("/.config/clm/agents");
+		agents_dir = malloc(n);
+		if (agents_dir != NULL)
+			(void)snprintf(agents_dir, n, "%s/.config/clm/agents", home);
+	}
+
+	if (agents_dir == NULL)
+		return;
+
+	DIR *d = opendir(agents_dir);
+	if (d == NULL) {
+		free(agents_dir);
+		return;
+	}
+
+	struct dirent *ent;
+	while ((ent = readdir(d)) != NULL && nmatches < MAX_CANDIDATES) {
+		size_t namelen = strlen(ent->d_name);
+		if (namelen <= 4 || strcmp(ent->d_name + namelen - 4, ".lua") != 0)
+			continue;
+
+		if (strncmp(ent->d_name, prefix, typed) == 0) {
+			char *name = malloc(namelen - 3);
+			if (name != NULL) {
+				memcpy(name, ent->d_name, namelen - 4);
+				name[namelen - 4] = '\0';
+				matches[nmatches++] = name;
+			}
+		}
+	}
+	closedir(d);
+	free(agents_dir);
+
+	if (nmatches == 0)
+		return;
+
+	qsort(matches, nmatches, sizeof(matches[0]), strp_cmp);
+
+	if (nmatches > 1)
+		list_plain(u, NULL, matches, nmatches);
+	apply_insert(u, wstart, wlen, 0, matches, nmatches, typed, '\0');
+
+	for (size_t i = 0; i < nmatches; i++)
+		free((char *)matches[i]);
+}
+
 /*
  * Per-request context for the async half of /model completion, carrying
  * only what's needed to check staleness and re-locate the word -- see
@@ -420,11 +485,9 @@ struct arg_source {
 
 /*
  * Which commands have a completable argument, and what completes it.
- * /agent isn't here yet (would need to enumerate ~/.config/clm/agents/
- * *.lua plus any inline agents{} table -- natural future addition, same
- * shape as the two below).
  */
 static const struct arg_source arg_sources[] = {
+	{ "agent",    source_agent_names },
 	{ "provider", source_provider_names },
 	{ "model",    source_model_names },
 };
