@@ -60,7 +60,15 @@ if have_lua
   # seed_plugins.h).
   # Runs at build time on the build machine to generate a source file;
   # under a cross build this must not resolve to the target's lua.
-  lua_bin = find_program('lua5.4', 'lua', required: true, native: true)
+  # Falls back to the lua-wrap subproject's own interpreter executable
+  # when the system has no lua CLI installed at all (omnios: lua_dep came
+  # from the wrap fallback above, but WrapDB's lua.wrap doesn't register
+  # its lua_exe target via meson.override_find_program, so find_program()
+  # alone never sees it).
+  lua_bin = find_program('lua5.4', 'lua', required: false, native: true)
+  if not lua_bin.found()
+    lua_bin = subproject('lua').get_variable('lua_exe')
+  endif
   seed_plugin_files = files(
     '../plugins/edit_file.lua',
     '../plugins/reverse.lua',
