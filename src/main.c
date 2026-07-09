@@ -521,11 +521,14 @@ main(int argc, char *argv[])
 	 * for why this must be the one place that logic lives. */
 	clm_provider_build_url(endpoint, sizeof(endpoint), api_base, cfg.provider);
 
-	/* API key: env > config > placeholder. */
-	if (cfg.api_key == NULL) {
+	/* API key: env > config > none. An empty string is a valid, explicit
+	 * "this connection needs no key" (e.g. config.lua's api_key =
+	 * clm.secrets.llm7 resolving to "" for a real free-tier provider),
+	 * not the same as unset -- checked here too, not just == NULL, so
+	 * CLM_API_KEY can still override an explicitly-empty config value. */
+	if (cfg.api_key == NULL || cfg.api_key[0] == '\0') {
 		const char *key = getenv("CLM_API_KEY");
-		cfg.api_key = (key != NULL && key[0] != '\0') ? key
-		                                              : "sk-no-key-required";
+		cfg.api_key = (key != NULL && key[0] != '\0') ? key : "";
 	}
 	cfg.base_url = endpoint;
 	cfg.model = model_name;

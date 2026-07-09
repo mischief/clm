@@ -1707,8 +1707,7 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 		return -EBUSY;
 
 	new_url = strdup(cfg->base_url);
-	new_key = (cfg->api_key != NULL && cfg->api_key[0] != '\0')
-	    ? strdup(cfg->api_key) : strdup("sk-no-key-required");
+	new_key = strdup(cfg->api_key != NULL ? cfg->api_key : "");
 	new_model = strdup(cfg->model != NULL ? cfg->model : "local-model");
 	if (new_url == NULL || new_key == NULL || new_model == NULL) {
 		free(new_url);

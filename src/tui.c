@@ -1743,7 +1743,12 @@ cmd_agent(struct ui *u, const char *arg)
 				newcfg.base_url = "http://127.0.0.1:8081/v1/chat/completions";
 			}
 			newcfg.model = pmodel ? pmodel : "local-model";
-			newcfg.api_key = pkey ? pkey : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY") : "sk-no-key-required");
+			/* Empty string is a valid, explicit "no key needed"
+			 * (see http_async.c: Content-Type no longer depends
+			 * on a non-empty key, so there's no need for a
+			 * non-empty placeholder here either). */
+			newcfg.api_key = (pkey != NULL && pkey[0] != '\0') ? pkey
+			    : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY") : "");
 			newcfg.system_prompt = sprompt;
 			newcfg.provider = clm_provider_from_str(pkind);
 			newcfg.stream = 1;

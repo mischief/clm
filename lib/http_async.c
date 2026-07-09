@@ -283,22 +283,29 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	}
 	clm_debug("curl_easy_init success");
 
+	/* Content-Type is unconditional: whether or not this connection needs
+	 * a bearer token, the body is always a JSON POST. This used to be set
+	 * only inside the api_key branch below -- fine for any provider with
+	 * a real key, but a provider explicitly configured with an empty key
+	 * (e.g. secrets.lua's llm7 = "", a real "no key needed" free-tier
+	 * entry, not an unconfigured one) sent no Content-Type at all, and
+	 * more than one backend (llm7.io included) 400s a JSON POST with no
+	 * Content-Type rather than inferring it from the body. */
+	req->headers = curl_slist_append(NULL, "Content-Type: application/json");
 	if (api_key != NULL && api_key[0] != '\0') {
 		auth_header_len = sizeof("Authorization: Bearer ") + strlen(api_key);
 		auth_header = malloc(auth_header_len);
 		if (auth_header == NULL) {
 			clm_debug("auth_header alloc failed");
+			curl_slist_free_all(req->headers);
 			curl_easy_cleanup(req->easy_handle);
 			curl_multi_cleanup(req->multi_handle);
 			free(req);
 			return -ENOMEM;
 		}
 		(void)snprintf(auth_header, auth_header_len, "Authorization: Bearer %s", api_key);
-		req->headers = curl_slist_append(NULL, "Content-Type: application/json");
 		req->headers = curl_slist_append(req->headers, auth_header);
 		free(auth_header);
-	} else {
-		req->headers = NULL;
 	}
 
 	/* Append any caller-provided extra headers. */
