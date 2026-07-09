@@ -162,14 +162,6 @@ foreach a : ['-Wl,-z,relro', '-Wl,-z,now']
   endif
 endforeach
 
-# suppress_args already defined earlier and used in clm_hardening_args
-# Apply to all targets (including subprojects) since they're suppressions, not strict flags
-foreach a : suppress_args
-  if cc.has_argument(a)
-    add_project_arguments(a, language: 'c')
-  endif
-endforeach
-
 clm_inc = include_directories('.')
 
 version_h = configure_file(
