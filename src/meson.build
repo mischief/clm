@@ -72,7 +72,9 @@ if have_lua
   # from the wrap fallback above, but WrapDB's lua.wrap doesn't register
   # its lua_exe target via meson.override_find_program, so find_program()
   # alone never sees it).
-  lua_bin = find_program('lua5.4', 'lua', required: false, native: true)
+  # 'lua54' is OpenBSD's package binary name (its lang/lua54 port installs
+  # /usr/local/bin/lua54, not lua5.4 or plain lua).
+  lua_bin = find_program('lua5.4', 'lua54', 'lua', required: false, native: true)
   if not lua_bin.found()
     lua_bin = subproject('lua').get_variable('lua_exe')
   endif
