@@ -3,6 +3,9 @@ option('tests', type: 'boolean', value: true,
 option('lua', type: 'feature', value: 'auto',
   description: 'Lua 5.4 plugin support')
 option('static', type: 'boolean', value: false,
-  description: 'Link libclm and all third-party deps statically ' +
-    '(glibc stays dynamic). Equivalent to -Ddefault_library=static ' +
-    '--prefer-static plus forcing static dependency lookup, in one flag.')
+  description: 'Prefer static linking for libclm and clm\'s own direct ' +
+    'pkg-config dependency() lookups (glibc stays dynamic). Does NOT ' +
+    'by itself affect dependencies resolved *inside* a fallback ' +
+    'subproject (e.g. curl\'s own internal dependency(\'threads\')) -- ' +
+    'also pass --default-library=static --prefer-static on the meson ' +
+    'setup command line for a genuinely fully-static third-party build.')

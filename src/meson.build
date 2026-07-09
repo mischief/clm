@@ -38,7 +38,14 @@ if have_lua
   clm_src = files('main.c')
 
   clm_bin_deps = [
-    dependency('libuv', fallback: ['libuv', 'libuv_dep'], kwargs: static_kw),
+    # build_tests/build_benchmarks off: same reason as lib/meson.build's
+    # own dependency('libuv', ...) -- libuv's test suite doesn't build
+    # clean on illumos (test-pipe-sendmsg.c assumes Linux's struct msghdr
+    # layout), and this is a second, independent fallback resolution for
+    # the same subproject, so it needs the same override.
+    dependency('libuv', fallback: ['libuv', 'libuv_dep'],
+      default_options: ['build_tests=false', 'build_benchmarks=false'],
+      kwargs: static_kw),
   ]
 
   # ncurses (wide) is a hard dependency: the default frontend is the TUI.
