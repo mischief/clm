@@ -114,7 +114,8 @@ ui_set_state(struct ui *u, enum clm_agent_state st)
 		u->busy = true;
 }
 
-static void drain_queue(struct ui *u); /* runs the next queued prompt */
+static void drain_steering_queue(struct ui *u); /* injects at decision point */
+static void enqueue_steering(struct ui *u, const char *prompt);
 static bool do_submit(struct ui *u, const char *prompt, bool echo);
 
 /* ---- libclm callbacks ---- */
@@ -485,6 +486,19 @@ cb_state(enum clm_agent_state st, void *user)
 		u->dirty = true;
 	}
 
+	/* Check for mid-turn steering at decision points: after tool batch
+	 * completes, before/after LLM response, before tool calls. */
+	if (u->steering_nqueue > 0) {
+		enum clm_agent_state prev = u->prev_state;
+		/* Inject after tools finish (CALLING_TOOL→THINKING), after LLM
+		 * finishes thinking (THINKING→CALLING_TOOL or THINKING→COMPLETE). */
+		if ((prev == CLM_STATE_CALLING_TOOL && st == CLM_STATE_THINKING) ||
+		    (prev == CLM_STATE_THINKING &&
+		        (st == CLM_STATE_CALLING_TOOL || st == CLM_STATE_COMPLETE)))
+			drain_steering_queue(u);
+	}
+
+	u->prev_state = st;
 	ui_set_state(user, st);
 }
 
@@ -590,15 +604,14 @@ cb_turn_done(int status, void *user)
 		 * next turn. */
 	}
 
-	drain_queue(u); /* start the next queued prompt, if any */
-	/* Nothing was queued and --forever is set: keep the agent going
-	 * instead of idling for human input. Skip on a real error so a
-	 * broken backend/tool doesn't spin forever -- UNLESS that "error"
-	 * was just a failed autocompact attempt (was_compacting), in which
-	 * case the original turn before it already completed successfully
-	 * and --forever should keep going regardless; only a failure of the
-	 * agent's actual conversational turn should stop the loop. */
-	if (!u->busy && u->nqueue == 0 && u->forever_prompt != NULL &&
+	/* --forever: keep the agent going instead of idling for human input.
+	 * Skip on a real error so a broken backend/tool doesn't spin forever
+	 * -- UNLESS that "error" was just a failed autocompact attempt
+	 * (was_compacting), in which case the original turn before it already
+	 * completed successfully and --forever should keep going regardless;
+	 * only a failure of the agent's actual conversational turn should stop
+	 * the loop. */
+	if (!u->busy && u->forever_prompt != NULL &&
 	    (status == 0 || status == -ECANCELED || was_compacting))
 		do_submit(u, u->forever_prompt, true);
 }
@@ -1473,41 +1486,47 @@ do_submit(struct ui *u, const char *prompt, bool echo)
 	return true;
 }
 
-/* Queue a prompt typed while a turn is running; it echoes as "(queued)". */
 static void
-enqueue_prompt(struct ui *u, const char *prompt)
+enqueue_steering(struct ui *u, const char *prompt)
 {
 	char *dup = strdup(prompt);
 	if (dup == NULL)
 		return;
-	if (u->nqueue == u->cap_queue) {
-		size_t ncap = u->cap_queue ? u->cap_queue * 2 : 8;
-		char **p = realloc(u->queue, ncap * sizeof(*p));
+	if (u->steering_nqueue == u->steering_cap) {
+		size_t ncap = u->steering_cap ? u->steering_cap * 2 : 8;
+		char **p = realloc(u->steering_queue, ncap * sizeof(*p));
 		if (p == NULL) {
 			free(dup);
 			return;
 		}
-		u->queue = p;
-		u->cap_queue = ncap;
+		u->steering_queue = p;
+		u->steering_cap = ncap;
 	}
-	u->queue[u->nqueue++] = dup;
-	ui_push(u, ST_USER, "\nyou> ");
-	ui_push(u, ST_USER, prompt);
-	ui_push(u, ST_META, "  (queued)\n");
+	u->steering_queue[u->steering_nqueue++] = dup;
+	ui_push(u, ST_PERM, "\nyou> ");
+	ui_push(u, ST_PERM, prompt);
+	ui_push(u, ST_META, "  (injects at next decision point)\n");
+	u->dirty = true;
 }
 
 static void
-drain_queue(struct ui *u)
+drain_steering_queue(struct ui *u)
 {
 	char *prompt;
 
-	if (u->busy || u->nqueue == 0)
+	if (!u->busy || u->steering_nqueue == 0)
 		return;
-	prompt = u->queue[0];
-	memmove(u->queue, u->queue + 1, (u->nqueue - 1) * sizeof(*u->queue));
-	u->nqueue--;
-	do_submit(u, prompt, false); /* already echoed when queued */
+	/* Mid-turn steering: inject immediately at decision point. */
+	prompt = u->steering_queue[0];
+	memmove(u->steering_queue, u->steering_queue + 1,
+	    (u->steering_nqueue - 1) * sizeof(*u->steering_queue));
+	u->steering_nqueue--;
+	ui_push(u, ST_META, "[steering: ");
+	ui_push(u, ST_META, prompt);
+	ui_push(u, ST_META, "]\n");
+	do_submit(u, prompt, true); /* suppress echo, already shown in meta */
 	free(prompt);
+	u->dirty = true;
 }
 
 static char *xdg_config_path(const char *suffix);
@@ -2141,7 +2160,7 @@ submit_line(struct ui *u)
 	else if (strcmp(u->input, "quit") == 0 || strcmp(u->input, "exit") == 0)
 		u->quit = true;
 	else if (u->busy)
-		enqueue_prompt(u, u->input);
+		enqueue_steering(u, u->input);
 	else
 		do_submit(u, u->input, true);
 
@@ -2772,9 +2791,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	for (size_t i = 0; i < u->nrsegs; i++)
 		free(u->rsegs[i].text);
 	free(u->rsegs);
-	for (size_t i = 0; i < u->nqueue; i++)
-		free(u->queue[i]);
-	free(u->queue);
+	for (size_t i = 0; i < u->steering_nqueue; i++)
+		free(u->steering_queue[i]);
+	free(u->steering_queue);
 	for (size_t i = 0; i < u->nhist; i++)
 		free(u->hist[i]);
 	free(u->hist);

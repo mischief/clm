@@ -135,6 +135,7 @@ struct ui {
 	int spinner;
 	bool busy;           /* a turn is in flight */
 	bool started_assist; /* assistant text seen this turn */
+	enum clm_agent_state prev_state; /* track transitions for steering injection */
 
 	/* Permission prompt queue: requests arrive in bursts (batched tool
 	 * calls) and we present them one at a time. */
@@ -153,9 +154,12 @@ struct ui {
 	bool
 	    built_reasoning; /* show_reasoning value the cache was built with */
 
-	/* Prompts typed while a turn is in flight, run FIFO on turn-done. */
-	char **queue;
-	size_t nqueue, cap_queue;
+	/* Mid-turn steering: input typed while a turn is in flight injects at
+	 * the next decision point (tool batch done, thinking done), instead of
+	 * waiting for turn completion. Drained ASAP when agent reaches a pause
+	 * point. */
+	char **steering_queue;
+	size_t steering_nqueue, steering_cap;
 
 	/* --forever: NULL normally; when set, this fixed prompt is
 	 * auto-resubmitted every time a turn completes and nothing else is
