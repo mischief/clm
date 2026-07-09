@@ -211,44 +211,186 @@ emit_border(struct ctx *c, const struct box *b, const int *w, size_t cols,
 	emit_nl(c);
 }
 
-/* One data row: an edge/separator plus a space-padded, aligned cell in each
- * w[j]+2 span. Header cells are bolded. */
-static void
-emit_row(struct ctx *c, struct table *t, size_t i, const struct box *b,
-    const int *w, bool ruled)
+#define WRAP_MIN_COL 3
+
+/* A styled slice of text, borrowed from the owning cell's runbuf -- no
+ * copies, just (style, pointer, len) into memory the table already owns. */
+struct frag {
+	unsigned style;
+	const char *text;
+	size_t len;
+};
+
+/* One wrapped line of a cell: a sequence of frags plus its cached display
+ * width, so alignment padding doesn't have to re-walk the frags. */
+struct cline {
+	struct frag *f;
+	size_t n, cap;
+	int width;
+};
+
+/* A cell wrapped to some column width: zero or more lines. */
+struct wcell {
+	struct cline *lines;
+	size_t n, cap;
+};
+
+static int
+cline_push(struct cline *ln, unsigned style, const char *text, size_t len)
 {
-	if (ruled)
-		emit_str(c, b->v);
+	if (len == 0)
+		return 0;
+	if (ln->n == ln->cap) {
+		size_t ncap = ln->cap ? ln->cap * 2 : 4;
+		struct frag *p = realloc(ln->f, ncap * sizeof(*p));
+		if (p == NULL)
+			return -1;
+		ln->f = p;
+		ln->cap = ncap;
+	}
+	ln->f[ln->n].style = style;
+	ln->f[ln->n].text = text;
+	ln->f[ln->n].len = len;
+	ln->n++;
+	ln->width += md_display_width(text, len);
+	return 0;
+}
+
+static struct cline *
+wcell_newline(struct wcell *wc)
+{
+	if (wc->n == wc->cap) {
+		size_t ncap = wc->cap ? wc->cap * 2 : 4;
+		struct cline *p = realloc(wc->lines, ncap * sizeof(*p));
+		if (p == NULL)
+			return NULL;
+		wc->lines = p;
+		wc->cap = ncap;
+	}
+	memset(&wc->lines[wc->n], 0, sizeof(wc->lines[wc->n]));
+	return &wc->lines[wc->n++];
+}
+
+static void
+wcell_free(struct wcell *wc)
+{
+	for (size_t i = 0; i < wc->n; i++)
+		free(wc->lines[i].f);
+	free(wc->lines);
+	wc->lines = NULL;
+	wc->n = wc->cap = 0;
+}
+
+/* Greedy word-wrap: break on runs of ' ', never splitting a word (an
+ * over-long word is simply left to overflow that one line). Styling is
+ * preserved per fragment across the break. */
+static int
+wrap_cell(struct wcell *wc, struct runbuf *cell, int width)
+{
+	struct cline *cur;
+	bool has_content = false;
+
+	cur = wcell_newline(wc);
+	if (cur == NULL)
+		return -1;
+
+	for (size_t r = 0; r < cell->n; r++) {
+		unsigned style = cell->v[r].style;
+		const char *text = cell->v[r].text;
+		size_t len = cell->v[r].len;
+		size_t i = 0;
+
+		while (i < len) {
+			size_t start = i;
+			bool is_space = (text[i] == ' ');
+			while (i < len && (text[i] == ' ') == is_space)
+				i++;
+			size_t tlen = i - start;
+			int tw = md_display_width(text + start, tlen);
+
+			if (is_space) {
+				if (!has_content)
+					continue;
+				if (cur->width + tw > width) {
+					cur = wcell_newline(wc);
+					if (cur == NULL)
+						return -1;
+					has_content = false;
+					continue;
+				}
+				if (cline_push(cur, style, text + start,
+					tlen) < 0)
+					return -1;
+				continue;
+			}
+
+			if (has_content && cur->width + tw > width) {
+				cur = wcell_newline(wc);
+				if (cur == NULL)
+					return -1;
+				has_content = false;
+			}
+			if (cline_push(cur, style, text + start, tlen) < 0)
+				return -1;
+			has_content = true;
+		}
+	}
+	return 0;
+}
+
+/* One data row, possibly spanning several wrapped lines: an edge/separator
+ * plus a space-padded, aligned fragment set in each w[j]+2 span per line.
+ * Header cells are bolded. */
+static void
+emit_wrapped_row(struct ctx *c, struct table *t, size_t i,
+    const struct wcell *wcells, const struct box *b, const int *w, bool ruled)
+{
+	size_t rh = 1;
+
 	for (size_t j = 0; j < t->cols; j++) {
-		struct runbuf *cell = tbl_cell(t, i, j);
-		int cw = runbuf_width(cell);
-		unsigned al = t->aligns[i * t->cols + j];
-		int padtot = w[j] - cw;
-		int lpad = 0, rpad = padtot;
+		const struct wcell *wc = &wcells[i * t->cols + j];
+		if (wc->n > rh)
+			rh = wc->n;
+	}
 
-		if (al == MD_ALIGN_RIGHT) {
-			lpad = padtot;
-			rpad = 0;
-		} else if (al == MD_ALIGN_CENTER) {
-			lpad = padtot / 2;
-			rpad = padtot - lpad;
-		}
-
-		emit_pad(c, 1 + lpad);
-		for (size_t r = 0; r < cell->n; r++) {
-			unsigned st = cell->v[r].style;
-			if (i < t->head_rows)
-				st |= MD_ST_BOLD;
-			emit_run(c, st, cell->v[r].text, cell->v[r].len);
-		}
-		c->bol = false;
-		emit_pad(c, rpad + 1);
+	for (size_t k = 0; k < rh; k++) {
 		if (ruled)
 			emit_str(c, b->v);
-		else if (j + 1 < t->cols)
-			emit_str(c, " ");
+		for (size_t j = 0; j < t->cols; j++) {
+			const struct wcell *wc = &wcells[i * t->cols + j];
+			unsigned al = t->aligns[i * t->cols + j];
+			int cw = (k < wc->n) ? wc->lines[k].width : 0;
+			int padtot = w[j] - cw;
+			int lpad = 0, rpad = padtot;
+
+			if (al == MD_ALIGN_RIGHT) {
+				lpad = padtot;
+				rpad = 0;
+			} else if (al == MD_ALIGN_CENTER) {
+				lpad = padtot / 2;
+				rpad = padtot - lpad;
+			}
+
+			emit_pad(c, 1 + lpad);
+			if (k < wc->n) {
+				const struct cline *ln = &wc->lines[k];
+				for (size_t f = 0; f < ln->n; f++) {
+					unsigned st = ln->f[f].style;
+					if (i < t->head_rows)
+						st |= MD_ST_BOLD;
+					emit_run(c, st, ln->f[f].text,
+					    ln->f[f].len);
+				}
+			}
+			c->bol = false;
+			emit_pad(c, rpad + 1);
+			if (ruled)
+				emit_str(c, b->v);
+			else if (j + 1 < t->cols)
+				emit_str(c, " ");
+		}
+		emit_nl(c);
 	}
-	emit_nl(c);
 }
 
 static void
@@ -257,6 +399,8 @@ layout_table(struct ctx *c, struct table *t)
 	const struct box *b;
 	bool ruled;
 	int *w;
+	int termw, overhead, avail, sum;
+	struct wcell *wcells;
 
 	if (t->rows == 0 || t->cols == 0)
 		return;
@@ -277,13 +421,64 @@ layout_table(struct ctx *c, struct table *t)
 	ruled = (c->tstyle != MD_TABLE_PLAIN);
 	b = (c->tstyle == MD_TABLE_ASCII) ? &box_ascii : &box_unicode;
 
+	/* If the table as laid out is wider than the terminal, shrink columns
+	 * proportionally to fit, then word-wrap each cell to the shrunk
+	 * width. overhead = rule/separator glyphs (cols+1 ruled, cols-1 bare)
+	 * plus one space of padding on each side of every column. */
+	termw = (c->width > 0) ? c->width : 80;
+	overhead = (int)t->cols * 2 +
+	    (ruled ? (int)t->cols + 1 : ((int)t->cols > 0 ? (int)t->cols - 1
+					 : 0));
+	avail = termw - overhead;
+	if (avail < (int)t->cols * WRAP_MIN_COL)
+		avail = (int)t->cols * WRAP_MIN_COL;
+
+	sum = 0;
+	for (size_t j = 0; j < t->cols; j++)
+		sum += w[j];
+
+	if (sum > avail && sum > 0) {
+		int assigned = 0;
+		for (size_t j = 0; j < t->cols; j++) {
+			int nw = (int)((int64_t)w[j] * avail / sum);
+			if (nw < WRAP_MIN_COL)
+				nw = WRAP_MIN_COL;
+			w[j] = nw;
+			assigned += nw;
+		}
+		/* Give any leftover (or take back any excess) from rounding
+		 * to the widest column, so we land close to `avail`. */
+		if (t->cols > 0) {
+			size_t wide = 0;
+			for (size_t j = 1; j < t->cols; j++)
+				if (w[j] > w[wide])
+					wide = j;
+			int diff = avail - assigned;
+			if (w[wide] + diff >= WRAP_MIN_COL)
+				w[wide] += diff;
+		}
+	}
+
+	wcells = calloc(t->rows * t->cols, sizeof(*wcells));
+	if (wcells == NULL) {
+		free(w);
+		return;
+	}
+	for (size_t i = 0; i < t->rows; i++) {
+		for (size_t j = 0; j < t->cols; j++) {
+			if (wrap_cell(&wcells[i * t->cols + j],
+				tbl_cell(t, i, j), w[j]) < 0)
+				goto done;
+		}
+	}
+
 	flush_blanks(c);
 
 	if (ruled)
 		emit_border(c, b, w, t->cols, b->tl, b->tm, b->tr);
 
 	for (size_t i = 0; i < t->rows; i++) {
-		emit_row(c, t, i, b, w, ruled);
+		emit_wrapped_row(c, t, i, wcells, b, w, ruled);
 		if (ruled && t->head_rows > 0 && i + 1 == t->head_rows)
 			emit_border(c, b, w, t->cols, b->ml, b->mm, b->mr);
 	}
@@ -292,6 +487,10 @@ layout_table(struct ctx *c, struct table *t)
 		emit_border(c, b, w, t->cols, b->bl, b->bm, b->br);
 
 	c->blanks = 1;
+done:
+	for (size_t i = 0; i < t->rows * t->cols; i++)
+		wcell_free(&wcells[i]);
+	free(wcells);
 	free(w);
 }
 
