@@ -2628,11 +2628,15 @@ init_colors(void)
 	init_pair(8, COLOR_CYAN, -1);          /* assistant "clm>" label */
 	/*
 	 * Reserved for attention, not decoration: red = error; yellow = warning /
-	 * timeout; and orange (ANSI 9 / brred) for tool-call permission prompts --
-	 * the "about to do something, confirm?" caution colour. TODO: expose the
-	 * whole role->colour map via the theme layer.
+	 * timeout / tool-call permission prompts (the "about to do something,
+	 * confirm?" caution colour -- shares the base-8 yellow with ST_TIMEOUT
+	 * rather than reaching for ANSI 9/brred, which silently vanished on
+	 * anything without a 16-colour terminfo entry, e.g. plain "screen" over
+	 * ssh in tmux; A_BOLD on ST_PERM below is what still sets it apart from
+	 * a plain timeout notice). TODO: expose the whole role->colour map via
+	 * the theme layer.
 	 */
-	init_pair(9, 9, -1);                   /* permission prompt (orange) */
+	init_pair(9, COLOR_YELLOW, -1);        /* permission prompt (yellow) */
 }
 
 /* Periodic (and startup) connectivity probe. */
