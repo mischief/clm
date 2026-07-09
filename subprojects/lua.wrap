@@ -1,0 +1,14 @@
+[wrap-file]
+directory = lua-5.4.8
+source_url = https://www.lua.org/ftp/lua-5.4.8.tar.gz
+source_filename = lua-5.4.8.tar.gz
+source_hash = 4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
+patch_filename = lua_5.4.8-1_patch.zip
+patch_url = https://wrapdb.mesonbuild.com/v2/lua_5.4.8-1/get_patch
+patch_hash = e9d7e451cd7b5e1204c0ba43d7b55e3f195a67b348917c35963f18d7e1dacfbe
+source_fallback_url = https://github.com/mesonbuild/wrapdb/releases/download/lua_5.4.8-1/lua-5.4.8.tar.gz
+wrapdb_version = 5.4.8-1
+
+[provide]
+lua-5.4 = lua_dep
+lua = lua_dep

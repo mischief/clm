@@ -18,7 +18,8 @@ clm_core_deps = [
 # is what actually lets an embedded build (e.g. a future esp32 target) omit
 # Lua/liblua entirely without any #ifdef CLM_LUA anywhere in C source --
 # the seam is a link-time decision, not a preprocessor one.
-lua_dep = dependency('lua5.4', required: get_option('lua'), kwargs: static_kw)
+lua_dep = dependency('lua5.4', required: get_option('lua'),
+  fallback: ['lua', 'lua_dep'], kwargs: static_kw)
 
 # Lib sources find "clm/..." via ../include, and "useful.h"/"banned.h" via
 # ../include and the project root.
