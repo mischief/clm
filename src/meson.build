@@ -42,8 +42,15 @@ if have_lua
   ]
 
   # ncurses (wide) is a hard dependency: the default frontend is the TUI.
-  # Available in base/ports on the BSDs, Linux, and macOS.
-  curses_dep = dependency('ncursesw', kwargs: static_kw)
+  # Available in base/ports on the BSDs, Linux, and macOS. omnios/illumos
+  # ships a single "ncurses" pkg-config module with wide-char support
+  # built in (NCURSES_WIDECHAR baked into its .pc Cflags) rather than a
+  # separate ncursesw -- so fall back to plain ncurses if ncursesw isn't
+  # found.
+  curses_dep = dependency('ncursesw', required: false, kwargs: static_kw)
+  if not curses_dep.found()
+    curses_dep = dependency('ncurses', kwargs: static_kw)
+  endif
 
   # ncurses' own macros (NCURSES_CAST) trip -Wuseless-cast; not our code.
   curses_warn = cc.get_supported_arguments('-Wno-useless-cast')
