@@ -361,9 +361,19 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	if (out_req != NULL)
 		*out_req = req;
 
-	/* Trigger initial socket action */
+	/* Trigger initial socket action. A refused/failed connect can complete
+	 * synchronously right here instead of later off the poll/timer
+	 * callbacks -- observed on illumos, where a loopback connect to a
+	 * closed port fails inline rather than returning EINPROGRESS the way
+	 * it does on Linux. Reap it here too, else the CURLMSG_DONE just sits
+	 * queued forever: no poll/timer callback is ever going to run for a
+	 * socket that never got added, so success_cb/error_cb never fire and
+	 * the caller's event loop spins with nothing to wait on. */
 	curl_multi_socket_action(req->multi_handle, CURL_SOCKET_TIMEOUT, 0, &req->events_pending);
 	clm_debug("curl_multi_socket_action completed");
+
+	if (http_reap_done(req))
+		http_request_teardown(req);
 
 	return 0;
 }
