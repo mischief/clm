@@ -7,7 +7,6 @@
  */
 #ifdef BOARD_TDECK
 
-#include <stdbool.h>
 #include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
@@ -87,11 +86,11 @@ board_spi_init(void)
 }
 
 /* Mount the microSD (FAT) at /sd. Non-fatal: the agent still runs, the file
- * tools just have nothing under /sd. Returns whether it actually mounted,
- * so board_init() can decide whether to advertise "sd" under the
- * synthetic "/" listing (see synth_vfs.h) -- no point claiming an entry
- * exists if there's no card or the mount failed. */
-static bool
+ * tools just have nothing under /sd. No return value to check: whether it
+ * actually mounted is handled downstream by synth_vfs_register_live("")
+ * (board_init(), below) querying the real VFS table on demand rather than
+ * by this function reporting a boot-time snapshot. */
+static void
 sd_mount(void)
 {
 	esp_err_t err;
@@ -115,11 +114,10 @@ sd_mount(void)
 	if (err != ESP_OK) {
 		ESP_LOGW(TAG, "SD: mount failed: %s (no card, or wiring/power?)",
 		    esp_err_to_name(err));
-		return false;
+		return;
 	}
 	ESP_LOGI(TAG, "SD mounted at %s: %lluMB", TDECK_SD_MOUNT,
 	    ((uint64_t)card->csd.capacity * card->csd.sector_size) / (1024 * 1024));
-	return true;
 }
 
 static void
@@ -151,22 +149,18 @@ keyboard_init(void)
 	ESP_LOGI(TAG, "keyboard ready (I2C 0x%02x)", TDECK_KB_ADDR);
 }
 
-/* Known top-level entries under "/" -- see synth_vfs.h. Static storage:
- * synth_vfs_register() doesn't copy this array, so it can't be a local. */
-static const struct synth_dirent root_entries[] = {
-	{ .name = "sd", .is_dir = true },
-};
-
 void
 board_init(void)
 {
-	bool have_sd;
-
 	board_power_on();
 	board_spi_init();
-	have_sd = sd_mount();
-	synth_vfs_register("", root_entries,
-	    have_sd ? sizeof(root_entries) / sizeof(root_entries[0]) : 0);
+	sd_mount();
+	/* Live, not a static {"sd"} table: derives "/"'s listing fresh from
+	 * ESP-IDF's actual VFS registration table on every list_dir("/") /
+	 * opendir("/"), so it can't go stale (a hardcoded table would keep
+	 * advertising "sd" even after a failed mount, or miss a future
+	 * mount nobody remembered to add to the array). See synth_vfs.h. */
+	synth_vfs_register_live("");
 	keyboard_init();
 }
 

@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -19,8 +20,10 @@ static const char *TAG = "synth-vfs";
  * more than one synth_vfs_register() call coexist (e.g. "" for the VFS
  * default plus a real "/whatever" prefix later), each with its own table. */
 struct synth_mount {
-	const struct synth_dirent *entries;
+	const struct synth_dirent *entries; /* NULL when live (see below) */
 	size_t n;
+	bool live;
+	const char *base_path; /* live mode only: exclude our own entry */
 };
 
 static bool
@@ -40,6 +43,127 @@ find_entry(const struct synth_mount *m, const char *path)
 	return NULL;
 }
 
+/* ---- live mode: derive entries from esp_vfs_dump_registered_paths() ---- */
+
+/*
+ * esp_vfs_dump_registered_paths() is the one real introspection API
+ * ESP-IDF's VFS offers over its internal registration table -- but it's
+ * FILE*-shaped (writes lines like "3:/sd -> 0x3fc9d123\n", one per table
+ * slot, "NULL" for an empty one), not a structured list. This captures
+ * that output via open_memstream() and parses it back into entries.
+ */
+#define SYNTH_LIVE_MAX 16
+
+static const char *
+find_arrow(const char *s, size_t len)
+{
+	for (size_t i = 0; i + 4 <= len; i++) {
+		if (memcmp(s + i, " -> ", 4) == 0)
+			return s + i;
+	}
+	return NULL;
+}
+
+/*
+ * Fills out[0..return) with every currently-registered top-level VFS
+ * prefix except skip_prefix (our own registration). Each ->name is a
+ * fresh malloc'd string the caller must free; ->is_dir is always true,
+ * ->data/->len always empty (a live entry stands for a real mount
+ * elsewhere, never file content of our own).
+ */
+static size_t
+build_live_entries(struct synth_dirent *out, size_t max, const char *skip_prefix)
+{
+	char *buf = NULL;
+	size_t buflen = 0;
+	FILE *fp;
+	size_t n = 0;
+	const char *line;
+
+	fp = open_memstream(&buf, &buflen);
+	if (fp == NULL)
+		return 0;
+	esp_vfs_dump_registered_paths(fp);
+	fclose(fp);
+	if (buf == NULL)
+		return 0;
+
+	line = buf;
+	while (line < buf + buflen && n < max) {
+		const char *nl = memchr(line, '\n', (size_t)(buf + buflen - line));
+		size_t linelen = nl ? (size_t)(nl - line)
+		                    : (size_t)(buf + buflen - line);
+		const char *colon = memchr(line, ':', linelen);
+		const char *arrow = colon
+		    ? find_arrow(colon, (size_t)(line + linelen - colon))
+		    : NULL;
+
+		if (colon != NULL && arrow != NULL) {
+			const char *pfx = colon + 1;
+			size_t pfxlen = (size_t)(arrow - pfx);
+
+			if (pfxlen > 0 && pfx[0] == '/') {
+				/* First path segment only: prefixes are single-
+				 * segment mount points in practice ("/sd"), but be
+				 * defensive about a hypothetical "/a/b". */
+				const char *seg_end =
+				    memchr(pfx + 1, '/', pfxlen - 1);
+				size_t seglen = seg_end
+				    ? (size_t)(seg_end - (pfx + 1))
+				    : pfxlen - 1;
+				bool is_self = skip_prefix != NULL &&
+				    strlen(skip_prefix) == pfxlen &&
+				    memcmp(skip_prefix, pfx, pfxlen) == 0;
+				bool dup = false;
+
+				for (size_t i = 0; i < n && !dup; i++) {
+					if (strlen(out[i].name) == seglen &&
+					    memcmp(out[i].name, pfx + 1, seglen) == 0)
+						dup = true;
+				}
+				if (!is_self && !dup) {
+					char *name = malloc(seglen + 1);
+					if (name != NULL) {
+						memcpy(name, pfx + 1, seglen);
+						name[seglen] = '\0';
+						out[n].name = name;
+						out[n].is_dir = true;
+						out[n].data = NULL;
+						out[n].len = 0;
+						n++;
+					}
+				}
+			}
+		}
+		line = nl ? nl + 1 : buf + buflen;
+	}
+	free(buf);
+	return n;
+}
+
+static void
+free_live_entries(struct synth_dirent *entries, size_t n)
+{
+	for (size_t i = 0; i < n; i++)
+		free((void *)entries[i].name);
+}
+
+static bool
+live_has_dir(const struct synth_mount *m, const char *path)
+{
+	const char *name = path[0] == '/' ? path + 1 : path;
+	struct synth_dirent tmp[SYNTH_LIVE_MAX];
+	size_t n = build_live_entries(tmp, SYNTH_LIVE_MAX, m->base_path);
+	bool found = false;
+
+	for (size_t i = 0; i < n; i++) {
+		if (!found && strcmp(tmp[i].name, name) == 0)
+			found = true;
+	}
+	free_live_entries(tmp, n);
+	return found;
+}
+
 /*
  * NOT an opaque handle of our own design: esp_vfs_opendir() (vfs_calls.c)
  * writes a dd_vfs_idx field directly into whatever DIR* our opendir_p
@@ -56,6 +180,11 @@ struct synth_dir {
 	DIR dir;
 	const struct synth_mount *mount;
 	size_t idx;
+	/* live mode only: a private snapshot built fresh in opendir_p and
+	 * freed in closedir_p, so each open/readdir/close cycle sees
+	 * current state without needing to rebuild on every readdir(). */
+	struct synth_dirent live[SYNTH_LIVE_MAX];
+	size_t live_n;
 };
 
 static DIR *
@@ -74,6 +203,8 @@ synth_opendir_p(void *ctx, const char *name)
 		return NULL;
 	}
 	d->mount = m;
+	if (m->live)
+		d->live_n = build_live_entries(d->live, SYNTH_LIVE_MAX, m->base_path);
 	return &d->dir;
 }
 
@@ -88,13 +219,15 @@ static struct dirent *
 synth_readdir_p(void *ctx, DIR *pdir)
 {
 	struct synth_dir *d = (struct synth_dir *)pdir;
+	const struct synth_dirent *table = d->mount->live ? d->live : d->mount->entries;
+	size_t n = d->mount->live ? d->live_n : d->mount->n;
 	const struct synth_dirent *e;
 
 	(void)ctx;
-	if (d->idx >= d->mount->n)
+	if (d->idx >= n)
 		return NULL;
 
-	e = &d->mount->entries[d->idx++];
+	e = &table[d->idx++];
 	memset(&s_dirent, 0, sizeof(s_dirent));
 #ifdef DT_DIR
 	s_dirent.d_type = e->is_dir ? DT_DIR : DT_REG;
@@ -106,8 +239,12 @@ synth_readdir_p(void *ctx, DIR *pdir)
 static int
 synth_closedir_p(void *ctx, DIR *pdir)
 {
+	struct synth_dir *d = (struct synth_dir *)pdir;
+
 	(void)ctx;
-	free(pdir);
+	if (d->mount->live)
+		free_live_entries(d->live, d->live_n);
+	free(d);
 	return 0;
 }
 
@@ -119,6 +256,14 @@ synth_stat_p(void *ctx, const char *path, struct stat *st)
 
 	memset(st, 0, sizeof(*st));
 	if (is_root_path(path)) {
+		st->st_mode = S_IFDIR | 0555;
+		return 0;
+	}
+	if (m->live) {
+		if (!live_has_dir(m, path)) {
+			errno = ENOENT;
+			return -1;
+		}
 		st->st_mode = S_IFDIR | 0555;
 		return 0;
 	}
@@ -159,6 +304,12 @@ synth_open_p(void *ctx, const char *path, int oflags, int mode)
 	}
 	if (is_root_path(path)) {
 		errno = EISDIR;
+		return -1;
+	}
+	if (m->live) {
+		/* Live entries are always placeholders for a real mount
+		 * elsewhere -- never our own file content. */
+		errno = live_has_dir(m, path) ? EISDIR : ENOENT;
 		return -1;
 	}
 	e = find_entry(m, path);
@@ -242,6 +393,28 @@ synth_vfs_register(const char *base_path, const struct synth_dirent *entries,
 	err = esp_vfs_register(base_path, &synth_vfs_ops, m);
 	if (err != ESP_OK) {
 		ESP_LOGW(TAG, "register(\"%s\") failed: %s", base_path,
+		    esp_err_to_name(err));
+		free(m);
+	}
+	return err;
+}
+
+esp_err_t
+synth_vfs_register_live(const char *base_path)
+{
+	/* Leaked deliberately, same as synth_vfs_register(). */
+	struct synth_mount *m = calloc(1, sizeof(*m));
+	esp_err_t err;
+
+	if (m == NULL)
+		return ESP_ERR_NO_MEM;
+	m->live = true;
+	m->base_path = base_path; /* only ever a string literal/static in
+	                            * practice -- no lifetime concern. */
+
+	err = esp_vfs_register(base_path, &synth_vfs_ops, m);
+	if (err != ESP_OK) {
+		ESP_LOGW(TAG, "register_live(\"%s\") failed: %s", base_path,
 		    esp_err_to_name(err));
 		free(m);
 	}

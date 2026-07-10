@@ -51,4 +51,17 @@ struct synth_dirent {
 esp_err_t synth_vfs_register(const char *base_path,
     const struct synth_dirent *entries, size_t n);
 
+/*
+ * Same, but the listing is derived live at every opendir() from ESP-IDF's
+ * actual registered-VFS table (esp_vfs_dump_registered_paths(), the one
+ * real (if FILE*-shaped) introspection API it offers -- there's no
+ * structured equivalent) instead of a caller-supplied static table. Shows
+ * every currently-mounted top-level prefix except base_path's own
+ * (self-)registration, so it stays correct across mounts/unmounts that
+ * happen after boot without needing a reflash. No file-content serving
+ * in this mode -- only ever directories, since a live-derived entry has
+ * no data/len to offer.
+ */
+esp_err_t synth_vfs_register_live(const char *base_path);
+
 #endif
