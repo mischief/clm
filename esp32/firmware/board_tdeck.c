@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: ISC
 /*
  * LilyGo T-Deck (ESP32-S3 N16R8) board bring-up: switched peripheral power
- * rail, shared SPI2 bus (display + microSD + LoRa), FAT microSD at /sd, and
- * the I2C keyboard (an ESP32-C3 at 0x55). Compiled only for -DBOARD_TDECK.
+ * rail, shared SPI2 bus (display + microSD + LoRa), FAT microSD at /sd (see
+ * sd_mount()'s comment for why not the VFS root), and the I2C keyboard (an
+ * ESP32-C3 at 0x55). Compiled only for -DBOARD_TDECK.
  */
 #ifdef BOARD_TDECK
 
@@ -84,7 +85,20 @@ board_spi_init(void)
 }
 
 /* Mount the microSD (FAT) at /sd. Non-fatal: the agent still runs, the file
- * tools just have nothing under /sd. */
+ * tools just have nothing under /sd.
+ *
+ * Tried mounting at the VFS root ("/") instead, so that list_dir("/") would
+ * work (ESP-IDF's VFS is a set of registered mount-point prefixes, not a
+ * real filesystem tree -- opendir()/readdir() only work on paths under
+ * something actually mounted, so with nothing registered at "/" itself,
+ * list_dir("/") and list_dir(".") just ENOENT). Doesn't work:
+ * esp_vfs_fat_sdspi_mount() rejects "/" outright with ESP_ERR_INVALID_ARG
+ * (confirmed on hardware) -- FATFS's own vfs_fat_sdmmc_mount_to_vfs()
+ * requires a non-trivial base_path. So "/" is unavoidably a dead end on
+ * this port; there is no real root directory to list, only mounted
+ * prefixes like /sd. A fix would need a synthetic root VFS driver
+ * (esp_vfs_register with a custom opendir/readdir that fabricates entries
+ * from the mount registry) -- real work, not attempted here. */
 static void
 sd_mount(void)
 {
