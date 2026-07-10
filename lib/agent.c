@@ -1587,6 +1587,63 @@ clm_agent_list_models(struct clm_agent *agent,
 	return 0;
 }
 
+int
+clm_agent_probe_models(struct clm_agent *agent, const char *base_url,
+    enum clm_provider provider, const char *api_key,
+    void (*on_models)(char **ids, void *user),
+    void (*on_error)(const char *msg, void *user), void *user)
+{
+	const struct clm_provider_ops *ops = clm_provider_ops_get(provider);
+	autofree char *url = NULL;
+	autofreev char **auth_headers = NULL;
+	struct clm_llm *tmp_llm = NULL;
+	struct clm_http_req req = {
+		.url = NULL,
+		.api_key = api_key,
+		.body = NULL,
+		.headers = NULL,
+		.client_suffix = NULL,
+	};
+	struct models_list_ctx *ctx;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(base_url != NULL, -EINVAL);
+
+	url = clm_derive_models_url(base_url);
+	if (url == NULL)
+		return -ENOMEM;
+	req.url = url;
+
+	/* Same trick as agent_http_post()'s own auth-header handling, but
+	 * against a throwaway clm_llm rather than the agent's live one --
+	 * build_auth_headers() only reads fields out of it synchronously
+	 * (e.g. anthropic_build_auth_headers() copies api_key into the
+	 * header string), so it doesn't need to outlive this call. */
+	if (ops->build_auth_headers != NULL &&
+	    clm_llm_new(&tmp_llm, provider, api_key, base_url, "") == 0) {
+		auth_headers = ops->build_auth_headers(tmp_llm);
+		clm_llm_free(tmp_llm);
+		if (auth_headers != NULL) {
+			req.api_key = NULL;
+			req.headers = (const char *const *)auth_headers;
+		}
+	}
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (ctx == NULL)
+		return -ENOMEM;
+	ctx->on_models = on_models;
+	ctx->on_error = on_error;
+	ctx->user = user;
+
+	if (agent->host->http_post(agent->host->ctx, &req,
+	    models_list_success_cb, models_list_error_cb, NULL, ctx, NULL) != 0) {
+		free(ctx);
+		return -EIO;
+	}
+	return 0;
+}
+
 const char *
 clm_agent_get_base_url(struct clm_agent *agent)
 {

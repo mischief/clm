@@ -431,6 +431,22 @@ CLM_API int clm_agent_list_models(struct clm_agent *agent,
     void *user);
 
 /*
+ * Like clm_agent_list_models(), but probes an arbitrary provider/endpoint
+ * instead of the agent's currently active connection -- e.g. TUI /model
+ * completion, which needs a live catalog for whatever provider the user
+ * just typed, not necessarily the one the agent is connected to right now.
+ * base_url/api_key are used only for the duration of this call (copied or
+ * consumed synchronously; no need to keep them alive past it). The agent
+ * is used solely for its host transport -- this does not touch or depend
+ * on the agent's own connection state.
+ */
+CLM_API int clm_agent_probe_models(struct clm_agent *agent,
+    const char *base_url, enum clm_provider provider, const char *api_key,
+    void (*on_models)(char **ids, void *user),
+    void (*on_error)(const char *msg, void *user),
+    void *user);
+
+/*
  * Read-only accessors for the connection currently active on a live agent
  * (whatever clm_agent_new/clm_agent_set_provider last set). A frontend
  * needing to change just the model -- keeping the same endpoint/key/

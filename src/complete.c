@@ -15,6 +15,7 @@
 #include "clm/cleanup.h"
 #include "clm/lua_plugin.h"
 #include "complete.h"
+#include "model_spec.h"
 #include "tui_internal.h"
 
 /* Generous but bounded: completion candidate sets are all small in
@@ -346,7 +347,19 @@ struct model_complete_req {
 	struct ui *u;
 	uint64_t generation;
 	size_t wstart, wlen;
+	char *provider_name; /* the provider this live catalog was probed
+	                       * against -- not necessarily u->provider_name,
+	                       * see source_model_names(). Owned by the req,
+	                       * freed alongside it. */
 };
+
+static void
+model_complete_req_free(struct model_complete_req *req)
+{
+	if (req != NULL)
+		free(req->provider_name);
+	free(req);
+}
 
 static void
 model_live_result(char **ids, void *user)
@@ -357,19 +370,14 @@ model_live_result(char **ids, void *user)
 	/* Stale: the user has pressed another key (typed on, TAB again,
 	 * Enter, ...) since this request started. Drop it silently rather
 	 * than reaching back into an input line that's moved on. */
-	if (u->complete_generation == req->generation && u->provider_name != NULL) {
+	if (u->complete_generation == req->generation) {
 		const char *prefix = u->input + req->wstart;
 		size_t typed = req->wlen;
 		/* The server's ids are bare (no provider prefix); /model
 		 * expects "provider/model-id" (see src/model_spec.h), so
-		 * reprefix each with whatever provider this live catalog
-		 * actually came from before matching/offering it -- a bare
-		 * id here wouldn't line up with what the user is typing.
-		 * If the active provider's name isn't known (e.g. a literal
-		 * connection with no config.lua backing), there's no
-		 * well-formed spec to offer, so this is skipped entirely --
-		 * a bare id can still be typed by hand (cmd_model's literal
-		 * fallback), just not TAB-completed here.
+		 * reprefix each with the provider this catalog was probed
+		 * against before matching/offering it -- a bare id here
+		 * wouldn't line up with what the user is typing.
 		 *
 		 * Heap, not two more MAX_CANDIDATES stack arrays alongside
 		 * everything else already declared here: that combination
@@ -381,11 +389,11 @@ model_live_result(char **ids, void *user)
 
 		if (prefixed != NULL && matches != NULL) {
 			for (size_t i = 0; ids[i] != NULL && nprefixed < MAX_CANDIDATES; i++) {
-				size_t need = strlen(u->provider_name) + 1 + strlen(ids[i]) + 1;
+				size_t need = strlen(req->provider_name) + 1 + strlen(ids[i]) + 1;
 				char *spec = malloc(need);
 				if (spec == NULL)
 					continue;
-				(void)snprintf(spec, need, "%s/%s", u->provider_name, ids[i]);
+				(void)snprintf(spec, need, "%s/%s", req->provider_name, ids[i]);
 				prefixed[nprefixed++] = spec;
 			}
 
@@ -406,7 +414,7 @@ model_live_result(char **ids, void *user)
 		free(prefixed);
 		free(matches);
 	}
-	free(req);
+	model_complete_req_free(req);
 }
 
 static void
@@ -423,7 +431,7 @@ model_live_error(const char *msg, void *user)
 			ui_push(u, ST_META, buf);
 		}
 	}
-	free(req);
+	model_complete_req_free(req);
 }
 
 /*
@@ -445,6 +453,26 @@ source_model_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen
 	char **names = NULL;
 	struct model_complete_req *req;
 
+	/* No '/' typed yet: complete provider names first (same table
+	 * /provider offers), not "provider/model-id" specs -- mixing those
+	 * in here biases completion toward whichever provider the live
+	 * server query below happens to be connected to, and that query
+	 * only ever knows the currently active provider's catalog, so it
+	 * would go on to silently narrow the offered specs down to just
+	 * that one provider. Suffix with '/' on an unambiguous match so
+	 * the next TAB moves straight on to that provider's models. */
+	if (memchr(prefix, '/', typed) == NULL) {
+		size_t pn = match_config_names(u->lcfg, "providers", prefix, typed,
+		    matches, &names);
+		if (pn > 0) {
+			if (pn > 1)
+				list_plain(u, NULL, matches, pn);
+			apply_insert(u, wstart, wlen, 0, matches, pn, typed, '/');
+			clm_lua_cfg_free_str_list(names);
+		}
+		return;
+	}
+
 	size_t n = match_config_names(u->lcfg, "models", prefix, typed,
 	    matches, &names);
 	if (n > 0) {
@@ -457,22 +485,73 @@ source_model_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen
 	if (u->agent == NULL)
 		return;
 
-	req = malloc(sizeof(*req));
-	if (req == NULL)
-		return;
-	req->u = u;
-	req->generation = generation;
-	req->wstart = wstart;
-	/* Not the original wlen parameter: the sync pass above may have just
-	 * inserted text (a single config match, or an unambiguous common
-	 * prefix), moving u->input_pos past what was originally typed. Since
-	 * apply_insert never moves the word's start, only extends it,
-	 * input_pos - wstart is the word's current length either way -- with
-	 * or without an insert -- without needing another extract_word call. */
-	req->wlen = u->input_pos - wstart;
-	if (clm_agent_list_models(u->agent, model_live_result, model_live_error,
-	    req) != 0)
-		free(req);
+	/* A provider name is already typed (that's how we got past the
+	 * no-'/' branch above) -- resolve it and probe *that* provider's
+	 * live catalog, not necessarily whatever the agent is currently
+	 * connected to (see clm_agent_probe_models's doc comment: /model
+	 * completion for a provider you're not currently on needs its own
+	 * probe, since the agent's own connection can't tell us anything
+	 * about it). typed/prefix have already moved past any sync insert
+	 * above (see the wlen recompute below), so re-find the slash. */
+	{
+		prefix = u->input + wstart;
+		typed = u->input_pos - wstart;
+		const char *slash = memchr(prefix, '/', typed);
+		if (slash == NULL)
+			return; /* shouldn't happen: we're past the no-'/' branch */
+
+		autofree char *spec_provider = strndup(prefix, (size_t)(slash - prefix));
+		if (spec_provider == NULL)
+			return;
+
+		req = malloc(sizeof(*req));
+		if (req == NULL)
+			return;
+		req->u = u;
+		req->generation = generation;
+		req->wstart = wstart;
+		/* Not the original wlen parameter: the sync pass above may have
+		 * just inserted text (a single config match, or an unambiguous
+		 * common prefix), moving u->input_pos past what was originally
+		 * typed. Since apply_insert never moves the word's start, only
+		 * extends it, input_pos - wstart is the word's current length
+		 * either way -- with or without an insert. */
+		req->wlen = typed;
+		req->provider_name = strdup(spec_provider);
+		if (req->provider_name == NULL) {
+			free(req);
+			return;
+		}
+
+		const char *purl = u->lcfg != NULL
+		    ? clm_lua_cfg_provider_str(u->lcfg, spec_provider, "url") : NULL;
+
+		if (purl != NULL) {
+			enum clm_provider provider = clm_provider_from_str(
+			    clm_lua_cfg_provider_str(u->lcfg, spec_provider, "kind"));
+			const char *api_key =
+			    clm_lua_cfg_provider_str(u->lcfg, spec_provider, "api_key");
+			char url_buf[512];
+
+			clm_provider_build_url(url_buf, sizeof(url_buf), purl, provider);
+			if (clm_agent_probe_models(u->agent, url_buf, provider, api_key,
+			    model_live_result, model_live_error, req) != 0)
+				model_complete_req_free(req);
+		} else if (u->provider_name != NULL &&
+		    strcmp(spec_provider, u->provider_name) == 0) {
+			/* Not in config, but it's the connection we're already
+			 * on (e.g. a literal ad hoc connection) -- probe that
+			 * live, same as before this function learned to look
+			 * beyond the active provider. */
+			if (clm_agent_list_models(u->agent, model_live_result,
+			    model_live_error, req) != 0)
+				model_complete_req_free(req);
+		} else {
+			/* Unknown provider name and it's not the active
+			 * connection either -- nothing to probe. */
+			model_complete_req_free(req);
+		}
+	}
 }
 
 typedef void (*arg_complete_fn)(struct ui *u, uint64_t generation,
