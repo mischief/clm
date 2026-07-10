@@ -49,7 +49,10 @@ struct clm_tool {
 };
 TAILQ_HEAD(clm_tool_list, clm_tool);
 
-/* Register the three built-in tools (read_file, write_file, shell_exec). */
+/* Register the core's built-in tools: read_file, write_file, list_dir.
+ * shell_exec/bg_exec are NOT here -- they're libclmuv's uv_spawn-based
+ * tools (see clm_tools_register_shell in clm/host_uv.h), unavailable on a
+ * host with no subprocess support (e.g. the ESP32 port). */
 int clm_tools_register_builtins(struct clm_agent *agent);
 
 /* Free every node on a tool registry list (name/description/params_schema

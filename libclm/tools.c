@@ -7,7 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dirent.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 #include <cjson/cJSON.h>
 
@@ -1160,6 +1162,147 @@ tool_file_write(struct clm_tool_invocation *inv, void *user)
 	clm_tool_complete(inv, "ok: file written");
 }
 
+static int
+namep_cmp(const void *a, const void *b)
+{
+	return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/*
+ * opendir/readdir/closedir are plain POSIX -- unlike shell_exec (uv_spawn,
+ * libclmuv-only), this works unmodified under ESP-IDF's VFS (SPIFFS/
+ * LittleFS implement the same dirent interface), so it lives in the core
+ * rather than the desktop uv layer. The only way to enumerate a directory
+ * on an embedded build otherwise: nothing, since there's no shell there.
+ */
+static void
+tool_list_dir(struct clm_tool_invocation *inv, void *user)
+{
+	json_cleanup cJSON *args = inv_args(inv);
+	autofree char *path = NULL;
+	autoclosedir DIR *d = NULL;
+	struct dirent *ent;
+	char **names = NULL;
+	size_t nnames = 0, ncap = 0;
+	autofree char *out = NULL;
+	size_t out_len = 0, out_cap = 0, cap;
+
+	(void)user;
+	if (args != NULL && !cJSON_IsObject(args)) {
+		clm_tool_fail(inv, "invalid arguments");
+		return;
+	}
+	path = args ? arg_string(args, "path") : NULL;
+	if (path == NULL)
+		path = strdup(".");
+	if (path == NULL) {
+		clm_tool_fail(inv, "out of memory");
+		return;
+	}
+	{
+		char *ep = expand_tilde(path);
+		if (ep != NULL) {
+			free(path);
+			path = ep;
+		}
+	}
+	cap = inv->output_cap;
+
+	d = opendir(path);
+	if (d == NULL) {
+		char buf[256];
+		(void)snprintf(buf, sizeof(buf), "cannot open '%s': %s", path,
+		    strerror(errno));
+		clm_tool_fail(inv, buf);
+		return;
+	}
+
+	while ((ent = readdir(d)) != NULL) {
+		struct stat st;
+		bool is_dir = false;
+		size_t nlen;
+		char *nm;
+
+		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+			continue;
+
+#ifdef DT_DIR
+		if (ent->d_type == DT_DIR)
+			is_dir = true;
+		else if (ent->d_type != DT_UNKNOWN)
+			is_dir = false;
+		else
+#endif
+		{
+			/* Heap, not a stack char[PATH_MAX]: that tripped
+			 * -Wframe-larger-than (this runs per readdir() entry, and
+			 * PATH_MAX can be 4096). */
+			size_t flen = strlen(path) + 1 + strlen(ent->d_name) + 1;
+			autofree char *full = malloc(flen);
+			if (full != NULL) {
+				(void)snprintf(full, flen, "%s/%s", path,
+				    ent->d_name);
+				if (stat(full, &st) == 0)
+					is_dir = S_ISDIR(st.st_mode);
+			}
+		}
+
+		if (nnames == ncap) {
+			size_t newcap = ncap ? ncap * 2 : 32;
+			char **p = realloc(names, newcap * sizeof(*names));
+			if (p == NULL)
+				break; /* best effort: list what fit */
+			names = p;
+			ncap = newcap;
+		}
+
+		nlen = strlen(ent->d_name);
+		nm = malloc(nlen + 2); /* +1 trailing '/', +1 NUL */
+		if (nm == NULL)
+			break;
+		memcpy(nm, ent->d_name, nlen);
+		nm[nlen] = is_dir ? '/' : '\0';
+		if (is_dir)
+			nm[nlen + 1] = '\0';
+		names[nnames++] = nm;
+	}
+
+	qsort(names, nnames, sizeof(*names), namep_cmp);
+
+	for (size_t i = 0; i < nnames; i++) {
+		size_t nlen = strlen(names[i]);
+		if (out_len + nlen + 1 + 1 > out_cap) {
+			size_t newcap = out_cap ? out_cap * 2 : 4096;
+			char *p;
+			while (newcap < out_len + nlen + 2)
+				newcap *= 2;
+			if (newcap > cap)
+				newcap = cap;
+			p = realloc(out, newcap);
+			if (p == NULL)
+				break;
+			out = p;
+			out_cap = newcap;
+		}
+		if (out_len + nlen + 1 + 1 > cap)
+			break;
+		memcpy(out + out_len, names[i], nlen);
+		out_len += nlen;
+		out[out_len++] = '\n';
+		out[out_len] = '\0';
+	}
+
+	for (size_t i = 0; i < nnames; i++)
+		free(names[i]);
+	free(names);
+
+	if (out == NULL) {
+		clm_tool_complete(inv, "(empty)");
+		return;
+	}
+	clm_tool_complete(inv, out);
+}
+
 int
 clm_tools_register_builtins(struct clm_agent *agent)
 {
@@ -1188,9 +1331,24 @@ clm_tools_register_builtins(struct clm_agent *agent)
 		    "\"required\":[\"path\",\"content\"]}",
 		.invoke = tool_file_write,
 	};
+	const struct clm_tool_def list_def = {
+		.name = "list_dir",
+		.description = "list a directory's entries, one per line, "
+		    "directories suffixed with '/'",
+		.params_schema =
+		    "{\"type\":\"object\","
+		    "\"properties\":{"
+		    "\"path\":{\"type\":\"string\",\"description\":\"directory to list (default '.')\"}},"
+		    "\"required\":[]}",
+		.invoke = tool_list_dir,
+		.flags = CLM_TOOL_NO_PROMPT, /* read-only: safe to run unprompted */
+	};
 
 	r = clm_tool_add(agent, &read_def);
 	if (r < 0)
 		return r;
-	return clm_tool_add(agent, &write_def);
+	r = clm_tool_add(agent, &write_def);
+	if (r < 0)
+		return r;
+	return clm_tool_add(agent, &list_def);
 }

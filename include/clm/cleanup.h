@@ -3,6 +3,7 @@
 #ifndef CLM_CLEANUP_H
 #define CLM_CLEANUP_H
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -44,6 +45,13 @@ autoclosefile_fn(FILE **fp)
 }
 
 static inline void
+autoclosedir_fn(DIR **d)
+{
+	if (*d != NULL)
+		closedir(*d);
+}
+
+static inline void
 cJSON_Delete_fn(cJSON **obj)
 {
 	if (*obj)
@@ -54,6 +62,7 @@ cJSON_Delete_fn(cJSON **obj)
 #define autofreev __attribute__((cleanup(autofreev_fn)))
 #define autoclose __attribute__((cleanup(autoclose_fn)))
 #define autoclosefile __attribute__((cleanup(autoclosefile_fn)))
+#define autoclosedir __attribute__((cleanup(autoclosedir_fn)))
 
 /*
  * json_cleanup: frees a cJSON* (and its whole subtree) when the
