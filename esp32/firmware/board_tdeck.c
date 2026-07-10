@@ -20,6 +20,7 @@
 #include "esp_vfs_fat.h"
 
 #include "board.h"
+#include "root_vfs.h"
 
 static const char *TAG = "board-tdeck";
 
@@ -158,12 +159,18 @@ keyboard_init(void)
 	ESP_LOGI(TAG, "keyboard ready (I2C 0x%02x)", TDECK_KB_ADDR);
 }
 
+/* Known top-level entries under "/" -- see root_vfs.h. Static storage:
+ * root_vfs_register() doesn't copy this array. */
+static const char *const root_entries[] = { "sd" };
+
 void
 board_init(void)
 {
 	board_power_on();
 	board_spi_init();
 	sd_mount();
+	root_vfs_register(root_entries,
+	    sizeof(root_entries) / sizeof(root_entries[0]));
 	keyboard_init();
 }
 
