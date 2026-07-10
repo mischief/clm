@@ -40,6 +40,9 @@ DOWN = b"\x1bOB"
 # kend=\EOF).
 HOME = b"\x1bOH"
 END = b"\x1bOF"
+# Bracketed-paste markers (mode 2004): what a terminal wraps pasted text in.
+PASTE_START = b"\x1b[200~"
+PASTE_END = b"\x1b[201~"
 
 
 class Tui:

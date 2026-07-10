@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from driver import (Tui, CTRL_A, CTRL_K, CTRL_U, CTRL_Y, PGUP, PGDN, UP, DOWN,
-                    END)
+                    END, PASTE_START, PASTE_END)
 from mock_server import MockServer
 
 BIN = os.environ.get("CLM_BIN", "clm")
@@ -282,6 +282,32 @@ def test_permission(url):
         check("denied" in t.text(), "permission: 'n' denies the call")
 
 
+def test_bracketed_paste(url):
+    """A pasted multi-line block must land as ONE submitted turn, not one
+    per embedded newline -- the exact failure bracketed paste exists to
+    prevent (see UI_KEY_PASTE_START in tui.c)."""
+    with Tui(BIN, url, rows=24, cols=80) as t:
+        t.wait_for("online", timeout=8)
+        # A real terminal wraps pasted text in \x1b[200~ ... \x1b[201~ and
+        # sends line endings as '\r' -- mimic that exactly, with no
+        # trailing Enter of our own yet.
+        t.send(PASTE_START + b"line one\rline two\rline three" + PASTE_END)
+        t.pump(0.3)
+        check("you>" not in t.text(),
+              "paste: embedded newlines don't auto-submit while pasting")
+        check("line one" in t.text() and "line three" in t.text(),
+              "paste: all three lines landed in the input box")
+
+        # Now actually submit it with a real Enter.
+        t.send(b"\r")
+        assert t.wait_for("Apple", timeout=15), "no reply after submitting paste"
+        txt = t.text()
+        check(txt.count("you>") == 1,
+              "paste: the whole paste became exactly one submitted turn")
+        check("line one" in txt and "line two" in txt and "line three" in txt,
+              "paste: all three lines appear in the submitted turn")
+
+
 def test_agent_name(url):
     """The status bar should show provider/model:agent from config."""
     with Tui(BIN, url, rows=12, cols=60) as t:
@@ -309,6 +335,7 @@ def main():
         test_queueing(srv.url)
         test_permission(srv.url)
         test_cancel(srv.url)
+        test_bracketed_paste(srv.url)
     if _failures:
         print(f"\n{len(_failures)} check(s) failed")
         return 1

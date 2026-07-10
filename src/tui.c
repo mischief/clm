@@ -40,6 +40,19 @@
 #include "model_spec.h"
 #include "tui_internal.h"
 
+/*
+ * Custom key codes for bracketed paste (xterm/most terminal emulators,
+ * enabled via the "\033[?2004h" mode below): a paste is wrapped in
+ * "\033[200~" ... "\033[201~" so we can tell "the user hit Enter" apart from
+ * "the pasted text happened to contain a newline" -- without this, pasting
+ * multi-line text submits one line at a time (each embedded newline reaching
+ * the input loop looks exactly like a real Enter keypress) instead of
+ * landing as a single multi-line prompt. Values are well above KEY_MAX
+ * (0777) so they can't collide with any real curses key code.
+ */
+#define UI_KEY_PASTE_START 0x1000
+#define UI_KEY_PASTE_END   0x1001
+
 /* ---- UI model mutation (called from libclm callbacks; keep cheap) ---- */
 
 void
@@ -963,16 +976,54 @@ disp_width(const char *s, size_t n)
 	return cols;
 }
 
-/* Rows the input box needs to show all its text (plus the trailing cursor). */
+/*
+ * Rows the input box needs to show all its text. Unlike a plain
+ * disp_width()/w division, this walks the text and treats '\n' as a hard
+ * line break rather than just another (near-zero-width) character -- a
+ * bracketed paste can land literal newlines in u->input (see
+ * UI_KEY_PASTE_START), and a short multi-line paste's *total* display width
+ * can easily be smaller than one row, which would make the width-only
+ * calculation say "1 row" even though the text is actually three lines.
+ */
 static int
 input_rows(struct ui *u, int w)
 {
-	int total;
+	mbstate_t ps;
+	size_t i = 0;
+	int rows = 1;
+	int col = 2; /* "> " prefix */
 
 	if (w < 1)
 		w = 1;
-	total = 2 + disp_width(u->input, u->input_len); /* "> " + text */
-	return total / w + 1;
+
+	memset(&ps, 0, sizeof(ps));
+	while (i < u->input_len) {
+		if (u->input[i] == '\n') {
+			rows++;
+			col = 0;
+			i++;
+			continue;
+		}
+
+		wchar_t wc;
+		size_t k = mbrtowc(&wc, u->input + i, u->input_len - i, &ps);
+		int cw = 1;
+		if (k == (size_t)-1 || k == (size_t)-2 || k == 0) {
+			k = 1; /* invalid/incomplete byte: one column, advance one byte */
+		} else {
+			cw = wcwidth(wc);
+			if (cw < 0)
+				cw = 1;
+		}
+
+		col += cw;
+		if (col >= w) {
+			rows++;
+			col = cw;
+		}
+		i += k;
+	}
+	return rows;
 }
 
 static void
@@ -2430,6 +2481,54 @@ handle_keys(struct ui *u)
 			case KEY_ENTER:
 				submit_line(u);
 				break;
+			case UI_KEY_PASTE_START: {
+				/*
+				 * Consume everything up to the matching END marker
+				 * ourselves, inserting it straight into the input
+				 * buffer (embedded newlines included) rather than
+				 * letting it flow back through the normal
+				 * key-at-a-time path, where a '\r'/'\n' means
+				 * "submit". A CR inside pasted text (xterm sends
+				 * line endings as '\r') is translated to '\n' so
+				 * it renders/wraps the same as a typed newline.
+				 *
+				 * u->in is nodelay(), so wget_wch never blocks --
+				 * ERR just means "nothing buffered right now", not
+				 * "the paste is over". A large paste can arrive
+				 * split across multiple pty reads, so on ERR we
+				 * retry briefly (bounded, so a real dropped/missing
+				 * END marker can't wedge the UI) before giving up
+				 * and taking whatever arrived so far.
+				 */
+				wint_t pwch;
+				int pr;
+				int idle_retries = 0;
+				const int max_idle_retries = 200; /* ~200 * 1ms = 200ms */
+				for (;;) {
+					pr = wget_wch(u->in, &pwch);
+					if (pr == ERR) {
+						if (++idle_retries > max_idle_retries)
+							break; /* END never showed up; stop waiting */
+						napms(1);
+						continue;
+					}
+					idle_retries = 0;
+					if (pr == KEY_CODE_YES) {
+						if (pwch == (wint_t)UI_KEY_PASTE_END)
+							break;
+						continue; /* ignore other special keys mid-paste */
+					}
+					if (pwch == L'\r')
+						pwch = L'\n';
+					if (pwch >= 32 || pwch == L'\n' || pwch == L'\t')
+						input_char(u, pwch);
+				}
+				u->dirty = true;
+				break;
+			}
+			case UI_KEY_PASTE_END:
+				/* Stray END with no matching START: ignore. */
+				break;
 			case KEY_LEFT:
 				u->input_pos =
 				    prev_boundary(u->input, u->input_pos);
@@ -2815,6 +2914,21 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	init_colors();
 	make_windows(u);
 
+	/*
+	 * Bracketed paste: ask the terminal to wrap pasted text in
+	 * \033[200~ ... \033[201~ so handle_keys can tell a paste apart from
+	 * real Enter keypresses (see UI_KEY_PASTE_START's comment above).
+	 * define_key teaches wget_wch to recognize the two marker sequences
+	 * as atomic custom key codes; the \033[?2004h write is what actually
+	 * turns the feature on in the terminal. Both are no-ops (harmless
+	 * escape bytes swallowed, or an unrecognized sequence typed back
+	 * character-by-character) on a terminal that doesn't support it.
+	 */
+	define_key("\033[200~", UI_KEY_PASTE_START);
+	define_key("\033[201~", UI_KEY_PASTE_END);
+	fputs("\033[?2004h", stdout);
+	fflush(stdout);
+
 	ui_push(u, ST_META,
 	        "clm -- type a prompt, /help for commands, /quit to exit.\n");
 
@@ -2844,6 +2958,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 
 	uv_run(loop, UV_RUN_DEFAULT);
 
+	/* Leave the terminal as we found it. */
+	fputs("\033[?2004l", stdout);
+	fflush(stdout);
 	endwin();
 	clm_lua_env_free(u->lua_env);
 	clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
