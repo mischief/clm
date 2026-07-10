@@ -1566,6 +1566,8 @@ static void
 drain_steering_queue(struct ui *u)
 {
 	char *prompt;
+	enum clm_agent_state prev_state;
+	int r;
 
 	if (!u->busy || u->steering_nqueue == 0)
 		return;
@@ -1577,7 +1579,31 @@ drain_steering_queue(struct ui *u)
 	ui_push(u, ST_META, "[steering: ");
 	ui_push(u, ST_META, prompt);
 	ui_push(u, ST_META, "]\n");
-	do_submit(u, prompt, true); /* suppress echo, already shown in meta */
+
+	/*
+	 * clm_agent_notify(), not clm_agent_submit(): two of the three
+	 * decision points this fires at (the CALLING_TOOL<->THINKING
+	 * transitions) still have the agent's state set to THINKING or
+	 * CALLING_TOOL at this exact instant, and clm_agent_submit()
+	 * unconditionally rejects those with "turn already in progress".
+	 * notify() queues the text as a pending follow-up in that case and
+	 * submits it itself once the current turn lands on COMPLETE/ERROR;
+	 * it only submits right away -- starting a genuinely new turn -- at
+	 * the third decision point (THINKING->COMPLETE), where the agent is
+	 * actually free.
+	 */
+	prev_state = clm_agent_get_state(u->agent);
+	r = clm_agent_notify(u->agent, prompt);
+	if (r < 0) {
+		ui_push(u, ST_ERROR, "\nerror: ");
+		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->agent));
+	} else if (prev_state != CLM_STATE_THINKING &&
+	    prev_state != CLM_STATE_CALLING_TOOL) {
+		/* Actually started a fresh turn, same bookkeeping do_submit()
+		 * does on a successful submit. */
+		u->started_assist = false;
+		u->usage[0] = '\0';
+	}
 	free(prompt);
 	u->dirty = true;
 }
