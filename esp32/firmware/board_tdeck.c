@@ -7,6 +7,7 @@
  */
 #ifdef BOARD_TDECK
 
+#include <stdbool.h>
 #include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
@@ -20,7 +21,7 @@
 #include "esp_vfs_fat.h"
 
 #include "board.h"
-#include "root_vfs.h"
+#include "synth_vfs.h"
 
 static const char *TAG = "board-tdeck";
 
@@ -86,21 +87,11 @@ board_spi_init(void)
 }
 
 /* Mount the microSD (FAT) at /sd. Non-fatal: the agent still runs, the file
- * tools just have nothing under /sd.
- *
- * Tried mounting at the VFS root ("/") instead, so that list_dir("/") would
- * work (ESP-IDF's VFS is a set of registered mount-point prefixes, not a
- * real filesystem tree -- opendir()/readdir() only work on paths under
- * something actually mounted, so with nothing registered at "/" itself,
- * list_dir("/") and list_dir(".") just ENOENT). Doesn't work:
- * esp_vfs_fat_sdspi_mount() rejects "/" outright with ESP_ERR_INVALID_ARG
- * (confirmed on hardware) -- FATFS's own vfs_fat_sdmmc_mount_to_vfs()
- * requires a non-trivial base_path. So "/" is unavoidably a dead end on
- * this port; there is no real root directory to list, only mounted
- * prefixes like /sd. A fix would need a synthetic root VFS driver
- * (esp_vfs_register with a custom opendir/readdir that fabricates entries
- * from the mount registry) -- real work, not attempted here. */
-static void
+ * tools just have nothing under /sd. Returns whether it actually mounted,
+ * so board_init() can decide whether to advertise "sd" under the
+ * synthetic "/" listing (see synth_vfs.h) -- no point claiming an entry
+ * exists if there's no card or the mount failed. */
+static bool
 sd_mount(void)
 {
 	esp_err_t err;
@@ -124,10 +115,11 @@ sd_mount(void)
 	if (err != ESP_OK) {
 		ESP_LOGW(TAG, "SD: mount failed: %s (no card, or wiring/power?)",
 		    esp_err_to_name(err));
-		return;
+		return false;
 	}
 	ESP_LOGI(TAG, "SD mounted at %s: %lluMB", TDECK_SD_MOUNT,
 	    ((uint64_t)card->csd.capacity * card->csd.sector_size) / (1024 * 1024));
+	return true;
 }
 
 static void
@@ -159,18 +151,22 @@ keyboard_init(void)
 	ESP_LOGI(TAG, "keyboard ready (I2C 0x%02x)", TDECK_KB_ADDR);
 }
 
-/* Known top-level entries under "/" -- see root_vfs.h. Static storage:
- * root_vfs_register() doesn't copy this array. */
-static const char *const root_entries[] = { "sd" };
+/* Known top-level entries under "/" -- see synth_vfs.h. Static storage:
+ * synth_vfs_register() doesn't copy this array, so it can't be a local. */
+static const struct synth_dirent root_entries[] = {
+	{ .name = "sd", .is_dir = true },
+};
 
 void
 board_init(void)
 {
+	bool have_sd;
+
 	board_power_on();
 	board_spi_init();
-	sd_mount();
-	root_vfs_register(root_entries,
-	    sizeof(root_entries) / sizeof(root_entries[0]));
+	have_sd = sd_mount();
+	synth_vfs_register("", root_entries,
+	    have_sd ? sizeof(root_entries) / sizeof(root_entries[0]) : 0);
 	keyboard_init();
 }
 
