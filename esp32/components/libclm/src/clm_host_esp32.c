@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: ISC
 /*
  * ESP-IDF clm_host implementation — a synchronous esp_http_client transport for
- * the libclm core, replacing the desktop libcurl+libuv host (lib/host_uv.c,
- * excluded on this port).
+ * the libclm core, replacing the desktop libcurl+libuv host (libclmuv/
+ * host_uv.c, excluded on this port).
  *
  * The embedded agent runs on one task with no event loop: http_post() performs
  * a blocking request and invokes the completion callbacks inline. It uses the

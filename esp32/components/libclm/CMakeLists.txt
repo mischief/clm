@@ -4,32 +4,22 @@
 # agent loop) against ESP-IDF's built-in cJSON ("json" component, providing
 # <cJSON.h> -- the same header clm's own code includes on the desktop side, so
 # no shim/rename is needed here) and a synchronous esp_http_client transport
-# that implements the clm_host interface. Excluded from the desktop tree --
-# these are the libuv/libcurl layer (libclmuv), replaced by the ESP-IDF host
-# in src/clm_host_esp32.c:
-#   - lua_*.c       (plugin system: not ported)
-#   - http_async.c  (libcurl+libuv async engine)
-#   - host_uv.c     (libuv/curl clm_host adapter)
-#   - tool_shell.c  (shell_exec via uv_spawn -- no subprocesses on-device)
-#   - tool_bg.c     (bg_exec: also uv_spawn-based, same reason as tool_shell.c)
-#   - mcp_client.c  (MCP client: built on http_async's uv-based engine, not
-#                    ported)
+# that implements the clm_host interface. The desktop tree's Lua plugin
+# support (libclmlua/) and libuv/libcurl host layer (libclmuv/) now live in
+# their own directories entirely (see the top-level meson.build split, one
+# lib per directory) -- so unlike the old single lib/ tree, there's no
+# filtering needed here at all: every libclm/*.c source is core, replaced
+# on-device by src/clm_host_esp32.c for transport.
 set(CLM_ROOT ${CMAKE_CURRENT_LIST_DIR}/../../..)
 
-file(GLOB CLM_CORE_SRCS "${CLM_ROOT}/lib/*.c")
-list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/lua_[^/]*\\.c$")
-list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/http_async\\.c$")
-list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/host_uv\\.c$")
-list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/tool_shell\\.c$")
-list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/tool_bg\\.c$")
-list(FILTER CLM_CORE_SRCS EXCLUDE REGEX "/mcp_client\\.c$")
+file(GLOB CLM_CORE_SRCS "${CLM_ROOT}/libclm/*.c")
 
 idf_component_register(
     SRCS ${CLM_CORE_SRCS}
          "src/clm_host_esp32.c"
          "src/compat_esp32.c"
     INCLUDE_DIRS "${CLM_ROOT}/include" "shim"
-    PRIV_INCLUDE_DIRS "${CLM_ROOT}" "${CLM_ROOT}/lib"
+    PRIV_INCLUDE_DIRS "${CLM_ROOT}" "${CLM_ROOT}/libclm"
     REQUIRES json esp_http_client esp-tls mbedtls
 )
 
