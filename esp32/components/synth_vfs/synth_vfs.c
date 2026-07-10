@@ -29,7 +29,17 @@ struct synth_mount {
 static bool
 is_root_path(const char *path)
 {
-	return path[0] == '\0' || strcmp(path, "/") == 0;
+	/* "." too: ESP-IDF's libc has no real cwd (chdir() is a permanent
+	 * ENOSYS stub, getcwd() hardcoded to "/" -- see
+	 * esp_libc/src/realpath.c), and its VFS path-matching (get_vfs_for_
+	 * path(), vfs.c) never requires a leading '/' at all -- an empty-
+	 * prefix catch-all registration like ours matches literally any
+	 * string, "." included. So a model that can't run pwd and guesses
+	 * list_dir(".") -- a completely reasonable guess -- would otherwise
+	 * ENOENT here for no real reason: there's no cwd for "." to
+	 * legitimately differ from "/" by. Treat it as the same request. */
+	return path[0] == '\0' || strcmp(path, "/") == 0 ||
+	    strcmp(path, ".") == 0;
 }
 
 static const struct synth_dirent *
