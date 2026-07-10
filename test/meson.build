@@ -14,7 +14,7 @@ endif
 
 # Uses the uv host (clm_host_uv) + shell_exec, so it links the uv layer.
 test_agent = executable('test_agent',
-  files('test_agent.c', 'canned.c', '../lib/props.c', '../lib/history.c', '../lib/models_list.c'),
+  files('test_agent.c', 'canned.c', '../libclm/props.c', '../libclm/history.c', '../libclm/models_list.c'),
   dependencies: [clmuv_dep],
   include_directories: [include_directories('.'), clm_inc, include_directories('../include')],
   c_args: test_cflags,
@@ -24,7 +24,7 @@ test('agent', test_agent)
 # Lua plugin test: loads plugins from ../plugins/ and verifies tool dispatch.
 # Builds a clm_host_uv, so it links the uv layer too. Only built when
 # have_lua (src/meson.build) -- clmlua_dep, needed for clm_lua_env_new etc,
-# only exists in that case (lib/meson.build's clmlua split). No more
+# only exists in that case (../libclmlua's own lua_dep.found() guard). No more
 # CLM_LUA-guarded skip-stub main() in the .c file: the target itself is now
 # the seam, not a preprocessor branch inside it.
 if have_lua

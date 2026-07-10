@@ -11,9 +11,10 @@ project('clm', 'c',
     # inlining, -Wnull-dereference's interprocedural analysis) and
     # -D_FORTIFY_SOURCE=3 further down only actually do anything at -O1+.
     # At -O0 they're silently inert, so real bugs they'd catch (two found
-    # this way: lib/tool_bg.c's asprintf-failure handling, a provable-null
-    # path in lib/provider_anthropic.c) would otherwise go untested by the
-    # default build every contributor actually runs. -O2 over -O3: this
+    # this way: libclmuv/tool_bg.c's asprintf-failure handling, a
+    # provable-null path in libclm/provider_anthropic.c) would otherwise
+    # go untested by the default build every contributor actually runs.
+    # -O2 over -O3: this
     # project is I/O/string-handling bound, not compute-bound, and -O3
     # buys nothing here beyond -O2 while pulling in extra inlining that
     # otherwise just makes the frame-size/backtrace tradeoffs below worse
@@ -47,7 +48,7 @@ static_kw = want_static ? {'static': true} : {}
 # defining _GNU_SOURCE there does nothing useful, and conversely
 # __EXTENSIONS__ alone does nothing on glibc (this was tried and broke
 # strdup/asprintf/pthread_rwlock_t/struct addrinfo declarations in
-# lib/tool_bg.c, lib/mcp_client.c, lib/http_async.c on Linux).
+# libclmuv/tool_bg.c, libclmuv/mcp_client.c, libclmuv/http_async.c on Linux).
 if host_machine.system() == 'sunos'
   add_project_arguments('-D__EXTENSIONS__', language: 'c')
 else
@@ -172,7 +173,9 @@ version_h = configure_file(
   install_dir: get_option('includedir') / 'clm',
 )
 
-subdir('lib')
+subdir('libclm')
+subdir('libclmlua')
+subdir('libclmuv')
 subdir('libemoji')
 subdir('src')
 subdir('man')

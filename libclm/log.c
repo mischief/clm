@@ -9,7 +9,7 @@
 #include "clm/log.h"
 #include "banned.h"
 
-void
+CLM_API void
 clm_debug(const char *fmt, ...)
 {
 	static FILE *out;

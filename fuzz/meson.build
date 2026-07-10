@@ -5,11 +5,11 @@
 # Run:    ./build-fuzz/fuzz/fuzz_tool_dispatch
 
 fuzz_lib_src = files(
-  '../lib/agent.c', '../lib/tools.c', '../lib/history.c',
-  '../lib/llm.c', '../lib/ratelimit.c', '../lib/log.c',
-  '../lib/http.c', '../lib/props.c', '../lib/provider.c',
-  '../lib/provider_anthropic.c', '../lib/provider_openai.c',
-  '../lib/models_list.c',
+  '../libclm/agent.c', '../libclm/tools.c', '../libclm/history.c',
+  '../libclm/llm.c', '../libclm/ratelimit.c', '../libclm/log.c',
+  '../libclm/http.c', '../libclm/props.c', '../libclm/provider.c',
+  '../libclm/provider_anthropic.c', '../libclm/provider_openai.c',
+  '../libclm/models_list.c',
 )
 
 # fuzz_tool_dispatch: fuzz clm_tools_dispatch() with adversarial JSON tool-calls.
@@ -26,7 +26,7 @@ fuzz_tool_dispatch_exe = executable(
 )
 
 # fuzz_tool_dispatch_lua: same but with Lua plugin support compiled in --
-# links clmlua_dep (lib/meson.build) rather than respecifying
+# links clmlua_dep (../libclmlua/meson.build) rather than respecifying
 # lua_plugin.c/lua_json.c/lua_http.c as their own source list, now that
 # they're a proper static archive shared with the clm desktop binary.
 if lua_dep.found()

@@ -16,31 +16,31 @@ md_render_lib = static_library('md_render',
   c_args: ['-D_XOPEN_SOURCE=700'] + clm_hardening_args, # wcwidth(3) is XSI
 )
 
-# Unlike the portable core (lib/meson.build's `lua` feature, optional there
-# for an eventual embedded/ESP32 build with no terminal), the clm desktop
+# Unlike the portable core (../libclm's `lua` feature, optional there for
+# an eventual embedded/ESP32 build with no terminal), the clm desktop
 # binary (this directory: main.c, tui.c, mcp_setup.c) has no embedded story
 # at all -- it already hard-depends on ncursesw, getopt_long, XDG paths. So
 # Lua plugin/agent-profile support is required for it, not optional: nothing
 # in main.c/tui.c is #ifdef CLM_LUA'd (that define no longer exists anywhere
 # -- lua_plugin.c et al now live in their own clmlua static archive, see
-# lib/meson.build, exactly like the existing clmuv split; libclm itself
-# never depended on Lua either way).
+# ../libclmlua/meson.build, exactly like the ../libclmuv split; libclm
+# itself never depended on Lua either way).
 #
 # But the binary still must not error out of a -Dlua=disabled configure
 # entirely -- that flag is legitimate for embedding the portable core alone.
 # So the whole binary -- and only the parts of the test suite that exercise
-# it -- are skipped whenever lib/'s lua feature (and so clmlua_dep) resolved
-# to disabled. have_lua is checked again in test/meson.build for the same
-# reason.
+# it -- are skipped whenever libclmlua's lua feature (and so clmlua_dep)
+# resolved to disabled. have_lua is checked again in test/meson.build for
+# the same reason.
 have_lua = lua_dep.found()
 
 if have_lua
   clm_src = files('main.c')
 
   # No separate libuv dependency() here: clmuv_dep (used below on clm_exe)
-  # already carries lib/meson.build's own libuv resolution transitively --
-  # a second independent dependency('libuv', ...) call here was dead
-  # weight, never actually referenced by anything in this file.
+  # already carries ../libclmuv's own libuv resolution transitively -- a
+  # second independent dependency('libuv', ...) call here was dead weight,
+  # never actually referenced by anything in this file.
 
   # ncurses (wide) is a hard dependency: the default frontend is the TUI.
   # Available in base/ports on the BSDs, Linux, and macOS. omnios/illumos
@@ -99,10 +99,10 @@ if have_lua
 
   # clmuv_dep pulls in the core (libclm) plus the uv/curl host layer and its
   # libuv/libcurl deps, so the binary gets clm_host_uv_new + shell_exec.
-  # clmlua_dep is listed explicitly (lib/meson.build only declares it when
-  # have_lua, which this whole block is already gated on) since lua_plugin.c
-  # et al no longer live inside libclm/clm_dep at all -- they're their own
-  # archive now, same shape as clmuv.
+  # clmlua_dep is listed explicitly (../libclmlua/meson.build only declares
+  # it when have_lua, which this whole block is already gated on) since
+  # lua_plugin.c et al no longer live inside libclm/clm_dep at all --
+  # they're their own archive now, same shape as ../libclmuv.
   #
   # emoji_dep: :shortcode: -> glyph completion/expansion for the input
   # line, see ../libemoji.
