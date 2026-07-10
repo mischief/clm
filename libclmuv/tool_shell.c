@@ -171,7 +171,20 @@ shell_cancel(struct clm_tool_invocation *inv, void *user)
 {
 	struct shell_state *s = user;
 	(void)inv;
-	uv_process_kill(&s->proc, SIGTERM);
+	/*
+	 * Signal the whole process group, not just the immediate $SHELL -c
+	 * child: a command that backgrounds a long-running job ("cmd &")
+	 * leaves that job behind as a sibling in the same group once the
+	 * shell itself exits. uv_process_kill() only reaches s->proc's own
+	 * pid, so a killed shell whose backgrounded grandchild still holds
+	 * the stdout/stderr pipes open never delivers EOF -- shell_read()
+	 * never sees nread < 0, the pipes never close, shell_finish() never
+	 * runs, and the tool call hangs forever even after cancel reports
+	 * success. opt.flags | UV_PROCESS_DETACHED (see tool_shell_exec)
+	 * puts the child in its own new process group via setsid(), so
+	 * killing -pid here reaches that job too.
+	 */
+	kill(-(pid_t)s->proc.pid, SIGTERM);
 }
 
 /* stdin blob written: close the pipe so the child sees EOF. */
@@ -251,6 +264,10 @@ tool_shell_exec(struct clm_tool_invocation *inv, void *user)
 	opt.file = shell;
 	opt.args = argv;
 	opt.exit_cb = shell_on_exit;
+	/* New process group (via setsid()) so shell_cancel()'s group kill
+	 * also reaches anything the command backgrounded with "&", not just
+	 * the $SHELL -c process itself. */
+	opt.flags = UV_PROCESS_DETACHED;
 	stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
 	stdio[1].data.stream = (uv_stream_t *)&s->out;
 	stdio[2].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
