@@ -723,6 +723,53 @@ test_agent_free_during_shell_exec(uv_loop_t *loop)
 	uv_run(loop, UV_RUN_DEFAULT); /* drain pending closes */
 }
 
+/*
+ * (d3) Regression for the stuck-tool bug fixed alongside the process-group
+ * change in shell_cancel(): a command that backgrounds a job with '&' left
+ * that job running as a sibling once the $SHELL -c process itself was
+ * killed. The old shell_cancel() only signalled the shell's own pid, so the
+ * orphaned grandchild kept the stdout/stderr pipes open forever -- cancel
+ * reported success (agent state moves on), but the tool's own invocation
+ * never actually finished, and the turn hung. Before the fix this test
+ * either hangs (caught by meson's default test timeout, not a clean
+ * assertion) or leaves stray "sleep" processes behind; after it, cancelling
+ * mid-command reaps the whole process group and the turn completes quickly.
+ */
+static void
+test_shell_exec_cancel_backgrounded_job(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_tool_call(srv, "shell_exec",
+	    "{\"command\":\"sleep 30 & echo started\"}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "background a job") == 0, "submit");
+
+	/* Pump just enough for the canned HTTP round trip and uv_spawn to
+	 * happen (both effectively instantaneous), nowhere near the 30s the
+	 * backgrounded sleep needs to exit on its own. */
+	for (i = 0; i < 50; i++)
+		uv_run(loop, UV_RUN_NOWAIT);
+	CHECK(!st.turn_done, "turn must still be waiting on the shell command");
+
+	CHECK(clm_agent_cancel(st.agent) == 0, "cancel accepted");
+
+	/* This is the actual regression check: without the process-group
+	 * kill, the orphaned `sleep 30` keeps the pipes open and this call
+	 * never returns (it just spins the loop). */
+	run_until_done(&st);
+	CHECK(st.turn_done, "turn finished after cancelling a backgrounded job");
+
+	teardown(&st, srv);
+}
+
 /* Queue an SSE text reply split across two content deltas. */
 static void
 canned_stream_text(struct canned_server *srv, const char *a, const char *b)
@@ -1612,6 +1659,7 @@ main(void)
 	test_file_tools(&loop);
 	test_shell_exec(&loop);
 	test_agent_free_during_shell_exec(&loop);
+	test_shell_exec_cancel_backgrounded_job(&loop);
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
