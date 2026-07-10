@@ -144,6 +144,18 @@ enum clm_tool_flags {
 };
 
 /*
+ * A byte-length-aware view of tool output: an explicit length paired with the
+ * pointer, instead of relying on a NUL terminator. Lets a tool report binary
+ * output (embedded NUL bytes included) through clm_tool_complete_buf without
+ * silent truncation at the first zero byte. data is not owned by the callee;
+ * clm_tool_complete_buf copies it before returning.
+ */
+struct clm_buffer {
+	const uint8_t *data; /* may be NULL iff len == 0 */
+	size_t len;
+};
+
+/*
  * Opaque handle for one in-flight tool call, passed to a tool's invoke fn.
  * The tool reads its args/limits from it and reports completion through it.
  */
@@ -558,11 +570,17 @@ CLM_API void clm_tool_invocation_set_cancel(struct clm_tool_invocation *inv,
     void (*cancel)(struct clm_tool_invocation *inv, void *user), void *user);
 
 /*
- * Report a tool result. Exactly one of these per invocation. content/msg are
- * copied. clm_tool_fail records the result as "[tool failed: <msg>]" so the
- * model sees the error. content is clamped to the invocation's output cap.
+ * Report a tool result. Exactly one of these per invocation. content/msg/buf
+ * are copied. clm_tool_fail records the result as "[tool failed: <msg>]" so
+ * the model sees the error. Output is clamped to the invocation's output cap.
+ *
+ * clm_tool_complete assumes content is a NUL-terminated C string (its length
+ * is taken via strlen); a tool whose output may itself contain embedded NUL
+ * bytes (binary data) must use clm_tool_complete_buf instead, which takes an
+ * explicit length and never truncates at a zero byte.
  */
 CLM_API void clm_tool_complete(struct clm_tool_invocation *inv, const char *content);
+CLM_API void clm_tool_complete_buf(struct clm_tool_invocation *inv, struct clm_buffer buf);
 CLM_API void clm_tool_fail(struct clm_tool_invocation *inv, const char *msg);
 
 CLM_API void clm_agent_free_ptr(struct clm_agent **agent);

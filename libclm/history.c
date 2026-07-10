@@ -78,11 +78,13 @@ clm_message_create(enum clm_role role)
 }
 
 /*
- * Duplicate content into m->content and set m->content_len to its length,
- * capped at UINT16_MAX (a single message cannot exceed 64 KiB - 1; content
- * longer than that is truncated to fit). Every insertion path routes through
- * here so content_len is never stale or left unset. A NULL content is a
- * no-op: m->content stays NULL, m->content_len stays 0.
+ * Duplicate content (exactly len bytes -- embedded NULs are not special, this
+ * never calls strlen) into m->content and set m->content_len to len, capped
+ * at UINT16_MAX (a single message cannot exceed 64 KiB - 1; content longer
+ * than that is truncated to fit). Every insertion path routes through here
+ * (via this function or the message_set_content text wrapper below) so
+ * content_len is never stale or left unset. A NULL content is a no-op:
+ * m->content stays NULL, m->content_len stays 0.
  *
  * If cz is non-NULL and content is at least cz->min_len bytes, content is
  * compressed via cz->write before storing; m->content_compressed is set and
@@ -91,11 +93,9 @@ clm_message_create(enum clm_role role)
  * compression fails, or the compressed result is not actually smaller.
  */
 static int
-message_set_content(struct clm_message *m, const char *content,
+message_set_content_len(struct clm_message *m, const char *content, size_t len,
     const struct clm_compressor *cz)
 {
-	size_t len;
-
 	if (content == NULL) {
 		free(m->content);
 		m->content = NULL;
@@ -104,7 +104,6 @@ message_set_content(struct clm_message *m, const char *content,
 		return 0;
 	}
 
-	len = strlen(content);
 	if (len > UINT16_MAX)
 		len = UINT16_MAX;
 
@@ -125,7 +124,8 @@ message_set_content(struct clm_message *m, const char *content,
 	char *copy = malloc(len + 1);
 	if (copy == NULL)
 		return -ENOMEM;
-	memcpy(copy, content, len);
+	if (len > 0)
+		memcpy(copy, content, len);
 	copy[len] = '\0';
 
 	free(m->content);
@@ -133,6 +133,18 @@ message_set_content(struct clm_message *m, const char *content,
 	m->content_len = (uint16_t)len;
 	m->content_compressed = false;
 	return 0;
+}
+
+/* Text-content convenience wrapper: content is a NUL-terminated C string,
+ * length taken via strlen. Callers whose content may hold embedded NUL bytes
+ * (e.g. binary tool output) must call message_set_content_len directly with
+ * the real byte count instead. */
+static int
+message_set_content(struct clm_message *m, const char *content,
+    const struct clm_compressor *cz)
+{
+	return message_set_content_len(m, content,
+	    content ? strlen(content) : 0, cz);
 }
 
 /*
@@ -341,7 +353,8 @@ clm_history_add_assistant_tool_calls(struct clm_history *h)
 
 struct clm_message *
 clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id,
-    const char *tool_name, const char *content, const struct clm_compressor *cz)
+    const char *tool_name, const char *content, size_t content_len,
+    const struct clm_compressor *cz)
 {
 	struct clm_message *m = clm_message_create(CLM_ROLE_TOOL);
 	if (m == NULL)
@@ -363,7 +376,7 @@ clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id,
 		}
 	}
 
-	if (message_set_content(m, content, cz) < 0) {
+	if (message_set_content_len(m, content, content_len, cz) < 0) {
 		clm_message_free(m);
 		return NULL;
 	}

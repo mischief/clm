@@ -507,25 +507,89 @@ batch_finalize(struct clm_tool_batch *batch)
 /* Completion                                                          */
 /* ------------------------------------------------------------------ */
 
-/* Copy s, truncating to cap bytes with a marker. NULL on OOM. */
-static char *
-clamp_dup(const char *s, size_t cap)
+/*
+ * Scan data[0..len) for the first byte that can't be part of well-formed
+ * UTF-8 text -- an embedded NUL, a stray continuation byte, a truncated
+ * multi-byte sequence, or 0xF8-0xFF. Returns that byte's offset, or len if
+ * the whole buffer is clean text. No dependency (e.g. libutf8proc) needed:
+ * this is a deliberately narrow validity check, not full Unicode handling --
+ * it never decodes code points or checks for overlong encodings, it only
+ * asks "is this plausibly text a chat API can carry as a JSON string."
+ */
+static size_t
+find_binary_offset(const uint8_t *data, size_t len)
+{
+	size_t i = 0;
+
+	while (i < len) {
+		uint8_t b = data[i];
+		size_t need;
+
+		if (b == 0)
+			return i;
+		if (b < 0x80) {
+			i++;
+			continue;
+		} else if ((b & 0xE0) == 0xC0) {
+			need = 1;
+		} else if ((b & 0xF0) == 0xE0) {
+			need = 2;
+		} else if ((b & 0xF8) == 0xF0) {
+			need = 3;
+		} else {
+			return i; /* stray continuation byte or 0xF8-0xFF */
+		}
+
+		if (i + need >= len)
+			return i; /* truncated sequence at end of buffer */
+		for (size_t k = 1; k <= need; k++) {
+			if ((data[i + k] & 0xC0) != 0x80)
+				return i;
+		}
+		i += need + 1;
+	}
+	return len;
+}
+
+/*
+ * Copy len bytes of data, truncating to cap bytes with a marker when it
+ * doesn't fit. Byte-based throughout (no strlen) so embedded NUL bytes in
+ * binary tool output survive intact instead of silently chopping the copy
+ * short. The result is always NUL-terminated one byte past *out_len, for
+ * callers that still want to treat it as a C string (e.g. the on_tool_result
+ * callback), but *out_len is the real byte count to use for anything
+ * length-sensitive. NULL on OOM.
+ */
+static uint8_t *
+clamp_dup(const uint8_t *data, size_t len, size_t cap, size_t *out_len)
 {
 	static const char marker[] = "\n[output truncated]";
-	size_t len = s ? strlen(s) : 0;
 	size_t mlen = sizeof(marker) - 1;
 	size_t keep;
-	char *out;
+	uint8_t *out;
 
-	if (len <= cap)
-		return strdup(s ? s : "");
+	if (data == NULL)
+		len = 0;
+
+	if (len <= cap) {
+		out = malloc(len + 1);
+		if (out == NULL)
+			return NULL;
+		if (len > 0)
+			memcpy(out, data, len);
+		out[len] = '\0';
+		*out_len = len;
+		return out;
+	}
 
 	keep = cap > mlen ? cap - mlen : 0;
 	out = malloc(keep + mlen + 1);
 	if (out == NULL)
 		return NULL;
-	memcpy(out, s, keep);
-	memcpy(out + keep, marker, mlen + 1);
+	if (keep > 0)
+		memcpy(out, data, keep);
+	memcpy(out + keep, marker, mlen + 1); /* includes trailing NUL */
+	*out_len = keep + mlen;
 	return out;
 }
 
@@ -561,13 +625,14 @@ tool_is_volatile(const struct clm_agent *agent, const char *name)
 }
 
 static void
-inv_finalize(struct clm_tool_invocation *inv, const char *content,
+inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content, size_t content_len,
     enum clm_tool_outcome outcome)
 {
 	struct clm_tool_batch *batch = inv->batch;
 	struct clm_agent *agent = batch->agent;
-	autofree char *clamped = NULL;
-	const char *out;
+	autofree uint8_t *clamped = NULL;
+	const uint8_t *out;
+	size_t out_len;
 
 	inv->completed = true;
 
@@ -600,11 +665,30 @@ inv_finalize(struct clm_tool_invocation *inv, const char *content,
 			tool_node_free(t);
 	}
 
-	clamped = clamp_dup(content, inv->output_cap);
-	out = clamped ? clamped : (content ? content : "");
+	char binary_warning[96];
+	const uint8_t *effective = content;
+	size_t effective_len = content_len;
+	size_t bin_off = find_binary_offset(content, content_len);
+	if (bin_off < content_len) {
+		int n = snprintf(binary_warning, sizeof(binary_warning),
+		    "[tool output contained binary data at byte offset %zu "
+		    "of %zu; not displayed]", bin_off, content_len);
+		effective = (const uint8_t *)binary_warning;
+		effective_len = n > 0 ? (size_t)n : 0;
+		if (effective_len > sizeof(binary_warning))
+			effective_len = sizeof(binary_warning); /* snprintf truncated */
+	}
+
+	clamped = clamp_dup(effective, effective_len, inv->output_cap, &out_len);
+	if (clamped != NULL) {
+		out = clamped;
+	} else {
+		out = effective ? effective : (const uint8_t *)"";
+		out_len = effective ? effective_len : 0;
+	}
 
 	if (agent->cb_on_tool_result)
-		agent->cb_on_tool_result(inv->name, out, outcome, agent->cb_user);
+		agent->cb_on_tool_result(inv->name, (const char *)out, outcome, agent->cb_user);
 
 	/*
 	 * Stub prior results of a volatile tool before recording the fresh
@@ -622,7 +706,7 @@ inv_finalize(struct clm_tool_invocation *inv, const char *content,
 	}
 
 	if (clm_history_add_tool_result(&agent->history, inv->id, inv->name,
-	    out, agent->compressor) == NULL)
+	    (const char *)out, out_len, agent->compressor) == NULL)
 		batch->status = -ENOMEM;
 
 	batch->done++;
@@ -642,22 +726,32 @@ finalize_timeout(struct clm_tool_invocation *inv)
 	(void)snprintf(buf, sizeof(buf),
 	    "[tool failed: timed out after %llu ms]",
 	    (unsigned long long)inv->timeout_ms);
-	inv_finalize(inv, buf, CLM_TOOL_TIMEDOUT);
+	inv_finalize(inv, (const uint8_t *)buf, strlen(buf), CLM_TOOL_TIMEDOUT);
+}
+
+void
+clm_tool_complete_buf(struct clm_tool_invocation *inv, struct clm_buffer buf)
+{
+	if (inv == NULL || inv->completed)
+		return;
+	clm_debug("[result] %s -> %.*s", inv->name,
+	    (int)(buf.len > 150 ? 150 : buf.len),
+	    buf.data ? (const char *)buf.data : "");
+	if (inv->timed_out) {
+		finalize_timeout(inv);
+		return;
+	}
+	inv_finalize(inv, buf.data, buf.len, CLM_TOOL_OK);
 }
 
 void
 clm_tool_complete(struct clm_tool_invocation *inv, const char *content)
 {
-	if (inv == NULL || inv->completed)
-		return;
-	clm_debug("[result] %s -> %.*s", inv->name,
-	    (int)(content && strlen(content) > 150 ? 150 : (content ? strlen(content) : 0)),
-	    content ? content : "");
-	if (inv->timed_out) {
-		finalize_timeout(inv);
-		return;
-	}
-	inv_finalize(inv, content ? content : "", CLM_TOOL_OK);
+	struct clm_buffer buf;
+
+	buf.data = (const uint8_t *)(content ? content : "");
+	buf.len = content ? strlen(content) : 0;
+	clm_tool_complete_buf(inv, buf);
 }
 
 void
@@ -672,7 +766,11 @@ clm_tool_fail(struct clm_tool_invocation *inv, const char *msg)
 		return;
 	}
 	wrapped = fail_wrap(msg);
-	inv_finalize(inv, wrapped ? wrapped : "[tool failed]", CLM_TOOL_FAILED);
+	if (wrapped != NULL)
+		inv_finalize(inv, (const uint8_t *)wrapped, strlen(wrapped), CLM_TOOL_FAILED);
+	else
+		inv_finalize(inv, (const uint8_t *)"[tool failed]",
+		    strlen("[tool failed]"), CLM_TOOL_FAILED);
 }
 
 static void

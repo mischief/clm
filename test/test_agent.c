@@ -182,6 +182,21 @@ echo_hello(struct clm_tool_invocation *inv, void *user)
 	clm_tool_complete(inv, "hello");
 }
 
+/* A mock tool that returns raw binary output (embedded NUL, non-UTF-8 bytes)
+ * via clm_tool_complete_buf, to exercise inv_finalize's binary-output
+ * detector (see find_binary_offset in tools.c). */
+static void
+emit_binary(struct clm_tool_invocation *inv, void *user)
+{
+	static const uint8_t data[] = { 'h', 'i', 0x00, 0x89, 'P', 'N', 'G' };
+	struct clm_buffer buf;
+
+	(void)user;
+	buf.data = data;
+	buf.len = sizeof(data);
+	clm_tool_complete_buf(inv, buf);
+}
+
 static struct clm_agent *
 make_agent(struct tstate *st, int port)
 {
@@ -290,6 +305,51 @@ test_tool_call(uv_loop_t *loop)
 	CHECK(canned_last_request(srv) != NULL &&
 	    strstr(canned_last_request(srv), "hello") != NULL,
 	    "tool result echoed back to model");
+
+	teardown(&st, srv);
+}
+
+/*
+ * (b2) A tool that reports raw binary output via clm_tool_complete_buf: the
+ * history/request-building path must never emit invalid-UTF-8 bytes into the
+ * JSON request (cJSON_CreateString on non-UTF-8 data is a landmine some
+ * cJSON builds silently mishandle), so inv_finalize replaces it with a
+ * human-readable warning before it ever reaches history or the wire.
+ */
+static void
+test_binary_tool_output(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_tool_call(srv, "emit_binary", "{}");
+	canned_reply(srv, final_reply);
+
+	st.agent = make_agent(&st, canned_port(srv));
+
+	def.name = "emit_binary";
+	def.description = "emit binary output";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = emit_binary;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "clm_tool_add");
+
+	CHECK(clm_agent_submit(st.agent, "use the tool") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "binary tool turn ok");
+	CHECK(st.tool_results == 1, "one tool result");
+	CHECK(st.last_outcome == CLM_TOOL_OK, "tool outcome ok");
+	CHECK(strstr(st.tool_content, "binary data at byte offset 2 of 7") != NULL,
+	    "on_tool_result sees the offset warning, not raw bytes");
+	CHECK(canned_request_count(srv) == 2, "two requests (call + result)");
+	CHECK(canned_last_request(srv) != NULL &&
+	    strstr(canned_last_request(srv), "binary data at byte offset 2 of 7") != NULL,
+	    "warning (not raw binary) is what actually gets sent to the API");
 
 	teardown(&st, srv);
 }
@@ -1141,7 +1201,7 @@ test_history_compact(void)
 	m = clm_history_add_assistant_tool_calls(&h);
 	tc = clm_message_add_tool_call(m, "call1", "shell_exec", "{}");
 	CHECK(tc != NULL, "compact: seed tool call");
-	clm_history_add_tool_result(&h, "call1", "shell_exec", "tool output", NULL);
+	clm_history_add_tool_result(&h, "call1", "shell_exec", "tool output", strlen("tool output"), NULL);
 	clm_history_add_assistant_text(&h, "reply2", NULL);
 
 	clm_history_add_user(&h, "turn3", NULL);
@@ -1227,7 +1287,7 @@ test_history_compact_agentic(void)
 		m = clm_history_add_assistant_tool_calls(&h);
 		CHECK(clm_message_add_tool_call(m, id, "local_map", "{}") != NULL,
 		    "agentic compact: seed call");
-		clm_history_add_tool_result(&h, id, "local_map", out, NULL);
+		clm_history_add_tool_result(&h, id, "local_map", out, strlen(out), NULL);
 	}
 
 	/* Keep the last 2 exchanges; exchanges 0-1 fold into the summary. */
@@ -1276,11 +1336,11 @@ test_history_compact_agentic(void)
 		m = clm_history_add_assistant_tool_calls(&h2);
 		CHECK(clm_message_add_tool_call(m, "c1", "t", "{}") != NULL,
 		    "agentic compact: seed short call1");
-		clm_history_add_tool_result(&h2, "c1", "t", "o1", NULL);
+		clm_history_add_tool_result(&h2, "c1", "t", "o1", strlen("o1"), NULL);
 		m = clm_history_add_assistant_tool_calls(&h2);
 		CHECK(clm_message_add_tool_call(m, "c2", "t", "{}") != NULL,
 		    "agentic compact: seed short call2");
-		clm_history_add_tool_result(&h2, "c2", "t", "o2", NULL);
+		clm_history_add_tool_result(&h2, "c2", "t", "o2", strlen("o2"), NULL);
 		CHECK(clm_history_compact(&h2, "SUMMARY", 2, NULL) == 0,
 		    "agentic compact: too-short no-op");
 		CHECK(count_role(&h2, CLM_ROLE_TOOL) == 2,
@@ -1306,8 +1366,8 @@ test_history_supersede(void)
 	m = clm_history_add_assistant_tool_calls(&h);
 	clm_message_add_tool_call(m, "c1", "local_map", "{}");
 	clm_message_add_tool_call(m, "c2", "examine", "{}");
-	clm_history_add_tool_result(&h, "c1", "local_map", "MAP v1", NULL);
-	clm_history_add_tool_result(&h, "c2", "examine", "a door", NULL);
+	clm_history_add_tool_result(&h, "c1", "local_map", "MAP v1", strlen("MAP v1"), NULL);
+	clm_history_add_tool_result(&h, "c2", "examine", "a door", strlen("a door"), NULL);
 	clm_history_add_assistant_text(&h, "r1", NULL);
 
 	/* Turn 2: a fresh local_map batch (its result not yet recorded). */
@@ -1317,7 +1377,7 @@ test_history_supersede(void)
 
 	CHECK(clm_history_supersede_tool(&h, "local_map", stub) == 1,
 	    "supersede: one prior result stubbed");
-	clm_history_add_tool_result(&h, "c3", "local_map", "MAP v2", NULL);
+	clm_history_add_tool_result(&h, "c3", "local_map", "MAP v2", strlen("MAP v2"), NULL);
 
 	{
 		int v1_stubbed = 0, v2_live = 0, examine_kept = 0;
@@ -1544,6 +1604,7 @@ main(void)
 	uv_loop_init(&loop);
 	test_text_reply(&loop);
 	test_tool_call(&loop);
+	test_binary_tool_output(&loop);
 	test_bg_exec(&loop);
 	test_autocompact_mid_chain(&loop);
 	test_compact_reasoning_fallback(&loop);

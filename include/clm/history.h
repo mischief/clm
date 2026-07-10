@@ -110,12 +110,14 @@ struct clm_message *clm_history_add_assistant_tool_calls(struct clm_history *h);
 
 /*
  * Append a tool result, linked to a prior call by tool_call_id. tool_name
- * (may be NULL) is kept for clm_history_supersede_tool() matching only. See
- * cz above.
+ * (may be NULL) is kept for clm_history_supersede_tool() matching only.
+ * content_len is the exact byte count of content (embedded NULs allowed --
+ * this is not assumed to be a plain C string); pass strlen(content) for
+ * ordinary text. See cz above.
  */
 struct clm_message *clm_history_add_tool_result(struct clm_history *h,
     const char *tool_call_id, const char *tool_name, const char *content,
-    const struct clm_compressor *cz);
+    size_t content_len, const struct clm_compressor *cz);
 
 /*
  * Replace the content of every tool result from tool_name that precedes
