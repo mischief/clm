@@ -23,7 +23,6 @@ struct synth_mount {
 	const struct synth_dirent *entries; /* NULL when live (see below) */
 	size_t n;
 	bool live;
-	const char *base_path; /* live mode only: exclude our own entry */
 };
 
 static bool
@@ -75,20 +74,69 @@ find_arrow(const char *s, size_t len)
 }
 
 /*
- * Fills out[0..return) with every currently-registered top-level VFS
- * prefix except skip_prefix (our own registration). Each ->name is a
- * fresh malloc'd string the caller must free; ->is_dir is always true,
- * ->data/->len always empty (a live entry stands for a real mount
- * elsewhere, never file content of our own).
+ * Bare directory path, no leading or trailing '/' ("" for the root, "dev"
+ * for "/dev", "/dev/", or "dev"). `storage` must be at least
+ * strlen(path)+1 bytes; returns a pointer into it.
+ */
+static const char *
+normalize_under(const char *path, char *storage, size_t storage_len)
+{
+	size_t len;
+
+	if (path[0] == '/')
+		path++;
+	len = strlen(path);
+	if (len >= storage_len)
+		len = storage_len - 1;
+	memcpy(storage, path, len);
+	while (len > 0 && storage[len - 1] == '/')
+		len--;
+	storage[len] = '\0';
+	return storage;
+}
+
+/*
+ * Fills out[0..return) with the next path segment of every currently-
+ * registered VFS prefix strictly under `under` (a normalize_under()'d
+ * path -- "" for the root, "dev" for "/dev", ...), deduplicated. This is
+ * what makes listing recursive: "dev" as an argument here is what turns
+ * up "uart"/"usbserjtag"/... as children of the "dev/" entry the root
+ * listing already shows, exactly the way a real "/dev" directory would
+ * enumerate its own device nodes -- except derived from the flat
+ * registration table instead of walking a real directory, since ESP-IDF
+ * has no such thing.
+ *
+ * Each out[].name is a fresh malloc'd string the caller must free (see
+ * free_live_entries); ->data/->len always empty (a live entry stands for
+ * a real mount elsewhere, never file content of our own). ->is_dir comes
+ * from a real stat() on the entry's full path -- NOT assumed true just
+ * because it showed up in the registration table: /dev/null is exactly
+ * as "registered" as /sd, but nullfs's own stat() correctly reports
+ * S_IFCHR, not S_IFDIR, and that stat() call reaches nullfs's real
+ * driver rather than looping back into us, since /dev/null is by
+ * definition a more specific (and so higher-priority) registration than
+ * our own empty-prefix catch-all.
  */
 static size_t
-build_live_entries(struct synth_dirent *out, size_t max, const char *skip_prefix)
+build_live_entries(struct synth_dirent *out, size_t max, const char *under)
 {
 	char *buf = NULL;
 	size_t buflen = 0;
 	FILE *fp;
 	size_t n = 0;
 	const char *line;
+	char match[80];
+	size_t matchlen;
+
+	if (under[0] == '\0') {
+		match[0] = '/';
+		matchlen = 1;
+	} else {
+		int r = snprintf(match, sizeof(match), "/%s/", under);
+		if (r < 0 || (size_t)r >= sizeof(match))
+			return 0;
+		matchlen = (size_t)r;
+	}
 
 	fp = open_memstream(&buf, &buflen);
 	if (fp == NULL)
@@ -112,32 +160,54 @@ build_live_entries(struct synth_dirent *out, size_t max, const char *skip_prefix
 			const char *pfx = colon + 1;
 			size_t pfxlen = (size_t)(arrow - pfx);
 
-			if (pfxlen > 0 && pfx[0] == '/') {
-				/* First path segment only: prefixes are single-
-				 * segment mount points in practice ("/sd"), but be
-				 * defensive about a hypothetical "/a/b". */
-				const char *seg_end =
-				    memchr(pfx + 1, '/', pfxlen - 1);
+			/* Our own registration's path_prefix is "" (empty
+			 * base_path), which never satisfies this -- no separate
+			 * self-exclusion check needed. */
+			if (pfxlen > matchlen && memcmp(pfx, match, matchlen) == 0) {
+				const char *rest = pfx + matchlen;
+				size_t restlen = pfxlen - matchlen;
+				const char *seg_end = memchr(rest, '/', restlen);
 				size_t seglen = seg_end
-				    ? (size_t)(seg_end - (pfx + 1))
-				    : pfxlen - 1;
-				bool is_self = skip_prefix != NULL &&
-				    strlen(skip_prefix) == pfxlen &&
-				    memcmp(skip_prefix, pfx, pfxlen) == 0;
+				    ? (size_t)(seg_end - rest)
+				    : restlen;
 				bool dup = false;
 
 				for (size_t i = 0; i < n && !dup; i++) {
 					if (strlen(out[i].name) == seglen &&
-					    memcmp(out[i].name, pfx + 1, seglen) == 0)
+					    memcmp(out[i].name, rest, seglen) == 0)
 						dup = true;
 				}
-				if (!is_self && !dup) {
+				if (!dup && seglen > 0) {
 					char *name = malloc(seglen + 1);
 					if (name != NULL) {
-						memcpy(name, pfx + 1, seglen);
+						char fullpath[96];
+						struct stat st;
+						/* Fallback if stat() itself fails (e.g.
+						 * ENOSYS, no .stat op at all -- common for
+						 * a simple character-device-style VFS
+						 * driver like usb_serial_jtag_vfs.c, unlike
+						 * a real mounted filesystem, which always
+						 * implements stat properly): assume NOT a
+						 * directory. A registration nobody bothered
+						 * making statable is far more likely a
+						 * single device node than something
+						 * meant to be listed into. */
+						bool is_dir = false;
+
+						memcpy(name, rest, seglen);
 						name[seglen] = '\0';
+
+						if (under[0] == '\0')
+							snprintf(fullpath, sizeof(fullpath),
+							    "/%s", name);
+						else
+							snprintf(fullpath, sizeof(fullpath),
+							    "/%s/%s", under, name);
+						if (stat(fullpath, &st) == 0)
+							is_dir = S_ISDIR(st.st_mode);
+
 						out[n].name = name;
-						out[n].is_dir = true;
+						out[n].is_dir = is_dir;
 						out[n].data = NULL;
 						out[n].len = 0;
 						n++;
@@ -158,20 +228,24 @@ free_live_entries(struct synth_dirent *entries, size_t n)
 		free((void *)entries[i].name);
 }
 
+/* Is `path` the root, or does it have at least one registered descendant
+ * (making it a synthesizable directory, at any depth)? */
 static bool
-live_has_dir(const struct synth_mount *m, const char *path)
+is_walkable(const char *path)
 {
-	const char *name = path[0] == '/' ? path + 1 : path;
+	char storage[80];
+	const char *under;
 	struct synth_dirent tmp[SYNTH_LIVE_MAX];
-	size_t n = build_live_entries(tmp, SYNTH_LIVE_MAX, m->base_path);
-	bool found = false;
+	size_t n;
+	bool has;
 
-	for (size_t i = 0; i < n; i++) {
-		if (!found && strcmp(tmp[i].name, name) == 0)
-			found = true;
-	}
+	if (path[0] == '\0' || strcmp(path, "/") == 0 || strcmp(path, ".") == 0)
+		return true;
+	under = normalize_under(path, storage, sizeof(storage));
+	n = build_live_entries(tmp, SYNTH_LIVE_MAX, under);
+	has = n > 0;
 	free_live_entries(tmp, n);
-	return found;
+	return has;
 }
 
 /*
@@ -203,7 +277,9 @@ synth_opendir_p(void *ctx, const char *name)
 	const struct synth_mount *m = ctx;
 	struct synth_dir *d;
 
-	if (!is_root_path(name)) {
+	/* Static-table mode only ever has one directory (the root); live
+	 * mode can be arbitrarily deep, see is_walkable(). */
+	if (m->live ? !is_walkable(name) : !is_root_path(name)) {
 		errno = ENOENT;
 		return NULL;
 	}
@@ -213,8 +289,15 @@ synth_opendir_p(void *ctx, const char *name)
 		return NULL;
 	}
 	d->mount = m;
-	if (m->live)
-		d->live_n = build_live_entries(d->live, SYNTH_LIVE_MAX, m->base_path);
+	if (m->live) {
+		char storage[80];
+		/* is_root_path also catches "." -- normalize_under alone
+		 * would treat it as a literal one-char path segment, not
+		 * the root, since it only strips a leading '/'. */
+		const char *under = is_root_path(name) ? ""
+		    : normalize_under(name, storage, sizeof(storage));
+		d->live_n = build_live_entries(d->live, SYNTH_LIVE_MAX, under);
+	}
 	return &d->dir;
 }
 
@@ -265,15 +348,15 @@ synth_stat_p(void *ctx, const char *path, struct stat *st)
 	const struct synth_dirent *e;
 
 	memset(st, 0, sizeof(*st));
-	if (is_root_path(path)) {
-		st->st_mode = S_IFDIR | 0555;
-		return 0;
-	}
 	if (m->live) {
-		if (!live_has_dir(m, path)) {
+		if (!is_walkable(path)) {
 			errno = ENOENT;
 			return -1;
 		}
+		st->st_mode = S_IFDIR | 0555;
+		return 0;
+	}
+	if (is_root_path(path)) {
 		st->st_mode = S_IFDIR | 0555;
 		return 0;
 	}
@@ -312,14 +395,14 @@ synth_open_p(void *ctx, const char *path, int oflags, int mode)
 		errno = EROFS; /* read-only filesystem */
 		return -1;
 	}
-	if (is_root_path(path)) {
-		errno = EISDIR;
-		return -1;
-	}
 	if (m->live) {
 		/* Live entries are always placeholders for a real mount
 		 * elsewhere -- never our own file content. */
-		errno = live_has_dir(m, path) ? EISDIR : ENOENT;
+		errno = is_walkable(path) ? EISDIR : ENOENT;
+		return -1;
+	}
+	if (is_root_path(path)) {
+		errno = EISDIR;
 		return -1;
 	}
 	e = find_entry(m, path);
@@ -419,8 +502,6 @@ synth_vfs_register_live(const char *base_path)
 	if (m == NULL)
 		return ESP_ERR_NO_MEM;
 	m->live = true;
-	m->base_path = base_path; /* only ever a string literal/static in
-	                            * practice -- no lifetime concern. */
 
 	err = esp_vfs_register(base_path, &synth_vfs_ops, m);
 	if (err != ESP_OK) {

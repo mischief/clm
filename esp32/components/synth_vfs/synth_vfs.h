@@ -55,12 +55,19 @@ esp_err_t synth_vfs_register(const char *base_path,
  * Same, but the listing is derived live at every opendir() from ESP-IDF's
  * actual registered-VFS table (esp_vfs_dump_registered_paths(), the one
  * real (if FILE*-shaped) introspection API it offers -- there's no
- * structured equivalent) instead of a caller-supplied static table. Shows
- * every currently-mounted top-level prefix except base_path's own
- * (self-)registration, so it stays correct across mounts/unmounts that
- * happen after boot without needing a reflash. No file-content serving
- * in this mode -- only ever directories, since a live-derived entry has
- * no data/len to offer.
+ * structured equivalent) instead of a caller-supplied static table, so it
+ * stays correct across mounts/unmounts that happen after boot without
+ * needing a reflash.
+ *
+ * Recursive: not just base_path's immediate children. If "/dev/uart" and
+ * "/dev/usbserjtag" are both registered elsewhere, opendir("/dev") under
+ * this mount lists "uart"/"usbserjtag" too, synthesized from the flat
+ * registration table the same way the top level is -- so exploring down
+ * from base_path works the way a real directory tree would, even though
+ * ESP-IDF's VFS has no such tree internally, just prefixes.
+ *
+ * No file-content serving in this mode -- only ever directories, since a
+ * live-derived entry stands for a mount elsewhere, not content of our own.
  */
 esp_err_t synth_vfs_register_live(const char *base_path);
 
