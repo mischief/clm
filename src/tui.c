@@ -10,6 +10,7 @@
  * input lines. Terminal input is read through uv_poll on stdin, so ncurses
  * shares the caller's event loop rather than blocking in getch().
  */
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <locale.h>
@@ -32,6 +33,7 @@
 #include "clm/lua_plugin.h"
 #include "clm/provider.h"
 #include "complete.h"
+#include "emoji.h"
 #include "frontend.h"
 #include "md_render.h"
 #include "mcp_setup.h"
@@ -2199,6 +2201,55 @@ next_boundary(const char *s, size_t pos, size_t len)
 	return pos;
 }
 
+/* A ':' sits at u->input_pos - 1 (just typed, or just inserted by tab
+ * completion). If it closes a ":shortcode:" run immediately behind the
+ * cursor, replace the whole ":shortcode:" span with the looked-up glyph,
+ * Slack/Discord-style. No-op (silently) if there's no opening ':' nearby,
+ * the name has characters a shortcode can't, or the name isn't in the
+ * table. Declared in tui_internal.h -- complete.c calls this too, after an
+ * unambiguous shortcode-name tab completion appends the closing ':'. */
+void
+tui_expand_emoji_at_cursor(struct ui *u)
+{
+	size_t close = u->input_pos - 1; /* index of the ':' just inserted */
+	size_t i = close;
+	while (i > 0) {
+		i--;
+		char c = u->input[i];
+		if (c == ':')
+			break;
+		if (!(isalnum((unsigned char)c) || c == '_' || c == '+' ||
+		        c == '-'))
+			return;
+		if (close - i > 64) /* no shortcode is this long; bail early */
+			return;
+	}
+	if (u->input[i] != ':')
+		return;
+
+	size_t namestart = i + 1;
+	size_t namelen = close - namestart;
+	if (namelen == 0)
+		return;
+
+	char glyph[5];
+	size_t glyphlen = clm_emoji_lookup(u->input + namestart, namelen, glyph);
+	if (glyphlen == 0)
+		return;
+
+	size_t fullspan = close - i + 1; /* ":name:" including both colons */
+	if (glyphlen > fullspan &&
+	    u->input_len + (glyphlen - fullspan) >= sizeof(u->input) - 1)
+		return;
+
+	size_t tail_len = u->input_len - u->input_pos;
+	memmove(u->input + i + glyphlen, u->input + u->input_pos, tail_len);
+	memcpy(u->input + i, glyph, glyphlen);
+	u->input_len = u->input_len - fullspan + glyphlen;
+	u->input_pos = i + glyphlen;
+	u->dirty = true;
+}
+
 static void
 input_char(struct ui *u, wint_t wch)
 {
@@ -2215,6 +2266,9 @@ input_char(struct ui *u, wint_t wch)
 	u->input_len += (size_t)n;
 	u->input_pos += (size_t)n;
 	u->dirty = true;
+
+	if (wch == L':')
+		tui_expand_emoji_at_cursor(u);
 }
 
 static void

@@ -173,6 +173,7 @@ version_h = configure_file(
 )
 
 subdir('lib')
+subdir('libemoji')
 subdir('src')
 subdir('man')
 

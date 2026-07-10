@@ -5,16 +5,20 @@
  * from the curses/uv plumbing -- see tui_internal.h for the shared struct
  * ui this and tui.c both operate on.
  */
+#include <ctype.h>
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
+#include <curses.h>
+
 #include "clm/clm.h"
 #include "clm/cleanup.h"
 #include "clm/lua_plugin.h"
 #include "complete.h"
+#include "emoji.h"
 #include "model_spec.h"
 #include "tui_internal.h"
 
@@ -147,6 +151,50 @@ list_plain(struct ui *u, const char *header, const char *const *items, size_t n)
 	ui_push(u, ST_META, buf);
 }
 
+/* Show a columnated candidate list: each item wrapped in prefix/suffix
+ * (e.g. "" / "" for bare file names, ":" / ":" for emoji shortcodes),
+ * packed as many per line as fit in ~60 display columns. For dense
+ * listings (file completion's directories, emoji's ~1400-entry table) --
+ * list_plain's one-per-line layout scrolls forever on those. */
+static void
+list_columns(struct ui *u, const char *const *items, size_t n,
+    const char *prefix, const char *suffix)
+{
+	autofree char *buf = malloc(4096);
+	if (buf == NULL)
+		return;
+
+	size_t plen = strlen(prefix), slen = strlen(suffix);
+	size_t maxw = 0;
+	for (size_t i = 0; i < n; i++) {
+		size_t w = plen + strlen(items[i]) + slen;
+		if (w > maxw)
+			maxw = w;
+	}
+	maxw += 2; /* column gutter */
+	/* COLS is ncurses' live terminal width (kept current across resize
+	 * via resizeterm(), see tui.c) -- fall back to 60 if curses hasn't
+	 * initialized a screen yet (shouldn't happen in practice: completion
+	 * only ever runs from the input line, which requires one). */
+	int width = COLS > 0 ? COLS : 60;
+	size_t cols = (size_t)width / (maxw > 0 ? maxw : 1);
+	if (cols < 1)
+		cols = 1;
+
+	int blen = snprintf(buf, 4096, "\n");
+	for (size_t i = 0; i < n && (size_t)blen < 4096 - maxw - 4; i++) {
+		autofree char *cell = malloc(maxw + 1);
+		if (cell == NULL)
+			break;
+		snprintf(cell, maxw + 1, "%s%s%s", prefix, items[i], suffix);
+		blen += snprintf(buf + blen, 4096 - (size_t)blen, "%-*s",
+		    (int)maxw, cell);
+		if ((i + 1) % cols == 0 || i + 1 == n)
+			blen += snprintf(buf + blen, 4096 - (size_t)blen, "\n");
+	}
+	ui_push(u, ST_META, buf);
+}
+
 /* ---- first word: slash-command names ---- */
 
 /*
@@ -200,6 +248,38 @@ complete_command_name(struct ui *u, size_t wstart, size_t wlen)
 	 * trailing '/' file completion appends after a directory. */
 	apply_insert(u, wstart, wlen, 1 /* skip '/' */, candidates, ncandidates,
 	    typed, ' ');
+}
+
+/* ---- emoji shortcode names (":sh" -> ":shrug") ---- */
+
+static void
+complete_emoji(struct ui *u, size_t wstart, size_t wlen)
+{
+	const char *prefix = u->input + wstart + 1; /* skip ':' */
+	size_t typed = wlen - 1;
+	const char *candidates[MAX_CANDIDATES];
+	size_t ncandidates = 0;
+
+	for (size_t i = 0;
+	    i < clm_emoji_table_len && ncandidates < MAX_CANDIDATES; i++) {
+		const char *name = clm_emoji_entry_name(i);
+		if (strncmp(name, prefix, typed) == 0)
+			candidates[ncandidates++] = name;
+	}
+	if (ncandidates == 0)
+		return;
+
+	if (ncandidates > 1)
+		list_columns(u, candidates, ncandidates, ":", ":");
+
+	/* Unambiguous match gets its closing ':' appended, same trick
+	 * complete_command_name uses with a trailing space -- and that ':'
+	 * is exactly what tui_expand_emoji_at_cursor looks for, so a single
+	 * match completes straight to the glyph. */
+	apply_insert(u, wstart, wlen, 1 /* skip ':' */, candidates, ncandidates,
+	    typed, ':');
+	if (ncandidates == 1)
+		tui_expand_emoji_at_cursor(u);
 }
 
 /* ---- command arguments: config.lua names, live /model catalog ---- */
@@ -702,37 +782,11 @@ complete_path(struct ui *u, size_t wstart, size_t wlen)
 		}
 	}
 
-	/* Show candidates if ambiguous, columnated -- file listings can be
-	 * wide and dense, unlike the other sources' plain one-per-line
-	 * lists, so this keeps its own layout instead of using list_plain. */
-	if (ncandidates > 1) {
-		autofree char *buf = malloc(4096);
-		if (buf) {
-			int blen = 0;
-			size_t maxw = 0;
-
-			for (size_t i = 0; i < ncandidates; i++) {
-				size_t n = strlen(candidates[i]);
-				if (n > maxw)
-					maxw = n;
-			}
-			maxw += 2;
-			size_t cols = 60 / (maxw > 0 ? maxw : 1);
-			if (cols < 1)
-				cols = 1;
-
-			blen += snprintf(buf, 4096, "\n");
-			for (size_t i = 0; i < ncandidates && (size_t)blen < 4096 - maxw - 4; i++) {
-				size_t remaining = 4096 - (size_t)blen;
-				blen += snprintf(buf + blen, remaining, "%-*s",
-				    (int)maxw, candidates[i]);
-				if ((i + 1) % cols == 0 || i + 1 == ncandidates)
-					blen += snprintf(buf + blen,
-					    4096 - (size_t)blen, "\n");
-			}
-			ui_push(u, ST_META, buf);
-		}
-	}
+	/* Ambiguous match: columnated, not list_plain's one-per-line -- file
+	 * listings can be wide and dense. */
+	if (ncandidates > 1)
+		list_columns(u, (const char *const *)candidates, ncandidates, "",
+		    "");
 
 	apply_insert(u, wstart, wlen, dir_offset, (const char *const *)candidates,
 	    ncandidates, plen, append_slash ? '/' : '\0');
@@ -808,6 +862,39 @@ complete_input(struct ui *u, uint64_t generation)
 			/* A recognized slash command with no argument source
 			 * (/agent, /reasoning, /compact, ...) -- nothing to
 			 * offer, and certainly not a file path. */
+			return;
+		}
+	}
+
+	/*
+	 * ":sh<TAB>" -> ":shrug", Slack/Discord-style. Scanned back from the
+	 * cursor independently of extract_word()'s space-delimited notion of
+	 * "word": that would miss a shortcode typed right after an already-
+	 * expanded glyph with no space in between (e.g. "🦴:bon<TAB>"), since
+	 * the glyph's bytes and ":bon" are one "word" together and its start
+	 * isn't ':'. Mirrors tui_expand_emoji_at_cursor's backward scan.
+	 * Requires at least one name char typed so a lone ':' doesn't dump
+	 * the whole ~1400-entry table.
+	 */
+	{
+		size_t cpos = u->input_pos;
+		size_t i = cpos;
+		bool found_colon = false;
+		while (i > 0) {
+			i--;
+			char c = u->input[i];
+			if (c == ':') {
+				found_colon = true;
+				break;
+			}
+			if (!(isalnum((unsigned char)c) || c == '_' || c == '+' ||
+			        c == '-'))
+				break;
+			if (cpos - i > 64) /* no shortcode is this long; bail */
+				break;
+		}
+		if (found_colon && cpos - i >= 2) {
+			complete_emoji(u, i, cpos - i);
 			return;
 		}
 	}

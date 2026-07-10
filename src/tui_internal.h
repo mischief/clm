@@ -186,4 +186,10 @@ struct ui {
  * shown. */
 void ui_push(struct ui *u, enum ui_style style, const char *text);
 
+/* If input[input_pos - 1] is a ':' that closes a ":shortcode:" run right
+ * behind the cursor, replace that whole span with the looked-up emoji
+ * glyph. No-op if there's no match. Shared between live typing
+ * (input_char, tui.c) and tab completion (complete.c). */
+void tui_expand_emoji_at_cursor(struct ui *u);
+
 #endif /* CLM_TUI_INTERNAL_H */
