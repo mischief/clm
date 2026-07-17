@@ -319,7 +319,13 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	curl_easy_setopt(req->easy_handle, CURLOPT_URL, url);
 	if (json_body != NULL) {
 		curl_easy_setopt(req->easy_handle, CURLOPT_POST, 1L);
-		curl_easy_setopt(req->easy_handle, CURLOPT_POSTFIELDS, json_body);
+		/* COPY, not POSTFIELDS: the latter only stores the pointer and
+		 * reads it later when the async transfer actually runs, but
+		 * callers (eg mcp_http_send) free their body buffer right
+		 * after this call returns -- a use-after-free that sent
+		 * garbage bytes as the request body instead of the caller's
+		 * JSON. */
+		curl_easy_setopt(req->easy_handle, CURLOPT_COPYPOSTFIELDS, json_body);
 	} else {
 		curl_easy_setopt(req->easy_handle, CURLOPT_HTTPGET, 1L);
 	}
