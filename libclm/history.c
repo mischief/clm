@@ -591,6 +591,198 @@ clm_message_to_json(const struct clm_message *m, const struct clm_compressor *cz
 	return ret;
 }
 
+static const char *
+role_to_str(enum clm_role role)
+{
+	switch (role) {
+	case CLM_ROLE_SYSTEM:
+		return "system";
+	case CLM_ROLE_USER:
+		return "user";
+	case CLM_ROLE_ASSISTANT:
+		return "assistant";
+	case CLM_ROLE_TOOL:
+		return "tool";
+	}
+	return NULL;
+}
+
+static int
+role_from_str(const char *s, enum clm_role *out)
+{
+	if (s == NULL)
+		return -EINVAL;
+	if (strcmp(s, "system") == 0)
+		*out = CLM_ROLE_SYSTEM;
+	else if (strcmp(s, "user") == 0)
+		*out = CLM_ROLE_USER;
+	else if (strcmp(s, "assistant") == 0)
+		*out = CLM_ROLE_ASSISTANT;
+	else if (strcmp(s, "tool") == 0)
+		*out = CLM_ROLE_TOOL;
+	else
+		return -EINVAL;
+	return 0;
+}
+
+cJSON *
+clm_message_to_json_full(const struct clm_message *m,
+    const struct clm_compressor *cz)
+{
+	json_cleanup cJSON *msg = NULL;
+
+	if (m == NULL)
+		return NULL;
+
+	msg = cJSON_CreateObject();
+	if (msg == NULL)
+		return NULL;
+
+	if (cJSON_AddStringToObject(msg, "role", role_to_str(m->role)) == NULL)
+		return NULL;
+
+	if (m->content) {
+		char *plain = m->content;
+		bool free_plain = false;
+
+		if (m->content_compressed) {
+			/* Stored compressed but no decompressor to reverse it:
+			 * caller/config mismatch, not recoverable here. */
+			ASSERT_RETURN(cz != NULL && cz->read != NULL, NULL);
+			if (cz->read(cz->ctx, m->content, m->content_len,
+			    &plain) < 0)
+				return NULL;
+			free_plain = true;
+		}
+
+		cJSON *jcontent = cJSON_AddStringToObject(msg, "content", plain);
+		if (free_plain)
+			free(plain);
+		if (jcontent == NULL)
+			return NULL;
+	}
+
+	if (m->tool_call_id &&
+	    cJSON_AddStringToObject(msg, "tool_call_id", m->tool_call_id) == NULL)
+		return NULL;
+
+	if (m->tool_name &&
+	    cJSON_AddStringToObject(msg, "tool_name", m->tool_name) == NULL)
+		return NULL;
+
+	if (!TAILQ_EMPTY(&m->tool_calls)) {
+		cJSON *arr = cJSON_AddArrayToObject(msg, "tool_calls");
+		if (arr == NULL)
+			return NULL;
+
+		struct clm_tool_call *tc;
+		TAILQ_FOREACH(tc, &m->tool_calls, entries) {
+			cJSON *jtc = cJSON_CreateObject();
+			if (jtc == NULL)
+				return NULL;
+			cJSON_AddItemToArray(arr, jtc);
+			if (tc->id &&
+			    cJSON_AddStringToObject(jtc, "id", tc->id) == NULL)
+				return NULL;
+			if (tc->name &&
+			    cJSON_AddStringToObject(jtc, "name", tc->name) == NULL)
+				return NULL;
+			if (tc->args &&
+			    cJSON_AddStringToObject(jtc, "args", tc->args) == NULL)
+				return NULL;
+		}
+	}
+
+	cJSON *ret = msg;
+	msg = NULL;
+	return ret;
+}
+
+int
+clm_message_from_json(struct clm_history *h, const cJSON *obj,
+    const struct clm_compressor *cz)
+{
+	const cJSON *jrole, *jcontent, *jtcs;
+	const char *content = NULL;
+	enum clm_role role;
+	struct clm_message *m;
+
+	if (h == NULL || obj == NULL || !cJSON_IsObject(obj))
+		return -EINVAL;
+
+	jrole = cJSON_GetObjectItemCaseSensitive(obj, "role");
+	if (role_from_str(cJSON_GetStringValue((cJSON *)jrole), &role) < 0)
+		return -EINVAL;
+
+	jcontent = cJSON_GetObjectItemCaseSensitive(obj, "content");
+	if (jcontent != NULL) {
+		if (!cJSON_IsString(jcontent))
+			return -EINVAL;
+		content = cJSON_GetStringValue((cJSON *)jcontent);
+	}
+
+	switch (role) {
+	case CLM_ROLE_SYSTEM:
+		m = clm_history_add_system(h, content, cz);
+		return m != NULL ? 0 : -ENOMEM;
+	case CLM_ROLE_USER:
+		m = clm_history_add_user(h, content, cz);
+		return m != NULL ? 0 : -ENOMEM;
+	case CLM_ROLE_TOOL: {
+		const char *tid = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(obj, "tool_call_id"));
+		const char *tname = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(obj, "tool_name"));
+		m = clm_history_add_tool_result(h, tid, tname, content,
+		    content != NULL ? strlen(content) : 0, cz);
+		return m != NULL ? 0 : -ENOMEM;
+	}
+	case CLM_ROLE_ASSISTANT:
+		break;
+	}
+
+	jtcs = cJSON_GetObjectItemCaseSensitive(obj, "tool_calls");
+	if (jtcs == NULL)
+		return clm_history_add_assistant_text(h, content, cz) != NULL ?
+		    0 : -ENOMEM;
+
+	if (!cJSON_IsArray(jtcs))
+		return -EINVAL;
+
+	m = clm_history_add_assistant_tool_calls(h);
+	if (m == NULL)
+		return -ENOMEM;
+
+	if (content != NULL && message_set_content(m, content, cz) < 0)
+		goto fail_nomem;
+
+	const cJSON *jtc;
+	cJSON_ArrayForEach(jtc, jtcs) {
+		if (!cJSON_IsObject(jtc))
+			goto fail_inval;
+		const char *id = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(jtc, "id"));
+		const char *name = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(jtc, "name"));
+		const char *args = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(jtc, "args"));
+		if (clm_message_add_tool_call(m, id, name, args) == NULL)
+			goto fail_nomem;
+	}
+
+	return 0;
+
+fail_inval:
+	TAILQ_REMOVE(h, m, entries);
+	clm_message_free(m);
+	return -EINVAL;
+
+fail_nomem:
+	TAILQ_REMOVE(h, m, entries);
+	clm_message_free(m);
+	return -ENOMEM;
+}
+
 cJSON *
 clm_history_to_json(const struct clm_history *h, const struct clm_compressor *cz)
 {
