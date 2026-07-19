@@ -21,6 +21,18 @@ test_agent = executable('test_agent',
 )
 test('agent', test_agent)
 
+# Session persistence test: pure (no network, no loop). Compiles history.c
+# and session.c directly, same pattern as test_agent, so internals are
+# reachable without going through the shared library's export list.
+test_session = executable('test_session',
+  files('test_session.c', '../libclm/history.c', '../libclmsession/session.c'),
+  dependencies: [cjson_dep],
+  include_directories: [include_directories('.'), clm_inc,
+    include_directories('../include'), include_directories('../libclmsession')],
+  c_args: test_cflags,
+)
+test('session', test_session)
+
 # Lua plugin test: loads plugins from ../plugins/ and verifies tool dispatch.
 # Builds a clm_host_uv, so it links the uv layer too. Only built when
 # have_lua (src/meson.build) -- clmlua_dep, needed for clm_lua_env_new etc,

@@ -1,0 +1,1 @@
+{"type":"msg","role":"tool","tool_call_id":"c1","tool_name":"shell_exec","content":"out"}

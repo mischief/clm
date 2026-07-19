@@ -41,6 +41,19 @@ if lua_dep.found()
   )
 endif
 
+# fuzz_session: fuzz the session JSONL line parser (external input: session
+# files are read back from disk and must never crash the loader).
+fuzz_session_exe = executable(
+  'fuzz_session',
+  files('fuzz_session.c', '../libclm/history.c', '../libclmsession/session.c'),
+  include_directories: [clm_inc, include_directories('../include'),
+    include_directories('../libclmsession')],
+  dependencies: [cjson_dep],
+  c_args: ['-fsanitize=address', '-DCLM_BUILDING'],
+  link_args: ['-fsanitize=fuzzer,address'],
+  install: false,
+)
+
 # fuzz_md: fuzz md_render() with arbitrary markdown input.
 fuzz_md_exe = executable(
   'fuzz_md',

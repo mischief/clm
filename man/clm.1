@@ -18,6 +18,7 @@
 .Op Fl -provider Ar name
 .Op Fl o Ar prompt | Fl -oneshot Ar prompt
 .Op Fl p Ar dir | Fl -plugins Ar dir
+.Op Fl r Op Ar id | Fl -resume Op Ar id
 .Op Fl u Ar base | Fl -url Ar base
 .Sh DESCRIPTION
 .Nm
@@ -128,6 +129,30 @@ Load Lua plugins from
 .Ar dir
 instead of the default
 .Ev XDG_CONFIG_HOME Ns Pa /clm/plugins .
+.It Fl r Op Ar id , Fl -resume Op Ar id
+Resume the saved session
+.Ar id
+in the interactive UI, replaying its transcript and continuing the
+conversation in the same session log.
+With no
+.Ar id ,
+present a numbered list of saved sessions to pick from.
+Sessions are logged automatically to
+.Ev XDG_STATE_HOME Ns Pa /clm
+.Po default
+.Pa ~/.local/state/clm
+.Pc ,
+one append-only
+.Pa .jsonl
+file per session; on exit the session id is printed for later
+resumption, and a session in which nothing was said is deleted.
+The
+.Ic /clear
+command starts a fresh session file, leaving the old one resumable.
+Incompatible with
+.Fl -oneshot
+and
+.Fl -headless .
 .It Fl S , Fl -no-stream
 Request non-streamed responses instead of the default
 server-sent-events streaming.

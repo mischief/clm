@@ -12,10 +12,15 @@ import pty
 import select
 import signal
 import struct
+import tempfile
 import termios
 import time
 
 import pyte
+
+# Shared session-state dir for every Tui spawned by one test run (exported
+# so tests can inspect the .jsonl session logs written under it).
+STATE_HOME = tempfile.mkdtemp(prefix="clm-tui-state-")
 
 # Control bytes and xterm key sequences, for readable test scripts.
 CTRL_A = b"\x01"
@@ -58,6 +63,9 @@ class Tui:
             # Point at the in-tree test config so agent profiles resolve.
             test_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             os.environ["XDG_CONFIG_HOME"] = os.path.join(test_dir, "config")
+            # Session logs go to a per-run temp dir, never the developer's
+            # real ~/.local/state/clm (every TUI run now writes a session).
+            os.environ["XDG_STATE_HOME"] = STATE_HOME
             try:
                 os.execv(argv[0], argv)
             finally:

@@ -51,6 +51,19 @@ CLM\_AGENT(3) - Library Functions Manual
 *int*  
 **clm\_agent\_set\_provider**(*struct clm\_agent \*agent*, *const struct clm\_cfg \*cfg*);
 
+*int*  
+**clm\_agent\_restore\_history**(*struct clm\_agent \*agent*,
+*const struct clm\_history \*h*);
+
+*cJSON \*&zwnj;*  
+**clm\_message\_to\_json\_full**(*const struct clm\_message \*m*,
+*const struct clm\_compressor \*cz*);
+
+*int*  
+**clm\_message\_from\_json**(*struct clm\_history \*h*,
+*const cJSON \*obj*,
+*const struct clm\_compressor \*cz*);
+
 *enum clm\_provider*  
 **clm\_provider\_from\_str**(*const char \*kind*);
 
@@ -301,6 +314,28 @@ holds the actual error message when
 **clm\_agent\_take\_mid\_chain\_compact\_error**()
 returns
 `true`.
+
+**clm\_agent\_restore\_history**()
+appends a copy of every non-system message in
+*h*
+to the agent's history, re-applying the agent's compressor on store.
+It is meant for resuming a persisted session: the agent keeps its own
+freshly built system prologue, a saved system prompt never overrides
+the current configuration, and the replay does not fire the
+*on\_message*
+callback.
+
+**clm\_message\_to\_json\_full**()
+serializes a single history message losslessly (including
+*tool\_name*
+and tool calls, unlike the wire format) into a caller-owned cJSON
+object;
+**clm\_message\_from\_json**()
+parses such an object and appends the message it describes to
+*h*.
+Together they are the round-trip used by
+[clm(1)](clm.md)'s
+session persistence.
 
 # RETURN VALUES
 

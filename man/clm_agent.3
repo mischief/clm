@@ -44,6 +44,22 @@
 .Fn clm_agent_check_connection "struct clm_agent *agent"
 .Ft int
 .Fn clm_agent_set_provider "struct clm_agent *agent" "const struct clm_cfg *cfg"
+.Ft int
+.Fo clm_agent_restore_history
+.Fa "struct clm_agent *agent"
+.Fa "const struct clm_history *h"
+.Fc
+.Ft "cJSON *"
+.Fo clm_message_to_json_full
+.Fa "const struct clm_message *m"
+.Fa "const struct clm_compressor *cz"
+.Fc
+.Ft int
+.Fo clm_message_from_json
+.Fa "struct clm_history *h"
+.Fa "const cJSON *obj"
+.Fa "const struct clm_compressor *cz"
+.Fc
 .Ft "enum clm_provider"
 .Fn clm_provider_from_str "const char *kind"
 .Ft "enum clm_agent_state"
@@ -289,6 +305,28 @@ holds the actual error message when
 .Fn clm_agent_take_mid_chain_compact_error
 returns
 .Dv true .
+.Pp
+.Fn clm_agent_restore_history
+appends a copy of every non-system message in
+.Fa h
+to the agent's history, re-applying the agent's compressor on store.
+It is meant for resuming a persisted session: the agent keeps its own
+freshly built system prologue, a saved system prompt never overrides
+the current configuration, and the replay does not fire the
+.Va on_message
+callback.
+.Pp
+.Fn clm_message_to_json_full
+serializes a single history message losslessly (including
+.Va tool_name
+and tool calls, unlike the wire format) into a caller-owned cJSON
+object;
+.Fn clm_message_from_json
+parses such an object and appends the message it describes to
+.Fa h .
+Together they are the round-trip used by
+.Xr clm 1 Ns 's
+session persistence.
 .Sh RETURN VALUES
 .Fn clm_agent_new ,
 .Fn clm_agent_submit ,

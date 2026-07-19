@@ -12,8 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from driver import (Tui, CTRL_A, CTRL_K, CTRL_U, CTRL_Y, PGUP, PGDN, UP, DOWN,
-                    END, PASTE_START, PASTE_END)
+from driver import (Tui, STATE_HOME, CTRL_A, CTRL_K, CTRL_U, CTRL_Y, PGUP,
+                    PGDN, UP, DOWN, END, PASTE_START, PASTE_END)
 from mock_server import MockServer
 
 BIN = os.environ.get("CLM_BIN", "clm")
@@ -319,6 +319,44 @@ def test_agent_name(url):
               "agent: status bar shows provider/model:agent from config")
 
 
+def test_session_resume(url):
+    """A conversation is logged to a session file, and --resume replays it."""
+    sessions = os.path.join(STATE_HOME, "clm")
+
+    with Tui(BIN, url, rows=24, cols=70) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"show me fruit\r")
+        assert t.wait_for("Yellow", timeout=15), "no reply to log"
+        t.pump(0.5)
+        t.send(b"/quit\r")
+        t.pump(0.8)
+
+    files = sorted((f for f in os.listdir(sessions) if f.endswith(".jsonl")),
+                   key=lambda f: os.path.getmtime(os.path.join(sessions, f)))
+    check(len(files) >= 1, "session: a .jsonl session log was written")
+    if not files:
+        return
+    sid = files[-1][:-len(".jsonl")]
+    with open(os.path.join(sessions, files[-1])) as f:
+        log = f.read()
+    check('"type": "meta"' in log or '"type":"meta"' in log,
+          "session: log starts with a meta line")
+    check("show me fruit" in log, "session: the user prompt was logged")
+
+    with Tui(BIN, url, rows=24, cols=70,
+             extra_args=("--resume", sid)) as t:
+        assert t.wait_for("resumed session", timeout=10), "no resume banner"
+        txt = t.text()
+        check("show me fruit" in txt,
+              "resume: the old prompt is replayed in the transcript")
+        check("Apple" in txt or "Fruit" in txt,
+              "resume: the old reply is replayed in the transcript")
+        # The resumed conversation must accept a new turn.
+        t.send(b"show me fruit\r")
+        check(t.wait_for("Yellow", timeout=15),
+              "resume: a follow-up turn works after resuming")
+
+
 def main():
     with MockServer() as srv:
         test_connection_online(srv.url)
@@ -336,6 +374,7 @@ def main():
         test_permission(srv.url)
         test_cancel(srv.url)
         test_bracketed_paste(srv.url)
+        test_session_resume(srv.url)
     if _failures:
         print(f"\n{len(_failures)} check(s) failed")
         return 1

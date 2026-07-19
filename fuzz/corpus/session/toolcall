@@ -1,0 +1,1 @@
+{"type":"msg","role":"assistant","tool_calls":[{"id":"c1","name":"shell_exec","args":"{\"cmd\":\"ls\"}"}]}

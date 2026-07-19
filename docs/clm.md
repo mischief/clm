@@ -18,6 +18,7 @@ CLM(1) - General Commands Manual
 \[**--provider**&nbsp;*name*]
 \[**-o**&nbsp;*prompt*&nbsp;|&nbsp;**--oneshot**&nbsp;*prompt*]
 \[**-p**&nbsp;*dir*&nbsp;|&nbsp;**--plugins**&nbsp;*dir*]
+\[**-r**&nbsp;\[*id*&nbsp;|&nbsp;**--resume**&nbsp;\[*id*]]]
 \[**-u**&nbsp;*base*&nbsp;|&nbsp;**--url**&nbsp;*base*]
 
 # DESCRIPTION
@@ -142,6 +143,32 @@ Load Lua plugins from
 *dir*
 instead of the default
 `XDG_CONFIG_HOME`*/clm/plugins*.
+
+**-r** \[*id*, **--resume** \[*id*]]
+
+Resume the saved session
+*id*
+in the interactive UI, replaying its transcript and continuing the
+conversation in the same session log.
+With no
+*id*,
+present a numbered list of saved sessions to pick from.
+Sessions are logged automatically to
+`XDG_STATE_HOME`*/clm*
+(default
+*~/.local/state/clm*)
+,
+one append-only
+*.jsonl*
+file per session; on exit the session id is printed for later
+resumption, and a session in which nothing was said is deleted.
+The
+**/clear**
+command starts a fresh session file, leaving the old one resumable.
+Incompatible with
+**--oneshot**
+and
+**--headless**.
 
 **-S**, **--no-stream**
 
