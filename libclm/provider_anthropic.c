@@ -19,6 +19,8 @@
  *     single such user message, matching how Anthropic expects them.
  *   - "max_tokens" is required (clm has no per-request token budget config,
  *     so a fixed generous default is used -- see CLM_ANTHROPIC_MAX_TOKENS).
+ *     Anthropic never picks a smaller finish itself; whatever this macro
+ *     names is the hard ceiling on any single response's output tokens.
  *   - tool schemas use "input_schema" instead of "function.parameters",
  *     and carry an explicit "type":"custom" to disambiguate from
  *     Anthropic's built-in tool types (optional per spec, but sent
@@ -45,8 +47,13 @@
 
 /* Anthropic requires max_tokens on every request; clm has no per-request
  * token-budget knob (see struct clm_cfg), so use a fixed, generous default
- * rather than growing new public config surface for this one provider. */
-#define CLM_ANTHROPIC_MAX_TOKENS 4096
+ * rather than growing new public config surface for this one provider.
+ * 4096 (the old value here) is the legacy Claude 3.x ceiling and was
+ * routinely hit on ordinary answers with newer models, truncating output
+ * mid-turn (finish_reason "max_tokens" -> CLM_FINISH_LENGTH); 64000 is the
+ * highest limit current Sonnet/Opus/Haiku 4.x generations accept without an
+ * anthropic-beta output-window header. */
+#define CLM_ANTHROPIC_MAX_TOKENS 64000
 
 /* ------------------------------------------------------------------ */
 /* Request building                                                    */
