@@ -1432,11 +1432,28 @@ draw_transcript(struct ui *u)
 	int w = getmaxx(u->txt);
 	int h = getmaxy(u->txt);
 	int total, maxscroll, start;
+	size_t base;
 
 	if (u->gen != u->built_gen || w != u->built_width ||
 	    u->expand_output != u->built_expand ||
 	    u->show_reasoning != u->built_reasoning)
 		rebuild_render(u, w);
+
+	/* Pending steering entries aren't part of the transcript source (see
+	 * enqueue_steering): they haven't happened yet, so rather than mixing
+	 * them into segs/rsegs (and the gen-keyed rebuild cache) they're
+	 * appended here as a transient tail, pinned below whatever the real
+	 * cache holds, then trimmed back off below so next frame starts clean. */
+	base = u->nrsegs;
+	for (size_t i = 0; i < u->steering_nqueue; i++) {
+		char line[600];
+
+		rseg_push(u, seg_attr(ST_USER), "\nyou> ", 6);
+		rseg_push(u, seg_attr(ST_USER), u->steering_queue[i],
+		    strlen(u->steering_queue[i]));
+		(void)snprintf(line, sizeof(line), "  (queued)\n");
+		rseg_push(u, seg_attr(ST_META), line, strlen(line));
+	}
 
 	total = wrap_walk(u, w, h, 0, false);
 
@@ -1466,6 +1483,13 @@ draw_transcript(struct ui *u)
 	werase(u->txt);
 	wrap_walk(u, w, h, start, true);
 	wnoutrefresh(u->txt);
+
+	/* Drop the transient queue tail appended above -- it must not survive
+	 * into the next frame's rsegs count (rebuild_render's free loop, or
+	 * this same overlay run again, would otherwise double up on it). */
+	for (size_t i = base; i < u->nrsegs; i++)
+		free(u->rsegs[i].text);
+	u->nrsegs = base;
 }
 
 static void handle_keys(struct ui *u); /* defined below; shared with on_stdin */
@@ -1556,9 +1580,12 @@ enqueue_steering(struct ui *u, const char *prompt)
 		u->steering_cap = ncap;
 	}
 	u->steering_queue[u->steering_nqueue++] = dup;
-	ui_push(u, ST_PERM, "\nyou> ");
-	ui_push(u, ST_PERM, prompt);
-	ui_push(u, ST_META, "  (injects at next decision point)\n");
+	/* Don't push into the transcript source here: a turn is in flight and
+	 * streaming into the same segs array, so anything appended now would
+	 * land wherever the stream happens to be, not at the end of the
+	 * conversation -- draw_transcript renders pending queue entries as a
+	 * transient tail instead, pinned below the real content until each one
+	 * drains. */
 	u->dirty = true;
 }
 
@@ -1576,9 +1603,12 @@ drain_steering_queue(struct ui *u)
 	memmove(u->steering_queue, u->steering_queue + 1,
 	    (u->steering_nqueue - 1) * sizeof(*u->steering_queue));
 	u->steering_nqueue--;
-	ui_push(u, ST_META, "[steering: ");
-	ui_push(u, ST_META, prompt);
-	ui_push(u, ST_META, "]\n");
+	/* Render exactly like any other submitted prompt: no separate
+	 * "[steering: ...]" treatment, so the transcript doesn't distinguish
+	 * a mid-turn nudge from a normal turn-start prompt once it lands. */
+	ui_push(u, ST_USER, "\nyou> ");
+	ui_push(u, ST_USER, prompt);
+	ui_push(u, ST_USER, "\n");
 
 	/*
 	 * clm_agent_notify(), not clm_agent_submit(): two of the three
