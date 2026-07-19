@@ -176,6 +176,7 @@ version_h = configure_file(
 subdir('libclm')
 subdir('libclmlua')
 subdir('libclmuv')
+subdir('libclmsession')
 subdir('libemoji')
 subdir('src')
 subdir('man')
