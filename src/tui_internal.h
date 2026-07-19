@@ -17,6 +17,7 @@
 #include <uv.h>
 
 #include "clm/clm.h"
+#include "clm/session.h"
 
 struct clm_host;
 struct clm_lua_env;
@@ -69,6 +70,7 @@ struct ui {
 	const char *plugin_dir;        /* NULL = use XDG default */
 	struct clm_mcp_client **mcp_clients;
 	size_t mcp_client_count;
+	struct clm_session *session;   /* NULL = session logging disabled */
 
 	uv_poll_t stdin_poll;
 	uv_timer_t repaint;

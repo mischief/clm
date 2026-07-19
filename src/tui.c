@@ -39,6 +39,7 @@
 #include "mcp_setup.h"
 #include "model_spec.h"
 #include "tui_internal.h"
+#include "xdg.h"
 
 /*
  * Custom key codes for bracketed paste (xterm/most terminal emulators,
@@ -744,6 +745,31 @@ cb_notice(const char *text, void *user)
 	u->dirty = true;
 }
 
+/*
+ * Mirror every appended history message into the session log. System
+ * messages are skipped: the prologue is rebuilt from config on every start,
+ * so persisting it would only resurrect a stale prompt on resume.
+ */
+static void
+cb_message(const struct clm_message *msg, void *user)
+{
+	struct ui *u = user;
+	int r;
+
+	if (u->session == NULL || msg->role == CLM_ROLE_SYSTEM)
+		return;
+
+	r = clm_session_append(u->session, msg, NULL);
+	if (r < 0) {
+		/* Warn once and stop logging rather than spamming a warning
+		 * per message on e.g. a full disk. */
+		ui_push(u, ST_META, "\n[session logging failed; disabled]\n");
+		clm_session_free(u->session);
+		u->session = NULL;
+		u->dirty = true;
+	}
+}
+
 static const struct clm_callbacks tui_callbacks = {
     .on_assistant_text = cb_assistant_text,
     .on_reasoning = cb_reasoning,
@@ -757,6 +783,7 @@ static const struct clm_callbacks tui_callbacks = {
     .on_state = cb_state,
     .on_turn_done = cb_turn_done,
     .on_notice = cb_notice,
+    .on_message = cb_message,
 };
 
 /* ---- rendering (all drawing happens here, from the repaint timer) ---- */
@@ -1638,8 +1665,6 @@ drain_steering_queue(struct ui *u)
 	u->dirty = true;
 }
 
-static char *xdg_config_path(const char *suffix);
-
 /*
  * Set u->model (status bar display + /provider's "keep the current model"
  * lookup), replacing any prior value. Always makes an owned copy: unlike
@@ -2111,7 +2136,8 @@ run_command(struct ui *u, const char *line)
 		    u, ST_META,
 		    "\ncommands:\n"
 		    "  /help              this help\n"
-		    "  /clear             clear the transcript\n"
+		    "  /clear             clear the transcript (starts a new "
+		    "session log)\n"
 		    "  /agent <name>      switch agent profile (system prompt + "
 		    "tools)\n"
 		    "  /model [name]      switch model (config.lua's `models` "
@@ -2138,6 +2164,25 @@ run_command(struct ui *u, const char *line)
 			u->nsegs = 0;
 			u->scroll = 0;
 			u->gen++;
+			/* Rotate the session log too: the cleared transcript
+			 * stays resumable under its old id, and what follows
+			 * is a new conversation, so it gets a new file. An
+			 * empty old session is just deleted. */
+			if (u->session != NULL) {
+				if (clm_session_is_empty(u->session))
+					(void)clm_session_discard(u->session);
+				else
+					clm_session_free(u->session);
+				u->session = NULL;
+				if (clm_session_create(NULL, u->model,
+				    u->provider_name, u->agent_name,
+				    &u->session) == 0) {
+					ui_push(u, ST_META, "[new session ");
+					ui_push(u, ST_META,
+					    clm_session_id(u->session));
+					ui_push(u, ST_META, "]\n");
+				}
+			}
 		}
 	} else if (CMD("reasoning") || CMD("think")) {
 		if (strcmp(arg, "on") == 0)
@@ -2863,30 +2908,58 @@ on_health(uv_timer_t *t)
 	clm_agent_check_connection(u->agent);
 }
 
-static char *
-xdg_config_path(const char *suffix)
+/*
+ * Re-render a restored session's transcript through the same seg vocabulary
+ * the live callbacks use, so a resumed conversation looks like it never
+ * ended. Internal context-update messages are replayed into the agent but
+ * not shown, same as live (they are never echoed).
+ */
+static void
+replay_transcript(struct ui *u, const struct clm_history *h)
 {
-	const char *xdg = getenv("XDG_CONFIG_HOME");
-	const char *home = getenv("HOME");
-	char *out = NULL;
+	const struct clm_message *m;
 
-	if (xdg != NULL && xdg[0] != '\0') {
-		size_t n = strlen(xdg) + 1 + strlen(suffix) + 1;
-		out = malloc(n);
-		if (out != NULL)
-			(void)snprintf(out, n, "%s/%s", xdg, suffix);
-	} else if (home != NULL && home[0] != '\0') {
-		size_t n = strlen(home) + sizeof("/.config/") + strlen(suffix);
-		out = malloc(n);
-		if (out != NULL)
-			(void)snprintf(out, n, "%s/.config/%s", home, suffix);
+	TAILQ_FOREACH(m, h, entries) {
+		switch (m->role) {
+		case CLM_ROLE_SYSTEM:
+			break;
+		case CLM_ROLE_USER:
+			if (m->content == NULL || strncmp(m->content,
+			    "[context update]",
+			    strlen("[context update]")) == 0)
+				break;
+			ui_push(u, ST_USER, "\nyou> ");
+			ui_push(u, ST_USER, m->content);
+			ui_push(u, ST_USER, "\n");
+			break;
+		case CLM_ROLE_ASSISTANT: {
+			const struct clm_tool_call *tc;
+			TAILQ_FOREACH(tc, &m->tool_calls, entries)
+				push_tool_summary(u,
+				    tc->name != NULL ? tc->name : "?",
+				    tc->args);
+			if (m->content != NULL && m->content[0] != '\0') {
+				ui_push(u, ST_LABEL, "\nclm>\n");
+				ui_push(u, ST_ASSIST, m->content);
+				ui_push(u, ST_NORMAL, "\n");
+			}
+			break;
+		}
+		case CLM_ROLE_TOOL:
+			if (m->content != NULL && m->content[0] != '\0') {
+				ui_push(u, ST_TOOL_OUT, m->content);
+				if (m->content[strlen(m->content) - 1] != '\n')
+					ui_push(u, ST_TOOL_OUT, "\n");
+			}
+			break;
+		}
 	}
-	return out;
 }
 
 int
 tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
-    struct clm_lua_cfg *lcfg, const char *forever_prompt)
+    struct clm_lua_cfg *lcfg, const char *forever_prompt,
+    struct clm_session *session, const struct clm_history *restore)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -2913,6 +2986,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	}
 	u->lcfg = lcfg;
 	u->plugin_dir = plugin_dir;
+	u->session = session;
 	u->state = CLM_STATE_IDLE;
 	/* Default to the clean view: reasoning hidden and tool output collapsed.
 	 * Opt in with ^R / ^O (see the status-bar hints). */
@@ -2988,6 +3062,21 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	ui_push(u, ST_META,
 	        "clm -- type a prompt, /help for commands, /quit to exit.\n");
 
+	if (restore != NULL) {
+		r = clm_agent_restore_history(u->agent, restore);
+		if (r < 0) {
+			ui_push(u, ST_ERROR,
+			    "\nfailed to restore the session; "
+			    "starting fresh\n");
+		} else {
+			replay_transcript(u, restore);
+			ui_push(u, ST_META, "\n[resumed session ");
+			ui_push(u, ST_META, u->session != NULL ?
+			    clm_session_id(u->session) : "?");
+			ui_push(u, ST_META, "]\n");
+		}
+	}
+
 	uv_poll_init(loop, &u->stdin_poll, fileno(stdin));
 	u->stdin_poll.data = u;
 	uv_poll_start(&u->stdin_poll, UV_READABLE, on_stdin);
@@ -3018,6 +3107,19 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	fputs("\033[?2004l", stdout);
 	fflush(stdout);
 	endwin();
+	/* Print the resume handle now that the terminal is sane again; a
+	 * session nothing was said in is deleted instead. */
+	if (u->session != NULL) {
+		if (clm_session_is_empty(u->session)) {
+			(void)clm_session_discard(u->session);
+		} else {
+			printf("session: %s (resume with clm --resume %s)\n",
+			    clm_session_id(u->session),
+			    clm_session_id(u->session));
+			clm_session_free(u->session);
+		}
+		u->session = NULL;
+	}
 	clm_lua_env_free(u->lua_env);
 	clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
 	clm_agent_free(u->agent);

@@ -17,6 +17,7 @@
 #include "clm/clm.h"
 #include "clm/cleanup.h"
 #include "clm/lua_plugin.h"
+#include "xdg.h"
 #include "complete.h"
 #include "emoji.h"
 #include "model_spec.h"
@@ -352,21 +353,7 @@ source_agent_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen
 	const char *matches[MAX_CANDIDATES];
 	size_t nmatches = 0;
 
-	const char *xdg = getenv("XDG_CONFIG_HOME");
-	const char *home = getenv("HOME");
-	char *agents_dir = NULL;
-
-	if (xdg != NULL && xdg[0] != '\0') {
-		size_t n = strlen(xdg) + sizeof("/clm/agents");
-		agents_dir = malloc(n);
-		if (agents_dir != NULL)
-			(void)snprintf(agents_dir, n, "%s/clm/agents", xdg);
-	} else if (home != NULL && home[0] != '\0') {
-		size_t n = strlen(home) + sizeof("/.config/clm/agents");
-		agents_dir = malloc(n);
-		if (agents_dir != NULL)
-			(void)snprintf(agents_dir, n, "%s/.config/clm/agents", home);
-	}
+	char *agents_dir = xdg_config_path("clm/agents");
 
 	if (agents_dir == NULL)
 		return;

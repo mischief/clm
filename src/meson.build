@@ -106,9 +106,9 @@ if have_lua
   #
   # emoji_dep: :shortcode: -> glyph completion/expansion for the input
   # line, see ../libemoji.
-  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c') + seed_src + [version_h, templates_data],
+  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c', 'xdg.c') + seed_src + [version_h, templates_data],
     link_with: [md_render_lib],
-    dependencies: [clmuv_dep, clmlua_dep, curses_dep, cjson_dep, emoji_dep],
+    dependencies: [clmuv_dep, clmlua_dep, clmsession_dep, curses_dep, cjson_dep, emoji_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],
     c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'] + clm_hardening_args,
     install: true,

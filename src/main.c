@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <uv.h>
 
@@ -17,9 +18,11 @@
 #include "clm/lua_plugin.h"
 #include "seed_plugins.h"
 #include "clm/cleanup.h"
+#include "clm/session.h"
 #include "mcp_setup.h"
 #include "model_spec.h"
 #include "templates.h"
+#include "xdg.h"
 
 static void
 usage(const char *prog)
@@ -30,6 +33,7 @@ usage(const char *prog)
 	    "[-H|--headless] [-u|--url BASE] "
 	    "[-m|--model PROVIDER/MODEL-ID] [--provider NAME] "
 	    "[-p|--plugins DIR] [-S|--no-stream] "
+	    "[-r|--resume [ID]] "
 	    "[-V|--version] [-h|--help]\n",
 	    prog, prog);
 	fprintf(stderr,
@@ -61,6 +65,9 @@ usage(const char *prog)
 	    "  -p, --plugins DIR     plugin directory "
 	    "(default $XDG_CONFIG_HOME/clm/plugins)\n"
 	    "  -S, --no-stream       disable streamed (SSE) responses\n"
+	    "  -r, --resume [ID]     resume a saved session in the TUI; with "
+	    "no ID,\n"
+	    "                        pick from a list of saved sessions\n"
 	    "  -V, --version         print version and exit\n"
 	    "  -h, --help            show this help\n"
 	    "\n"
@@ -296,31 +303,6 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 	free(buf->base);
 }
 
-/*
- * Build a path under the XDG config dir: $XDG_CONFIG_HOME/<suffix> or
- * ~/.config/<suffix>. Returns a malloc'd string, or NULL.
- */
-static char *
-xdg_config_path(const char *suffix)
-{
-	const char *xdg = getenv("XDG_CONFIG_HOME");
-	const char *home = getenv("HOME");
-	char *out = NULL;
-
-	if (xdg != NULL && xdg[0] != '\0') {
-		size_t n = strlen(xdg) + 1 + strlen(suffix) + 1;
-		out = malloc(n);
-		if (out != NULL)
-			(void)snprintf(out, n, "%s/%s", xdg, suffix);
-	} else if (home != NULL && home[0] != '\0') {
-		size_t n = strlen(home) + sizeof("/.config/") + strlen(suffix);
-		out = malloc(n);
-		if (out != NULL)
-			(void)snprintf(out, n, "%s/.config/%s", home, suffix);
-	}
-	return out;
-}
-
 /* Writes content to path unless it already exists. Returns 0 if written,
  * 1 if it already existed (left untouched), or -errno on failure. */
 static int
@@ -344,6 +326,61 @@ write_new_file(const char *path, const char *content, mode_t mode)
 	}
 	close(fd);
 	return 0;
+}
+
+/*
+ * --resume with no id: print a numbered listing of saved sessions and read
+ * a choice from stdin. Returns a malloc'd session id, or NULL (no sessions,
+ * bad choice, or EOF).
+ */
+static char *
+pick_session(void)
+{
+	struct clm_session_info *infos = NULL;
+	size_t n = 0, i;
+	char line[32], *end, *id = NULL;
+	unsigned long choice;
+	int r;
+
+	r = clm_session_list(NULL, &infos, &n);
+	if (r < 0) {
+		fprintf(stderr, "error: listing sessions: %s\n", strerror(-r));
+		return NULL;
+	}
+	if (n == 0) {
+		fprintf(stderr, "no saved sessions\n");
+		return NULL;
+	}
+
+	for (i = 0; i < n; i++) {
+		char when[32] = "?";
+		time_t created = (time_t)infos[i].created;
+		struct tm tm;
+
+		if (created > 0 && localtime_r(&created, &tm) != NULL)
+			(void)strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &tm);
+		printf("%3zu) %s  %s  %s\n     %s\n", i + 1, infos[i].id, when,
+		    infos[i].model != NULL ? infos[i].model : "",
+		    infos[i].first_user != NULL ? infos[i].first_user : "(empty)");
+	}
+	printf("resume which session? [1-%zu] ", n);
+	fflush(stdout);
+
+	if (fgets(line, sizeof(line), stdin) == NULL) {
+		clm_session_list_free(infos, n);
+		return NULL;
+	}
+	errno = 0;
+	choice = strtoul(line, &end, 10);
+	if (errno != 0 || end == line || choice < 1 || choice > n) {
+		fprintf(stderr, "no such session\n");
+		clm_session_list_free(infos, n);
+		return NULL;
+	}
+
+	id = strdup(infos[choice - 1].id);
+	clm_session_list_free(infos, n);
+	return id;
 }
 
 /* `clm setup`: writes a starter config.lua and secrets.lua, and seeds the
@@ -429,6 +466,9 @@ main(int argc, char *argv[])
 	if (argc >= 2 && strcmp(argv[1], "setup") == 0)
 		return run_setup();
 
+	int resume = 0;
+	const char *resume_id = NULL;
+
 	enum { OPT_PROVIDER = 256 };
 	const struct option opts[] = {
 		{"oneshot", required_argument, NULL, 'o'},
@@ -438,6 +478,7 @@ main(int argc, char *argv[])
 		{"provider", required_argument, NULL, OPT_PROVIDER},
 		{"plugins", required_argument, NULL, 'p'},
 		{"agent", required_argument, NULL, 'a'},
+		{"resume", optional_argument, NULL, 'r'},
 		{"headless", no_argument, NULL, 'H'},
 		{"no-stream", no_argument, NULL, 'S'},
 		{"version", no_argument, NULL, 'V'},
@@ -445,9 +486,18 @@ main(int argc, char *argv[])
 		{NULL, 0, NULL, 0},
 	};
 
-	while ((opt = getopt_long(argc, argv, "a:o:f:u:m:p:HSVh", opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "a:o:f:u:m:p:r::HSVh", opts, NULL)) != -1) {
 		switch (opt) {
 		case 'a': agent_name = optarg; break;
+		case 'r':
+			resume = 1;
+			/* getopt's optional_argument only binds --resume=ID /
+			 * -rID; also accept a detached "--resume ID". */
+			if (optarg != NULL)
+				resume_id = optarg;
+			else if (optind < argc && argv[optind][0] != '-')
+				resume_id = argv[optind++];
+			break;
 		case 'o': oneshot = optarg; break;
 		case 'f': forever_prompt = optarg; break;
 		case 'u': api_base = optarg; break;
@@ -549,9 +599,53 @@ main(int argc, char *argv[])
 	 * forced headless, and stdin+stdout are both a terminal. Otherwise fall
 	 * through to the plain stdio path (works for pipes and --oneshot).
 	 */
+	if (resume && (oneshot != NULL || headless)) {
+		fprintf(stderr, "error: --resume needs the interactive TUI "
+		    "(not --oneshot/--headless)\n");
+		return 1;
+	}
+
 	if (oneshot == NULL && !headless && isatty(STDIN_FILENO) &&
-	    isatty(STDOUT_FILENO))
-		return tui_run(&cfg, plugin_dir, lcfg, forever_prompt);
+	    isatty(STDOUT_FILENO)) {
+		struct clm_session *sess = NULL;
+		struct clm_history restore;
+		struct clm_history *restorep = NULL;
+		autofree char *picked = NULL;
+		int rc;
+
+		clm_history_init(&restore);
+		if (resume) {
+			if (resume_id == NULL) {
+				picked = pick_session();
+				if (picked == NULL)
+					return 1;
+				resume_id = picked;
+			}
+			r = clm_session_load(NULL, resume_id, &restore, NULL);
+			if (r == 0)
+				r = clm_session_open(NULL, resume_id, &sess);
+			if (r < 0) {
+				fprintf(stderr, "error: resuming %s: %s\n",
+				    resume_id, strerror(-r));
+				clm_history_free(&restore);
+				return 1;
+			}
+			restorep = &restore;
+		} else {
+			/* Session logging is best-effort: a read-only HOME
+			 * shouldn't keep the TUI from running at all. */
+			r = clm_session_create(NULL, model_name,
+			    cfg.provider_name, agent_name, &sess);
+			if (r < 0)
+				fprintf(stderr, "warning: session logging "
+				    "disabled: %s\n", strerror(-r));
+		}
+
+		rc = tui_run(&cfg, plugin_dir, lcfg, forever_prompt, sess,
+		    restorep);
+		clm_history_free(&restore);
+		return rc;
+	}
 
 	/* Heap-allocated so the 1 KB input buffer stays off main's stack frame. */
 	state = calloc(1, sizeof(*state));
