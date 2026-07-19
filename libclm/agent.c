@@ -227,6 +227,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 		agent->cb_on_state = cb->on_state;
 		agent->cb_on_turn_done = cb->on_turn_done;
 		agent->cb_on_notice = cb->on_notice;
+		agent->cb_on_message = cb->on_message;
 	}
 	agent->cb_user = user;
 
@@ -251,12 +252,15 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 		const char *base = agent->system_prompt_base ? agent->system_prompt_base
 		                                              : default_system_prompt;
 		autofree char *sys = build_system_prompt(base);
+		struct clm_message *m;
 
 		if (sys == NULL ||
-		    clm_history_add_system(&agent->history, sys, agent->compressor) == NULL) {
+		    (m = clm_history_add_system(&agent->history, sys,
+		    agent->compressor)) == NULL) {
 			clm_agent_free(agent);
 			return -ENOMEM;
 		}
+		clm_agent_emit_message(agent, m);
 	}
 	agent->last_time_stamp = time(NULL);
 
@@ -477,17 +481,23 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 				    "[context update] current time: %s\n"
 				    "(automatic context, not user input; do not acknowledge)",
 				    stamp);
-				(void)clm_history_add_user(&agent->history, msg,
-				    agent->compressor);
+				clm_agent_emit_message(agent,
+				    clm_history_add_user(&agent->history, msg,
+				    agent->compressor));
 			}
 			agent->last_time_stamp = now;
 		}
 	}
 
-	if (clm_history_add_user(&agent->history, prompt, agent->compressor) == NULL) {
-		clm_agent_set_error(agent, "out of memory");
-		agent->state = CLM_STATE_ERROR;
-		return -ENOMEM;
+	{
+		struct clm_message *m = clm_history_add_user(&agent->history,
+		    prompt, agent->compressor);
+		if (m == NULL) {
+			clm_agent_set_error(agent, "out of memory");
+			agent->state = CLM_STATE_ERROR;
+			return -ENOMEM;
+		}
+		clm_agent_emit_message(agent, m);
 	}
 
 	agent->state = CLM_STATE_THINKING;
@@ -998,12 +1008,15 @@ agent_finish(struct clm_agent *agent, cJSON *tool_calls,
 	}
 
 	if (content != NULL) {
+		struct clm_message *m;
 		clm_debug("[think] %.*s", (int)(strlen(content) > 200 ? 200 : strlen(content)), content);
-		if (clm_history_add_assistant_text(&agent->history, content,
-		    agent->compressor) == NULL) {
+		m = clm_history_add_assistant_text(&agent->history, content,
+		    agent->compressor);
+		if (m == NULL) {
 			agent_fail(agent, "out of memory", -ENOMEM);
 			return;
 		}
+		clm_agent_emit_message(agent, m);
 		if (!streamed && agent->cb_on_assistant_text)
 			agent->cb_on_assistant_text(content, agent->cb_user);
 	}
@@ -1734,10 +1747,55 @@ clm_agent_clear_history(struct clm_agent *agent)
 
 	clm_history_free(&agent->history);
 	clm_history_init(&agent->history);
-	if (clm_history_add_system(&agent->history, sys, agent->compressor) == NULL)
-		return -ENOMEM;
+	{
+		struct clm_message *m = clm_history_add_system(&agent->history,
+		    sys, agent->compressor);
+		if (m == NULL)
+			return -ENOMEM;
+		clm_agent_emit_message(agent, m);
+	}
 
 	agent->last_time_stamp = time(NULL);
+	return 0;
+}
+
+void
+clm_agent_emit_message(struct clm_agent *agent, const struct clm_message *m)
+{
+	if (agent == NULL || m == NULL || agent->cb_on_message == NULL)
+		return;
+	agent->cb_on_message(m, agent->cb_user);
+}
+
+int
+clm_agent_restore_history(struct clm_agent *agent, const struct clm_history *h)
+{
+	const struct clm_message *m;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(h != NULL, -EINVAL);
+
+	if (agent->state == CLM_STATE_THINKING ||
+	    agent->state == CLM_STATE_CALLING_TOOL ||
+	    agent->state == CLM_STATE_RATE_LIMITED)
+		return -EBUSY;
+
+	TAILQ_FOREACH(m, h, entries) {
+		if (m->role == CLM_ROLE_SYSTEM)
+			continue;
+
+		/* Round-trip through the lossless JSON form: it already
+		 * handles every role shape (tool_calls, tool_name, ...) and
+		 * decompress/recompress across differing compressors. */
+		json_cleanup cJSON *obj = clm_message_to_json_full(m, NULL);
+		if (obj == NULL)
+			return -ENOMEM;
+		int r = clm_message_from_json(&agent->history, obj,
+		    agent->compressor);
+		if (r < 0)
+			return r;
+	}
+
 	return 0;
 }
 

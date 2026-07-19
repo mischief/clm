@@ -705,9 +705,15 @@ inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content, size_t con
 		    stub);
 	}
 
-	if (clm_history_add_tool_result(&agent->history, inv->id, inv->name,
-	    (const char *)out, out_len, agent->compressor) == NULL)
-		batch->status = -ENOMEM;
+	{
+		struct clm_message *m = clm_history_add_tool_result(
+		    &agent->history, inv->id, inv->name, (const char *)out,
+		    out_len, agent->compressor);
+		if (m == NULL)
+			batch->status = -ENOMEM;
+		else
+			clm_agent_emit_message(agent, m);
+	}
 
 	batch->done++;
 	if (agent->cb_on_tool_batch)
@@ -993,6 +999,9 @@ clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls)
 			((struct clm_tool *)inv->def)->inflight++;
 		inv_compute_limits(inv);
 	}
+
+	/* After the loop so the emitted message carries all its tool_calls. */
+	clm_agent_emit_message(agent, amsg);
 
 	/* Dispatch.
  *	 * Synchronous completers (e.g. file tools) finalize inline

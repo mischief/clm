@@ -12,6 +12,8 @@
 
 struct clm_agent;
 struct clm_cfg;
+struct clm_history;
+struct clm_message;
 
 /*
  * LLM provider types.
@@ -320,6 +322,20 @@ struct clm_callbacks {
 	 * without them for this session." Optional -- NULL is fine, the
 	 * underlying behavior happens either way. */
 	void (*on_notice)(const char *text, void *user);
+
+	/*
+	 * A message was appended to the agent's conversation history (any
+	 * role, including the initial system message and internal context
+	 * updates). Fires after the message is fully built -- an assistant
+	 * tool-call message already carries all of its tool_calls. msg is
+	 * BORROWED and valid only for the duration of the callback; its
+	 * content may be stored compressed (msg->content_compressed), so
+	 * persist it via clm_message_to_json_full() rather than reading
+	 * content directly. Does not fire for history rewrites (compaction,
+	 * clm_agent_clear_history's discard) or for replays via
+	 * clm_agent_restore_history(). Intended for session logging.
+	 */
+	void (*on_message)(const struct clm_message *msg, void *user);
 };
 
 /*
@@ -513,6 +529,19 @@ CLM_API int clm_agent_set_provider(struct clm_agent *agent,
  * -EBUSY if one is in flight.
  */
 CLM_API int clm_agent_clear_history(struct clm_agent *agent);
+
+/*
+ * Append a copy of every non-system message in h to the agent's history,
+ * re-applying the agent's compressor on store. Intended for resuming a
+ * persisted session: the agent keeps its own freshly built system
+ * prologue (a saved system prompt never overrides the current config).
+ * Does not fire on_message -- this is a replay, not new conversation.
+ * Safe to call between turns; returns -EBUSY if one is in flight,
+ * -ENOMEM on allocation failure (history may then hold a partial
+ * replay; callers should treat that as fatal for the resume).
+ */
+CLM_API int clm_agent_restore_history(struct clm_agent *agent,
+    const struct clm_history *h);
 
 /*
  * Summarize the conversation and fold old turns into that summary, keeping the

@@ -156,6 +156,7 @@ struct clm_agent {
 	void (*cb_on_state)(enum clm_agent_state, void *);
 	void (*cb_on_turn_done)(int, void *);
 	void (*cb_on_notice)(const char *, void *);
+	void (*cb_on_message)(const struct clm_message *, void *);
 	void *cb_user;
 
 	/* Derived from base_url: the /v1/models URL used for health probes. */
@@ -164,6 +165,11 @@ struct clm_agent {
 
 /* Set agent->last_error to a copy of msg (replacing any previous error). */
 void clm_agent_set_error(struct clm_agent *agent, const char *msg);
+
+/* Fire cb_on_message for a message just appended to agent->history. NULL
+ * agent/m or an uninstalled callback is a no-op. */
+void clm_agent_emit_message(struct clm_agent *agent,
+    const struct clm_message *m);
 
 /*
  * Called by the tool framework when a dispatched batch finishes. status 0
