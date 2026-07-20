@@ -77,6 +77,18 @@ struct clm_host {
 	void (*timer_cancel)(struct clm_timer *timer);
 
 	void *ctx; /* opaque, passed to http_post/timer_set */
+
+	/*
+	 * The host's native event loop (e.g. the desktop adapter's
+	 * uv_loop_t*), for tools that need to reach the underlying platform
+	 * directly -- see clm_tool_invocation_loop(). NULL when the host has
+	 * no such thing (e.g. a blocking embedded transport). Kept separate
+	 * from ctx on purpose: ctx is whatever the adapter's own callbacks
+	 * need (and may wrap more than the loop), while this is specifically
+	 * the loop, for external consumers that must not depend on the
+	 * adapter's private ctx layout.
+	 */
+	void *native_loop;
 };
 
 #endif /* CLM_HOST_H */

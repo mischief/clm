@@ -372,7 +372,7 @@ void *
 clm_tool_invocation_loop(const struct clm_tool_invocation *inv)
 {
 	struct clm_host *host = inv ? inv->batch->agent->host : NULL;
-	return host ? host->ctx : NULL;
+	return host ? host->native_loop : NULL;
 }
 
 const char *

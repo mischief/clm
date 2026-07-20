@@ -65,6 +65,15 @@ struct clm_mcp_client {
 	char *api_key;
 	uint64_t timeout_ms;
 
+	/* CLM_MCP_HTTP only: shared across every JSON-RPC call this client
+	 * makes to its one server, so repeat calls (tools/list, tool calls)
+	 * reuse curl's connection/TLS-session cache instead of each paying
+	 * for a fresh handshake. NULL for CLM_MCP_STDIO (no HTTP at all). One
+	 * per client, not shared with any other client or with the agent's
+	 * own clm_host -- this server's connection cache has no business
+	 * being reused by a different server or by the LLM API calls. */
+	struct clm_http_mux *http_mux;
+
 	void (*on_ready)(int status, size_t tool_count, void *user);
 	void *user;
 
@@ -562,7 +571,7 @@ mcp_http_send(struct clm_mcp_client *client, char *body,
 	hctx->inv = inv;
 	hctx->kind = kind;
 
-	r = clm_http_async_post(client->loop, client->url, client->api_key, body,
+	r = clm_http_async_post(client->http_mux, client->url, client->api_key, body,
 	    NULL, mcp_http_success, mcp_http_error, NULL, "mcp", hctx, NULL);
 	free(body);
 	if (r != 0)
@@ -1026,6 +1035,17 @@ clm_mcp_connect(struct clm_agent *agent, struct uv_loop_s *loop,
 	client->restart_tokens = MCP_RESTART_BURST;
 	client->last_refill_usec = mcp_now_usec();
 
+	if (client->transport == CLM_MCP_HTTP) {
+		client->http_mux = clm_http_mux_new(client->loop);
+		if (client->http_mux == NULL) {
+			free(client->name);
+			free(client->url);
+			free(client->api_key);
+			free(client);
+			return -ENOMEM;
+		}
+	}
+
 	if (client->transport == CLM_MCP_STDIO) {
 		client->argv_copy = mcp_dup_argv(server_cfg->argv);
 		if (client->argv_copy == NULL) {
@@ -1058,10 +1078,25 @@ clm_mcp_connect(struct clm_agent *agent, struct uv_loop_s *loop,
 /* Actually release the struct's own memory. Only called once we're certain no
  * further callback (a pipe read/write, or proc's exit_cb) can fire into it --
  * see mcp_begin_close/mcp_handle_closed. Pending calls and registered tools
- * must already be cleared by the caller before this runs. */
+ * must already be cleared by the caller before this runs.
+ *
+ * NOTE (pre-existing, not introduced by http_mux): the HTTP transport does
+ * not track its in-flight clm_http_request handles at all (mcp_http_send
+ * passes out_req=NULL), so a call started via mcp_http_send that is still
+ * in flight when this runs is neither cancelled nor waited on -- its
+ * eventual mcp_http_success/mcp_http_error will fire into a freed hctx
+ * (which points at this now-freed client) whether or not http_mux exists.
+ * Freeing http_mux here does not create that hazard; it does mean
+ * clm_http_mux_free's "nothing still attached" assert can now catch it
+ * loudly (abort, in a debug build) instead of the silent
+ * use-after-free continuing unnoticed the way it already did before this
+ * change. Worth fixing properly (track+cancel HTTP calls the same way
+ * stdio's pending list does) but that is a separate change from adding
+ * mux sharing here. */
 static void
 mcp_client_free_now(struct clm_mcp_client *client)
 {
+	clm_http_mux_free(client->http_mux);
 	mcp_free_argv(client->argv_copy);
 	free(client->linebuf);
 	free(client->name);

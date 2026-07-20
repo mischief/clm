@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: ISC
+#include <assert.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -36,19 +37,43 @@ struct http_buf {
 	size_t len;
 };
 
-/* Per-socket poll context, allocated by the socket callback. */
+/* Per-socket poll context, allocated by the socket callback. One per fd
+ * curl asks us to watch; outlives any single request, since curl reuses
+ * a kept-alive connection's fd across requests on the shared multi. */
 struct clm_http_socket {
 	uv_poll_t poll;
 	curl_socket_t sockfd;
-	struct clm_http_request *req;
+	struct clm_http_mux *mux;
+};
+
+/*
+ * Shared transport context: one CURLM multi handle plus the one uv_timer_t
+ * curl_multi ever needs (CURLMOPT_TIMERFUNCTION gives a single next-wakeup
+ * per multi handle, not per easy handle, so the timer lives here, not on
+ * individual requests). See clm/http_async.h for the sharing/ownership
+ * contract.
+ *
+ * live_requests is not a refcount in the "free when it hits zero" sense --
+ * the mux is only ever freed by its owner's explicit clm_http_mux_free()
+ * call, never by requests finishing. It exists purely so that call can
+ * assert nothing is still attached, catching a too-early free (a real bug:
+ * it would leave any still-running request holding a dangling multi_handle)
+ * immediately instead of as a later use-after-free.
+ */
+struct clm_http_mux {
+	uv_loop_t *uv;
+	CURLM *multi_handle;
+	uv_timer_t timer_handle;
+	bool timer_initialized;
+	bool timer_closing; /* uv_close on timer_handle issued, awaiting callback */
+	size_t live_requests;
 };
 
 /* Async HTTP request context (opaque to callers; see clm/http_async.h). */
 struct clm_http_request {
-	uv_loop_t *uv;
+	struct clm_http_mux *mux; /* borrowed; outlives the request */
 
-	/* Curl handles */
-	CURLM *multi_handle;
+	/* Curl handle */
 	CURL *easy_handle;
 	struct curl_slist *headers;
 
@@ -56,10 +81,6 @@ struct clm_http_request {
 	struct http_buf response_buf;
 
 	int events_pending;
-
-	/* UV timer handle */
-	uv_timer_t timer_handle;
-	int timer_initialized;
 
 	/* Callbacks and user data */
 	clm_http_success_cb success_cb;
@@ -72,7 +93,6 @@ struct clm_http_request {
 	int error_code;
 	char error_msg[256];
 	int closing;
-	int handles_to_close;
 };
 
 static size_t
@@ -104,28 +124,58 @@ http_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 	return realsize;
 }
 
-static void http_handle_closed(uv_handle_t *handle);
 static void http_request_teardown(struct clm_http_request *req);
 static int http_timer_callback(CURLM *multi, long timeout_ms, void *userp);
 static void http_timer_expired(uv_timer_t *handle);
 
 /*
- * Drain curl's message queue after a socket_action. If a transfer finished,
- * record its outcome on req and return true so the caller tears down. Both the
- * socket-poll and timer paths must call this: a transfer can complete off the
- * timer (e.g. TLS/handshake progress or a fast response driven by a 0ms
- * timeout), and if only the poll path reaps CURLMSG_DONE the timer keeps
- * re-arming at 0ms and the loop spins at 100% CPU.
+ * Look up the clm_http_request an in-progress easy handle belongs to. Every
+ * easy handle gets CURLOPT_PRIVATE set to its owning req at creation, so this
+ * is how the shared mux's callbacks (which only ever get the mux itself as
+ * their userp/timerdata -- see CURLMOPT_SOCKETDATA/TIMERDATA below) recover
+ * which *request*, out of however many are concurrently multiplexed on this
+ * one CURLM, a given socket event or completion message is actually for.
  */
-static bool
-http_reap_done(struct clm_http_request *req)
+static struct clm_http_request *
+req_from_easy(CURL *easy)
+{
+	struct clm_http_request *req = NULL;
+	curl_easy_getinfo(easy, CURLINFO_PRIVATE, &req);
+	return req;
+}
+
+/*
+ * Drain curl's message queue after a socket_action, tearing down every
+ * transfer that finished. A single curl_multi_socket_action on a mux shared
+ * by several concurrent requests can complete more than one of them at once
+ * (e.g. two tool-call HTTP requests finishing in the same poll wakeup), so
+ * this must fully drain the queue -- not stop at the first CURLMSG_DONE --
+ * and resolve each message's own request via req_from_easy rather than
+ * assuming it's "the" request the caller already had in hand.
+ *
+ * Both the socket-poll and timer paths call this: a transfer can complete off
+ * the timer (e.g. TLS/handshake progress or a fast response driven by a 0ms
+ * timeout), and if only the poll path reaped CURLMSG_DONE the timer would
+ * keep re-arming at 0ms and the loop would spin at 100% CPU.
+ */
+static void
+http_reap_done(struct clm_http_mux *mux)
 {
 	int msgs_left;
 	CURLMsg *msg;
 
-	while ((msg = curl_multi_info_read(req->multi_handle, &msgs_left)) != NULL) {
+	while ((msg = curl_multi_info_read(mux->multi_handle, &msgs_left)) != NULL) {
+		struct clm_http_request *req;
+
 		if (msg->msg != CURLMSG_DONE)
 			continue;
+
+		req = req_from_easy(msg->easy_handle);
+		if (req == NULL) {
+			clm_debug("CURLMSG_DONE for unknown easy handle, ignoring");
+			continue;
+		}
+
 		CURLcode curl_err = msg->data.result;
 		if (curl_err == CURLE_OK) {
 			req->state = CLM_HTTP_DONE;
@@ -137,26 +187,31 @@ http_reap_done(struct clm_http_request *req)
 			    "curl error: %s", curl_easy_strerror(curl_err));
 			clm_debug("CURLMSG_DONE, curl_err=%d", curl_err);
 		}
-		return true;
+		http_request_teardown(req);
 	}
-	return false;
 }
 
 static void
 http_poll_callback(uv_poll_t *handle, int status, int events)
 {
 	struct clm_http_socket *ctx = handle->data;
-	struct clm_http_request *req = ctx->req;
+	struct clm_http_mux *mux = ctx->mux;
 	int curl_action = 0;
+	int running = 0;
 
 	clm_debug("status=%d, events=%d, fd=%d", status, events, ctx->sockfd);
 
 	if (status < 0) {
-		req->state = CLM_HTTP_ERROR;
-		req->error_code = -status;
-		snprintf(req->error_msg, sizeof(req->error_msg), "poll error: %s", uv_err_name(-status));
-		clm_debug("poll error, status=%d", status);
-		goto done;
+		/* A poll error on this fd: tell curl about it via the error
+		 * select bit and let it decide which transfer(s), if any, are
+		 * affected -- unlike the old one-request-per-mux design, this
+		 * socket may be serving a connection curl is keeping alive for
+		 * a *future* request rather than one that's live right now, so
+		 * there's no single req here to fail directly. */
+		curl_multi_socket_action(mux->multi_handle, ctx->sockfd,
+		    CURL_CSELECT_ERR, &running);
+		http_reap_done(mux);
+		return;
 	}
 
 	if (events & UV_READABLE)
@@ -166,17 +221,10 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 
 	clm_debug("curl_action=%d", curl_action);
 
-	curl_multi_socket_action(req->multi_handle, ctx->sockfd, curl_action, &req->events_pending);
+	curl_multi_socket_action(mux->multi_handle, ctx->sockfd, curl_action, &running);
 	clm_debug("curl_multi_socket_action completed");
 
-	if (http_reap_done(req))
-		goto done;
-
-	return;
-
-done:
-	clm_debug("calling http_request_teardown");
-	http_request_teardown(req);
+	http_reap_done(mux);
 }
 
 static void
@@ -189,16 +237,17 @@ on_socket_closed(uv_handle_t *handle)
 static int
 http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void *socketp)
 {
-	struct clm_http_request *req = userp;
+	struct clm_http_mux *mux = userp;
 	struct clm_http_socket *ctx = socketp;
 
+	(void)easy;
 	clm_debug("action=%d, s=%d", action, s);
 
 	if (action == CURL_POLL_REMOVE) {
 		if (ctx != NULL) {
 			uv_poll_stop(&ctx->poll);
 			uv_close((uv_handle_t *)&ctx->poll, on_socket_closed);
-			curl_multi_assign(req->multi_handle, s, NULL);
+			curl_multi_assign(mux->multi_handle, s, NULL);
 		}
 		return 0;
 	}
@@ -208,10 +257,10 @@ http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void 
 		if (ctx == NULL)
 			return 0;
 		ctx->sockfd = s;
-		ctx->req = req;
+		ctx->mux = mux;
 		ctx->poll.data = ctx;
-		uv_poll_init_socket(req->uv, &ctx->poll, s);
-		curl_multi_assign(req->multi_handle, s, ctx);
+		uv_poll_init_socket(mux->uv, &ctx->poll, s);
+		curl_multi_assign(mux->multi_handle, s, ctx);
 		clm_debug("uv_poll_init_socket success, sockfd=%d", s);
 	}
 
@@ -228,11 +277,127 @@ http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void 
 	return 0;
 }
 
+static int
+http_timer_callback(CURLM *multi, long timeout_ms, void *userp)
+{
+	struct clm_http_mux *mux = userp;
+
+	(void)multi;
+	clm_debug("timeout_ms=%ld", timeout_ms);
+
+	if (mux->timer_closing)
+		return 0; /* mux is tearing down; nothing to (re)arm */
+
+	if (timeout_ms < 0) {
+		if (mux->timer_initialized) {
+			uv_timer_stop(&mux->timer_handle);
+			clm_debug("uv_timer_stop completed");
+		}
+		return 0;
+	}
+
+	if (!mux->timer_initialized) {
+		uv_timer_init(mux->uv, &mux->timer_handle);
+		mux->timer_handle.data = mux;
+		mux->timer_initialized = true;
+		clm_debug("uv_timer_init success");
+	}
+
+	uv_timer_start(&mux->timer_handle, http_timer_expired, (uint64_t)timeout_ms, 0);
+	clm_debug("uv_timer_start completed with timeout=%lu", (unsigned long)timeout_ms);
+	return 0;
+}
+
+static void
+http_timer_expired(uv_timer_t *handle)
+{
+	struct clm_http_mux *mux = handle->data;
+	int running;
+
+	clm_debug("calling curl_multi_socket_action");
+	curl_multi_socket_action(mux->multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
+	clm_debug("curl_multi_socket_action completed, running=%d", running);
+
+	/* A transfer can finish on the timer path; see http_reap_done's
+	 * comment for why this must be drained here too. */
+	http_reap_done(mux);
+}
+
+struct clm_http_mux *
+clm_http_mux_new(uv_loop_t *loop)
+{
+	struct clm_http_mux *mux;
+
+	if (loop == NULL)
+		return NULL;
+
+	mux = calloc(1, sizeof(*mux));
+	if (mux == NULL)
+		return NULL;
+
+	mux->multi_handle = curl_multi_init();
+	if (mux->multi_handle == NULL) {
+		free(mux);
+		return NULL;
+	}
+
+	mux->uv = loop;
+
+	curl_multi_setopt(mux->multi_handle, CURLMOPT_SOCKETFUNCTION, http_socket_callback);
+	curl_multi_setopt(mux->multi_handle, CURLMOPT_SOCKETDATA, mux);
+	curl_multi_setopt(mux->multi_handle, CURLMOPT_TIMERFUNCTION, http_timer_callback);
+	curl_multi_setopt(mux->multi_handle, CURLMOPT_TIMERDATA, mux);
+
+	return mux;
+}
+
+static void
+mux_free_now(uv_handle_t *handle)
+{
+	struct clm_http_mux *mux = handle->data;
+
+	assert(mux->live_requests == 0);
+	curl_multi_cleanup(mux->multi_handle);
+	free(mux);
+}
+
+void
+clm_http_mux_free(struct clm_http_mux *mux)
+{
+	if (mux == NULL)
+		return;
+
+	/*
+	 * Every request started against this mux must already be gone --
+	 * clm_http_request_free (called from every completion/cancel/
+	 * teardown path) decrements live_requests, and nothing else does.
+	 * A caller that frees the mux while a request is still attached has
+	 * a lifetime bug: continuing would hand that request's later
+	 * callbacks (socket/timer events still pointed at this mux) a
+	 * dangling CURLM*. Catch it here, loudly, instead of corrupting
+	 * memory silently later.
+	 */
+	assert(mux->live_requests == 0);
+
+	if (mux->timer_initialized && !mux->timer_closing) {
+		mux->timer_closing = true;
+		uv_close((uv_handle_t *)&mux->timer_handle, mux_free_now);
+		return;
+	}
+
+	/* No timer handle was ever created (never had a request), or it was
+	 * already stopped/never started closing: nothing pending on the
+	 * loop for this mux, free it immediately. */
+	curl_multi_cleanup(mux->multi_handle);
+	free(mux);
+}
+
 int
-clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
-    const char *json_body, struct curl_slist *extra_headers,
-    clm_http_success_cb success_cb, clm_http_error_cb error_cb,
-    clm_http_data_cb data_cb, const char *client_suffix, void *user,
+clm_http_async_post(struct clm_http_mux *mux, const char *url,
+    const char *api_key, const char *json_body,
+    struct curl_slist *extra_headers, clm_http_success_cb success_cb,
+    clm_http_error_cb error_cb, clm_http_data_cb data_cb,
+    const char *client_suffix, void *user,
     struct clm_http_request **out_req)
 {
 	struct clm_http_request *req;
@@ -244,7 +409,7 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	if (out_req != NULL)
 		*out_req = NULL;
 
-	ASSERT_RETURN(loop != NULL, -EINVAL);
+	ASSERT_RETURN(mux != NULL, -EINVAL);
 	ASSERT_RETURN(url != NULL, -EINVAL);
 	/* json_body == NULL performs a GET (used for the health check). */
 	ASSERT_RETURN(success_cb != NULL, -EINVAL);
@@ -257,7 +422,7 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	}
 	clm_debug("req allocated");
 
-	req->uv = loop;
+	req->mux = mux;
 	req->success_cb = success_cb;
 	req->error_cb = error_cb;
 	req->data_cb = data_cb;
@@ -266,18 +431,9 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	req->response_buf.data = NULL;
 	req->response_buf.len = 0;
 
-	req->multi_handle = curl_multi_init();
-	if (req->multi_handle == NULL) {
-		clm_debug("curl_multi_init failed");
-		free(req);
-		return -ENOMEM;
-	}
-	clm_debug("curl_multi_init success");
-
 	req->easy_handle = curl_easy_init();
 	if (req->easy_handle == NULL) {
 		clm_debug("curl_easy_init failed");
-		curl_multi_cleanup(req->multi_handle);
 		free(req);
 		return -ENOMEM;
 	}
@@ -299,7 +455,6 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 			clm_debug("auth_header alloc failed");
 			curl_slist_free_all(req->headers);
 			curl_easy_cleanup(req->easy_handle);
-			curl_multi_cleanup(req->multi_handle);
 			free(req);
 			return -ENOMEM;
 		}
@@ -358,15 +513,15 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	curl_easy_setopt(req->easy_handle, CURLOPT_LOW_SPEED_TIME, 300L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
+	/* CURLOPT_PRIVATE, not CURLMOPT_SOCKETDATA/TIMERDATA (those carry the
+	 * mux, set once in clm_http_mux_new): this is how the mux's shared
+	 * callbacks recover *this* request out of however many are
+	 * concurrently multiplexed on the same CURLM -- see req_from_easy. */
 	curl_easy_setopt(req->easy_handle, CURLOPT_PRIVATE, req);
 
-	curl_multi_setopt(req->multi_handle, CURLMOPT_SOCKETFUNCTION, http_socket_callback);
-	curl_multi_setopt(req->multi_handle, CURLMOPT_SOCKETDATA, req);
-	curl_multi_setopt(req->multi_handle, CURLMOPT_TIMERFUNCTION, http_timer_callback);
-	curl_multi_setopt(req->multi_handle, CURLMOPT_TIMERDATA, req);
-
-	curl_multi_add_handle(req->multi_handle, req->easy_handle);
+	curl_multi_add_handle(mux->multi_handle, req->easy_handle);
 	req->state = CLM_HTTP_RUNNING;
+	mux->live_requests++;
 	clm_debug("curl_multi_add_handle success");
 
 	/* Hand the caller a cancellable handle before we start driving it. The
@@ -381,12 +536,13 @@ clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
 	 * it does on Linux. Reap it here too, else the CURLMSG_DONE just sits
 	 * queued forever: no poll/timer callback is ever going to run for a
 	 * socket that never got added, so success_cb/error_cb never fire and
-	 * the caller's event loop spins with nothing to wait on. */
-	curl_multi_socket_action(req->multi_handle, CURL_SOCKET_TIMEOUT, 0, &req->events_pending);
+	 * the caller's event loop spins with nothing to wait on. http_reap_done
+	 * drains the whole mux, not just this req, since curl may also have
+	 * settled other requests sharing this multi in the same call. */
+	curl_multi_socket_action(mux->multi_handle, CURL_SOCKET_TIMEOUT, 0, &req->events_pending);
 	clm_debug("curl_multi_socket_action completed");
 
-	if (http_reap_done(req))
-		http_request_teardown(req);
+	http_reap_done(mux);
 
 	return 0;
 }
@@ -419,17 +575,15 @@ http_request_complete(struct clm_http_request *req)
 	}
 }
 
-static void
-http_handle_closed(uv_handle_t *handle)
-{
-	struct clm_http_request *req = handle->data;
-	req->handles_to_close--;
-	if (req->handles_to_close == 0) {
-		http_request_complete(req);
-		clm_http_request_free(req);
-	}
-}
-
+/*
+ * Remove the easy handle from the shared multi and finish the request
+ * synchronously. There is no per-request timer/socket handle to wait on
+ * anymore (those belong to the mux, shared across every request, and
+ * outlive this one) -- curl_multi_remove_handle is synchronous, so once it
+ * returns there is nothing left pending specifically for this request, and
+ * clm_http_request_free can run immediately instead of deferring to a uv
+ * close callback the way the old per-request-multi design had to.
+ */
 static void
 http_request_teardown(struct clm_http_request *req)
 {
@@ -439,69 +593,12 @@ http_request_teardown(struct clm_http_request *req)
 		return;
 	req->closing = 1;
 
-	/* Remove the easy handle from multi; this triggers CURL_POLL_REMOVE
-	 * callbacks for any open sockets, which close their poll handles. */
-	if (req->easy_handle != NULL && req->multi_handle != NULL)
-		curl_multi_remove_handle(req->multi_handle, req->easy_handle);
+	if (req->easy_handle != NULL && req->mux != NULL &&
+	    req->mux->multi_handle != NULL)
+		curl_multi_remove_handle(req->mux->multi_handle, req->easy_handle);
 
-	req->handles_to_close = 0;
-	if (req->timer_initialized)
-		req->handles_to_close++;
-
-	if (req->handles_to_close == 0) {
-		clm_debug("no handles to close, completing");
-		http_request_complete(req);
-		clm_http_request_free(req);
-		return;
-	}
-	if (req->timer_initialized) {
-		clm_debug("uv_close timer_handle");
-		uv_close((uv_handle_t *)&req->timer_handle, http_handle_closed);
-	}
-}
-
-static int
-http_timer_callback(CURLM *multi, long timeout_ms, void *userp)
-{
-	struct clm_http_request *req = userp;
-
-	clm_debug("timeout_ms=%ld", timeout_ms);
-
-	if (timeout_ms < 0) {
-		if (req->timer_initialized) {
-			uv_timer_stop(&req->timer_handle);
-			clm_debug("uv_timer_stop completed");
-		}
-		return 0;
-	}
-
-	if (!req->timer_initialized) {
-		uv_timer_init(req->uv, &req->timer_handle);
-		req->timer_handle.data = req;
-		req->timer_initialized = 1;
-		clm_debug("uv_timer_init success");
-	}
-
-	uv_timer_start(&req->timer_handle, http_timer_expired, (uint64_t)timeout_ms, 0);
-	clm_debug("uv_timer_start completed with timeout=%lu", (unsigned long)timeout_ms);
-	return 0;
-}
-
-static void
-http_timer_expired(uv_timer_t *handle)
-{
-	struct clm_http_request *req = handle->data;
-	int running;
-	clm_debug("calling curl_multi_socket_action");
-	curl_multi_socket_action(req->multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
-	clm_debug("curl_multi_socket_action completed, running=%d", running);
-
-	/*
-	 * A transfer can finish on the timer path. Reap it here too, else a
-	 * curl-requested 0ms timeout re-arms forever and the loop spins.
-	 */
-	if (http_reap_done(req))
-		http_request_teardown(req);
+	http_request_complete(req);
+	clm_http_request_free(req);
 }
 
 void
@@ -511,16 +608,13 @@ clm_http_request_free(struct clm_http_request *req)
 		return;
 
 	if (req->easy_handle != NULL) {
-		/* Remove from multi if not already done in teardown. */
-		if (req->multi_handle != NULL)
-			curl_multi_remove_handle(req->multi_handle, req->easy_handle);
+		/* Remove from the mux's multi if not already done in
+		 * teardown (e.g. a caller invoking this directly on a
+		 * request that was never started). */
+		if (req->mux != NULL && req->mux->multi_handle != NULL)
+			curl_multi_remove_handle(req->mux->multi_handle, req->easy_handle);
 		curl_easy_cleanup(req->easy_handle);
 		req->easy_handle = NULL;
-	}
-
-	if (req->multi_handle != NULL) {
-		curl_multi_cleanup(req->multi_handle);
-		req->multi_handle = NULL;
 	}
 
 	if (req->headers != NULL) {
@@ -531,6 +625,14 @@ clm_http_request_free(struct clm_http_request *req)
 	if (req->response_buf.data != NULL) {
 		free(req->response_buf.data);
 		req->response_buf.data = NULL;
+	}
+
+	/* The mux itself is borrowed, never owned by a request -- only
+	 * live_requests is ours to touch, so its owner's clm_http_mux_free
+	 * can assert nothing is still attached. */
+	if (req->mux != NULL) {
+		assert(req->mux->live_requests > 0);
+		req->mux->live_requests--;
 	}
 
 	free(req);

@@ -16,6 +16,26 @@
 #include "clm/http_async.h"
 #include "banned.h"
 
+/*
+ * host->ctx for this adapter: the loop (needed for timer_set, which has
+ * nothing to do with HTTP) plus one clm_http_mux shared by every HTTP
+ * request this host ever starts -- the agent's own LLM API calls and every
+ * Lua plugin's http.get/post alike, since both already route through
+ * agent->host->http_post (see libclmlua/lua_http.c). One host, one mux, for
+ * the host's whole lifetime: curl's connection/TLS-session cache is then
+ * reused across every request instead of each paying for a fresh handshake.
+ *
+ * Scoped to one clm_host, not a process-wide global: nothing here prevents
+ * a caller from constructing more than one clm_host (and hence more than
+ * one clm_agent) in the same process -- each gets its own independent mux,
+ * so there is never a question of one host's connection cache leaking into
+ * another's, and no shared/static state to reason about across them.
+ */
+struct host_uv_ctx {
+	uv_loop_t *loop;
+	struct clm_http_mux *mux;
+};
+
 /* ------------------------------------------------------------------ */
 /* HTTP transport                                                      */
 /* ------------------------------------------------------------------ */
@@ -25,7 +45,7 @@ host_uv_http_post(void *ctx, const struct clm_http_req *req,
                   clm_http_success_cb success, clm_http_error_cb error,
                   clm_http_data_cb data, void *user, struct clm_http_call **out)
 {
-	uv_loop_t *loop = ctx;
+	struct host_uv_ctx *hctx = ctx;
 	struct curl_slist *hdrs = NULL;
 	struct clm_http_request *r = NULL;
 	int rc;
@@ -43,9 +63,9 @@ host_uv_http_post(void *ctx, const struct clm_http_req *req,
 		}
 	}
 
-	rc = clm_http_async_post(loop, req->url, req->api_key, req->body, hdrs,
-	                         success, error, data, req->client_suffix, user,
-	                         &r);
+	rc = clm_http_async_post(hctx->mux, req->url, req->api_key, req->body,
+	                         hdrs, success, error, data, req->client_suffix,
+	                         user, &r);
 	if (rc < 0) {
 		/* The engine did not take the headers on a start failure. */
 		curl_slist_free_all(hdrs);
@@ -94,13 +114,13 @@ static int
 host_uv_timer_set(void *ctx, uint64_t ms, clm_timer_cb cb, void *arg,
                   struct clm_timer **out)
 {
-	uv_loop_t *loop = ctx;
+	struct host_uv_ctx *hctx = ctx;
 	struct clm_timer *tm = calloc(1, sizeof(*tm));
 	if (tm == NULL)
 		return -ENOMEM;
 	tm->cb = cb;
 	tm->arg = arg;
-	uv_timer_init(loop, &tm->t);
+	uv_timer_init(hctx->loop, &tm->t);
 	uv_timer_start(&tm->t, host_uv_timer_fire, ms, 0);
 	if (out != NULL)
 		*out = tm;
@@ -124,6 +144,7 @@ int
 clm_host_uv_new(uv_loop_t *loop, struct clm_host **out)
 {
 	struct clm_host *h;
+	struct host_uv_ctx *hctx;
 
 	if (loop == NULL || out == NULL)
 		return -EINVAL;
@@ -139,15 +160,33 @@ clm_host_uv_new(uv_loop_t *loop, struct clm_host **out)
 	 */
 	signal(SIGPIPE, SIG_IGN);
 
-	h = calloc(1, sizeof(*h));
-	if (h == NULL)
+	hctx = calloc(1, sizeof(*hctx));
+	if (hctx == NULL)
 		return -ENOMEM;
+
+	hctx->loop = loop;
+	hctx->mux = clm_http_mux_new(loop);
+	if (hctx->mux == NULL) {
+		free(hctx);
+		return -ENOMEM;
+	}
+
+	h = calloc(1, sizeof(*h));
+	if (h == NULL) {
+		clm_http_mux_free(hctx->mux);
+		free(hctx);
+		return -ENOMEM;
+	}
 
 	h->http_post = host_uv_http_post;
 	h->http_cancel = host_uv_http_cancel;
 	h->timer_set = host_uv_timer_set;
 	h->timer_cancel = host_uv_timer_cancel;
-	h->ctx = loop;
+	h->ctx = hctx;
+	/* clm_tool_invocation_loop() consumers (tool_shell/tool_bg's uv_spawn)
+	 * cast this back to uv_loop_t* -- it must stay the loop itself, not
+	 * hctx, whose layout is private to this adapter. */
+	h->native_loop = loop;
 
 	*out = h;
 	return 0;
@@ -156,5 +195,23 @@ clm_host_uv_new(uv_loop_t *loop, struct clm_host **out)
 void
 clm_host_uv_free(struct clm_host *host)
 {
+	struct host_uv_ctx *hctx;
+
+	if (host == NULL)
+		return;
+
+	/*
+	 * clm_http_mux_free asserts nothing is still attached (see its
+	 * comment in http_async.c) -- the caller freeing this host is
+	 * responsible for having already settled every request it started
+	 * (cancelled or completed), same existing invariant clm_agent_free
+	 * and clm_mcp_client_free already rely on for their own in-flight
+	 * requests today.
+	 */
+	hctx = host->ctx;
+	if (hctx != NULL) {
+		clm_http_mux_free(hctx->mux);
+		free(hctx);
+	}
 	free(host);
 }
