@@ -96,6 +96,23 @@ struct ui {
 	unsigned built_gen;
 	int built_width;
 
+	/* Wrap-position cache: wrap_row[i]/wrap_col[i] hold the cursor
+	 * position (row, col) immediately before rsegs[i] is walked, for
+	 * width wrap_width; index nrsegs (i.e. one past the last real rseg)
+	 * holds the position where the transient steering-queue tail begins
+	 * (see draw_transcript). Filled by wrap_walk (tui.c) the first time
+	 * it does a full pass after rebuild_render invalidates it; reused
+	 * as-is by every repaint tick until the next rebuild, since rsegs
+	 * never change shape without one (rebuild_render always frees and
+	 * repushes from scratch) -- this is what lets an idle repaint tick
+	 * (fires every 80ms while dirty/busy, whether or not new content
+	 * arrived) skip re-walking the whole transcript with mbrtowc/wcwidth.
+	 */
+	int *wrap_row, *wrap_col;
+	size_t cap_wrap;
+	int wrap_width;
+	bool wrap_valid;
+
 	size_t
 	    scroll; /* wrapped rows scrolled up from the bottom; 0 = follow */
 	int last_total; /* wrapped row count as of the last draw_transcript

@@ -1309,6 +1309,7 @@ rebuild_render(struct ui *u, int w)
 	for (size_t i = 0; i < u->nrsegs; i++)
 		free(u->rsegs[i].text);
 	u->nrsegs = 0;
+	u->wrap_valid = false; /* rsegs are about to change shape */
 
 	/* Find the most recent ST_TOOL_OUT segment so push_tool_output can
 	 * leave only it at full preview depth and collapse the rest. */
@@ -1394,26 +1395,30 @@ rebuild_render(struct ui *u, int w)
 }
 
 /*
- * Walk the rendered runs, soft-wrapping every run to width w. Returns the total
- * number of wrapped rows. When draw is true, cells whose wrapped-row index
- * falls in [start, start+h) are painted into u->txt at row (index - start).
- * The single walk is used both to measure (draw=false) and to paint, so the
- * two passes can never disagree about where lines wrap.
+ * Soft-wrap rsegs[i0, iN) to width w, starting at cursor (*row, *col), and
+ * advance *row and *col past the last character walked. If ckpt_row and
+ * ckpt_col are non-NULL, record the (row, col) at the start of each rseg
+ * into them -- this is how wrap_walk below builds its resume cache. If draw
+ * is true,
+ * cells whose wrapped-row index falls in [start, start+h) are painted into
+ * u->txt at row (index - start). Both the checkpoint-building pass and the
+ * paint pass call this same core loop, so they can never disagree about
+ * where lines wrap.
  */
-static int
-wrap_walk(struct ui *u, int w, int h, int start, bool draw)
+static void
+wrap_span(struct ui *u, size_t i0, size_t iN, int *row, int *col, int w,
+    int h, int start, bool draw, int *ckpt_row, int *ckpt_col)
 {
-	int row = 0, col = 0;
-
-	if (w < 1)
-		w = 1;
-
-	for (size_t i = 0; i < u->nrsegs; i++) {
+	for (size_t i = i0; i < iN; i++) {
 		const char *s = u->rsegs[i].text;
 		size_t len = strlen(s);
 		size_t j = 0;
 		mbstate_t ps;
 
+		if (ckpt_row != NULL) {
+			ckpt_row[i] = *row;
+			ckpt_col[i] = *col;
+		}
 		if (draw)
 			wattrset(u->txt, u->rsegs[i].attr);
 		memset(&ps, 0, sizeof(ps));
@@ -1428,28 +1433,125 @@ wrap_walk(struct ui *u, int w, int h, int start, bool draw)
 				wc = 0;
 			}
 			if (wc == L'\n') {
-				row++;
-				col = 0;
+				(*row)++;
+				*col = 0;
 				j += k;
 				continue;
 			}
 			cw = wcwidth(wc);
 			if (cw < 0)
 				cw = 1;
-			if (cw > 0 && col + cw > w) {
-				row++;
-				col = 0;
+			if (cw > 0 && *col + cw > w) {
+				(*row)++;
+				*col = 0;
 			}
-			if (draw && row >= start && row < start + h) {
-				wmove(u->txt, row - start, col);
+			if (draw && *row >= start && *row < start + h) {
+				wmove(u->txt, *row - start, *col);
 				waddnstr(u->txt, s + j, (int)k);
 			}
-			col += cw;
+			*col += cw;
 			j += k;
 		}
 	}
 	if (draw)
 		wattrset(u->txt, A_NORMAL);
+}
+
+/* Binary-search wrap_row[0..n] (sorted ascending) for the rightmost index
+ * whose checkpoint row is <= start, so a paint pass can resume closest to
+ * its visible window instead of walking from rseg 0. */
+static size_t
+wrap_checkpoint_before(const int *rows, size_t n, int start)
+{
+	size_t lo = 0, hi = n;
+
+	while (lo < hi) {
+		size_t mid = lo + (hi - lo) / 2;
+
+		if (rows[mid] <= start)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo > 0 ? lo - 1 : 0;
+}
+
+/* Ensure wrap_row/wrap_col hold valid checkpoints for rsegs[0..base] at
+ * width w (index `base` = the position just after the last real rseg,
+ * where the transient steering tail begins -- see draw_transcript). If the
+ * cache is already valid (rebuild_render hasn't run and w hasn't changed
+ * since), this is a no-op: no mbrtowc/wcwidth work at all. Otherwise it
+ * does one full wrap_span pass over the real rsegs to rebuild it.
+ */
+static void
+wrap_ensure_checkpoints(struct ui *u, int w, size_t base)
+{
+	int row = 0, col = 0;
+	int *r, *c;
+
+	if (u->wrap_valid && u->wrap_width == w)
+		return;
+
+	if (u->cap_wrap < base + 1) {
+		size_t ncap = u->cap_wrap ? u->cap_wrap * 2 : 64;
+
+		while (ncap < base + 1)
+			ncap *= 2;
+		r = realloc(u->wrap_row, ncap * sizeof(*r));
+		c = realloc(u->wrap_col, ncap * sizeof(*c));
+		if (r != NULL)
+			u->wrap_row = r;
+		if (c != NULL)
+			u->wrap_col = c;
+		if (r == NULL || c == NULL)
+			return; /* leave wrap_valid false; retry next tick */
+		u->cap_wrap = ncap;
+	}
+
+	wrap_span(u, 0, base, &row, &col, w, 0, 0, false, u->wrap_row,
+	    u->wrap_col);
+	u->wrap_row[base] = row;
+	u->wrap_col[base] = col;
+	u->wrap_width = w;
+	u->wrap_valid = true;
+}
+
+/*
+ * Walk the rendered runs (real rsegs plus the transient tail appended past
+ * `base` by draw_transcript), soft-wrapped to width w. Returns the total
+ * number of wrapped rows. When draw is true, cells whose wrapped-row index
+ * falls in [start, start+h) are painted into u->txt at row (index - start).
+ *
+ * The real-rseg portion is resumed from a cached checkpoint rather than
+ * walked from scratch whenever possible: wrap_ensure_checkpoints only
+ * redoes that work when rebuild_render has changed rsegs or w has changed;
+ * a paint pass additionally jumps to the closest checkpoint at or before
+ * `start` instead of resuming at row 0. Only the checkpoint-building pass
+ * and the tail (0-3 short lines) ever get walked character-by-character on
+ * a steady-state repaint tick.
+ */
+static int
+wrap_walk(struct ui *u, int w, int h, int start, bool draw, size_t base)
+{
+	int row, col;
+	size_t i0;
+
+	if (w < 1)
+		w = 1;
+
+	wrap_ensure_checkpoints(u, w, base);
+
+	if (draw) {
+		i0 = wrap_checkpoint_before(u->wrap_row, base + 1, start);
+		row = u->wrap_row[i0];
+		col = u->wrap_col[i0];
+	} else {
+		i0 = base;
+		row = u->wrap_row[base];
+		col = u->wrap_col[base];
+	}
+
+	wrap_span(u, i0, u->nrsegs, &row, &col, w, h, start, draw, NULL, NULL);
 	return row + 1;
 }
 
@@ -1482,7 +1584,7 @@ draw_transcript(struct ui *u)
 		rseg_push(u, seg_attr(ST_META), line, strlen(line));
 	}
 
-	total = wrap_walk(u, w, h, 0, false);
+	total = wrap_walk(u, w, h, 0, false, base);
 
 	/* scroll is a distance from the bottom, so on its own it re-anchors
 	 * to the new bottom whenever total grows -- which drags the viewport
@@ -1508,7 +1610,7 @@ draw_transcript(struct ui *u)
 		start = 0;
 
 	werase(u->txt);
-	wrap_walk(u, w, h, start, true);
+	wrap_walk(u, w, h, start, true, base);
 	wnoutrefresh(u->txt);
 
 	/* Drop the transient queue tail appended above -- it must not survive
@@ -3133,6 +3235,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	for (size_t i = 0; i < u->nrsegs; i++)
 		free(u->rsegs[i].text);
 	free(u->rsegs);
+	free(u->wrap_row);
+	free(u->wrap_col);
 	for (size_t i = 0; i < u->steering_nqueue; i++)
 		free(u->steering_queue[i]);
 	free(u->steering_queue);
