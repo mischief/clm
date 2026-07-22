@@ -63,8 +63,11 @@ void clm_http_mux_free(struct clm_http_mux *mux);
  * "(tool: <suffix>)" so the server can attribute the request to a specific
  * tool/plugin. Pass NULL for the base User-Agent only.
  *
- * Returns 0 on success (request started), negative errno on failure.
- * On completion, either success_cb or error_cb will be called.
+ * returns 0 when the request is accepted and negative errno when startup
+ * fails. a failed start invokes no callback. an accepted request invokes
+ * exactly one completion callback, which may run before this function returns.
+ * out_req is cleared before startup and receives a cancellable handle only if
+ * the request is still in flight when this function returns.
  */
 int clm_http_async_post(struct clm_http_mux *mux, const char *url,
                         const char *api_key, const char *json_body,
@@ -75,9 +78,9 @@ int clm_http_async_post(struct clm_http_mux *mux, const char *url,
                         struct clm_http_request **out_req);
 
 /*
- * Abort an in-flight request. Tears down its handles and delivers the outcome
- * to error_cb with -ECANCELED. Safe to call once, before the request has
- * completed; a no-op if already tearing down.
+ * abort an in-flight request. tears down its handles and delivers the outcome
+ * to error_cb with -ECANCELED. safe to call once on the non-null handle returned
+ * by clm_http_async_post, before the request has completed.
  */
 void clm_http_async_cancel(struct clm_http_request *req);
 

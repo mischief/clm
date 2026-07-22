@@ -45,21 +45,22 @@ typedef void (*clm_timer_cb)(void *arg);
 
 struct clm_host {
 	/*
-	 * Start an HTTP request. Exactly one of success/error is invoked for it
-	 * — later (async host) or before returning (blocking host). data may be
-	 * NULL. On a 2xx streamed response, data receives body chunks; success
-	 * still gets the full body. *out (if non-NULL) receives a handle usable
-	 * with cancel. Returns 0 on accepted, negative errno on failure to
-	 * start.
+	 * start an http request. a negative return means startup failed: no
+	 * callback is invoked and *out remains null. zero means accepted and
+	 * exactly one of success/error is invoked, either before returning or
+	 * later. data may be null. on a 2xx streamed response, data receives body
+	 * chunks; success still gets the full body. *out is cleared before startup
+	 * and receives a cancellable handle only when the request remains in
+	 * flight after this call returns.
 	 */
 	int (*http_post)(void *ctx, const struct clm_http_req *req,
 	                 clm_http_success_cb success, clm_http_error_cb error,
 	                 clm_http_data_cb data, void *user,
 	                 struct clm_http_call **out);
 
-	/* Abort an in-flight request; delivers the error callback with
-	 * -ECANCELED. Safe once, before completion; a no-op if already
-	 * settling. */
+	/* abort an in-flight request; delivers the error callback with
+	 * -ECANCELED. safe once on a non-null handle returned by http_post,
+	 * before completion. */
 	void (*http_cancel)(struct clm_http_call *call);
 
 	/*

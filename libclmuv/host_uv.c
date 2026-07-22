@@ -50,6 +50,9 @@ host_uv_http_post(void *ctx, const struct clm_http_req *req,
 	struct clm_http_request *r = NULL;
 	int rc;
 
+	if (out != NULL)
+		*out = NULL;
+
 	/* Translate the portable "Name: Value" header list into a curl_slist.
 	 * clm_http_async_post takes ownership on success. */
 	if (req->headers != NULL) {

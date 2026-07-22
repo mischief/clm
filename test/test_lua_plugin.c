@@ -10,12 +10,14 @@
 #include <string.h>
 
 #include <cjson/cJSON.h>
+#include <curl/curl.h>
 #include <uv.h>
 
 #include "clm/clm.h"
 #include "clm/host_uv.h"
 #include "clm/internal.h"
 #include "clm/lua_plugin.h"
+#include "canned.h"
 
 static int failures;
 
@@ -381,6 +383,155 @@ test_sandbox_and_load_failures(void)
 	return 0;
 }
 
+struct inline_http_host {
+	struct clm_host host;
+	struct clm_host *uv_host;
+	int calls;
+};
+
+struct inline_http_state {
+	int done;
+	int status;
+	int results;
+	char content[256];
+};
+
+static int
+inline_http_post(void *ctx, const struct clm_http_req *req,
+    clm_http_success_cb success, clm_http_error_cb error,
+    clm_http_data_cb data, void *user, struct clm_http_call **out)
+{
+	struct inline_http_host *host = ctx;
+
+	if (out != NULL)
+		*out = NULL;
+	if (strcmp(req->url, "test://inline/success") == 0) {
+		struct clm_http_response resp = {
+			.status_code = 200,
+			.body = strdup("inline body"),
+		};
+		host->calls++;
+		if (resp.body == NULL)
+			error((int)CURLE_OUT_OF_MEMORY, "curl error: out of memory", user);
+		else
+			success(&resp, user);
+		return 0;
+	}
+	if (strcmp(req->url, "test://inline/connect-error") == 0) {
+		host->calls++;
+		error((int)CURLE_COULDNT_CONNECT, "curl error: could not connect", user);
+		return 0;
+	}
+	return host->uv_host->http_post(host->uv_host->ctx, req, success, error,
+	    data, user, out);
+}
+
+static int
+inline_timer_set(void *ctx, uint64_t ms, clm_timer_cb cb, void *arg,
+    struct clm_timer **out)
+{
+	struct inline_http_host *host = ctx;
+
+	return host->uv_host->timer_set(host->uv_host->ctx, ms, cb, arg, out);
+}
+
+static void
+inline_on_tool_result(const char *name, const char *content,
+    enum clm_tool_outcome outcome, void *user)
+{
+	struct inline_http_state *state = user;
+
+	(void)name;
+	(void)outcome;
+	state->results++;
+	(void)snprintf(state->content, sizeof(state->content), "%s",
+	    content != NULL ? content : "");
+}
+
+static void
+inline_on_turn_done(int status, void *user)
+{
+	struct inline_http_state *state = user;
+
+	state->done = 1;
+	state->status = status;
+}
+
+static int
+test_inline_http_completion(void)
+{
+	uv_loop_t loop;
+	struct canned_server *srv;
+	struct inline_http_host host = {0};
+	struct inline_http_state state = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	struct clm_callbacks callbacks = {
+		.on_tool_result = inline_on_tool_result,
+		.on_turn_done = inline_on_turn_done,
+	};
+	struct clm_cfg cfg = {
+		.api_key = "test",
+		.provider = CLM_PROVIDER_OPENAI,
+		.model = "test",
+		.max_iterations = 2,
+	};
+	char url[128];
+	int r;
+
+	CHECK(uv_loop_init(&loop) == 0, "inline loop init");
+	srv = canned_start(&loop);
+	CHECK(srv != NULL, "inline canned server");
+	if (srv == NULL)
+		return 1;
+	(void)snprintf(url, sizeof(url),
+	    "http://127.0.0.1:%d/v1/chat/completions", canned_port(srv));
+	cfg.base_url = url;
+
+	r = clm_host_uv_new(&loop, &host.uv_host);
+	CHECK(r == 0, "inline uv host creation");
+	host.host.http_post = inline_http_post;
+	host.host.http_cancel = host.uv_host->http_cancel;
+	host.host.timer_set = inline_timer_set;
+	host.host.timer_cancel = host.uv_host->timer_cancel;
+	host.host.ctx = &host;
+
+	r = clm_agent_new(&cfg, &host.host, &callbacks, &state, &agent);
+	CHECK(r == 0, "inline agent creation");
+	r = clm_lua_env_new(agent, &env);
+	CHECK(r == 0, "inline lua env creation");
+	r = clm_lua_load_plugins(env, "test/plugins");
+	CHECK(r == 0, "inline plugin loading");
+
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"http_inline\","
+	    "\"arguments\":\"{}\"}}]}}]}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"done\"}}]}");
+
+	CHECK(clm_agent_submit(agent, "run inline http") == 0, "inline submit");
+	while (!state.done)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(state.status == 0, "inline turn status");
+	CHECK(state.results == 1, "inline tool result count");
+	CHECK(strcmp(state.content,
+	    "inline body:curl error: could not connect") == 0,
+	    "inline tool result content");
+	CHECK(host.calls == 2, "inline host call count");
+
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	clm_host_uv_free(host.uv_host);
+	canned_stop(srv);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(uv_loop_close(&loop) == 0, "inline loop close");
+	return 0;
+}
+
 int
 main(void)
 {
@@ -390,6 +541,7 @@ main(void)
 	test_sandbox_and_load_failures();
 	test_pending_http_teardown();
 	test_pending_sleep_teardown();
+	test_inline_http_completion();
 
 	if (failures > 0) {
 		printf("test_lua_plugin: %d failure(s)\n", failures);

@@ -38,6 +38,12 @@ int clm_lua_is_invocation_thread(lua_State *L);
 void clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on);
 void clm_lua_clear_invocation_registry(lua_State *L);
 
+enum lua_http_start_result {
+	LUA_HTTP_START_PENDING,
+	LUA_HTTP_START_SUCCESS,
+	LUA_HTTP_START_ERROR,
+};
+
 /* State for one in-flight Lua HTTP request. */
 struct lua_http_req {
 	struct clm_lua_pending pending;
@@ -48,6 +54,11 @@ struct lua_http_req {
 	struct clm_http_call *req; /* the underlying async request */
 	char *tool_name;
 	struct clm_tool_invocation *inv; /* for failing the tool on error */
+	int starting;
+	enum lua_http_start_result start_result;
+	int start_status;
+	char *start_body;
+	char start_error[256];
 };
 
 static void
@@ -108,6 +119,14 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 	lua_State *co;
 	lua_State *L;
 	int nres, rc;
+
+	if (lr->starting) {
+		lr->start_result = LUA_HTTP_START_SUCCESS;
+		lr->start_status = resp->status_code;
+		lr->start_body = resp->body;
+		resp->body = NULL;
+		return;
+	}
 
 	plugin = clm_lua_pending_remove(&lr->pending);
 	if (plugin == NULL) {
@@ -225,6 +244,13 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 	lua_State *L;
 	int nres, rc;
 
+	if (lr->starting) {
+		lr->start_result = LUA_HTTP_START_ERROR;
+		(void)snprintf(lr->start_error, sizeof(lr->start_error), "%s",
+		    error_msg ? error_msg : "unknown HTTP error");
+		return;
+	}
+
 	plugin = clm_lua_pending_remove(&lr->pending);
 	if (plugin == NULL) {
 		lua_http_req_free(lr);
@@ -275,6 +301,34 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 	(void)error_code;
 	clm_lua_http_done(plugin);
 	lua_http_req_free(lr);
+}
+
+static int
+lua_http_return_inline(lua_State *L, struct lua_http_req *lr)
+{
+	struct clm_lua_plugin *plugin;
+	int nres;
+
+	plugin = clm_lua_pending_remove(&lr->pending);
+	if (lr->start_result == LUA_HTTP_START_SUCCESS) {
+		lua_newtable(L);
+		lua_pushinteger(L, lr->start_status);
+		lua_setfield(L, -2, "status");
+		if (lr->start_body != NULL) {
+			lua_pushstring(L, lr->start_body);
+			lua_setfield(L, -2, "body");
+		}
+		free(lr->start_body);
+		nres = 1;
+	} else {
+		lua_pushnil(L);
+		lua_pushstring(L, lr->start_error);
+		nres = 2;
+	}
+
+	clm_lua_http_done(plugin);
+	lua_http_req_free(lr);
+	return nres;
 }
 
 /* ------------------------------------------------------------------ */
@@ -441,15 +495,20 @@ lua_ctx_http_get(lua_State *L)
 		lua_http_req_free(lr);
 		return luaL_error(L, "http_get: plugin is shutting down");
 	}
+	lr->starting = 1;
 	r = agent->host->http_post(agent->host->ctx, &hreq, lua_http_on_success,
 	    lua_http_on_error, NULL, lr, &lr->req);
+	lr->starting = 0;
 	free_headers(hdrs);
 	if (r < 0) {
 		(void)clm_lua_pending_remove(&lr->pending);
+		clm_lua_http_done(plugin);
 		lua_http_req_free(lr);
 		return luaL_error(L, "http_get: failed to start request: %s",
 		    strerror(-r));
 	}
+	if (lr->start_result != LUA_HTTP_START_PENDING)
+		return lua_http_return_inline(L, lr);
 
 	/* If the tool times out while this request is still in flight, abort
 	 * it instead of letting it complete later against a freed inv. */
@@ -553,15 +612,20 @@ lua_ctx_http_post(lua_State *L)
 		lua_http_req_free(lr);
 		return luaL_error(L, "http_post: plugin is shutting down");
 	}
+	lr->starting = 1;
 	r = agent->host->http_post(agent->host->ctx, &hreq, lua_http_on_success,
 	    lua_http_on_error, NULL, lr, &lr->req);
+	lr->starting = 0;
 	free_headers(hdrs);
 	if (r < 0) {
 		(void)clm_lua_pending_remove(&lr->pending);
+		clm_lua_http_done(plugin);
 		lua_http_req_free(lr);
 		return luaL_error(L, "http_post: failed to start request: %s",
 		    strerror(-r));
 	}
+	if (lr->start_result != LUA_HTTP_START_PENDING)
+		return lua_http_return_inline(L, lr);
 
 	if (lr->inv != NULL)
 		clm_tool_invocation_set_cancel(lr->inv, lua_http_cancel, lr);

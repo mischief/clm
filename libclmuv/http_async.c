@@ -93,6 +93,7 @@ struct clm_http_request {
 	int error_code;
 	char error_msg[256];
 	int closing;
+	bool starting;
 };
 
 static size_t
@@ -124,6 +125,7 @@ http_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 	return realsize;
 }
 
+static void http_request_complete(struct clm_http_request *req);
 static void http_request_teardown(struct clm_http_request *req);
 static int http_timer_callback(CURLM *multi, long timeout_ms, void *userp);
 static void http_timer_expired(uv_timer_t *handle);
@@ -524,26 +526,25 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 	mux->live_requests++;
 	clm_debug("curl_multi_add_handle success");
 
-	/* Hand the caller a cancellable handle before we start driving it. The
-	 * transfer only completes on a later loop iteration, so this is safe. */
-	if (out_req != NULL)
-		*out_req = req;
-
-	/* Trigger initial socket action. A refused/failed connect can complete
-	 * synchronously right here instead of later off the poll/timer
-	 * callbacks -- observed on illumos, where a loopback connect to a
-	 * closed port fails inline rather than returning EINPROGRESS the way
-	 * it does on Linux. Reap it here too, else the CURLMSG_DONE just sits
-	 * queued forever: no poll/timer callback is ever going to run for a
-	 * socket that never got added, so success_cb/error_cb never fire and
-	 * the caller's event loop spins with nothing to wait on. http_reap_done
-	 * drains the whole mux, not just this req, since curl may also have
-	 * settled other requests sharing this multi in the same call. */
-	curl_multi_socket_action(mux->multi_handle, CURL_SOCKET_TIMEOUT, 0, &req->events_pending);
+	/* the initial action may complete inline. keep the request alive until
+	 * this function can either publish a live handle or return a completed
+	 * request with a null handle. */
+	req->starting = true;
+	curl_multi_socket_action(mux->multi_handle, CURL_SOCKET_TIMEOUT, 0,
+	    &req->events_pending);
 	clm_debug("curl_multi_socket_action completed");
 
 	http_reap_done(mux);
 
+	req->starting = false;
+	if (req->closing) {
+		http_request_complete(req);
+		clm_http_request_free(req);
+		return 0;
+	}
+
+	if (out_req != NULL)
+		*out_req = req;
 	return 0;
 }
 
@@ -596,6 +597,18 @@ http_request_teardown(struct clm_http_request *req)
 	if (req->easy_handle != NULL && req->mux != NULL &&
 	    req->mux->multi_handle != NULL)
 		curl_multi_remove_handle(req->mux->multi_handle, req->easy_handle);
+
+	/* detach before invoking user code. the callback may release the mux owner. */
+	if (req->mux != NULL) {
+		assert(req->mux->live_requests > 0);
+		req->mux->live_requests--;
+		req->mux = NULL;
+	}
+
+	if (req->starting) {
+		clm_debug("completion deferred until start returns");
+		return;
+	}
 
 	http_request_complete(req);
 	clm_http_request_free(req);

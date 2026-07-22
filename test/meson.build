@@ -50,6 +50,16 @@ test_mcp_ready = executable('test_mcp_ready',
 )
 test('mcp_ready', test_mcp_ready, timeout: 15)
 
+# malformed urls complete in curl's initial socket action. this checks that
+# completion does not publish a dead cancellation handle.
+test_http_async = executable('test_http_async',
+  files('test_http_async.c'),
+  dependencies: [clmuv_dep],
+  include_directories: [clm_inc, include_directories('../include')],
+  c_args: test_cflags,
+)
+test('http_async', test_http_async)
+
 # Session persistence test: pure (no network, no loop). Compiles history.c
 # and session.c directly, same pattern as test_agent, so internals are
 # reachable without going through the shared library's export list.
@@ -70,7 +80,7 @@ test('session', test_session)
 # the seam, not a preprocessor branch inside it.
 if have_lua
   test_lua = executable('test_lua_plugin',
-    files('test_lua_plugin.c'),
+    files('test_lua_plugin.c', 'canned.c'),
     dependencies: [clmuv_dep, clmlua_dep],
     include_directories: [clm_inc, include_directories('../include')],
     c_args: test_cflags,

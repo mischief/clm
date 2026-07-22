@@ -36,7 +36,9 @@ stub_http_post(void *ctx, const struct clm_http_req *req,
                struct clm_http_call **out)
 {
 	(void)ctx; (void)req; (void)success; (void)error;
-	(void)data; (void)user; (void)out;
+	(void)data; (void)user;
+	if (out != NULL)
+		*out = NULL;
 	return -ENOSYS;
 }
 
