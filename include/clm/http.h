@@ -17,9 +17,9 @@ typedef void (*clm_http_success_cb)(struct clm_http_response *resp, void *user);
 typedef void (*clm_http_error_cb)(int error_code, const char *error_msg, void *user);
 
 /*
- * Optional callback delivering response body bytes as they arrive. Only invoked
- * for a 2xx response, so a streaming consumer never sees error bodies. The full
- * body is still accumulated and handed to the success callback at the end.
+ * optional callback delivering response body bytes as they arrive. only invoked
+ * for a 2xx response, so a streaming consumer never sees error bodies. on a
+ * successful streamed request, the success callback receives a null body.
  */
 typedef void (*clm_http_data_cb)(const char *data, size_t len, void *user);
 

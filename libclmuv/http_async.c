@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,9 +14,15 @@
 #include "clm/http_async.h"
 #include "clm/log.h"
 #include "clm/cleanup.h"
+#include "http_response_buffer.h"
 #include "useful.h"
 #include "version.h"
 #include "banned.h"
+
+_Static_assert(CLM_HTTP_MAX_RESPONSE_BYTES > 0,
+    "CLM_HTTP_MAX_RESPONSE_BYTES must be positive");
+_Static_assert((uintmax_t)CLM_HTTP_MAX_RESPONSE_BYTES <= (uintmax_t)SIZE_MAX,
+    "CLM_HTTP_MAX_RESPONSE_BYTES must fit in size_t");
 
 /* Base User-Agent: product token, version, and a homepage comment. Kept
  * minimal (no OS/arch/stack leakage) by design; an optional per-request
@@ -31,13 +38,7 @@ enum clm_http_request_state {
 	CLM_HTTP_ERROR,
 };
 
-/* Async HTTP request response buffer. */
-struct http_buf {
-	char *data;
-	size_t len;
-};
-
-/* Per-socket poll context, allocated by the socket callback. One per fd
+/* per-socket poll context, allocated by the socket callback. one per fd
  * curl asks us to watch; outlives any single request, since curl reuses
  * a kept-alive connection's fd across requests on the shared multi. */
 struct clm_http_socket {
@@ -78,7 +79,7 @@ struct clm_http_request {
 	struct curl_slist *headers;
 
 	/* Response buffer */
-	struct http_buf response_buf;
+	struct http_response_buffer response_buf;
 
 	int events_pending;
 
@@ -99,28 +100,52 @@ struct clm_http_request {
 static size_t
 http_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 {
-	size_t realsize = size * nmemb;
 	struct clm_http_request *req = userp;
-	struct http_buf *buf = &req->response_buf;
-	char *ptr;
+	enum http_response_buffer_result result;
+	size_t realsize;
+	long code = 0;
+	bool streaming;
 
-	ptr = realloc(buf->data, buf->len + realsize + 1);
-	if (ptr == NULL)
-		return 0;
-
-	buf->data = ptr;
-	memcpy(buf->data + buf->len, contents, realsize);
-	buf->len += realsize;
-	buf->data[buf->len] = '\0';
-
-	/* Forward chunks to a streaming consumer, but only for a 2xx response so
-	 * it never sees an error body. */
-	if (req->data_cb != NULL) {
-		long code = 0;
-		curl_easy_getinfo(req->easy_handle, CURLINFO_RESPONSE_CODE, &code);
-		if (code >= 200 && code < 300)
-			req->data_cb(contents, realsize, req->user);
+	curl_easy_getinfo(req->easy_handle, CURLINFO_RESPONSE_CODE, &code);
+	streaming = req->data_cb != NULL && code >= 200 && code < 300;
+	if (streaming && req->response_buf.data != NULL) {
+		free(req->response_buf.data);
+		req->response_buf.data = NULL;
+		req->response_buf.len = 0;
 	}
+	result = http_response_buffer_write(&req->response_buf, contents, size,
+	    nmemb, !streaming, &realsize);
+	if (result != HTTP_RESPONSE_BUFFER_OK) {
+		req->state = CLM_HTTP_ERROR;
+		switch (result) {
+		case HTTP_RESPONSE_BUFFER_OVERFLOW:
+			req->error_code = -EOVERFLOW;
+			(void)snprintf(req->error_msg, sizeof(req->error_msg),
+			    "http response size overflow");
+			break;
+		case HTTP_RESPONSE_BUFFER_TOO_LARGE:
+			req->error_code = -EFBIG;
+			(void)snprintf(req->error_msg, sizeof(req->error_msg),
+			    "http response exceeds %zu-byte limit",
+			    req->response_buf.limit);
+			break;
+		case HTTP_RESPONSE_BUFFER_NO_MEMORY:
+			req->error_code = -ENOMEM;
+			(void)snprintf(req->error_msg, sizeof(req->error_msg),
+			    "out of memory buffering http response");
+			break;
+		case HTTP_RESPONSE_BUFFER_OK:
+		default:
+			req->error_code = -EIO;
+			(void)snprintf(req->error_msg, sizeof(req->error_msg),
+			    "http response write failed");
+			break;
+		}
+		return 0;
+	}
+
+	if (streaming)
+		req->data_cb(contents, realsize, req->user);
 
 	return realsize;
 }
@@ -182,7 +207,7 @@ http_reap_done(struct clm_http_mux *mux)
 		if (curl_err == CURLE_OK) {
 			req->state = CLM_HTTP_DONE;
 			clm_debug("CURLMSG_DONE, CURLE_OK");
-		} else {
+		} else if (req->state != CLM_HTTP_ERROR) {
 			req->state = CLM_HTTP_ERROR;
 			req->error_code = (int)curl_err;
 			snprintf(req->error_msg, sizeof(req->error_msg),
@@ -432,6 +457,8 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 	req->state = CLM_HTTP_PENDING;
 	req->response_buf.data = NULL;
 	req->response_buf.len = 0;
+	req->response_buf.received = 0;
+	req->response_buf.limit = (size_t)CLM_HTTP_MAX_RESPONSE_BYTES;
 
 	req->easy_handle = curl_easy_init();
 	if (req->easy_handle == NULL) {

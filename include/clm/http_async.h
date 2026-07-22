@@ -15,21 +15,21 @@
 struct clm_http_request;
 
 /*
- * Opaque shared transport context: one CURLM multi handle plus the libuv
+ * response bodies are capped at 64 mib by default, including streamed bodies.
+ * this leaves room for unusually large model output while bounding a peer that
+ * sends data indefinitely. define CLM_HTTP_MAX_RESPONSE_BYTES to a positive
+ * byte count when building libclmuv to select a different hard limit.
+ */
+#ifndef CLM_HTTP_MAX_RESPONSE_BYTES
+#define CLM_HTTP_MAX_RESPONSE_BYTES (64U * 1024U * 1024U)
+#endif
+
+/*
+ * opaque shared transport context: one CURLM multi handle plus the libuv
  * socket/timer glue driving it, bound to a single uv_loop_t for its whole
- * lifetime. Every clm_http_async_post() call against the same mux shares
- * curl's connection cache (TCP + TLS session reuse, not just DNS), instead of
- * each request paying for a fresh handshake -- and a fresh CA-bundle
- * load/parse -- from a private multi handle of its own.
- *
- * Scope one of these per logical "client" that makes repeat calls to the
- * same place over its lifetime (the desktop clm_host adapter uses one for
- * the whole process; each clm_mcp_client with an HTTP transport uses one for
- * that server). Never share a mux across independent clients -- there is no
- * reason one client's connection/TLS-session cache should serve another's
- * requests, and nothing here uses locks or threads, so "sharing" only ever
- * means "several requests multiplexed on the same uv-loop iteration", not
- * concurrent access from different threads.
+ * lifetime. every clm_http_async_post() call against the same mux shares
+ * curl's connection cache instead of each request paying for a fresh
+ * connection and tls handshake.
  */
 struct clm_http_mux;
 

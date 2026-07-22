@@ -49,9 +49,9 @@ struct clm_host {
 	 * callback is invoked and *out remains null. zero means accepted and
 	 * exactly one of success/error is invoked, either before returning or
 	 * later. data may be null. on a 2xx streamed response, data receives body
-	 * chunks; success still gets the full body. *out is cleared before startup
-	 * and receives a cancellable handle only when the request remains in
-	 * flight after this call returns.
+	 * chunks and success gets a null body. *out is cleared before startup and
+	 * receives a cancellable handle only when the request remains in flight
+	 * after this call returns.
 	 */
 	int (*http_post)(void *ctx, const struct clm_http_req *req,
 	                 clm_http_success_cb success, clm_http_error_cb error,

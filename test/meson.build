@@ -60,6 +60,17 @@ test_http_async = executable('test_http_async',
 )
 test('http_async', test_http_async)
 
+# response accounting is pure and uses tiny limits so overflow and cap tests
+# do not need a server or large allocations.
+test_http_response_buffer = executable('test_http_response_buffer',
+  files('test_http_response_buffer.c',
+    '../libclmuv/http_response_buffer.c'),
+  include_directories: [include_directories('../libclmuv'),
+    include_directories('..')],
+  c_args: test_cflags,
+)
+test('http_response_buffer', test_http_response_buffer)
+
 # Session persistence test: pure (no network, no loop). Compiles history.c
 # and session.c directly, same pattern as test_agent, so internals are
 # reachable without going through the shared library's export list.

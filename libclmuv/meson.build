@@ -5,7 +5,14 @@
 # http_async.c calls clm_debug (../libclm/log.h) -- that's CLM_API-exported
 # from libclm itself (see log.h), so this archive just links clm_dep for it
 # rather than compiling its own private copy of log.c.
-clmuv_src = files('http_async.c', 'host_uv.c', 'tool_shell.c', 'tool_bg.c', 'mcp_client.c')
+clmuv_src = files(
+  'http_async.c',
+  'http_response_buffer.c',
+  'host_uv.c',
+  'tool_shell.c',
+  'tool_bg.c',
+  'mcp_client.c',
+)
 
 clmuv_deps = [
   # Trimmed to the protocols/features clm actually uses (HTTP/HTTPS) --
