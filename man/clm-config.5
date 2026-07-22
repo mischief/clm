@@ -77,8 +77,9 @@ Each entry may set:
 Wire dialect to speak:
 .Qq openai ,
 .Qq anthropic ,
+.Qq ollama ,
 or
-.Qq ollama .
+.Qq openai-responses .
 Defaults to
 .Qq openai
 if unset.
@@ -96,6 +97,11 @@ internally -- and gets Anthropic's
 auth headers instead of a bearer token, and prompt caching enabled on
 every request automatically (a no-op below the model's minimum
 cacheable prefix, so this is free to leave on).
+.Qq openai-responses
+speaks OpenAI's Responses API instead of chat/completions -- also
+translated internally -- needed for models that reject function tools
+on chat/completions
+.Pq e.g. gpt-5.6-luna , gpt-5.6-sol .
 .It Va url
 Base API endpoint, e.g.
 .Qq http://127.0.0.1:8081/v1 .
@@ -110,6 +116,9 @@ appended automatically and depends on
 .Pa /messages
 for
 .Qq anthropic ,
+.Pa /responses
+for
+.Qq openai-responses ,
 .Pa /chat/completions
 otherwise.
 .It Va api_key

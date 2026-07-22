@@ -24,21 +24,26 @@ struct clm_message;
  * calls, an SSE stream of choices[0].delta chunks, ...). CLM_PROVIDER_OPENAI
  * and CLM_PROVIDER_OLLAMA speak that shape directly. CLM_PROVIDER_ANTHROPIC
  * does not (the Messages API has a structurally different request/response/
- * stream-event shape); see clm/provider.h for the per-provider ops vtable
- * that translates at that one seam, keeping every other file (tools.c,
- * history.c, the bulk of agent.c) unaware more than one wire format exists.
+ * stream-event shape), and neither does CLM_PROVIDER_OPENAI_RESPONSES (the
+ * OpenAI Responses API -- required by some newer OpenAI models, e.g.
+ * gpt-5.6-luna/sol, which reject function tools on chat/completions); see
+ * clm/provider.h for the per-provider ops vtable that translates at that one
+ * seam, keeping every other file (tools.c, history.c, the bulk of agent.c)
+ * unaware more than one wire format exists.
  */
 enum clm_provider {
 	CLM_PROVIDER_OPENAI,
 	CLM_PROVIDER_OLLAMA,
 	CLM_PROVIDER_ANTHROPIC,
+	CLM_PROVIDER_OPENAI_RESPONSES,
 };
 
 /*
  * Parse a provider "kind" string (as used in config.lua's providers[*].kind;
- * see clm-config(5)) into the enum. Recognizes "openai", "ollama", and
- * "anthropic"; anything else, including NULL, yields CLM_PROVIDER_OPENAI
- * (the OpenAI-compatible dialect almost every local server also speaks).
+ * see clm-config(5)) into the enum. Recognizes "openai", "ollama",
+ * "anthropic", and "openai-responses"; anything else, including NULL,
+ * yields CLM_PROVIDER_OPENAI (the OpenAI-compatible dialect almost every
+ * local server also speaks).
  */
 CLM_API enum clm_provider clm_provider_from_str(const char *kind);
 

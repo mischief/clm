@@ -8,6 +8,7 @@
 
 extern const struct clm_provider_ops clm_provider_ops_openai;
 extern const struct clm_provider_ops clm_provider_ops_anthropic;
+extern const struct clm_provider_ops clm_provider_ops_responses;
 
 const struct clm_provider_ops *
 clm_provider_ops_get(enum clm_provider provider)
@@ -15,6 +16,8 @@ clm_provider_ops_get(enum clm_provider provider)
 	switch (provider) {
 	case CLM_PROVIDER_ANTHROPIC:
 		return &clm_provider_ops_anthropic;
+	case CLM_PROVIDER_OPENAI_RESPONSES:
+		return &clm_provider_ops_responses;
 	case CLM_PROVIDER_OPENAI:
 	case CLM_PROVIDER_OLLAMA:
 	default:

@@ -40,6 +40,17 @@ return {
             api_key = clm.secrets.anthropic,
         },
 
+        -- OpenAI's own API, paid key from
+        -- https://platform.openai.com/api-keys. kind = "openai-responses"
+        -- (the Responses API, not chat/completions) because some current
+        -- models -- gpt-5.6-luna, gpt-5.6-sol -- reject function tools on
+        -- chat/completions outright; see clm-config(5).
+        openai = {
+            kind = "openai-responses",
+            url = "https://api.openai.com/v1",
+            api_key = clm.secrets.openai,
+        },
+
         -- Everything below is OpenAI-compatible (kind = "openai"),
         -- differing only in url and which key it needs. All have a
         -- free tier requiring no credit card, current as of this

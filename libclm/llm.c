@@ -17,6 +17,8 @@ clm_provider_from_str(const char *kind)
 		return CLM_PROVIDER_OLLAMA;
 	if (strcmp(kind, "anthropic") == 0)
 		return CLM_PROVIDER_ANTHROPIC;
+	if (strcmp(kind, "openai-responses") == 0)
+		return CLM_PROVIDER_OPENAI_RESPONSES;
 	return CLM_PROVIDER_OPENAI;
 }
 
