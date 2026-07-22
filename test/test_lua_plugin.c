@@ -5,9 +5,12 @@
  * see the clmlua split in lib/meson.build.
  */
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <cjson/cJSON.h>
 #include <curl/curl.h>
@@ -34,10 +37,15 @@ struct pending_host;
 
 struct clm_http_call {
 	struct pending_host *owner;
+	int active;
 };
 
 struct clm_timer {
 	struct pending_host *owner;
+	clm_timer_cb cb;
+	void *arg;
+	uint64_t ms;
+	int active;
 };
 
 struct pending_host {
@@ -532,6 +540,220 @@ test_inline_http_completion(void)
 	return 0;
 }
 
+struct fake_host {
+	struct clm_host host;
+	clm_http_success_cb http_success;
+	clm_http_error_cb http_error;
+	void *http_user;
+	struct clm_http_call http_call;
+	struct clm_timer timers[4];
+	size_t timer_count;
+};
+
+struct timeout_result {
+	int count;
+	enum clm_tool_outcome outcome;
+	char content[256];
+};
+
+static int
+fake_http_post(void *arg, const struct clm_http_req *req,
+    clm_http_success_cb success, clm_http_error_cb error,
+    clm_http_data_cb data, void *user, struct clm_http_call **out)
+{
+	struct fake_host *fake = arg;
+
+	(void)req;
+	(void)data;
+	fake->http_success = success;
+	fake->http_error = error;
+	fake->http_user = user;
+	fake->http_call.active = 1;
+	if (out != NULL)
+		*out = &fake->http_call;
+	return 0;
+}
+
+static void
+fake_http_cancel(struct clm_http_call *call)
+{
+	call->active = 0;
+}
+
+static int
+fake_timer_set(void *arg, uint64_t ms, clm_timer_cb cb, void *user,
+    struct clm_timer **out)
+{
+	struct fake_host *fake = arg;
+	struct clm_timer *timer;
+
+	if (fake->timer_count >= sizeof(fake->timers) / sizeof(fake->timers[0]))
+		return -1;
+	timer = &fake->timers[fake->timer_count++];
+	timer->cb = cb;
+	timer->arg = user;
+	timer->ms = ms;
+	timer->active = 1;
+	if (out != NULL)
+		*out = timer;
+	return 0;
+}
+
+static void
+fake_timer_cancel(struct clm_timer *timer)
+{
+	timer->active = 0;
+}
+
+static void
+fake_host_init(struct fake_host *fake)
+{
+	memset(fake, 0, sizeof(*fake));
+	fake->host.http_post = fake_http_post;
+	fake->host.http_cancel = fake_http_cancel;
+	fake->host.timer_set = fake_timer_set;
+	fake->host.timer_cancel = fake_timer_cancel;
+	fake->host.ctx = fake;
+}
+
+static int
+fake_http_complete(struct fake_host *fake, const char *body)
+{
+	struct clm_http_response response = {
+		.status_code = 200,
+		.body = strdup(body),
+	};
+	clm_http_success_cb cb = fake->http_success;
+	void *user = fake->http_user;
+
+	if (cb == NULL || response.body == NULL)
+		return -1;
+	fake->http_success = NULL;
+	fake->http_error = NULL;
+	fake->http_user = NULL;
+	fake->http_call.active = 0;
+	cb(&response, user);
+	free(response.body);
+	return 0;
+}
+
+static int
+fake_fire_sleep_timer(struct fake_host *fake)
+{
+	for (size_t i = 0; i < fake->timer_count; i++) {
+		struct clm_timer *timer = &fake->timers[i];
+		if (!timer->active || timer->ms != 0)
+			continue;
+		timer->active = 0;
+		timer->cb(timer->arg);
+		return 0;
+	}
+	return -1;
+}
+
+static void
+on_timeout_result(const char *name, const char *content,
+    enum clm_tool_outcome outcome, void *user)
+{
+	struct timeout_result *result = user;
+
+	(void)name;
+	result->count++;
+	result->outcome = outcome;
+	(void)snprintf(result->content, sizeof(result->content), "%s",
+	    content ? content : "");
+}
+
+static int
+start_timeout_tool(struct clm_agent *agent, struct fake_host *fake,
+    const char *name)
+{
+	char response[512];
+
+	(void)snprintf(response, sizeof(response),
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"yield-timeout\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"%s\",\"arguments\":\"{}\"}}]}}]}",
+	    name);
+	if (clm_agent_submit(agent, "run timeout regression") != 0)
+		return -1;
+	return fake_http_complete(fake, response);
+}
+
+static int
+run_yield_timeout_case(const char *name, int use_http)
+{
+	struct fake_host fake;
+	struct timeout_result result = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	const struct clm_callbacks callbacks = {
+		.on_tool_result = on_timeout_result,
+	};
+	struct clm_cfg cfg = {
+		.api_key = "test",
+		.base_url = "http://test.invalid/v1/chat/completions",
+		.provider = CLM_PROVIDER_OPENAI,
+		.model = "test",
+		.max_iterations = 1,
+	};
+	int ok = 0;
+
+	fake_host_init(&fake);
+	if (clm_agent_new(&cfg, &fake.host, &callbacks, &result, &agent) != 0)
+		goto out;
+	if (clm_lua_env_new(agent, &env) != 0)
+		goto out;
+	if (clm_lua_load_plugins(env, "test/plugins_after_yield") != 0)
+		goto out;
+	if (start_timeout_tool(agent, &fake, name) != 0 || result.count != 0)
+		goto out;
+	if (use_http) {
+		if (fake_http_complete(&fake, "{}") != 0)
+			goto out;
+	} else if (fake_fire_sleep_timer(&fake) != 0) {
+		goto out;
+	}
+	ok = result.count == 1 && result.outcome == CLM_TOOL_FAILED &&
+	    strstr(result.content, "plugin exceeded execution time budget") != NULL;
+out:
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	return ok;
+}
+
+/*
+ * run each infinite-loop regression in a child so a missing hook fails in a
+ * bounded time instead of hanging the test process.
+ */
+static int
+run_yield_timeout_subprocess(const char *name, int use_http)
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (pid < 0)
+		return 0;
+	if (pid == 0) {
+		alarm(2);
+		_exit(run_yield_timeout_case(name, use_http) ? 0 : 1);
+	}
+	if (waitpid(pid, &status, 0) != pid)
+		return 0;
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static void
+test_deadline_rearmed_after_yield(void)
+{
+	CHECK(run_yield_timeout_subprocess("loop_after_http", 1),
+	    "execution deadline rearmed after http yield");
+	CHECK(run_yield_timeout_subprocess("loop_after_sleep", 0),
+	    "execution deadline rearmed after sleep yield");
+}
+
 int
 main(void)
 {
@@ -542,6 +764,7 @@ main(void)
 	test_pending_http_teardown();
 	test_pending_sleep_teardown();
 	test_inline_http_completion();
+	test_deadline_rearmed_after_yield();
 
 	if (failures > 0) {
 		printf("test_lua_plugin: %d failure(s)\n", failures);

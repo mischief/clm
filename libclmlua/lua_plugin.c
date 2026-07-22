@@ -146,6 +146,9 @@ clm_lua_pending_teardown_all(struct clm_lua_plugin *plugin)
 void clm_lua_http_done(struct clm_lua_plugin *plugin);
 int clm_lua_http_start(struct clm_lua_plugin *plugin);
 void clm_lua_budget_report(struct clm_lua_plugin *plugin, const char *name);
+int clm_lua_resume_with_deadline(struct clm_lua_plugin *plugin,
+    lua_State *co, lua_State *from, int nargs, int *nresults,
+    uint64_t timeout_ms);
 
 /* ------------------------------------------------------------------ */
 /* Capped allocator                                                    */
@@ -319,6 +322,27 @@ lua_exec_hook(lua_State *L, lua_Debug *ar)
 		return;
 	if (clock_ns() > p->deadline_ns)
 		luaL_error(L, "plugin exceeded execution time budget");
+}
+
+/*
+ * resume a tool coroutine with a fresh execution deadline. the deadline is
+ * active only while lua bytecode runs, so time suspended on async work does
+ * not consume the execution budget.
+ */
+int
+clm_lua_resume_with_deadline(struct clm_lua_plugin *plugin, lua_State *co,
+    lua_State *from, int nargs, int *nresults, uint64_t timeout_ms)
+{
+	int rc;
+
+	if (timeout_ms == 0)
+		timeout_ms = CLM_LUA_EXEC_TIMEOUT_MS;
+	plugin->deadline_ns = clock_ns() + timeout_ms * 1000000ULL;
+	lua_sethook(co, lua_exec_hook, LUA_MASKCOUNT, CLM_LUA_HOOK_INTERVAL);
+	rc = lua_resume(co, from, nargs, nresults);
+	plugin->deadline_ns = 0;
+	lua_sethook(co, NULL, 0, 0);
+	return rc;
 }
 
 /*
@@ -533,22 +557,13 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	lua_pushlightuserdata(co, inv);
 	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_inv");
 
-	/* Set execution deadline and install the count hook. The hook fires
-	 * every N instructions and raises if the deadline has passed. */
+	/* resume the coroutine with (args_table, ctx). */
 	uint64_t timeout = clm_tool_invocation_timeout_ms(inv);
-	if (timeout == 0)
-		timeout = CLM_LUA_EXEC_TIMEOUT_MS;
-	plugin->deadline_ns = clock_ns() + timeout * 1000000ULL;
-	lua_sethook(co, lua_exec_hook, LUA_MASKCOUNT, CLM_LUA_HOOK_INTERVAL);
-
-	/* Resume the coroutine with (args_table, ctx). */
 	nres = 0;
-	rc = lua_resume(co, L, 2, &nres);
+	rc = clm_lua_resume_with_deadline(plugin, co, L, 2, &nres, timeout);
 
 	if (rc == LUA_OK) {
 		/* Coroutine returned normally (synchronous tool). */
-		plugin->deadline_ns = 0;
-		lua_sethook(co, NULL, 0, 0);
 		if (!ctx->completed)
 			clm_tool_fail(inv, "plugin returned without calling ctx:complete/ctx:fail");
 		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
@@ -556,15 +571,9 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 		clm_lua_clear_invocation_registry(L);
 	} else if (rc == LUA_YIELD) {
-		/* Coroutine yielded (waiting for async op like HTTP).
-		 * Clear the hook while suspended — the plugin isn't running
-		 * Lua bytecode during the wait. */
-		plugin->deadline_ns = 0;
-		lua_sethook(co, NULL, 0, 0);
+		/* the helper leaves no deadline armed while async work is pending. */
 	} else {
 		/* Runtime error (includes timeout from the exec hook). */
-		plugin->deadline_ns = 0;
-		lua_sethook(co, NULL, 0, 0);
 		const char *err = lua_tostring(co, -1);
 		clm_debug("lua plugin error: %s", err ? err : "(unknown)");
 		if (!ctx->completed)
@@ -790,7 +799,9 @@ struct lua_sleep_req {
 	int co_ref;
 	struct clm_agent *agent;
 	struct clm_timer *timer;
+	struct clm_lua_plugin *plugin;
 	struct clm_tool_invocation *inv;
+	uint64_t timeout_ms;
 };
 
 static void
@@ -854,7 +865,8 @@ lua_sleep_timer_cb(void *arg)
 	}
 
 	nres = 0;
-	rc = lua_resume(co, L, 0, &nres);
+	rc = clm_lua_resume_with_deadline(sr->plugin, co, L, 0, &nres,
+	    sr->timeout_ms);
 	if (rc == LUA_OK) {
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, sr->co_ref);
@@ -863,6 +875,8 @@ lua_sleep_timer_cb(void *arg)
 		const char *err = lua_tostring(co, -1);
 		clm_debug("clm.sleep: coroutine error on resume: %s",
 		    err ? err : "(unknown)");
+		if (sr->inv != NULL)
+			clm_tool_fail(sr->inv, err ? err : "lua runtime error");
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, sr->co_ref);
 		clm_lua_clear_invocation_registry(L);
@@ -915,9 +929,11 @@ lua_clm_sleep(lua_State *L)
 	sr->main_L = main_L;
 	sr->co_ref = co_ref;
 	sr->agent = agent;
+	sr->plugin = plugin;
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_inv");
 	sr->inv = lua_touserdata(L, -1);
 	lua_pop(L, 1);
+	sr->timeout_ms = clm_tool_invocation_timeout_ms(sr->inv);
 
 	int r = clm_lua_pending_add(plugin, &sr->pending, lua_sleep_teardown);
 	if (r < 0) {

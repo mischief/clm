@@ -6,6 +6,7 @@
  */
 #include <errno.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,6 +38,8 @@ void clm_lua_budget_report(struct clm_lua_plugin *plugin, const char *name);
 int clm_lua_is_invocation_thread(lua_State *L);
 void clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on);
 void clm_lua_clear_invocation_registry(lua_State *L);
+int clm_lua_resume_with_deadline(struct clm_lua_plugin *plugin, lua_State *co,
+    lua_State *from, int nargs, int *nresults, uint64_t timeout_ms);
 
 enum lua_http_start_result {
 	LUA_HTTP_START_PENDING,
@@ -206,7 +209,8 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 
 	/* Resume the coroutine with one result (the table). */
 	nres = 0;
-	rc = lua_resume(co, L, 1, &nres);
+	rc = clm_lua_resume_with_deadline(plugin, co, L, 1, &nres,
+	    clm_tool_invocation_timeout_ms(lr->inv));
 	if (rc == LUA_OK) {
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
@@ -278,7 +282,8 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 	lua_pushstring(co, error_msg ? error_msg : "unknown HTTP error");
 
 	nres = 0;
-	rc = lua_resume(co, L, 2, &nres);
+	rc = clm_lua_resume_with_deadline(plugin, co, L, 2, &nres,
+	    clm_tool_invocation_timeout_ms(lr->inv));
 	if (rc == LUA_OK) {
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
