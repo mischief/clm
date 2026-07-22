@@ -18,6 +18,7 @@
 #include "clm/host.h"
 #include "clm/http.h"
 #include "clm/log.h"
+#include "lua_internal.h"
 #include "useful.h"
 #include "banned.h"
 
@@ -39,15 +40,40 @@ void clm_lua_clear_invocation_registry(lua_State *L);
 
 /* State for one in-flight Lua HTTP request. */
 struct lua_http_req {
+	struct clm_lua_pending pending;
 	lua_State *co;              /* the yielded coroutine */
 	lua_State *main_L;          /* plugin's main state */
 	int co_ref;                 /* registry ref for the coroutine */
 	struct clm_agent *agent;
 	struct clm_http_call *req; /* the underlying async request */
-	struct clm_lua_plugin *plugin; /* for budget tracking */
-	const char *tool_name;      /* borrowed from invocation, for reporting */
+	char *tool_name;
 	struct clm_tool_invocation *inv; /* for failing the tool on error */
 };
+
+static void
+lua_http_req_free(struct lua_http_req *lr)
+{
+	free(lr->tool_name);
+	free(lr);
+}
+
+static void
+lua_http_teardown(struct clm_lua_pending *pending)
+{
+	struct lua_http_req *lr = (struct lua_http_req *)pending;
+	struct clm_tool_invocation *inv = lr->inv;
+
+	if (inv != NULL)
+		clm_tool_invocation_set_cancel(inv, NULL, NULL);
+	lr->inv = NULL;
+	lr->co = NULL;
+	lr->main_L = NULL;
+	if (lr->agent != NULL && lr->agent->host != NULL &&
+	    lr->agent->host->http_cancel != NULL && lr->req != NULL)
+		lr->agent->host->http_cancel(lr->req);
+	if (inv != NULL)
+		clm_tool_fail(inv, "lua plugin environment is shutting down");
+}
 
 /*
  * Tool timeout while an http.get/post is still in flight: abort the
@@ -78,9 +104,22 @@ static void
 lua_http_on_success(struct clm_http_response *resp, void *user)
 {
 	struct lua_http_req *lr = user;
-	lua_State *co = lr->co;
-	lua_State *L = lr->main_L;
+	struct clm_lua_plugin *plugin;
+	lua_State *co;
+	lua_State *L;
 	int nres, rc;
+
+	plugin = clm_lua_pending_remove(&lr->pending);
+	if (plugin == NULL) {
+		free(resp->body);
+		resp->body = NULL;
+		lua_http_req_free(lr);
+		return;
+	}
+	co = lr->co;
+	L = lr->main_L;
+	if (lr->inv != NULL)
+		clm_tool_invocation_set_cancel(lr->inv, NULL, NULL);
 
 	/* Guard: if the coroutine is no longer suspended (already finished
 	 * or errored out via another path), resuming it would crash in
@@ -93,8 +132,8 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_clear_invocation_registry(L);
-		clm_lua_http_done(lr->plugin);
-		free(lr);
+		clm_lua_http_done(plugin);
+		lua_http_req_free(lr);
 		return;
 	}
 
@@ -111,8 +150,8 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_clear_invocation_registry(L);
-		clm_lua_http_done(lr->plugin);
-		free(lr);
+		clm_lua_http_done(plugin);
+		lua_http_req_free(lr);
 		return;
 	}
 
@@ -128,8 +167,8 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 		    lr->co_ref, (void *)ref_co, (void *)co);
 		free(resp->body);
 		resp->body = NULL;
-		clm_lua_http_done(lr->plugin);
-		free(lr);
+		clm_lua_http_done(plugin);
+		lua_http_req_free(lr);
 		return;
 	}
 
@@ -153,7 +192,7 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_clear_invocation_registry(L);
-		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
+		clm_lua_budget_report(plugin, lr->tool_name ? lr->tool_name : "?");
 	} else if (rc == LUA_YIELD) {
 		/* Yielded again (e.g. another HTTP request in the same tool).
 		 * The next HTTP callback will resume it. */
@@ -167,11 +206,11 @@ lua_http_on_success(struct clm_http_response *resp, void *user)
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_clear_invocation_registry(L);
-		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
+		clm_lua_budget_report(plugin, lr->tool_name ? lr->tool_name : "?");
 	}
 
-	clm_lua_http_done(lr->plugin);
-	free(lr);
+	clm_lua_http_done(plugin);
+	lua_http_req_free(lr);
 }
 
 /*
@@ -181,9 +220,20 @@ static void
 lua_http_on_error(int error_code, const char *error_msg, void *user)
 {
 	struct lua_http_req *lr = user;
-	lua_State *co = lr->co;
-	lua_State *L = lr->main_L;
+	struct clm_lua_plugin *plugin;
+	lua_State *co;
+	lua_State *L;
 	int nres, rc;
+
+	plugin = clm_lua_pending_remove(&lr->pending);
+	if (plugin == NULL) {
+		lua_http_req_free(lr);
+		return;
+	}
+	co = lr->co;
+	L = lr->main_L;
+	if (lr->inv != NULL)
+		clm_tool_invocation_set_cancel(lr->inv, NULL, NULL);
 
 	/* Guard: coroutine already finished, don't resume. */
 	if (lua_status(co) != LUA_YIELD) {
@@ -192,8 +242,8 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_clear_invocation_registry(L);
-		clm_lua_http_done(lr->plugin);
-		free(lr);
+		clm_lua_http_done(plugin);
+		lua_http_req_free(lr);
 		return;
 	}
 
@@ -207,7 +257,7 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_clear_invocation_registry(L);
-		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
+		clm_lua_budget_report(plugin, lr->tool_name ? lr->tool_name : "?");
 	} else if (rc == LUA_YIELD) {
 		/* Yielded again. */
 	} else {
@@ -219,12 +269,12 @@ lua_http_on_error(int error_code, const char *error_msg, void *user)
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, lr->co_ref);
 		clm_lua_clear_invocation_registry(L);
-		clm_lua_budget_report(lr->plugin, lr->tool_name ? lr->tool_name : "?");
+		clm_lua_budget_report(plugin, lr->tool_name ? lr->tool_name : "?");
 	}
 
 	(void)error_code;
-	clm_lua_http_done(lr->plugin);
-	free(lr);
+	clm_lua_http_done(plugin);
+	lua_http_req_free(lr);
 }
 
 /* ------------------------------------------------------------------ */
@@ -305,6 +355,7 @@ lua_ctx_http_get(lua_State *L)
 {
 	const char *url = luaL_checkstring(L, 1);
 	struct lua_http_req *lr;
+	struct clm_lua_plugin *plugin;
 	int r;
 
 	/* Must run directly on the invocation coroutine: a nested coroutine or a
@@ -345,11 +396,12 @@ lua_ctx_http_get(lua_State *L)
 	lua_pop(L, 1);
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_plugin");
-	lr->plugin = lua_touserdata(L, -1);
+	plugin = lua_touserdata(L, -1);
 	lua_pop(L, 1);
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_tool_name");
-	lr->tool_name = lua_tostring(L, -1);
+	const char *tool_name = lua_tostring(L, -1);
+	lr->tool_name = tool_name != NULL ? strdup(tool_name) : NULL;
 	lua_pop(L, 1);
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_inv");
@@ -358,13 +410,13 @@ lua_ctx_http_get(lua_State *L)
 
 	/* Enforce HTTP budget. */
 	{
-		int br = clm_lua_http_start(lr->plugin);
+		int br = clm_lua_http_start(plugin);
 		if (br == -1) {
-			free(lr);
+			lua_http_req_free(lr);
 			return luaL_error(L, "http_get: too many in-flight requests");
 		}
 		if (br == -2) {
-			free(lr);
+			lua_http_req_free(lr);
 			return luaL_error(L, "http_get: request limit exceeded");
 		}
 	}
@@ -372,7 +424,7 @@ lua_ctx_http_get(lua_State *L)
 	/* Build optional request headers from arg 2 (table). */
 	char **hdrs = lua_collect_headers(L, 2, NULL);
 	if (hdrs == NULL) {
-		free(lr);
+		lua_http_req_free(lr);
 		return luaL_error(L, "http_get: out of memory");
 	}
 
@@ -383,11 +435,18 @@ lua_ctx_http_get(lua_State *L)
 		.headers = (const char *const *)hdrs,
 		.client_suffix = lr->tool_name,
 	};
+	r = clm_lua_pending_add(plugin, &lr->pending, lua_http_teardown);
+	if (r < 0) {
+		free_headers(hdrs);
+		lua_http_req_free(lr);
+		return luaL_error(L, "http_get: plugin is shutting down");
+	}
 	r = agent->host->http_post(agent->host->ctx, &hreq, lua_http_on_success,
 	    lua_http_on_error, NULL, lr, &lr->req);
 	free_headers(hdrs);
 	if (r < 0) {
-		free(lr);
+		(void)clm_lua_pending_remove(&lr->pending);
+		lua_http_req_free(lr);
 		return luaL_error(L, "http_get: failed to start request: %s",
 		    strerror(-r));
 	}
@@ -411,6 +470,7 @@ lua_ctx_http_post(lua_State *L)
 	const char *url = luaL_checkstring(L, 1);
 	const char *body = luaL_checkstring(L, 2);
 	struct lua_http_req *lr;
+	struct clm_lua_plugin *plugin;
 	int r;
 
 	/* See lua_ctx_http_get: must run on the invocation coroutine. */
@@ -447,11 +507,12 @@ lua_ctx_http_post(lua_State *L)
 	lua_pop(L, 1);
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_plugin");
-	lr->plugin = lua_touserdata(L, -1);
+	plugin = lua_touserdata(L, -1);
 	lua_pop(L, 1);
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_tool_name");
-	lr->tool_name = lua_tostring(L, -1);
+	const char *tool_name = lua_tostring(L, -1);
+	lr->tool_name = tool_name != NULL ? strdup(tool_name) : NULL;
 	lua_pop(L, 1);
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_inv");
@@ -460,13 +521,13 @@ lua_ctx_http_post(lua_State *L)
 
 	/* Enforce HTTP budget. */
 	{
-		int br = clm_lua_http_start(lr->plugin);
+		int br = clm_lua_http_start(plugin);
 		if (br == -1) {
-			free(lr);
+			lua_http_req_free(lr);
 			return luaL_error(L, "http_post: too many in-flight requests");
 		}
 		if (br == -2) {
-			free(lr);
+			lua_http_req_free(lr);
 			return luaL_error(L, "http_post: request limit exceeded");
 		}
 	}
@@ -475,7 +536,7 @@ lua_ctx_http_post(lua_State *L)
 	 * table, contributes extra headers. */
 	char **hdrs = lua_collect_headers(L, 3, "Content-Type: application/json");
 	if (hdrs == NULL) {
-		free(lr);
+		lua_http_req_free(lr);
 		return luaL_error(L, "http_post: out of memory");
 	}
 
@@ -486,11 +547,18 @@ lua_ctx_http_post(lua_State *L)
 		.headers = (const char *const *)hdrs,
 		.client_suffix = lr->tool_name,
 	};
+	r = clm_lua_pending_add(plugin, &lr->pending, lua_http_teardown);
+	if (r < 0) {
+		free_headers(hdrs);
+		lua_http_req_free(lr);
+		return luaL_error(L, "http_post: plugin is shutting down");
+	}
 	r = agent->host->http_post(agent->host->ctx, &hreq, lua_http_on_success,
 	    lua_http_on_error, NULL, lr, &lr->req);
 	free_headers(hdrs);
 	if (r < 0) {
-		free(lr);
+		(void)clm_lua_pending_remove(&lr->pending);
+		lua_http_req_free(lr);
 		return luaL_error(L, "http_post: failed to start request: %s",
 		    strerror(-r));
 	}

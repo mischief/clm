@@ -21,6 +21,7 @@
 #include "clm/internal.h"
 #include "clm/lua_plugin.h"
 #include "clm/log.h"
+#include "lua_internal.h"
 #include "useful.h"
 #include "banned.h"
 
@@ -68,6 +69,8 @@ struct clm_lua_budget {
 	uint64_t peak_call_ns;     /* longest tool call duration */
 };
 
+TAILQ_HEAD(clm_lua_pending_list, clm_lua_pending);
+
 /* Per-plugin state. */
 struct clm_lua_plugin {
 	TAILQ_ENTRY(clm_lua_plugin) entry;
@@ -81,6 +84,8 @@ struct clm_lua_plugin {
 	size_t tool_user_cap;
 	uint64_t deadline_ns; /* wall-clock deadline for current execution */
 	struct clm_lua_budget budget;
+	struct clm_lua_pending_list pending;
+	bool tearing_down;
 };
 
 TAILQ_HEAD(clm_lua_plugin_list, clm_lua_plugin);
@@ -97,6 +102,45 @@ struct clm_lua_env {
 	/* Per-tool config (parsed JSON object, keyed by tool/plugin name). */
 	cJSON *tool_config;
 };
+
+int
+clm_lua_pending_add(struct clm_lua_plugin *plugin,
+    struct clm_lua_pending *pending, clm_lua_pending_teardown_fn teardown)
+{
+	if (plugin == NULL || pending == NULL || teardown == NULL)
+		return -EINVAL;
+	if (plugin->tearing_down)
+		return -ECANCELED;
+	pending->plugin = plugin;
+	pending->teardown = teardown;
+	TAILQ_INSERT_TAIL(&plugin->pending, pending, entry);
+	return 0;
+}
+
+struct clm_lua_plugin *
+clm_lua_pending_remove(struct clm_lua_pending *pending)
+{
+	struct clm_lua_plugin *plugin;
+
+	if (pending == NULL || pending->plugin == NULL)
+		return NULL;
+	plugin = pending->plugin;
+	TAILQ_REMOVE(&plugin->pending, pending, entry);
+	pending->plugin = NULL;
+	return plugin;
+}
+
+static void
+clm_lua_pending_teardown_all(struct clm_lua_plugin *plugin)
+{
+	struct clm_lua_pending *pending;
+
+	plugin->tearing_down = true;
+	while ((pending = TAILQ_FIRST(&plugin->pending)) != NULL) {
+		(void)clm_lua_pending_remove(pending);
+		pending->teardown(pending);
+	}
+}
 
 /* Budget helpers called from lua_http.c (defined below). */
 void clm_lua_http_done(struct clm_lua_plugin *plugin);
@@ -740,11 +784,50 @@ lua_clm_write_file(lua_State *L)
 
 /* State for a pending clm.sleep() call. */
 struct lua_sleep_req {
+	struct clm_lua_pending pending;
 	lua_State *co;
 	lua_State *main_L;
 	int co_ref;
-	struct clm_lua_plugin *plugin;
+	struct clm_agent *agent;
+	struct clm_timer *timer;
+	struct clm_tool_invocation *inv;
 };
+
+static void
+lua_sleep_finish_cancel(struct lua_sleep_req *sr, const char *reason)
+{
+	struct clm_tool_invocation *inv = sr->inv;
+
+	if (inv != NULL)
+		clm_tool_invocation_set_cancel(inv, NULL, NULL);
+	sr->inv = NULL;
+	if (sr->timer != NULL && sr->agent != NULL && sr->agent->host != NULL &&
+	    sr->agent->host->timer_cancel != NULL) {
+		sr->agent->host->timer_cancel(sr->timer);
+		sr->timer = NULL;
+	}
+	free(sr);
+	if (inv != NULL)
+		clm_tool_fail(inv, reason);
+}
+
+static void
+lua_sleep_teardown(struct clm_lua_pending *pending)
+{
+	lua_sleep_finish_cancel((struct lua_sleep_req *)pending,
+	    "lua plugin environment is shutting down");
+}
+
+static void
+lua_sleep_cancel(struct clm_tool_invocation *inv, void *user)
+{
+	struct lua_sleep_req *sr = user;
+
+	(void)inv;
+	if (clm_lua_pending_remove(&sr->pending) == NULL)
+		return;
+	lua_sleep_finish_cancel(sr, "clm.sleep cancelled");
+}
 
 static void
 lua_sleep_timer_cb(void *arg)
@@ -753,6 +836,15 @@ lua_sleep_timer_cb(void *arg)
 	lua_State *co = sr->co;
 	lua_State *L = sr->main_L;
 	int nres, rc;
+
+	if (clm_lua_pending_remove(&sr->pending) == NULL)
+		return;
+	if (sr->inv != NULL)
+		clm_tool_invocation_set_cancel(sr->inv, NULL, NULL);
+	if (sr->timer != NULL && sr->agent->host->timer_cancel != NULL) {
+		sr->agent->host->timer_cancel(sr->timer);
+		sr->timer = NULL;
+	}
 
 	if (lua_status(co) != LUA_YIELD) {
 		clm_debug("clm.sleep: coroutine not yielded, skipping resume");
@@ -822,14 +914,26 @@ lua_clm_sleep(lua_State *L)
 	sr->co = L;
 	sr->main_L = main_L;
 	sr->co_ref = co_ref;
-	sr->plugin = plugin;
+	sr->agent = agent;
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_inv");
+	sr->inv = lua_touserdata(L, -1);
+	lua_pop(L, 1);
 
-	int r = agent->host->timer_set(agent->host->ctx, (uint64_t)ms,
-	    lua_sleep_timer_cb, sr, NULL);
+	int r = clm_lua_pending_add(plugin, &sr->pending, lua_sleep_teardown);
 	if (r < 0) {
+		free(sr);
+		return luaL_error(L, "clm.sleep: plugin is shutting down");
+	}
+
+	r = agent->host->timer_set(agent->host->ctx, (uint64_t)ms,
+	    lua_sleep_timer_cb, sr, &sr->timer);
+	if (r < 0) {
+		(void)clm_lua_pending_remove(&sr->pending);
 		free(sr);
 		return luaL_error(L, "clm.sleep: timer_set failed");
 	}
+	if (sr->inv != NULL)
+		clm_tool_invocation_set_cancel(sr->inv, lua_sleep_cancel, sr);
 
 	return lua_yield(L, 0);
 }
@@ -908,6 +1012,7 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	plugin->budget.http_max_inflight = env->http_max_inflight;
 	plugin->budget.http_max_per_call = env->http_max_per_call;
 	plugin->budget.json_decode_max = env->json_decode_max;
+	TAILQ_INIT(&plugin->pending);
 	plugin->path = strdup(path);
 	if (plugin->path == NULL) {
 		free(plugin);
@@ -1129,6 +1234,7 @@ clm_lua_env_free(struct clm_lua_env *env)
 	p = TAILQ_FIRST(&env->plugins);
 	while (p != NULL) {
 		tmp = TAILQ_NEXT(p, entry);
+		clm_lua_pending_teardown_all(p);
 		/* Free tool user structs and unref invoke functions. */
 		for (size_t j = 0; j < p->tool_user_count; j++) {
 			luaL_unref(p->L, LUA_REGISTRYINDEX,
