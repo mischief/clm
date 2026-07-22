@@ -186,7 +186,7 @@ req_from_easy(CURL *easy)
  * keep re-arming at 0ms and the loop would spin at 100% CPU.
  */
 static void
-http_reap_done(struct clm_http_mux *mux)
+http_reap_done(struct clm_http_mux *mux, int poll_status)
 {
 	int msgs_left;
 	CURLMsg *msg;
@@ -204,7 +204,13 @@ http_reap_done(struct clm_http_mux *mux)
 		}
 
 		CURLcode curl_err = msg->data.result;
-		if (curl_err == CURLE_OK) {
+		if (poll_status < 0) {
+			req->state = CLM_HTTP_ERROR;
+			req->error_code = poll_status;
+			snprintf(req->error_msg, sizeof(req->error_msg),
+			    "poll error: %s", uv_err_name(poll_status));
+			clm_debug("poll error, status=%d", poll_status);
+		} else if (curl_err == CURLE_OK) {
 			req->state = CLM_HTTP_DONE;
 			clm_debug("CURLMSG_DONE, CURLE_OK");
 		} else if (req->state != CLM_HTTP_ERROR) {
@@ -229,15 +235,11 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 	clm_debug("status=%d, events=%d, fd=%d", status, events, ctx->sockfd);
 
 	if (status < 0) {
-		/* A poll error on this fd: tell curl about it via the error
-		 * select bit and let it decide which transfer(s), if any, are
-		 * affected -- unlike the old one-request-per-mux design, this
-		 * socket may be serving a connection curl is keeping alive for
-		 * a *future* request rather than one that's live right now, so
-		 * there's no single req here to fail directly. */
+		/* tell curl this socket failed, then retain libuv's signed status for
+		 * every request completed by this action. */
 		curl_multi_socket_action(mux->multi_handle, ctx->sockfd,
 		    CURL_CSELECT_ERR, &running);
-		http_reap_done(mux);
+		http_reap_done(mux, status);
 		return;
 	}
 
@@ -251,7 +253,7 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 	curl_multi_socket_action(mux->multi_handle, ctx->sockfd, curl_action, &running);
 	clm_debug("curl_multi_socket_action completed");
 
-	http_reap_done(mux);
+	http_reap_done(mux, 0);
 }
 
 static void
@@ -347,7 +349,7 @@ http_timer_expired(uv_timer_t *handle)
 
 	/* A transfer can finish on the timer path; see http_reap_done's
 	 * comment for why this must be drained here too. */
-	http_reap_done(mux);
+	http_reap_done(mux, 0);
 }
 
 struct clm_http_mux *
@@ -561,7 +563,7 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 	    &req->events_pending);
 	clm_debug("curl_multi_socket_action completed");
 
-	http_reap_done(mux);
+	http_reap_done(mux, 0);
 
 	req->starting = false;
 	if (req->closing) {
