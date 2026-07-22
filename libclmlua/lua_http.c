@@ -417,14 +417,14 @@ lua_ctx_http_get(lua_State *L)
 	struct clm_lua_plugin *plugin;
 	int r;
 
-	/* Must run directly on the invocation coroutine: a nested coroutine or a
-	 * load-time (main-thread) call would yield to the wrong lua_resume and
-	 * desync completion tracking. Reject it before starting any request. */
-	if (!clm_lua_is_invocation_thread(L)) {
-		clm_debug("lua http: http.get rejected — not called from a tool "
-		    "invocation coroutine (nested coroutine or load time)");
-		return luaL_error(L, "http.get may only be called directly from a "
-		    "tool invocation, not from a nested coroutine or at load time");
+	/* Must be called from a coroutine that is part of the current tool
+	 * invocation family (main or spawned). This replaces the old binary
+	 * "invocation thread" check. */
+	if (!clm_lua_coroutine_is_valid(L, L)) {
+		clm_debug("lua http: http.get rejected — not called from a "
+		    "valid tool coroutine");
+		return luaL_error(L, "http.get may only be called from within "
+		    "a tool coroutine");
 	}
 
 	/* Retrieve the agent from the registry (set during http module open). */

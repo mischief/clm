@@ -86,6 +86,9 @@ struct clm_lua_plugin {
 	struct clm_lua_budget budget;
 	struct clm_lua_pending_list pending;
 	bool tearing_down;
+
+	/* Multi-coroutine support for generalized async */
+	TAILQ_HEAD(, clm_lua_coroutine) coroutines;
 };
 
 TAILQ_HEAD(clm_lua_plugin_list, clm_lua_plugin);
@@ -375,6 +378,84 @@ clm_lua_is_invocation_thread(lua_State *L)
 	ok = lua_toboolean(L, -1);
 	lua_pop(L, 1);
 	return ok;
+}
+
+/* ------------------------------------------------------------------ */
+/* Multi-coroutine support (generalized async model)                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Register a new coroutine as part of the current tool invocation family.
+ * This allows http.get/post to be called from it (or any future async op).
+ */
+struct clm_lua_coroutine *
+clm_lua_coroutine_register(struct clm_lua_plugin *plugin, lua_State *co, bool is_main)
+{
+	struct clm_lua_coroutine *lco;
+
+	lco = calloc(1, sizeof(*lco));
+	if (lco == NULL)
+		return NULL;
+
+	lco->plugin = plugin;
+	lco->co = co;
+	lco->is_main = is_main;
+	TAILQ_INIT(&lco->pendings);
+
+	/* Keep the coroutine alive via registry on the plugin's main state */
+	lua_pushthread(co);
+	lco->ref = luaL_ref(plugin->L, LUA_REGISTRYINDEX);
+
+	TAILQ_INSERT_TAIL(&plugin->coroutines, lco, entry);
+	return lco;
+}
+
+/* Unregister and destroy a coroutine tracker, cancelling any pending work. */
+void
+clm_lua_coroutine_unregister(struct clm_lua_coroutine *lco)
+{
+	if (lco == NULL)
+		return;
+
+	/* Cancel any remaining pending async work on this coroutine */
+	struct clm_lua_pending *p, *tmp;
+	TAILQ_FOREACH_SAFE(p, &lco->pendings, entry, tmp) {
+		TAILQ_REMOVE(&lco->pendings, p, entry);
+		if (p->teardown)
+			p->teardown(p);
+	}
+
+	luaL_unref(lco->plugin->L, LUA_REGISTRYINDEX, lco->ref);
+	TAILQ_REMOVE(&lco->plugin->coroutines, lco, entry);
+	free(lco);
+}
+
+/* Find the tracking struct for a given coroutine (or NULL). */
+struct clm_lua_coroutine *
+clm_lua_coroutine_find(lua_State *L, lua_State *co)
+{
+	struct clm_lua_plugin *plugin;
+	struct clm_lua_coroutine *lco;
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_plugin");
+	plugin = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	if (plugin == NULL)
+		return NULL;
+
+	TAILQ_FOREACH(lco, &plugin->coroutines, entry) {
+		if (lco->co == co)
+			return lco;
+	}
+	return NULL;
+}
+
+/* Convenience predicate: is this coroutine part of the current invocation? */
+bool
+clm_lua_coroutine_is_valid(lua_State *L, lua_State *co)
+{
+	return clm_lua_coroutine_find(L, co) != NULL;
 }
 
 /*
