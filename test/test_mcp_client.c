@@ -221,7 +221,7 @@ connect_client(struct test_state *st, uv_loop_t *loop)
 	};
 	struct clm_mcp_client *client = NULL;
 
-	CHECK(clm_mcp_connect(st->agent, loop, &cfg, on_ready, st,
+	CHECK(clm_mcp_connect(st->agent, loop, &cfg, on_ready, st, NULL,
 	    &client) == 0, "connect mcp client");
 	CHECK(client != NULL, "mcp client returned");
 	return client;

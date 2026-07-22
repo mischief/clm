@@ -223,7 +223,7 @@ test_http_timeout(uv_loop_t *loop)
 	cfg.url = url;
 	cfg.timeout_ms = 10;
 
-	r = clm_mcp_connect(st.agent, loop, &cfg, on_ready, &st, &client);
+	r = clm_mcp_connect(st.agent, loop, &cfg, on_ready, &st, NULL, &client);
 	check(r == 0, "http: connect");
 	if (r != 0) {
 		cleanup(&st, client, model, mcp);
@@ -287,7 +287,7 @@ test_stdio_timeout(uv_loop_t *loop)
 	cfg.transport = CLM_MCP_STDIO;
 	cfg.argv = argv;
 	cfg.timeout_ms = 10;
-	r = clm_mcp_connect(st.agent, loop, &cfg, on_ready, &st, &client);
+	r = clm_mcp_connect(st.agent, loop, &cfg, on_ready, &st, NULL, &client);
 	check(r == 0, "stdio: connect");
 	if (r != 0) {
 		cleanup(&st, client, model, NULL);
