@@ -48,6 +48,7 @@
 enum mcp_close_intent { MCP_CLOSE_THEN_IDLE, MCP_CLOSE_THEN_RESPAWN, MCP_CLOSE_THEN_FREE };
 
 struct mcp_tool_ctx; /* full definition further down, near mcp_register_tools */
+struct mcp_http_ctx;
 
 struct mcp_pending {
 	int id;
@@ -80,6 +81,9 @@ struct clm_mcp_client {
 
 	int next_id;
 	struct mcp_pending *pending;
+	struct mcp_http_ctx *http_requests;
+	bool discarded;
+	bool cancelling_http;
 
 	/* Full ("<server>__<tool>") names of every tool this client has
 	 * registered on the agent, so a disconnect can unregister them all. */
@@ -123,8 +127,10 @@ enum mcp_http_kind { MCP_HTTP_INIT, MCP_HTTP_LIST, MCP_HTTP_CALL };
 struct mcp_http_ctx {
 	struct clm_mcp_client *client;
 	struct clm_tool_invocation *inv; /* NULL for init/list */
-	struct clm_http_request *req; /* MCP_HTTP_CALL cancellation handle */
+	struct clm_http_request *request;
 	enum mcp_http_kind kind;
+	struct mcp_http_ctx *next;
+	struct mcp_http_ctx **prev;
 };
 
 static void mcp_send_tools_list(struct clm_mcp_client *client);
@@ -474,7 +480,22 @@ mcp_http_cancel(struct clm_tool_invocation *inv, void *user)
 	struct mcp_http_ctx *hctx = user;
 
 	(void)inv;
-	clm_http_async_cancel(hctx->req);
+	clm_http_async_cancel(hctx->request);
+}
+
+static void
+mcp_http_ctx_done(struct mcp_http_ctx *hctx)
+{
+	struct clm_mcp_client *client = hctx->client;
+
+	*hctx->prev = hctx->next;
+	if (hctx->next != NULL)
+		hctx->next->prev = hctx->prev;
+	free(hctx);
+
+	if (client->discarded && client->http_requests == NULL &&
+	    !client->cancelling_http)
+		mcp_client_free_now(client);
 }
 
 static void
@@ -501,6 +522,8 @@ mcp_http_success(struct clm_http_response *resp, void *user)
 			    ? cJSON_GetStringValue(jmsg) : "MCP error";
 		}
 	}
+	if (hctx->client->discarded)
+		goto finish;
 
 	switch (hctx->kind) {
 	case MCP_HTTP_INIT:
@@ -541,11 +564,12 @@ mcp_http_success(struct clm_http_response *resp, void *user)
 	}
 	}
 
+finish:
 	/* clm_http_response_free is core-internal (hidden across the libclm.so
 	 * boundary); free the fields directly instead. */
 	free(resp->body);
 	free(resp->error_msg);
-	free(hctx);
+	mcp_http_ctx_done(hctx);
 }
 
 static void
@@ -554,24 +578,26 @@ mcp_http_error(int error_code, const char *error_msg, void *user)
 	struct mcp_http_ctx *hctx = user;
 	(void)error_code;
 
-	switch (hctx->kind) {
-	case MCP_HTTP_INIT:
-	case MCP_HTTP_LIST:
-		if (hctx->client->on_ready != NULL)
-			hctx->client->on_ready(-EIO, 0, hctx->client->user);
-		break;
-	case MCP_HTTP_CALL:
-		clm_tool_fail(hctx->inv, error_msg);
-		break;
+	if (!hctx->client->discarded) {
+		switch (hctx->kind) {
+		case MCP_HTTP_INIT:
+		case MCP_HTTP_LIST:
+			if (hctx->client->on_ready != NULL)
+				hctx->client->on_ready(-EIO, 0, hctx->client->user);
+			break;
+		case MCP_HTTP_CALL:
+			clm_tool_fail(hctx->inv, error_msg);
+			break;
+		}
 	}
-	free(hctx);
+	mcp_http_ctx_done(hctx);
 }
 
 static int
 mcp_http_send(struct clm_mcp_client *client, char *body,
     enum mcp_http_kind kind, struct clm_tool_invocation *inv)
 {
-	struct mcp_http_ctx *hctx = malloc(sizeof(*hctx));
+	struct mcp_http_ctx *hctx = calloc(1, sizeof(*hctx));
 	int r;
 
 	if (hctx == NULL) {
@@ -580,18 +606,24 @@ mcp_http_send(struct clm_mcp_client *client, char *body,
 	}
 	hctx->client = client;
 	hctx->inv = inv;
-	hctx->req = NULL;
+	hctx->request = NULL;
 	hctx->kind = kind;
+	hctx->next = client->http_requests;
+	hctx->prev = &client->http_requests;
+	if (hctx->next != NULL)
+		hctx->next->prev = &hctx->next;
+	client->http_requests = hctx;
 	if (inv != NULL)
 		clm_tool_invocation_set_cancel(inv, mcp_http_cancel, hctx);
 
 	r = clm_http_async_post(client->http_mux, client->url, client->api_key, body,
-	    NULL, mcp_http_success, mcp_http_error, NULL, "mcp", hctx, &hctx->req);
+	    NULL, mcp_http_success, mcp_http_error, NULL, "mcp", hctx,
+	    &hctx->request);
 	free(body);
 	if (r != 0) {
 		if (inv != NULL)
 			clm_tool_invocation_set_cancel(inv, NULL, NULL);
-		free(hctx);
+		mcp_http_ctx_done(hctx);
 	}
 	return r;
 }
@@ -1012,6 +1044,38 @@ mcp_fail_all_pending(struct clm_mcp_client *client, const char *msg)
 }
 
 static void
+mcp_fail_all_http_calls(struct clm_mcp_client *client)
+{
+	struct mcp_http_ctx *hctx;
+	struct mcp_http_ctx *next;
+
+	for (hctx = client->http_requests; hctx != NULL; hctx = next) {
+		struct clm_tool_invocation *inv;
+
+		next = hctx->next;
+		if (hctx->kind != MCP_HTTP_CALL || hctx->inv == NULL)
+			continue;
+		inv = hctx->inv;
+		hctx->inv = NULL;
+		clm_tool_fail(inv, "mcp client closed");
+	}
+}
+
+static void
+mcp_cancel_all_http(struct clm_mcp_client *client)
+{
+	struct mcp_http_ctx *hctx;
+	struct mcp_http_ctx *next;
+
+	client->cancelling_http = true;
+	for (hctx = client->http_requests; hctx != NULL; hctx = next) {
+		next = hctx->next;
+		clm_http_async_cancel(hctx->request);
+	}
+	client->cancelling_http = false;
+}
+
+static void
 mcp_go_dead(struct clm_mcp_client *client, int status)
 {
 	if (client->dead)
@@ -1110,24 +1174,8 @@ clm_mcp_connect(struct clm_agent *agent, struct uv_loop_s *loop,
 	return 0;
 }
 
-/* Actually release the struct's own memory. Only called once we're certain no
- * further callback (a pipe read/write, or proc's exit_cb) can fire into it --
- * see mcp_begin_close/mcp_handle_closed. Pending calls and registered tools
- * must already be cleared by the caller before this runs.
- *
- * NOTE (pre-existing, not introduced by http_mux): the HTTP transport does
- * not track its in-flight clm_http_request handles at all (mcp_http_send
- * passes out_req=NULL), so a call started via mcp_http_send that is still
- * in flight when this runs is neither cancelled nor waited on -- its
- * eventual mcp_http_success/mcp_http_error will fire into a freed hctx
- * (which points at this now-freed client) whether or not http_mux exists.
- * Freeing http_mux here does not create that hazard; it does mean
- * clm_http_mux_free's "nothing still attached" assert can now catch it
- * loudly (abort, in a debug build) instead of the silent
- * use-after-free continuing unnoticed the way it already did before this
- * change. Worth fixing properly (track+cancel HTTP calls the same way
- * stdio's pending list does) but that is a separate change from adding
- * mux sharing here. */
+/* release the struct only after no transport callback can fire into it.
+ * pending calls and registered tools must already be cleared. */
 static void
 mcp_client_free_now(struct clm_mcp_client *client)
 {
@@ -1143,18 +1191,21 @@ mcp_client_free_now(struct clm_mcp_client *client)
 void
 clm_mcp_client_free(struct clm_mcp_client *client)
 {
-	if (client == NULL)
+	if (client == NULL || client->discarded)
 		return;
 
-	/* Detach from the agent and fail anything outstanding immediately,
-	 * regardless of transport state -- the caller is discarding this handle
-	 * right now and must not see any more callbacks through it. */
-	mcp_fail_all_pending(client, "MCP client closed");
-	mcp_unregister_all(client);
+	/* detach from the agent and fail anything outstanding immediately,
+	 * regardless of transport state. */
+	client->discarded = true;
 	client->on_ready = NULL;
+	mcp_fail_all_pending(client, "MCP client closed");
+	mcp_fail_all_http_calls(client);
+	mcp_unregister_all(client);
 
 	if (client->transport != CLM_MCP_STDIO) {
-		mcp_client_free_now(client); /* HTTP: no persistent handles at all */
+		mcp_cancel_all_http(client);
+		if (client->http_requests == NULL)
+			mcp_client_free_now(client);
 		return;
 	}
 

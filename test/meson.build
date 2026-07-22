@@ -30,6 +30,16 @@ test_mcp = executable('test_mcp',
 )
 test('mcp', test_mcp)
 
+# compile the mcp client against a delayed http stub so teardown can settle
+# each cancelled request after clm_mcp_client_free returns.
+test_mcp_client = executable('test_mcp_client',
+  files('test_mcp_client.c', '../libclmuv/mcp_client.c') + clm_core_src + [version_h],
+  dependencies: clmuv_deps,
+  include_directories: [clm_lib_inc, clm_inc, include_directories('../include')],
+  c_args: ['-DCLM_BUILDING'] + clm_hardening_args + test_cflags,
+)
+test('mcp_client', test_mcp_client)
+
 # Session persistence test: pure (no network, no loop). Compiles history.c
 # and session.c directly, same pattern as test_agent, so internals are
 # reachable without going through the shared library's export list.
