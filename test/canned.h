@@ -31,6 +31,12 @@ void canned_reply(struct canned_server *s, const char *json_body);
  * body, as some OpenAI-compatible backends send). */
 void canned_reply_status(struct canned_server *s, int status, const char *body);
 
+/* hold the next complete request open without responding. canned_resume()
+ * sends its queued reply later. this is useful for deterministic timeout
+ * tests where the response must become available after cancellation. */
+void canned_pause_next(struct canned_server *s);
+void canned_resume(struct canned_server *s);
+
 /* Number of requests received so far. */
 size_t canned_request_count(const struct canned_server *s);
 

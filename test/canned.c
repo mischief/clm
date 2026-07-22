@@ -10,6 +10,8 @@
 
 #include "canned.h"
 
+struct conn;
+
 struct canned_server {
 	uv_loop_t *loop;
 	uv_tcp_t listener;
@@ -23,6 +25,8 @@ struct canned_server {
 
 	char *last_request;
 	size_t request_count;
+	bool pause_next;
+	struct conn *paused;
 };
 
 struct conn {
@@ -33,6 +37,8 @@ struct conn {
 	size_t len;
 	size_t cap;
 	char *resp;
+	bool request_seen;
+	bool paused;
 	bool responded;
 };
 
@@ -147,7 +153,7 @@ on_write(uv_write_t *req, int status)
 }
 
 static void
-respond(struct conn *c)
+send_response(struct conn *c)
 {
 	struct canned_server *srv = c->srv;
 	int status;
@@ -162,10 +168,7 @@ respond(struct conn *c)
 	int hlen;
 	uv_buf_t b;
 
-	free(srv->last_request);
-	srv->last_request = strdup(c->buf ? c->buf : "");
-	srv->request_count++;
-
+	uv_read_stop((uv_stream_t *)&c->handle);
 	hlen = snprintf(NULL, 0, fmt, status_line, blen);
 	c->resp = malloc((size_t)hlen + blen + 1);
 	if (c->resp == NULL) {
@@ -182,19 +185,39 @@ respond(struct conn *c)
 }
 
 static void
+respond(struct conn *c)
+{
+	struct canned_server *srv = c->srv;
+
+	free(srv->last_request);
+	srv->last_request = strdup(c->buf ? c->buf : "");
+	srv->request_count++;
+	c->request_seen = true;
+
+	if (srv->pause_next) {
+		srv->pause_next = false;
+		srv->paused = c;
+		c->paused = true;
+		return;
+	}
+	send_response(c);
+}
+
+static void
 on_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 {
 	struct conn *c = stream->data;
 
 	if (nread > 0) {
 		conn_append(c, buf->base, (size_t)nread);
-		if (!c->responded && request_complete(c)) {
-			uv_read_stop(stream);
+		if (!c->request_seen && request_complete(c))
 			respond(c);
-		}
 	} else if (nread < 0) {
-		if (!c->responded)
+		if (!c->responded) {
+			if (c->paused && c->srv->paused == c)
+				c->srv->paused = NULL;
 			uv_close((uv_handle_t *)stream, on_conn_close);
+		}
 	}
 	free(buf->base);
 }
@@ -285,6 +308,26 @@ canned_reply(struct canned_server *s, const char *json_body)
 	canned_reply_status(s, 200, json_body);
 }
 
+void
+canned_pause_next(struct canned_server *s)
+{
+	if (s != NULL)
+		s->pause_next = true;
+}
+
+void
+canned_resume(struct canned_server *s)
+{
+	struct conn *c;
+
+	if (s == NULL || s->paused == NULL)
+		return;
+	c = s->paused;
+	s->paused = NULL;
+	c->paused = false;
+	send_response(c);
+}
+
 size_t
 canned_request_count(const struct canned_server *s)
 {
@@ -313,5 +356,12 @@ on_listener_close(uv_handle_t *handle)
 void
 canned_stop(struct canned_server *s)
 {
+	if (s->paused != NULL) {
+		struct conn *c = s->paused;
+		s->paused = NULL;
+		c->paused = false;
+		uv_read_stop((uv_stream_t *)&c->handle);
+		uv_close((uv_handle_t *)&c->handle, on_conn_close);
+	}
 	uv_close((uv_handle_t *)&s->listener, on_listener_close);
 }

@@ -53,6 +53,7 @@ struct mcp_pending {
 	int id;
 	enum { MCP_PEND_INIT, MCP_PEND_LIST, MCP_PEND_CALL } kind;
 	struct clm_tool_invocation *inv; /* MCP_PEND_CALL only */
+	struct clm_mcp_client *client; /* MCP_PEND_CALL cancellation owner */
 	struct mcp_pending *next;
 };
 
@@ -122,6 +123,7 @@ enum mcp_http_kind { MCP_HTTP_INIT, MCP_HTTP_LIST, MCP_HTTP_CALL };
 struct mcp_http_ctx {
 	struct clm_mcp_client *client;
 	struct clm_tool_invocation *inv; /* NULL for init/list */
+	struct clm_http_request *req; /* MCP_HTTP_CALL cancellation handle */
 	enum mcp_http_kind kind;
 };
 
@@ -467,6 +469,15 @@ mcp_register_tools(struct clm_mcp_client *client, cJSON *tools)
 /* --- HTTP transport ------------------------------------------------------ */
 
 static void
+mcp_http_cancel(struct clm_tool_invocation *inv, void *user)
+{
+	struct mcp_http_ctx *hctx = user;
+
+	(void)inv;
+	clm_http_async_cancel(hctx->req);
+}
+
+static void
 mcp_http_success(struct clm_http_response *resp, void *user)
 {
 	struct mcp_http_ctx *hctx = user;
@@ -569,13 +580,19 @@ mcp_http_send(struct clm_mcp_client *client, char *body,
 	}
 	hctx->client = client;
 	hctx->inv = inv;
+	hctx->req = NULL;
 	hctx->kind = kind;
+	if (inv != NULL)
+		clm_tool_invocation_set_cancel(inv, mcp_http_cancel, hctx);
 
 	r = clm_http_async_post(client->http_mux, client->url, client->api_key, body,
-	    NULL, mcp_http_success, mcp_http_error, NULL, "mcp", hctx, NULL);
+	    NULL, mcp_http_success, mcp_http_error, NULL, "mcp", hctx, &hctx->req);
 	free(body);
-	if (r != 0)
+	if (r != 0) {
+		if (inv != NULL)
+			clm_tool_invocation_set_cancel(inv, NULL, NULL);
 		free(hctx);
+	}
 	return r;
 }
 
@@ -650,6 +667,21 @@ mcp_pending_take(struct clm_mcp_client *client, int id)
 		pp = &(*pp)->next;
 	}
 	return NULL;
+}
+
+static void
+mcp_stdio_cancel(struct clm_tool_invocation *inv, void *user)
+{
+	struct mcp_pending *target = user;
+	struct mcp_pending **pp = &target->client->pending;
+
+	while (*pp != NULL && *pp != target)
+		pp = &(*pp)->next;
+	if (*pp == target)
+		*pp = target->next;
+
+	free(target);
+	clm_tool_fail(inv, "cancelled");
 }
 
 static void
@@ -851,6 +883,7 @@ mcp_send(struct clm_mcp_client *client, char *body, enum mcp_http_kind kind,
 	}
 	pend->id = client->next_id - 1; /* caller already bumped next_id */
 	pend->inv = inv;
+	pend->client = client;
 	pend->next = client->pending;
 
 	switch (kind) {
@@ -865,6 +898,8 @@ mcp_send(struct clm_mcp_client *client, char *body, enum mcp_http_kind kind,
 		return r;
 	}
 	client->pending = pend;
+	if (pend->kind == MCP_PEND_CALL)
+		clm_tool_invocation_set_cancel(inv, mcp_stdio_cancel, pend);
 	return 0;
 }
 

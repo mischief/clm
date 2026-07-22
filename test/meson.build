@@ -21,6 +21,15 @@ test_agent = executable('test_agent',
 )
 test('agent', test_agent)
 
+# mcp transport regressions use the uv host plus the local canned http server.
+test_mcp = executable('test_mcp',
+  files('test_mcp.c', 'canned.c'),
+  dependencies: [clmuv_dep],
+  include_directories: [include_directories('.'), clm_inc, include_directories('../include')],
+  c_args: test_cflags,
+)
+test('mcp', test_mcp)
+
 # Session persistence test: pure (no network, no loop). Compiles history.c
 # and session.c directly, same pattern as test_agent, so internals are
 # reachable without going through the shared library's export list.
