@@ -78,6 +78,7 @@ struct clm_mcp_client {
 
 	void (*on_ready)(int status, size_t tool_count, void *user);
 	void *user;
+	void (*free_user)(void *user);
 
 	int next_id;
 	struct mcp_pending *pending;
@@ -1101,7 +1102,7 @@ int
 clm_mcp_connect(struct clm_agent *agent, struct uv_loop_s *loop,
     const struct clm_mcp_server_cfg *server_cfg,
     void (*on_ready)(int status, size_t tool_count, void *user), void *user,
-    struct clm_mcp_client **out)
+    void (*free_user)(void *user), struct clm_mcp_client **out)
 {
 	struct clm_mcp_client *client;
 	int r = 0;
@@ -1130,6 +1131,7 @@ clm_mcp_connect(struct clm_agent *agent, struct uv_loop_s *loop,
 	                                                  : MCP_DEFAULT_TIMEOUT_MS;
 	client->on_ready = on_ready;
 	client->user = user;
+	client->free_user = free_user;
 	client->next_id = 1;
 	client->restart_tokens = MCP_RESTART_BURST;
 	client->last_refill_usec = mcp_now_usec();
@@ -1185,6 +1187,8 @@ mcp_client_free_now(struct clm_mcp_client *client)
 	free(client->name);
 	free(client->url);
 	free(client->api_key);
+	if (client->free_user != NULL)
+		client->free_user(client->user);
 	free(client);
 }
 

@@ -49,6 +49,13 @@ on_mcp_ready(int status, size_t tool_count, void *user)
 		(void)snprintf(msg, sizeof(msg), "mcp: %s: connect failed (%d)",
 		    ctx->name, status);
 	emit_status(ctx->status_cb, ctx->status_user, msg);
+}
+
+static void
+free_mcp_ready_ctx(void *user)
+{
+	struct mcp_ready_ctx *ctx = user;
+
 	free(ctx->name);
 	free(ctx);
 }
@@ -130,7 +137,8 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 	ready_ctx->status_cb = status_cb;
 	ready_ctx->status_user = status_user;
 
-	if (clm_mcp_connect(agent, loop, &server_cfg, on_mcp_ready, ready_ctx, &client) != 0) {
+	if (clm_mcp_connect(agent, loop, &server_cfg, on_mcp_ready, ready_ctx,
+	    free_mcp_ready_ctx, &client) != 0) {
 		char msg[256];
 		(void)snprintf(msg, sizeof(msg), "mcp: %s: failed to start", name);
 		emit_status(status_cb, status_user, msg);

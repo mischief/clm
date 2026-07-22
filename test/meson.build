@@ -40,6 +40,16 @@ test_mcp_client = executable('test_mcp_client',
 )
 test('mcp_client', test_mcp_client)
 
+# the callback lifetime test runs itself as a stdio server, lets that server
+# exit after one handshake, and verifies status callbacks across the restart.
+test_mcp_ready = executable('test_mcp_ready',
+  files('test_mcp_ready.c'),
+  dependencies: [clmuv_dep],
+  include_directories: [clm_inc, include_directories('../include')],
+  c_args: test_cflags,
+)
+test('mcp_ready', test_mcp_ready, timeout: 15)
+
 # Session persistence test: pure (no network, no loop). Compiles history.c
 # and session.c directly, same pattern as test_agent, so internals are
 # reachable without going through the shared library's export list.

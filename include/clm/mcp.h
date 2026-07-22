@@ -56,10 +56,19 @@ struct clm_mcp_client;
  * "tools/list", and register each discovered tool on `agent` (name is
  * "mcp__<server_cfg.name>__<tool name>", matching the scheme Claude Code uses
  * for MCP-sourced tools, to avoid collisions across servers).
- * Asynchronous: returns 0 once connection has started (negative errno if the
+ * asynchronous: returns 0 once connection has started (negative errno if the
  * transport failed to even start, e.g. spawn failure), and later calls
  * on_ready(status, tool_count, user) -- status 0 on success, negative errno
- * (and tool_count 0) if the handshake or tools/list failed.
+ * (and tool_count 0) if the handshake or tools/list failed. on_ready is a
+ * connection-status callback, not a one-shot completion callback: a stdio
+ * server disconnect and each restart handshake produce further calls.
+ *
+ * a successful call transfers ownership of user to the client when free_user
+ * is non-null. free_user(user) runs exactly once when the client is finally
+ * destroyed, after its last possible on_ready call. a failed call does not
+ * transfer ownership. when free_user is null, user is borrowed and must remain
+ * valid until clm_mcp_client_free() begins; that call synchronously disables
+ * further on_ready calls even when transport cleanup remains asynchronous.
  *
  * *out is set immediately (even before on_ready fires) so the caller can hold
  * it for clm_mcp_client_free; the client stays alive until freed regardless of
@@ -68,7 +77,7 @@ struct clm_mcp_client;
 CLM_API int clm_mcp_connect(struct clm_agent *agent, struct uv_loop_s *loop,
     const struct clm_mcp_server_cfg *server_cfg,
     void (*on_ready)(int status, size_t tool_count, void *user), void *user,
-    struct clm_mcp_client **out);
+    void (*free_user)(void *user), struct clm_mcp_client **out);
 
 /*
  * Tear down the client: unregisters every tool it had registered on the
