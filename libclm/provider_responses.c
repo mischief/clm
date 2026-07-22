@@ -239,12 +239,14 @@ responses_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools
 			cJSON *tool_choice;
 
 			cJSON_AddItemToObject(req, "tools", rtools);
-			/* Mirror the chat-completions ops' parallel_tool_calls:
-			 * false -- serialize tool dispatch for hosts that can
-			 * only run one action at a time (see
-			 * provider_openai.c). Responses API's equivalent knob
-			 * is top-level "parallel_tool_calls". */
-			cJSON_AddItemToObject(req, "parallel_tool_calls", cJSON_CreateBool(0));
+			/* Mirror the chat-completions ops' handling -- only
+			 * serialize tool dispatch when the caller actually
+			 * needs it (see clm_cfg.disable_parallel_tool_calls
+			 * and provider_openai.c for the full rationale).
+			 * Responses API's equivalent knob is top-level
+			 * "parallel_tool_calls". */
+			if (llm->disable_parallel_tool_calls)
+				cJSON_AddItemToObject(req, "parallel_tool_calls", cJSON_CreateBool(0));
 			tool_choice = cJSON_CreateString("auto");
 			if (tool_choice != NULL)
 				cJSON_AddItemToObject(req, "tool_choice", tool_choice);

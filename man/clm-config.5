@@ -148,6 +148,16 @@ Unset, or either left at
 falls back to a rate high enough to never bind in normal use -- lower
 these only for a backend with a real, tight quota (a free-tier proxy,
 typically).
+.It Va disable_parallel_tool_calls
+Ask the model to make at most one tool call per turn instead of
+however many it likes at once
+.Pq Va 0 No or unset means false, the default .
+clm dispatches a multi-call batch concurrently, which is fine for
+independent tools but deadlocks a tool host that can only advance one
+action at a time (e.g. a game bridge advancing one action per game
+turn); set to
+.Va 1
+only for hosts that need serialized dispatch.
 .It Va models
 A table of per-model overrides nested under this provider, keyed by
 the literal wire model id (the same string sent on the wire and used

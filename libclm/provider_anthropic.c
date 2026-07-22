@@ -373,15 +373,19 @@ anthropic_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools
 	}
 
 	if (cJSON_GetArraySize(anth_tools) > 0) {
-		cJSON *tool_choice = cJSON_CreateObject();
 		cJSON_AddItemToObject(req, "tools", anth_tools);
-		/* Mirror the OpenAI ops' parallel_tool_calls:false -- serialize
-		 * tool dispatch for hosts that can only run one action at a
-		 * time (see provider_openai.c for the full rationale). */
-		if (tool_choice != NULL) {
-			cJSON_AddItemToObject(tool_choice, "type", cJSON_CreateString("auto"));
-			cJSON_AddItemToObject(tool_choice, "disable_parallel_tool_use", cJSON_CreateBool(1));
-			cJSON_AddItemToObject(req, "tool_choice", tool_choice);
+		/* Mirror the OpenAI ops' parallel_tool_calls handling --
+		 * serialize tool dispatch only when the caller actually needs
+		 * it (see clm_cfg.disable_parallel_tool_calls and
+		 * provider_openai.c for the full rationale). */
+		if (llm->disable_parallel_tool_calls) {
+			cJSON *tool_choice = cJSON_CreateObject();
+
+			if (tool_choice != NULL) {
+				cJSON_AddItemToObject(tool_choice, "type", cJSON_CreateString("auto"));
+				cJSON_AddItemToObject(tool_choice, "disable_parallel_tool_use", cJSON_CreateBool(1));
+				cJSON_AddItemToObject(req, "tool_choice", tool_choice);
+			}
 		}
 	} else {
 		cJSON_Delete(anth_tools);

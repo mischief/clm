@@ -235,7 +235,8 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 	agent->props_url = clm_derive_props_url(cfg->base_url);
 
 	r = clm_llm_new(&agent->llm, cfg->provider, cfg->api_key, cfg->base_url,
-	    cfg->model ? cfg->model : "local-model");
+	    cfg->model ? cfg->model : "local-model",
+	    cfg->disable_parallel_tool_calls);
 	if (r < 0) {
 		free(agent);
 		return r;
@@ -1633,7 +1634,7 @@ clm_agent_probe_models(struct clm_agent *agent, const char *base_url,
 	 * (e.g. anthropic_build_auth_headers() copies api_key into the
 	 * header string), so it doesn't need to outlive this call. */
 	if (ops->build_auth_headers != NULL &&
-	    clm_llm_new(&tmp_llm, provider, api_key, base_url, "") == 0) {
+	    clm_llm_new(&tmp_llm, provider, api_key, base_url, "", false) == 0) {
 		auth_headers = ops->build_auth_headers(tmp_llm);
 		clm_llm_free(tmp_llm);
 		if (auth_headers != NULL) {
@@ -1843,6 +1844,7 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 	agent->llm->api_key = new_key;
 	agent->llm->model = new_model;
 	agent->llm->provider = cfg->provider;
+	agent->llm->disable_parallel_tool_calls = cfg->disable_parallel_tool_calls;
 
 	free(agent->models_url);
 	free(agent->props_url);

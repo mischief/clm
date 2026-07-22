@@ -239,6 +239,18 @@ struct clm_cfg {
 	 * Borrowed like the string fields above.
 	 */
 	const char *const *volatile_tools;
+
+	/*
+	 * Ask the model to make at most one tool call per turn instead of
+	 * however many it likes at once. clm dispatches a multi-call batch
+	 * concurrently (see clm_tools_dispatch), which is fine for
+	 * independent tools but deadlocks a tool host that can only advance
+	 * one action at a time (e.g. a game bridge advancing one action per
+	 * game turn). False (the default, and clm's zero-value default) lets
+	 * the model batch tool calls as it likes -- set true only for hosts
+	 * that need serialized dispatch.
+	 */
+	bool disable_parallel_tool_calls;
 };
 
 /*

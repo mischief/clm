@@ -549,6 +549,8 @@ main(int argc, char *argv[])
 			cfg.provider_name = prov_name;
 			cfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_tokens_per_sec", 0);
 			cfg.rate_burst = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_burst", 0);
+			cfg.disable_parallel_tool_calls = clm_lua_cfg_provider_int(lcfg,
+			    prov_name, "disable_parallel_tool_calls", 0) != 0;
 		}
 		if (spec_provider != NULL && spec_model != NULL) {
 			cfg.context_size = clm_lua_cfg_provider_model_int(lcfg,

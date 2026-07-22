@@ -57,12 +57,16 @@ openai_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools, b
 		cJSON_AddItemToObject(req, "tools", tools);
 		tools = NULL; /* req owns it now, even if a later step fails */
 
-		/* Disable parallel tool calls -- a tool host that can only
-		 * process one action at a time (e.g. a game bridge advancing
-		 * one action per game turn) deadlocks on parallel dispatch,
-		 * and serial calls keep tool ordering deterministic
-		 * everywhere else. */
-		cJSON_AddItemToObject(req, "parallel_tool_calls", cJSON_CreateBool(0));
+		/* Only send parallel_tool_calls:false when the caller (see
+		 * clm_cfg.disable_parallel_tool_calls) actually needs serial
+		 * dispatch -- a tool host that can only process one action at
+		 * a time (e.g. a game bridge advancing one action per game
+		 * turn) deadlocks on clm's own concurrent batch dispatch (see
+		 * clm_tools_dispatch) otherwise. Omitted rather than sent as
+		 * true when not needed, to match the API's own default and
+		 * let the model batch tool calls as it likes. */
+		if (llm->disable_parallel_tool_calls)
+			cJSON_AddItemToObject(req, "parallel_tool_calls", cJSON_CreateBool(0));
 	}
 
 	return req;

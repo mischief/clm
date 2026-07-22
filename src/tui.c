@@ -1895,6 +1895,8 @@ cmd_agent(struct ui *u, const char *arg)
 			if (prov) {
 				newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
 				newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
+				newcfg.disable_parallel_tool_calls = clm_lua_cfg_provider_int(u->lcfg,
+				    prov, "disable_parallel_tool_calls", 0) != 0;
 			}
 			/* Volatile-tool policy from the new agent profile.
 			 * Not freed on the next switch (borrowed by the
