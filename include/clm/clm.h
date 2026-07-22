@@ -177,6 +177,13 @@ struct clm_tool_invocation;
 typedef void (*clm_tool_fn)(struct clm_tool_invocation *inv, void *tool_user);
 
 /*
+ * called when a tool is unregistered or its agent is freed. tools with work
+ * that outlives an invocation must use this to sever references to the agent.
+ * the callback does not own tool_user and must not free it.
+ */
+typedef void (*clm_tool_detach_fn)(void *tool_user);
+
+/*
  * A tool definition. Registered with clm_tool_add; the agent copies it (and
  * the strings it points to), so it need not outlive the call.
  */
@@ -184,12 +191,13 @@ struct clm_tool_def {
 	const char *name;          /* unique; matches the model's function name */
 	const char *description;
 	const char *params_schema; /* JSON "parameters" object, or NULL */
-	clm_tool_fn  invoke;
-	void        *user;
+	clm_tool_fn invoke;
+	void *user;
 
 	size_t   output_cap;       /* result clamp in bytes; 0 => library default */
 	uint64_t timeout_ms;       /* per-call deadline; 0 => no timeout */
 	unsigned flags;            /* enum clm_tool_flags */
+	clm_tool_detach_fn detach;
 };
 
 /* Agent state. */

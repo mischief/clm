@@ -15,11 +15,9 @@
  * the portable core: a subprocess needs libuv. Register it with
  * clm_tools_register_bg() alongside clm_tools_register_shell().
  *
- * Known limitation: a job still running when the agent is torn down is not
- * killed or waited on here (no teardown hook wired up yet) -- the child
- * becomes an orphan of the process, same as it would with a bare fork/exec
- * left to run past its parent's exit. Fine for a REPL session ending
- * normally; worth revisiting if this is ever used somewhere longer-lived.
+ * a job still running when its agent is torn down keeps running and is reaped
+ * normally. the tool detach hook severs its agent pointer first, so completion
+ * only releases the job and never notifies the freed agent.
  */
 #include <stdbool.h>
 #include <stdlib.h>
@@ -77,6 +75,18 @@ TAILQ_HEAD(clm_bg_job_list, clm_bg_job);
 static struct clm_bg_job_list bg_jobs = TAILQ_HEAD_INITIALIZER(bg_jobs);
 static uint64_t bg_next_id = 1;
 
+static void
+bg_detach(void *user)
+{
+	struct clm_agent *agent = user;
+	struct clm_bg_job *j;
+
+	TAILQ_FOREACH(j, &bg_jobs, entries) {
+		if (j->agent == agent)
+			j->agent = NULL;
+	}
+}
+
 /* Same growth strategy as tool_shell.c's shell_append, capped at
  * CLM_BG_OUTPUT_CAP instead of a per-invocation output_cap. */
 static void
@@ -121,7 +131,7 @@ bg_finish(struct clm_bg_job *j)
 	/* uv_spawn itself failed: clm_tool_fail() already reported this
 	 * synchronously to the invocation, before the job was even started.
 	 * Nothing more to deliver -- just release the uv handles' bookkeeping. */
-	if (j->started) {
+	if (j->started && j->agent != NULL) {
 		autofree char *msg = NULL;
 
 		/* asprintf's contents-of-*strp-on-failure is unspecified by
@@ -313,6 +323,7 @@ clm_tools_register_bg(struct clm_agent *agent)
 		    "its later result message; defaults to the command itself\"}},"
 		    "\"required\":[\"command\"]}",
 		.invoke = tool_bg_exec,
+		.detach = bg_detach,
 		.user = agent,
 	};
 	return clm_tool_add(agent, &bg_def);

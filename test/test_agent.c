@@ -419,6 +419,58 @@ test_bg_exec(uv_loop_t *loop)
 }
 
 /*
+ * a bg_exec job outlives the invocation that started it, so freeing the agent
+ * after the immediate result must detach the job before its child exits. the
+ * marker keeps the child alive until after clm_agent_free() has returned.
+ */
+static void
+test_agent_free_during_bg_exec(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	char dir[] = "/tmp/clm-bg-free.XXXXXX";
+	char marker[128];
+	char args[512];
+	FILE *f;
+
+	st.loop = loop;
+	CHECK(mkdtemp(dir) != NULL, "mkdtemp");
+	(void)snprintf(marker, sizeof(marker), "%s/go", dir);
+	(void)snprintf(args, sizeof(args),
+	    "{\"command\":\"while [ ! -f %s ]; do sleep 0.01; done; "
+	    "printf bgdone\",\"label\":\"detach probe\"}", marker);
+
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+	canned_tool_call(srv, "bg_exec", args);
+	canned_reply(srv, final_reply);
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "start a background job") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "background job start turn ok");
+	CHECK(st.tool_results == 1, "bg_exec completed immediately");
+	CHECK(canned_request_count(srv) == 2, "background child is still blocked");
+
+	clm_agent_free(st.agent);
+	st.agent = NULL;
+	canned_stop(srv);
+
+	f = fopen(marker, "w");
+	CHECK(f != NULL, "create background child marker");
+	if (f != NULL)
+		fclose(f);
+
+	uv_run(loop, UV_RUN_DEFAULT);
+	clm_host_uv_free(st.host);
+	uv_run(loop, UV_RUN_DEFAULT);
+
+	(void)unlink(marker);
+	(void)rmdir(dir);
+}
+
+/*
  * (b2) Mid-chain autocompact: if usage crosses the threshold on a response
  * that itself requests another tool call (i.e. the turn is NOT done yet),
  * clm_agent_tools_done() must trigger clm_agent_compact() itself right then
@@ -1653,6 +1705,7 @@ main(void)
 	test_tool_call(&loop);
 	test_binary_tool_output(&loop);
 	test_bg_exec(&loop);
+	test_agent_free_during_bg_exec(&loop);
 	test_autocompact_mid_chain(&loop);
 	test_compact_reasoning_fallback(&loop);
 	test_tools_unsupported_retry(&loop);

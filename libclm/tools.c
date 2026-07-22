@@ -187,6 +187,7 @@ clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def)
 		return -ENOMEM;
 	}
 	t->invoke = def->invoke;
+	t->detach = def->detach;
 	t->user = def->user;
 	t->output_cap = def->output_cap;
 	t->timeout_ms = def->timeout_ms;
@@ -197,12 +198,22 @@ clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def)
 	return 0;
 }
 
+static void
+tool_detach(struct clm_tool *t)
+{
+	if (t->detach == NULL)
+		return;
+	t->detach(t->user);
+	t->detach = NULL;
+}
+
 /* Free a node's owned strings and itself. Does not unlink or touch pending
  * invocations; callers must already know it is safe (unlinked + inflight==0,
  * or agent teardown). */
 static void
 tool_node_free(struct clm_tool *t)
 {
+	tool_detach(t);
 	free(t->name);
 	free(t->description);
 	free(t->params_schema);
@@ -220,6 +231,7 @@ clm_tool_remove(struct clm_agent *agent, const char *name)
 	TAILQ_FOREACH(t, &agent->tools, entries) {
 		if (t->removed || strcmp(t->name, name) != 0)
 			continue;
+		tool_detach(t);
 		TAILQ_REMOVE(&agent->tools, t, entries);
 		agent->tool_count--;
 		if (t->inflight == 0)
@@ -1054,12 +1066,18 @@ void
 clm_tools_detach(struct clm_agent *agent)
 {
 	struct clm_tool_batch *batch;
+	struct clm_tool *tool;
 	size_t i;
 
-	if (agent == NULL || agent->active_batch == NULL)
+	if (agent == NULL)
 		return;
 
+	TAILQ_FOREACH(tool, &agent->tools, entries)
+		tool_detach(tool);
+
 	batch = agent->active_batch;
+	if (batch == NULL)
+		return;
 	batch->detached = true;
 	agent->active_batch = NULL;
 

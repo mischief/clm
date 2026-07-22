@@ -34,6 +34,7 @@ struct clm_tool {
 	char *description;   /* owned, may be NULL */
 	char *params_schema; /* owned JSON string, may be NULL */
 	clm_tool_fn invoke;
+	clm_tool_detach_fn detach;
 	void *user;
 	size_t output_cap;
 	uint64_t timeout_ms;
