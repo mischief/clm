@@ -24,12 +24,32 @@ static int failures;
 		}                                                              \
 	} while (0)
 
+struct clm_http_mux {
+	uv_loop_t *loop;
+};
+
 struct clm_http_request {
 	clm_http_success_cb success;
 	clm_http_error_cb error;
 	void *user;
 	bool cancelled;
 };
+
+struct clm_http_mux *
+clm_http_mux_new(uv_loop_t *loop)
+{
+	struct clm_http_mux *mux = calloc(1, sizeof(*mux));
+
+	if (mux != NULL)
+		mux->loop = loop;
+	return mux;
+}
+
+void
+clm_http_mux_free(struct clm_http_mux *mux)
+{
+	free(mux);
+}
 
 struct test_state {
 	struct clm_agent *agent;
@@ -46,15 +66,15 @@ static size_t mock_request_count;
 static size_t mock_cancel_count;
 
 int
-clm_http_async_post(uv_loop_t *loop, const char *url, const char *api_key,
-    const char *json_body, struct curl_slist *extra_headers,
+clm_http_async_post(struct clm_http_mux *mux, const char *url,
+    const char *api_key, const char *json_body, struct curl_slist *extra_headers,
     clm_http_success_cb success_cb, clm_http_error_cb error_cb,
     clm_http_data_cb data_cb, const char *client_suffix, void *user,
     struct clm_http_request **out_req)
 {
 	struct clm_http_request *req;
 
-	(void)loop;
+	(void)mux;
 	(void)url;
 	(void)api_key;
 	(void)json_body;
