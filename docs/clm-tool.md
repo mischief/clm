@@ -83,13 +83,15 @@ is called once per tool invocation with
 and
 *ctx*,
 described below.
-Exactly one of
+exactly one of
 *ctx:complete*
 or
 *ctx:fail*
 must be called, from
 *invoke*
-or from a coroutine it yields into (see
+or from a child started with
+**clm.spawn**()
+(see
 *HTTP requests*
 below); calling either a second time is an error.
 
@@ -145,31 +147,24 @@ in
 [clm(1)](clm.md)).
 A no-op, at negligible cost, when that variable is unset.
 
-**ctx:http\_get**(*url*, *headers*)
-
-**ctx:http\_post**(*url*, *body*, *headers*)
-
-Described under
-*HTTP requests*;
-*headers*
-is optional in both.
-
 ## HTTP requests
 
-	local resp, err = ctx:http_get(url)
-	local resp, err = ctx:http_get(url, {["Authorization"] = "Bearer ..."})
-	local resp, err = ctx:http_post(url, body)
-	local resp, err = ctx:http_post(url, body, {["Content-Type"] = "text/plain"})
+	local resp, err = http.get(url)
+	local resp, err = http.get(url, {["Authorization"] = "Bearer ..."})
+	local resp, err = http.post(url, body)
+	local resp, err = http.post(url, body, {["Content-Type"] = "text/plain"})
 
-Both yield the calling coroutine and resume it once the request
+both yield the calling coroutine and resume it once the request
 completes, so
 *invoke*
 does not block the agent's event loop while a request is in flight.
-Only callable directly from a tool invocation's own coroutine, not
-from a nested coroutine or at plugin load time.
+they may be called from the main tool coroutine or from a child started
+with
+**clm.spawn**(),
+but not at plugin load time.
 *headers*
 is an optional table of header-name to header-value strings;
-**ctx:http\_post**()
+**http.post**()
 seeds
 "Content-Type: application/json"
 by default unless
@@ -210,12 +205,123 @@ Available at any point in a plugin, not just from within
 
 **clm.sleep**(*ms*)
 
-Yield the calling coroutine for
+yield the calling coroutine for
 *ms*
 milliseconds without blocking the event loop.
-Same coroutine restriction as
+same coroutine restriction as
 *HTTP requests*
 above.
+
+**clm.spawn**(*function*)
+
+create and return a task handle for
+*function*.
+the function is scheduled for a later event-loop iteration and does not
+execute before
+**clm.spawn**()
+returns.
+the task belongs to the current tool invocation and may call
+**http.get**(),
+**http.post**(),
+and
+**clm.sleep**().
+only the main tool coroutine may spawn tasks; a task may not spawn another
+task.
+values returned by
+*function*
+become the task result.
+
+**task:wait**()
+
+wait until
+*task*
+succeeds, fails, or is cancelled, then return
+`true`.
+waiting does not read or interpret the task result.
+
+**task:result**()
+
+return
+`nil`
+if
+*task*
+is pending.
+a terminal task returns a stable outcome table.
+a successful outcome has
+*ok*
+set to
+`true`
+and one normalized
+*value*
+field: one returned value is stored directly, multiple returned values are
+stored in an array, and zero returned values omit
+*value*.
+a failed outcome has
+*ok*
+set to
+`false`
+and an
+*error*
+string.
+a cancelled outcome also has
+*cancelled*
+set to
+`true`.
+reading a failed outcome marks its error as observed.
+
+**task:cancel**(*reason*)
+
+cancel a pending task and its asynchronous operation.
+*reason*
+is optional and defaults to
+"task cancelled".
+return
+`true`
+when the task was cancelled or was already cancelled, and
+`false`
+when it had already succeeded or failed.
+
+**clm.wait\_any**(*tasks*, *timeout\_ms*)
+
+wait until any task in the array table
+*tasks*
+is terminal and return its one-based input index.
+*timeout\_ms*
+is optional; expiration returns
+`nil`
+plus
+"timeout"
+without cancelling any task.
+all tasks must be unique handles from the current invocation, and at most 128
+tasks may be waited on at once.
+
+**clm.await\_all**(*tasks*)
+
+wait for every task and return an ordered array of outcome tables as described
+under
+**task:result**().
+task failure does not cancel or otherwise affect another task.
+
+**clm.try\_all**(*tasks*)
+
+wait for tasks until all succeed or one fails.
+on success, return normalized task values in input order.
+on failure, cancel every unfinished task in this set and return
+`nil`
+plus the observed error string.
+
+only the main tool coroutine may wait, read results, cancel tasks, or complete
+or fail the tool.
+returning from the main
+*invoke*
+function with live tasks cancels those tasks and fails the tool.
+successfully completing a tool with live tasks or unobserved task errors also
+fails the tool;
+**clm.spawn**()
+does not create detached background work.
+the invocation remains alive while its main coroutine or child tasks are
+suspended; tool cancellation, timeout, and plugin teardown cancel the whole
+family and its pending asynchronous work.
 
 ## The json module
 
@@ -267,6 +373,27 @@ as an empty table, not
 	        ctx:complete("Hello, " .. args.name .. "!")
 	    end,
 	})
+
+	local tasks = {
+	    clm.spawn(function()
+	        local resp, err = http.get(url_a)
+	        if resp == nil then error(err) end
+	        return resp.body
+	    end),
+	    clm.spawn(function()
+	        local resp, err = http.get(url_b)
+	        if resp == nil then error(err) end
+	        return resp.body
+	    end),
+	}
+	local outcomes = clm.await_all(tasks)
+	for _, outcome in ipairs(outcomes) do
+	    if not outcome.ok then
+	        ctx:fail(outcome.error)
+	        return
+	    end
+	end
+	ctx:complete(outcomes[1].value .. outcomes[2].value)
 
 # SEE ALSO
 

@@ -81,13 +81,15 @@ is called once per tool invocation with
 and
 .Va ctx ,
 described below.
-Exactly one of
+exactly one of
 .Va ctx:complete
 or
 .Va ctx:fail
 must be called, from
 .Va invoke
-or from a coroutine it yields into (see
+or from a child started with
+.Fn clm.spawn
+(see
 .Sx HTTP requests
 below); calling either a second time is an error.
 .Pp
@@ -134,30 +136,26 @@ to the debug log (see
 in
 .Xr clm 1 ) .
 A no-op, at negligible cost, when that variable is unset.
-.It Fn ctx:http_get url headers
-.It Fn ctx:http_post url body headers
-Described under
-.Sx HTTP requests ;
-.Fa headers
-is optional in both.
 .El
 .Ss HTTP requests
 .Bd -literal -offset indent
-local resp, err = ctx:http_get(url)
-local resp, err = ctx:http_get(url, {["Authorization"] = "Bearer ..."})
-local resp, err = ctx:http_post(url, body)
-local resp, err = ctx:http_post(url, body, {["Content-Type"] = "text/plain"})
+local resp, err = http.get(url)
+local resp, err = http.get(url, {["Authorization"] = "Bearer ..."})
+local resp, err = http.post(url, body)
+local resp, err = http.post(url, body, {["Content-Type"] = "text/plain"})
 .Ed
 .Pp
-Both yield the calling coroutine and resume it once the request
+both yield the calling coroutine and resume it once the request
 completes, so
 .Va invoke
 does not block the agent's event loop while a request is in flight.
-Only callable directly from a tool invocation's own coroutine, not
-from a nested coroutine or at plugin load time.
+they may be called from the main tool coroutine or from a child started
+with
+.Fn clm.spawn ,
+but not at plugin load time.
 .Va headers
 is an optional table of header-name to header-value strings;
-.Fn ctx:http_post
+.Fn http.post
 seeds
 .Qq Content-Type: application/json
 by default unless
@@ -193,12 +191,109 @@ access.
 Available at any point in a plugin, not just from within
 .Va invoke .
 .It Fn clm.sleep ms
-Yield the calling coroutine for
+yield the calling coroutine for
 .Va ms
 milliseconds without blocking the event loop.
-Same coroutine restriction as
+same coroutine restriction as
 .Sx HTTP requests
 above.
+.It Fn clm.spawn function
+create and return a task handle for
+.Va function .
+the function is scheduled for a later event-loop iteration and does not
+execute before
+.Fn clm.spawn
+returns.
+the task belongs to the current tool invocation and may call
+.Fn http.get ,
+.Fn http.post ,
+and
+.Fn clm.sleep .
+only the main tool coroutine may spawn tasks; a task may not spawn another
+task.
+values returned by
+.Va function
+become the task result.
+.It Fn task:wait
+wait until
+.Va task
+succeeds, fails, or is cancelled, then return
+.Dv true .
+waiting does not read or interpret the task result.
+.It Fn task:result
+return
+.Dv nil
+if
+.Va task
+is pending.
+a terminal task returns a stable outcome table.
+a successful outcome has
+.Va ok
+set to
+.Dv true
+and one normalized
+.Va value
+field: one returned value is stored directly, multiple returned values are
+stored in an array, and zero returned values omit
+.Va value .
+a failed outcome has
+.Va ok
+set to
+.Dv false
+and an
+.Va error
+string.
+a cancelled outcome also has
+.Va cancelled
+set to
+.Dv true .
+reading a failed outcome marks its error as observed.
+.It Fn task:cancel reason
+cancel a pending task and its asynchronous operation.
+.Va reason
+is optional and defaults to
+.Dq task cancelled .
+return
+.Dv true
+when the task was cancelled or was already cancelled, and
+.Dv false
+when it had already succeeded or failed.
+.It Fn clm.wait_any tasks timeout_ms
+wait until any task in the array table
+.Va tasks
+is terminal and return its one-based input index.
+.Va timeout_ms
+is optional; expiration returns
+.Dv nil
+plus
+.Dq timeout
+without cancelling any task.
+all tasks must be unique handles from the current invocation, and at most 128
+tasks may be waited on at once.
+.It Fn clm.await_all tasks
+wait for every task and return an ordered array of outcome tables as described
+under
+.Fn task:result .
+task failure does not cancel or otherwise affect another task.
+.It Fn clm.try_all tasks
+wait for tasks until all succeed or one fails.
+on success, return normalized task values in input order.
+on failure, cancel every unfinished task in this set and return
+.Dv nil
+plus the observed error string.
+.Pp
+only the main tool coroutine may wait, read results, cancel tasks, or complete
+or fail the tool.
+returning from the main
+.Va invoke
+function with live tasks cancels those tasks and fails the tool.
+successfully completing a tool with live tasks or unobserved task errors also
+fails the tool;
+.Fn clm.spawn
+does not create detached background work.
+the invocation remains alive while its main coroutine or child tasks are
+suspended; tool cancellation, timeout, and plugin teardown cancel the whole
+family and its pending asynchronous work.
 .El
 .Ss The json module
 .Bd -literal -offset indent
@@ -248,6 +343,28 @@ clm.tool_register("hello", {
         ctx:complete("Hello, " .. args.name .. "!")
     end,
 })
+.Ed
+.Bd -literal -offset indent
+local tasks = {
+    clm.spawn(function()
+        local resp, err = http.get(url_a)
+        if resp == nil then error(err) end
+        return resp.body
+    end),
+    clm.spawn(function()
+        local resp, err = http.get(url_b)
+        if resp == nil then error(err) end
+        return resp.body
+    end),
+}
+local outcomes = clm.await_all(tasks)
+for _, outcome in ipairs(outcomes) do
+    if not outcome.ok then
+        ctx:fail(outcome.error)
+        return
+    end
+end
+ctx:complete(outcomes[1].value .. outcomes[2].value)
 .Ed
 .Sh SEE ALSO
 .Xr clm 1 ,

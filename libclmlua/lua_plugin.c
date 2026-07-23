@@ -30,15 +30,6 @@ int clm_lua_json_open(lua_State *L);
 void clm_lua_push_json_value(lua_State *L, cJSON *obj);
 int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
 
-/* Invocation-thread guard, consulted by the http bindings (lua_http.c). */
-void clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on);
-int clm_lua_is_invocation_thread(lua_State *L);
-
-/* Clears the per-invocation registry stash (_clm_co_ref/_clm_tool_name/
- * _clm_inv, set in lua_tool_invoke below) once a coroutine is truly done.
- * Called from both here and lua_http.c's async completion callbacks. */
-void clm_lua_clear_invocation_registry(lua_State *L);
-
 #define CLM_LUA_MEM_LIMIT (8 * 1024 * 1024) /* 8 MiB per plugin */
 #define CLM_LUA_EXEC_TIMEOUT_MS 30000u     /* default: 30s CPU timeout */
 #define CLM_LUA_LOAD_TIMEOUT_MS 500u       /* plugin load must be quick */
@@ -69,8 +60,6 @@ struct clm_lua_budget {
 	uint64_t peak_call_ns;     /* longest tool call duration */
 };
 
-TAILQ_HEAD(clm_lua_pending_list, clm_lua_pending);
-
 /* Per-plugin state. */
 struct clm_lua_plugin {
 	TAILQ_ENTRY(clm_lua_plugin) entry;
@@ -85,10 +74,11 @@ struct clm_lua_plugin {
 	uint64_t deadline_ns; /* wall-clock deadline for current execution */
 	struct clm_lua_budget budget;
 	struct clm_lua_pending_list pending;
+	uint64_t next_call_serial;
 	bool tearing_down;
 
-	/* Multi-coroutine support for generalized async */
-	TAILQ_HEAD(, clm_lua_coroutine) coroutines;
+	/* every live tool coroutine, grouped by clm_lua_call. */
+	struct clm_lua_coroutine_list coroutines;
 };
 
 TAILQ_HEAD(clm_lua_plugin_list, clm_lua_plugin);
@@ -107,16 +97,23 @@ struct clm_lua_env {
 };
 
 int
-clm_lua_pending_add(struct clm_lua_plugin *plugin,
+clm_lua_pending_add(struct clm_lua_plugin *plugin, lua_State *co,
     struct clm_lua_pending *pending, clm_lua_pending_teardown_fn teardown)
 {
-	if (plugin == NULL || pending == NULL || teardown == NULL)
+	struct clm_lua_coroutine *lco;
+
+	if (plugin == NULL || co == NULL || pending == NULL || teardown == NULL)
 		return -EINVAL;
 	if (plugin->tearing_down)
 		return -ECANCELED;
+	lco = clm_lua_coroutine_find(co);
+	if (lco == NULL || lco->plugin != plugin || lco->call->completed)
+		return -ECANCELED;
 	pending->plugin = plugin;
+	pending->coroutine = lco;
 	pending->teardown = teardown;
-	TAILQ_INSERT_TAIL(&plugin->pending, pending, entry);
+	TAILQ_INSERT_TAIL(&plugin->pending, pending, plugin_entry);
+	TAILQ_INSERT_TAIL(&lco->pendings, pending, coroutine_entry);
 	return 0;
 }
 
@@ -124,12 +121,17 @@ struct clm_lua_plugin *
 clm_lua_pending_remove(struct clm_lua_pending *pending)
 {
 	struct clm_lua_plugin *plugin;
+	struct clm_lua_coroutine *lco;
 
 	if (pending == NULL || pending->plugin == NULL)
 		return NULL;
 	plugin = pending->plugin;
-	TAILQ_REMOVE(&plugin->pending, pending, entry);
+	lco = pending->coroutine;
+	TAILQ_REMOVE(&plugin->pending, pending, plugin_entry);
+	if (lco != NULL)
+		TAILQ_REMOVE(&lco->pendings, pending, coroutine_entry);
 	pending->plugin = NULL;
+	pending->coroutine = NULL;
 	return plugin;
 }
 
@@ -198,13 +200,45 @@ lua_capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 /* ------------------------------------------------------------------ */
 
 #define CLM_LUA_CTX_META "clm_tool_ctx"
+#define CLM_LUA_TASK_META "clm_task"
+
+enum clm_lua_task_state {
+	CLM_LUA_TASK_PENDING,
+	CLM_LUA_TASK_DONE,
+	CLM_LUA_TASK_ERROR,
+	CLM_LUA_TASK_CANCELLED,
+};
+
+struct clm_lua_wait;
+
+struct clm_lua_task {
+	struct clm_lua_call *call;
+	uint64_t call_serial;
+	struct clm_lua_coroutine *lco;
+	struct clm_lua_wait *waiter;
+	enum clm_lua_task_state state;
+	int self_ref;
+	int results_ref;
+	int nresults;
+	char *error;
+	bool error_observed;
+};
+
+struct clm_lua_wait {
+	struct clm_lua_pending pending;
+	struct clm_lua_task **tasks;
+	size_t ntasks;
+	struct clm_agent *agent;
+	struct clm_timer *timer;
+	bool any;
+};
 
 struct lua_tool_ctx {
-	struct clm_tool_invocation *inv;
-	lua_State *main_L;  /* plugin's main state */
-	int co_ref;         /* registry ref keeping coroutine alive */
-	bool completed;
+	struct clm_lua_call *call;
 };
+
+static void lua_call_result(struct clm_lua_call *call, bool failed,
+    const char *text, struct clm_lua_coroutine *current);
 
 static struct lua_tool_ctx *
 check_ctx(lua_State *L, int idx)
@@ -216,13 +250,27 @@ static int
 lua_ctx_complete(lua_State *L)
 {
 	struct lua_tool_ctx *ctx = check_ctx(L, 1);
+	struct clm_lua_coroutine *lco = clm_lua_coroutine_find(L);
 	const char *result;
 
-	if (ctx->completed)
+	if (ctx->call->completed)
 		return luaL_error(L, "tool already completed");
+	if (lco == NULL || !lco->is_main)
+		return luaL_error(L, "ctx:complete may only be called from the main "
+		    "tool coroutine");
 	result = luaL_checkstring(L, 2);
-	ctx->completed = true;
-	clm_tool_complete(ctx->inv, result);
+	if (ctx->call->active_coroutines > 1) {
+		lua_call_result(ctx->call, true,
+		    "tool completed with unawaited tasks", lco);
+		return 0;
+	}
+	if (ctx->call->unobserved_errors != 0) {
+		lua_call_result(ctx->call, true,
+		    ctx->call->child_error != NULL ? ctx->call->child_error :
+		    "task failed without its result being observed", lco);
+		return 0;
+	}
+	lua_call_result(ctx->call, false, result, lco);
 	return 0;
 }
 
@@ -230,13 +278,16 @@ static int
 lua_ctx_fail(lua_State *L)
 {
 	struct lua_tool_ctx *ctx = check_ctx(L, 1);
+	struct clm_lua_coroutine *lco = clm_lua_coroutine_find(L);
 	const char *msg;
 
-	if (ctx->completed)
+	if (ctx->call->completed)
 		return luaL_error(L, "tool already completed");
+	if (lco == NULL || !lco->is_main)
+		return luaL_error(L, "ctx:fail may only be called from the main "
+		    "tool coroutine");
 	msg = luaL_checkstring(L, 2);
-	ctx->completed = true;
-	clm_tool_fail(ctx->inv, msg);
+	lua_call_result(ctx->call, true, msg, lco);
 	return 0;
 }
 
@@ -244,7 +295,8 @@ static int
 lua_ctx_args_raw(lua_State *L)
 {
 	struct lua_tool_ctx *ctx = check_ctx(L, 1);
-	const char *args = clm_tool_invocation_args(ctx->inv);
+	const char *args = ctx->call->inv != NULL ?
+	    clm_tool_invocation_args(ctx->call->inv) : NULL;
 
 	if (args == NULL)
 		lua_pushstring(L, "{}");
@@ -279,6 +331,51 @@ register_ctx_meta(lua_State *L)
 	lua_pushvalue(L, -1);
 	lua_setfield(L, -2, "__index");
 	luaL_setfuncs(L, ctx_methods, 0);
+	lua_pop(L, 1);
+}
+
+static int lua_task_wait(lua_State *L);
+static int lua_task_result(lua_State *L);
+static int lua_task_cancel_method(lua_State *L);
+
+static struct clm_lua_task *
+check_task(lua_State *L, int idx)
+{
+	return luaL_checkudata(L, idx, CLM_LUA_TASK_META);
+}
+
+static int
+lua_task_gc(lua_State *L)
+{
+	struct clm_lua_task *task = check_task(L, 1);
+
+	if (task->results_ref != LUA_NOREF) {
+		luaL_unref(L, LUA_REGISTRYINDEX, task->results_ref);
+		task->results_ref = LUA_NOREF;
+	}
+	free(task->error);
+	task->error = NULL;
+	return 0;
+}
+
+static const luaL_Reg task_methods[] = {
+	{"wait", lua_task_wait},
+	{"result", lua_task_result},
+	{"cancel", lua_task_cancel_method},
+	{NULL, NULL},
+};
+
+static void
+register_task_meta(lua_State *L)
+{
+	luaL_newmetatable(L, CLM_LUA_TASK_META);
+	lua_pushvalue(L, -1);
+	lua_setfield(L, -2, "__index");
+	luaL_setfuncs(L, task_methods, 0);
+	lua_pushcfunction(L, lua_task_gc);
+	lua_setfield(L, -2, "__gc");
+	lua_pushstring(L, "clm task");
+	lua_setfield(L, -2, "__name");
 	lua_pop(L, 1);
 }
 
@@ -340,110 +437,90 @@ clm_lua_resume_with_deadline(struct clm_lua_plugin *plugin, lua_State *co,
 
 	if (timeout_ms == 0)
 		timeout_ms = CLM_LUA_EXEC_TIMEOUT_MS;
+	struct clm_lua_coroutine *lco = clm_lua_coroutine_find(co);
+	uint64_t previous_deadline = plugin->deadline_ns;
 	plugin->deadline_ns = clock_ns() + timeout_ms * 1000000ULL;
 	lua_sethook(co, lua_exec_hook, LUA_MASKCOUNT, CLM_LUA_HOOK_INTERVAL);
+	if (lco != NULL)
+		lco->running = true;
 	rc = lua_resume(co, from, nargs, nresults);
-	plugin->deadline_ns = 0;
+	if (lco != NULL)
+		lco->running = false;
+	plugin->deadline_ns = previous_deadline;
 	lua_sethook(co, NULL, 0, 0);
 	return rc;
 }
 
-/*
- * Mark (on != 0) or clear (on == 0) `co` as a live tool-invocation coroutine,
- * keyed by its thread pointer in the registry. clm's async HTTP model requires
- * that http.get/post run directly on this coroutine, so their lua_yield unwinds
- * to clm's C-level lua_resume; the http bindings consult this marker to reject
- * calls from a nested coroutine or from load time (the main thread), which would
- * otherwise drive completion tracking out of band. Keyed per-thread, so
- * concurrent invocations of one plugin do not alias one another.
- */
-void
-clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on)
-{
-	lua_pushlightuserdata(L, co);
-	if (on)
-		lua_pushboolean(L, 1);
-	else
-		lua_pushnil(L);
-	lua_settable(L, LUA_REGISTRYINDEX);
-}
+static void lua_task_cancel_internal(struct clm_lua_task *task,
+    const char *reason);
+static void lua_wait_task_done(struct clm_lua_task *task);
 
-/* True if the running state L is a live tool-invocation coroutine. */
-int
-clm_lua_is_invocation_thread(lua_State *L)
-{
-	int ok;
-	lua_pushlightuserdata(L, L);
-	lua_gettable(L, LUA_REGISTRYINDEX);
-	ok = lua_toboolean(L, -1);
-	lua_pop(L, 1);
-	return ok;
-}
-
-/* ------------------------------------------------------------------ */
-/* Multi-coroutine support (generalized async model)                  */
-/* ------------------------------------------------------------------ */
-
-/*
- * Register a new coroutine as part of the current tool invocation family.
- * This allows http.get/post to be called from it (or any future async op).
- */
+/* register a coroutine while its thread object is on owner's stack. */
 struct clm_lua_coroutine *
-clm_lua_coroutine_register(struct clm_lua_plugin *plugin, lua_State *co, bool is_main)
+clm_lua_coroutine_register(struct clm_lua_plugin *plugin,
+    struct clm_lua_call *call, lua_State *owner, lua_State *co, bool is_main)
 {
 	struct clm_lua_coroutine *lco;
 
+	if (plugin == NULL || call == NULL || owner == NULL || co == NULL ||
+	    lua_tothread(owner, -1) != co)
+		return NULL;
 	lco = calloc(1, sizeof(*lco));
 	if (lco == NULL)
 		return NULL;
-
 	lco->plugin = plugin;
+	lco->call = call;
 	lco->co = co;
+	lco->main_L = plugin->L;
+	lco->agent = plugin->agent;
 	lco->is_main = is_main;
 	TAILQ_INIT(&lco->pendings);
 
-	/* Keep the coroutine alive via registry on the plugin's main state */
-	lua_pushthread(co);
-	lco->ref = luaL_ref(plugin->L, LUA_REGISTRYINDEX);
-
+	/* lua_newthread left the thread on owner; copy and root that value. */
+	lua_pushvalue(owner, -1);
+	lco->ref = luaL_ref(owner, LUA_REGISTRYINDEX);
 	TAILQ_INSERT_TAIL(&plugin->coroutines, lco, entry);
+	call->active_coroutines++;
 	return lco;
 }
 
-/* Unregister and destroy a coroutine tracker, cancelling any pending work. */
 void
 clm_lua_coroutine_unregister(struct clm_lua_coroutine *lco)
 {
+	struct clm_lua_call *call;
+
 	if (lco == NULL)
 		return;
-
-	/* Cancel any remaining pending async work on this coroutine */
-	struct clm_lua_pending *p, *tmp;
-	TAILQ_FOREACH_SAFE(p, &lco->pendings, entry, tmp) {
-		TAILQ_REMOVE(&lco->pendings, p, entry);
-		if (p->teardown)
-			p->teardown(p);
+	while (!TAILQ_EMPTY(&lco->pendings)) {
+		struct clm_lua_pending *pending = TAILQ_FIRST(&lco->pendings);
+		(void)clm_lua_pending_remove(pending);
+		pending->teardown(pending);
 	}
-
+	if (lco->task != NULL) {
+		lua_task_cancel_internal(lco->task, "task cancelled");
+		lco->task = NULL;
+	}
+	call = lco->call;
 	luaL_unref(lco->plugin->L, LUA_REGISTRYINDEX, lco->ref);
 	TAILQ_REMOVE(&lco->plugin->coroutines, lco, entry);
+	if (call != NULL && call->active_coroutines > 0)
+		call->active_coroutines--;
 	free(lco);
 }
 
-/* Find the tracking struct for a given coroutine (or NULL). */
 struct clm_lua_coroutine *
-clm_lua_coroutine_find(lua_State *L, lua_State *co)
+clm_lua_coroutine_find(lua_State *co)
 {
 	struct clm_lua_plugin *plugin;
 	struct clm_lua_coroutine *lco;
 
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_plugin");
-	plugin = lua_touserdata(L, -1);
-	lua_pop(L, 1);
-
+	if (co == NULL)
+		return NULL;
+	lua_getfield(co, LUA_REGISTRYINDEX, "_clm_plugin");
+	plugin = lua_touserdata(co, -1);
+	lua_pop(co, 1);
 	if (plugin == NULL)
 		return NULL;
-
 	TAILQ_FOREACH(lco, &plugin->coroutines, entry) {
 		if (lco->co == co)
 			return lco;
@@ -451,38 +528,439 @@ clm_lua_coroutine_find(lua_State *L, lua_State *co)
 	return NULL;
 }
 
-/* Convenience predicate: is this coroutine part of the current invocation? */
 bool
-clm_lua_coroutine_is_valid(lua_State *L, lua_State *co)
+clm_lua_coroutine_is_valid(lua_State *co)
 {
-	return clm_lua_coroutine_find(L, co) != NULL;
+	struct clm_lua_coroutine *lco = clm_lua_coroutine_find(co);
+
+	return lco != NULL && lco->call != NULL && !lco->call->completed &&
+	    lco->call->inv != NULL;
 }
 
-/*
- * lua_tool_invoke stashes _clm_co_ref/_clm_tool_name/_clm_inv in the
- * (shared, coroutine-and-main-state-wide) registry so http.get/post can
- * retrieve them from an async callback. They were only ever being
- * overwritten by the next invocation, never explicitly cleared -- so
- * between calls the registry held a stale _clm_inv lightuserdata pointing
- * at an already-freed clm_tool_invocation, and kept the previous call's
- * tool-name string rooted for no reason. Call this once a coroutine is
- * truly finished (same terminal points as the co_ref unref).
- */
-void
-clm_lua_clear_invocation_registry(lua_State *L)
+static void
+lua_call_free(struct clm_lua_call *call)
 {
-	lua_pushnil(L);
-	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_co_ref");
-	lua_pushnil(L);
-	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_tool_name");
-	lua_pushnil(L);
-	lua_setfield(L, LUA_REGISTRYINDEX, "_clm_inv");
-	/* Nudge the collector now rather than waiting for its own pacing to
-	 * notice -- an incremental step is cheap and reclaims the coroutine
-	 * (now genuinely unreferenced) and its stack contents promptly
-	 * instead of letting several turns' worth of garbage pile up under
-	 * the plugin's tight memory cap before the GC gets around to it. */
-	lua_gc(L, LUA_GCSTEP, 0);
+	if (call == NULL)
+		return;
+	if (!call->reported) {
+		call->reported = true;
+		clm_lua_budget_report(call->plugin,
+		    call->tool_name != NULL ? call->tool_name : "?");
+	}
+	lua_gc(call->plugin->L, LUA_GCSTEP, 0);
+	free(call->child_error);
+	free(call->tool_name);
+	free(call);
+}
+
+/* cancel every suspended coroutine in a family, preserving running frames. */
+static void
+lua_call_cancel_suspended(struct clm_lua_call *call,
+    struct clm_lua_coroutine *current)
+{
+	struct clm_lua_coroutine *lco;
+
+	for (;;) {
+		lco = NULL;
+		TAILQ_FOREACH(lco, &call->plugin->coroutines, entry) {
+			if (lco->call == call && lco != current && !lco->running)
+				break;
+		}
+		if (lco == NULL)
+			break;
+		clm_lua_coroutine_unregister(lco);
+	}
+}
+
+static void
+lua_call_result(struct clm_lua_call *call, bool failed, const char *text,
+    struct clm_lua_coroutine *current)
+{
+	struct clm_tool_invocation *inv;
+
+	if (call == NULL || call->completed)
+		return;
+	call->completed = true;
+	inv = call->inv;
+	call->inv = NULL;
+	if (inv != NULL)
+		clm_tool_invocation_set_cancel(inv, NULL, NULL);
+	lua_call_cancel_suspended(call, current);
+	if (inv != NULL) {
+		if (failed)
+			clm_tool_fail(inv, text != NULL ? text : "lua runtime error");
+		else
+			clm_tool_complete(inv, text != NULL ? text : "");
+	}
+	if (call->active_coroutines == 0)
+		lua_call_free(call);
+}
+
+static void
+lua_call_cancel(struct clm_tool_invocation *inv, void *user)
+{
+	struct clm_lua_call *call = user;
+
+	if (call == NULL || call->inv != inv)
+		return;
+	call->completed = true;
+	call->inv = NULL;
+	lua_call_cancel_suspended(call, NULL);
+	if (call->active_coroutines == 0)
+		lua_call_free(call);
+}
+
+static void
+lua_task_release_root(struct clm_lua_task *task)
+{
+	if (task->self_ref == LUA_NOREF)
+		return;
+	luaL_unref(task->call->plugin->L, LUA_REGISTRYINDEX, task->self_ref);
+	task->self_ref = LUA_NOREF;
+}
+
+static void
+lua_task_cancel_internal(struct clm_lua_task *task, const char *reason)
+{
+	if (task == NULL || task->state != CLM_LUA_TASK_PENDING)
+		return;
+	task->state = CLM_LUA_TASK_CANCELLED;
+	task->lco = NULL;
+	free(task->error);
+	task->error = strdup(reason != NULL ? reason : "task cancelled");
+	lua_task_release_root(task);
+}
+
+static int
+lua_task_store_results(struct clm_lua_task *task, lua_State *co, int nresults)
+{
+	int first;
+
+	if (nresults < 0 || nresults > lua_gettop(co))
+		return -EINVAL;
+	first = lua_gettop(co) - nresults + 1;
+	lua_createtable(co, nresults, 0);
+	for (int i = 0; i < nresults; i++) {
+		lua_pushvalue(co, first + i);
+		lua_rawseti(co, -2, (lua_Integer)i + 1);
+	}
+	task->nresults = nresults;
+	task->results_ref = luaL_ref(co, LUA_REGISTRYINDEX);
+	return 0;
+}
+
+static void
+lua_task_push_value(lua_State *L, struct clm_lua_task *task)
+{
+	lua_rawgeti(L, LUA_REGISTRYINDEX, task->results_ref);
+	if (task->nresults == 1) {
+		lua_rawgeti(L, -1, 1);
+		lua_remove(L, -2);
+	}
+}
+
+static void
+lua_task_mark_error_observed(struct clm_lua_task *task)
+{
+	struct clm_lua_call *call;
+
+	if (task->state != CLM_LUA_TASK_ERROR || task->error_observed)
+		return;
+	task->error_observed = true;
+	call = task->call;
+	if (call->unobserved_errors > 0)
+		call->unobserved_errors--;
+	if (call->unobserved_errors == 0) {
+		free(call->child_error);
+		call->child_error = NULL;
+	}
+}
+
+static void
+lua_task_push_outcome(lua_State *L, struct clm_lua_task *task)
+{
+	lua_createtable(L, 0, 3);
+	if (task->state == CLM_LUA_TASK_DONE) {
+		lua_pushboolean(L, 1);
+		lua_setfield(L, -2, "ok");
+		if (task->nresults != 0) {
+			lua_task_push_value(L, task);
+			lua_setfield(L, -2, "value");
+		}
+		return;
+	}
+	lua_pushboolean(L, 0);
+	lua_setfield(L, -2, "ok");
+	lua_pushstring(L, task->error != NULL ? task->error : "task failed");
+	lua_setfield(L, -2, "error");
+	if (task->state == CLM_LUA_TASK_CANCELLED) {
+		lua_pushboolean(L, 1);
+		lua_setfield(L, -2, "cancelled");
+	}
+}
+
+static struct clm_lua_coroutine *
+lua_task_main_caller(lua_State *L, const char *operation)
+{
+	struct clm_lua_coroutine *lco;
+
+	if (!clm_lua_coroutine_is_valid(L))
+		luaL_error(L, "%s may only be called from within a tool coroutine",
+		    operation);
+	lco = clm_lua_coroutine_find(L);
+	if (!lco->is_main)
+		luaL_error(L, "%s may only be called from the main tool coroutine",
+		    operation);
+	return lco;
+}
+
+static void
+lua_task_check_owner(lua_State *L, struct clm_lua_task *task,
+    struct clm_lua_coroutine *caller, const char *operation)
+{
+	if (task->call != caller->call ||
+	    task->call_serial != caller->call->serial)
+		luaL_error(L, "%s: task belongs to another invocation", operation);
+}
+
+static void
+lua_wait_detach(struct clm_lua_wait *wait)
+{
+	for (size_t i = 0; i < wait->ntasks; i++) {
+		if (wait->tasks[i]->waiter == wait)
+			wait->tasks[i]->waiter = NULL;
+	}
+}
+
+static void
+lua_wait_free(struct clm_lua_wait *wait)
+{
+	free(wait->tasks);
+	free(wait);
+}
+
+static void
+lua_wait_teardown(struct clm_lua_pending *pending)
+{
+	struct clm_lua_wait *wait = (struct clm_lua_wait *)pending;
+
+	lua_wait_detach(wait);
+	if (wait->timer != NULL && wait->agent != NULL &&
+	    wait->agent->host != NULL && wait->agent->host->timer_cancel != NULL)
+		wait->agent->host->timer_cancel(wait->timer);
+	lua_wait_free(wait);
+}
+
+static void
+lua_wait_resume(struct clm_lua_wait *wait, size_t index, bool timed_out)
+{
+	struct clm_lua_coroutine *lco = wait->pending.coroutine;
+	struct clm_lua_plugin *plugin;
+	struct clm_lua_call *call;
+	lua_State *co;
+	int nargs, nresults = 0, rc;
+	uint64_t timeout;
+
+	plugin = clm_lua_pending_remove(&wait->pending);
+	if (plugin == NULL || lco == NULL) {
+		lua_wait_free(wait);
+		return;
+	}
+	call = lco->call;
+	co = lco->co;
+	lua_wait_detach(wait);
+	if (wait->timer != NULL && wait->agent != NULL &&
+	    wait->agent->host != NULL && wait->agent->host->timer_cancel != NULL)
+		wait->agent->host->timer_cancel(wait->timer);
+	wait->timer = NULL;
+	if (timed_out) {
+		lua_pushnil(co);
+		lua_pushstring(co, "timeout");
+		nargs = 2;
+	} else if (wait->any) {
+		lua_pushinteger(co, (lua_Integer)index + 1);
+		nargs = 1;
+	} else {
+		lua_pushboolean(co, 1);
+		nargs = 1;
+	}
+	lua_wait_free(wait);
+	timeout = clm_tool_invocation_timeout_ms(call->inv);
+	rc = clm_lua_resume_with_deadline(plugin, co, lco->main_L, nargs,
+	    &nresults, timeout);
+	if (rc != LUA_YIELD) {
+		const char *resume_error = rc == LUA_OK ? NULL : lua_tostring(co, -1);
+		clm_lua_coroutine_finish(lco, rc, nresults, resume_error);
+	}
+}
+
+static void
+lua_wait_timeout(void *arg)
+{
+	struct clm_lua_wait *wait = arg;
+
+	lua_wait_resume(wait, 0, true);
+}
+
+static void
+lua_wait_task_done(struct clm_lua_task *task)
+{
+	struct clm_lua_wait *wait = task->waiter;
+
+	if (wait == NULL)
+		return;
+	for (size_t i = 0; i < wait->ntasks; i++) {
+		if (wait->tasks[i] == task) {
+			lua_wait_resume(wait, i, false);
+			return;
+		}
+	}
+}
+
+static int
+lua_task_wait(lua_State *L)
+{
+	struct clm_lua_task *task = check_task(L, 1);
+	struct clm_lua_coroutine *parent;
+	struct clm_lua_wait *wait;
+	int r;
+
+	parent = lua_task_main_caller(L, "task:wait");
+	lua_task_check_owner(L, task, parent, "task:wait");
+	if (task->state != CLM_LUA_TASK_PENDING) {
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+	if (task->waiter != NULL)
+		return luaL_error(L, "task:wait: task is already being waited on");
+	wait = calloc(1, sizeof(*wait));
+	if (wait == NULL)
+		return luaL_error(L, "task:wait: out of memory");
+	wait->tasks = calloc(1, sizeof(*wait->tasks));
+	if (wait->tasks == NULL) {
+		free(wait);
+		return luaL_error(L, "task:wait: out of memory");
+	}
+	wait->tasks[0] = task;
+	wait->ntasks = 1;
+	wait->agent = parent->agent;
+	r = clm_lua_pending_add(parent->plugin, L, &wait->pending,
+	    lua_wait_teardown);
+	if (r < 0) {
+		lua_wait_free(wait);
+		return luaL_error(L, "task:wait: invocation is shutting down");
+	}
+	task->waiter = wait;
+	return lua_yield(L, 0);
+}
+
+static int
+lua_task_result(lua_State *L)
+{
+	struct clm_lua_task *task = check_task(L, 1);
+	struct clm_lua_coroutine *parent;
+
+	parent = lua_task_main_caller(L, "task:result");
+	lua_task_check_owner(L, task, parent, "task:result");
+	if (task->state == CLM_LUA_TASK_PENDING) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_task_push_outcome(L, task);
+	lua_task_mark_error_observed(task);
+	return 1;
+}
+
+static int
+lua_task_cancel_method(lua_State *L)
+{
+	struct clm_lua_task *task = check_task(L, 1);
+	struct clm_lua_coroutine *parent;
+	const char *reason = luaL_optstring(L, 2, "task cancelled");
+
+	parent = lua_task_main_caller(L, "task:cancel");
+	lua_task_check_owner(L, task, parent, "task:cancel");
+	if (task->state == CLM_LUA_TASK_CANCELLED) {
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+	if (task->state != CLM_LUA_TASK_PENDING || task->lco == NULL) {
+		lua_pushboolean(L, 0);
+		return 1;
+	}
+	clm_lua_coroutine_unregister(task->lco);
+	free(task->error);
+	task->error = strdup(reason);
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+void
+clm_lua_coroutine_finish(struct clm_lua_coroutine *lco, int status,
+    int nresults, const char *error)
+{
+	struct clm_lua_call *call;
+	struct clm_lua_task *task;
+
+	if (lco == NULL)
+		return;
+	call = lco->call;
+	task = lco->task;
+	if (task != NULL) {
+		struct clm_lua_wait *waiter;
+
+		if (status == LUA_OK && lua_task_store_results(task, lco->co,
+		    nresults) == 0) {
+			task->state = CLM_LUA_TASK_DONE;
+		} else {
+			task->state = CLM_LUA_TASK_ERROR;
+			task->error = strdup(error != NULL ? error :
+			    "lua task failed to store results");
+			call->unobserved_errors++;
+			if (call->child_error == NULL && task->error != NULL)
+				call->child_error = strdup(task->error);
+		}
+		task->lco = NULL;
+		lco->task = NULL;
+		lua_task_release_root(task);
+		waiter = task->waiter;
+		clm_lua_coroutine_unregister(lco);
+		if (waiter != NULL) {
+			lua_wait_task_done(task);
+			return;
+		}
+		if (call->active_coroutines != 0)
+			return;
+		if (!call->completed) {
+			lua_call_result(call, true,
+			    call->child_error != NULL ? call->child_error :
+			    "plugin returned without calling ctx:complete/ctx:fail",
+			    NULL);
+			return;
+		}
+		lua_call_free(call);
+		return;
+	}
+
+	if (status != LUA_OK && !call->completed)
+		lua_call_result(call, true,
+		    error != NULL ? error : "lua runtime error", lco);
+	bool is_main = lco->is_main;
+	clm_lua_coroutine_unregister(lco);
+	if (is_main && !call->completed && call->active_coroutines != 0) {
+		lua_call_result(call, true,
+		    "plugin returned with unawaited tasks", NULL);
+		return;
+	}
+	if (call->active_coroutines != 0)
+		return;
+	if (!call->completed) {
+		lua_call_result(call, true,
+		    call->child_error != NULL ? call->child_error :
+		    "plugin returned without calling ctx:complete/ctx:fail", NULL);
+		return;
+	}
+	lua_call_free(call);
 }
 
 /*
@@ -561,109 +1039,76 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	struct clm_lua_plugin *plugin = tu->plugin;
 	lua_State *L = plugin->L;
 	lua_State *co;
+	struct clm_lua_call *call;
+	struct clm_lua_coroutine *lco;
 	struct lua_tool_ctx *ctx;
 	int nres, rc;
 
-	/* Reset per-call budget counters. */
 	plugin->budget.http_total = 0;
 	plugin->budget.call_start_ns = clock_ns();
-
-	/* lua_newthread() is a bare C-API call, not wrapped in lua_pcall (it
-	 * can't be -- there's no Lua frame to unwind into yet). If the
-	 * capped allocator refuses this allocation, Lua's OOM error has
-	 * nowhere protected to longjmp to, so its default panic handler
-	 * calls abort() and takes the whole process down -- lua_newthread()
-	 * does NOT return NULL on OOM the way the check below assumes; it
-	 * never returns at all. Refuse proactively instead, with a safety
-	 * margin covering what one invocation typically needs (the
-	 * coroutine object itself, its stack, the decoded args table, and
-	 * response bodies), so we fail this one tool call cleanly via
-	 * clm_tool_fail() instead of crashing every in-flight turn. */
 	if (plugin->mem_used + 262144 > plugin->mem_limit) {
 		clm_tool_fail(inv, "plugin is low on memory, refusing to start "
 		    "a new invocation to avoid crashing");
 		return;
 	}
 
-	/* Create a coroutine for this invocation. */
-	co = lua_newthread(L);
-	if (co == NULL) {
-		clm_tool_fail(inv, "failed to create Lua coroutine");
+	call = calloc(1, sizeof(*call));
+	if (call == NULL) {
+		clm_tool_fail(inv, "failed to allocate lua invocation");
 		return;
 	}
-	/* Keep coroutine rooted on the main stack while it runs. We'll pop
-	 * it once the tool completes (synchronously or after resume). */
-	int co_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	call->plugin = plugin;
+	call->inv = inv;
+	call->serial = ++plugin->next_call_serial;
+	if (call->serial == 0)
+		call->serial = ++plugin->next_call_serial;
+	call->tool_name = strdup(clm_tool_invocation_name(inv));
+	if (call->tool_name == NULL) {
+		free(call);
+		clm_tool_fail(inv, "failed to allocate lua invocation");
+		return;
+	}
 
-	/* Mark this coroutine as the live invocation thread so http.get/post can
-	 * verify they run directly on it (not a nested coroutine). Cleared on
-	 * every terminal path below, but left set across a yield so the resumed
-	 * coroutine may issue further http calls. */
-	clm_lua_mark_invocation_thread(L, co, 1);
+	co = lua_newthread(L);
+	if (co == NULL) {
+		lua_call_free(call);
+		clm_tool_fail(inv, "failed to create lua coroutine");
+		return;
+	}
+	lco = clm_lua_coroutine_register(plugin, call, L, co, true);
+	lua_pop(L, 1);
+	if (lco == NULL) {
+		lua_call_free(call);
+		clm_tool_fail(inv, "failed to register lua coroutine");
+		return;
+	}
+	clm_tool_invocation_set_cancel(inv, lua_call_cancel, call);
 
-	/* Push the invoke function onto the coroutine stack. */
 	lua_rawgeti(co, LUA_REGISTRYINDEX, tu->invoke_ref);
-
-	/* Decode tool args directly in C (avoids unprotected lua_call and the
-	 * C->Lua->C round trip through json.decode). */
 	const char *args_str = clm_tool_invocation_args(inv);
 	cJSON *args_obj = cJSON_Parse(args_str ? args_str : "{}");
 	if (args_obj == NULL) {
-		clm_tool_fail(inv, "invalid tool arguments (malformed JSON)");
-		clm_lua_mark_invocation_thread(L, co, 0);
-		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
+		lua_call_result(call, true,
+		    "invalid tool arguments (malformed json)", lco);
+		clm_lua_coroutine_finish(lco, LUA_OK, 0, NULL);
 		return;
 	}
 	clm_lua_push_json_value(co, args_obj);
 	cJSON_Delete(args_obj);
 
-	/* Push ctx userdata. */
 	ctx = lua_newuserdatauv(co, sizeof(*ctx), 0);
-	ctx->inv = inv;
-	ctx->main_L = L;
-	ctx->co_ref = co_ref;
-	ctx->completed = false;
+	ctx->call = call;
 	luaL_setmetatable(co, CLM_LUA_CTX_META);
 
-	/* Store co_ref on the coroutine's registry so http functions
-	 * (which run on `co`) can retrieve it for the async callback. */
-	lua_pushinteger(co, co_ref);
-	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_co_ref");
-
-	/* Store tool name for budget attribution in async callbacks. */
-	lua_pushstring(co, clm_tool_invocation_name(inv));
-	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_tool_name");
-
-	/* Store invocation pointer for error reporting from HTTP callbacks. */
-	lua_pushlightuserdata(co, inv);
-	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_inv");
-
-	/* resume the coroutine with (args_table, ctx). */
-	uint64_t timeout = clm_tool_invocation_timeout_ms(inv);
 	nres = 0;
-	rc = clm_lua_resume_with_deadline(plugin, co, L, 2, &nres, timeout);
-
-	if (rc == LUA_OK) {
-		/* Coroutine returned normally (synchronous tool). */
-		if (!ctx->completed)
-			clm_tool_fail(inv, "plugin returned without calling ctx:complete/ctx:fail");
-		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
-		clm_lua_mark_invocation_thread(L, co, 0);
-		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
-		clm_lua_clear_invocation_registry(L);
-	} else if (rc == LUA_YIELD) {
-		/* the helper leaves no deadline armed while async work is pending. */
-	} else {
-		/* Runtime error (includes timeout from the exec hook). */
-		const char *err = lua_tostring(co, -1);
+	rc = clm_lua_resume_with_deadline(plugin, co, L, 2, &nres,
+	    clm_tool_invocation_timeout_ms(inv));
+	if (rc == LUA_YIELD)
+		return;
+	const char *err = rc == LUA_OK ? NULL : lua_tostring(co, -1);
+	if (rc != LUA_OK)
 		clm_debug("lua plugin error: %s", err ? err : "(unknown)");
-		if (!ctx->completed)
-			clm_tool_fail(inv, err ? err : "Lua runtime error");
-		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
-		clm_lua_mark_invocation_thread(L, co, 0);
-		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
-		clm_lua_clear_invocation_registry(L);
-	}
+	clm_lua_coroutine_finish(lco, rc, nres, err);
 }
 
 /* ------------------------------------------------------------------ */
@@ -872,167 +1317,364 @@ lua_clm_write_file(lua_State *L)
 	return 1;
 }
 
-/* State for a pending clm.sleep() call. */
+/* state for one pending clm.sleep call. */
 struct lua_sleep_req {
 	struct clm_lua_pending pending;
-	lua_State *co;
-	lua_State *main_L;
-	int co_ref;
+	struct clm_lua_coroutine *lco;
 	struct clm_agent *agent;
 	struct clm_timer *timer;
-	struct clm_lua_plugin *plugin;
-	struct clm_tool_invocation *inv;
 	uint64_t timeout_ms;
 };
 
 static void
-lua_sleep_finish_cancel(struct lua_sleep_req *sr, const char *reason)
-{
-	struct clm_tool_invocation *inv = sr->inv;
-
-	if (inv != NULL)
-		clm_tool_invocation_set_cancel(inv, NULL, NULL);
-	sr->inv = NULL;
-	if (sr->timer != NULL && sr->agent != NULL && sr->agent->host != NULL &&
-	    sr->agent->host->timer_cancel != NULL) {
-		sr->agent->host->timer_cancel(sr->timer);
-		sr->timer = NULL;
-	}
-	free(sr);
-	if (inv != NULL)
-		clm_tool_fail(inv, reason);
-}
-
-static void
 lua_sleep_teardown(struct clm_lua_pending *pending)
 {
-	lua_sleep_finish_cancel((struct lua_sleep_req *)pending,
-	    "lua plugin environment is shutting down");
-}
+	struct lua_sleep_req *sr = (struct lua_sleep_req *)pending;
 
-static void
-lua_sleep_cancel(struct clm_tool_invocation *inv, void *user)
-{
-	struct lua_sleep_req *sr = user;
-
-	(void)inv;
-	if (clm_lua_pending_remove(&sr->pending) == NULL)
-		return;
-	lua_sleep_finish_cancel(sr, "clm.sleep cancelled");
+	sr->lco = NULL;
+	if (sr->timer != NULL && sr->agent != NULL && sr->agent->host != NULL &&
+	    sr->agent->host->timer_cancel != NULL)
+		sr->agent->host->timer_cancel(sr->timer);
+	free(sr);
 }
 
 static void
 lua_sleep_timer_cb(void *arg)
 {
 	struct lua_sleep_req *sr = arg;
-	lua_State *co = sr->co;
-	lua_State *L = sr->main_L;
-	int nres, rc;
+	struct clm_lua_coroutine *lco = sr->pending.coroutine;
+	int nres = 0, rc;
 
 	if (clm_lua_pending_remove(&sr->pending) == NULL)
 		return;
-	if (sr->inv != NULL)
-		clm_tool_invocation_set_cancel(sr->inv, NULL, NULL);
-	if (sr->timer != NULL && sr->agent->host->timer_cancel != NULL) {
+	if (sr->timer != NULL && sr->agent != NULL && sr->agent->host != NULL &&
+	    sr->agent->host->timer_cancel != NULL)
 		sr->agent->host->timer_cancel(sr->timer);
-		sr->timer = NULL;
-	}
-
-	if (lua_status(co) != LUA_YIELD) {
+	sr->timer = NULL;
+	if (lco == NULL || lua_status(lco->co) != LUA_YIELD) {
 		clm_debug("clm.sleep: coroutine not yielded, skipping resume");
-		luaL_unref(L, LUA_REGISTRYINDEX, sr->co_ref);
 		free(sr);
 		return;
 	}
-
-	nres = 0;
-	rc = clm_lua_resume_with_deadline(sr->plugin, co, L, 0, &nres,
-	    sr->timeout_ms);
-	if (rc == LUA_OK) {
-		clm_lua_mark_invocation_thread(L, co, 0);
-		luaL_unref(L, LUA_REGISTRYINDEX, sr->co_ref);
-		clm_lua_clear_invocation_registry(L);
-	} else if (rc != LUA_YIELD) {
-		const char *err = lua_tostring(co, -1);
-		clm_debug("clm.sleep: coroutine error on resume: %s",
-		    err ? err : "(unknown)");
-		if (sr->inv != NULL)
-			clm_tool_fail(sr->inv, err ? err : "lua runtime error");
-		clm_lua_mark_invocation_thread(L, co, 0);
-		luaL_unref(L, LUA_REGISTRYINDEX, sr->co_ref);
-		clm_lua_clear_invocation_registry(L);
+	rc = clm_lua_resume_with_deadline(lco->plugin, lco->co,
+	    lco->plugin->L, 0, &nres, sr->timeout_ms);
+	if (rc != LUA_YIELD) {
+		const char *err = rc == LUA_OK ? NULL : lua_tostring(lco->co, -1);
+		if (rc != LUA_OK)
+			clm_debug("clm.sleep: coroutine error on resume: %s",
+			    err ? err : "(unknown)");
+		clm_lua_coroutine_finish(lco, rc, nres, err);
 	}
-	/* rc == LUA_YIELD: coroutine yielded again (another sleep/http). */
 	free(sr);
 }
 
-/*
- * clm.sleep(ms) -- yield the tool coroutine for ms milliseconds.
- * Only callable from a tool invocation coroutine.
- */
 static int
 lua_clm_sleep(lua_State *L)
 {
 	lua_Integer ms = luaL_checkinteger(L, 1);
-	if (ms < 0) ms = 0;
-	if (ms > 30000) ms = 30000; /* cap at 30s */
+	struct clm_lua_coroutine *lco;
+	struct lua_sleep_req *sr;
+	int r;
 
-	if (!clm_lua_is_invocation_thread(L)) {
-		return luaL_error(L, "clm.sleep may only be called from a "
-		    "tool invocation coroutine");
-	}
-
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_agent");
-	struct clm_agent *agent = lua_touserdata(L, -1);
-	lua_pop(L, 1);
-	if (agent == NULL || agent->host == NULL || agent->host->timer_set == NULL) {
+	if (ms < 0)
+		ms = 0;
+	if (ms > 30000)
+		ms = 30000;
+	if (!clm_lua_coroutine_is_valid(L))
+		return luaL_error(L, "clm.sleep may only be called from within "
+		    "a tool coroutine");
+	lco = clm_lua_coroutine_find(L);
+	if (lco->plugin->agent == NULL || lco->plugin->agent->host == NULL ||
+	    lco->plugin->agent->host->timer_set == NULL)
 		return luaL_error(L, "clm.sleep: no timer available");
-	}
 
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_plugin");
-	struct clm_lua_plugin *plugin = lua_touserdata(L, -1);
-	lua_pop(L, 1);
-
-	/* Get coroutine ref (same pattern as lua_http). */
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_co_ref");
-	int co_ref = (int)lua_tointeger(L, -1);
-	lua_pop(L, 1);
-
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_main_L");
-	lua_State *main_L = lua_touserdata(L, -1);
-	lua_pop(L, 1);
-
-	struct lua_sleep_req *sr = calloc(1, sizeof(*sr));
+	sr = calloc(1, sizeof(*sr));
 	if (sr == NULL)
 		return luaL_error(L, "clm.sleep: out of memory");
-
-	sr->co = L;
-	sr->main_L = main_L;
-	sr->co_ref = co_ref;
-	sr->agent = agent;
-	sr->plugin = plugin;
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_inv");
-	sr->inv = lua_touserdata(L, -1);
-	lua_pop(L, 1);
-	sr->timeout_ms = clm_tool_invocation_timeout_ms(sr->inv);
-
-	int r = clm_lua_pending_add(plugin, &sr->pending, lua_sleep_teardown);
+	sr->lco = lco;
+	sr->agent = lco->plugin->agent;
+	sr->timeout_ms = clm_tool_invocation_timeout_ms(lco->call->inv);
+	r = clm_lua_pending_add(lco->plugin, L, &sr->pending,
+	    lua_sleep_teardown);
 	if (r < 0) {
 		free(sr);
-		return luaL_error(L, "clm.sleep: plugin is shutting down");
+		return luaL_error(L, "clm.sleep: invocation is shutting down");
 	}
-
-	r = agent->host->timer_set(agent->host->ctx, (uint64_t)ms,
+	r = sr->agent->host->timer_set(sr->agent->host->ctx, (uint64_t)ms,
 	    lua_sleep_timer_cb, sr, &sr->timer);
 	if (r < 0) {
 		(void)clm_lua_pending_remove(&sr->pending);
 		free(sr);
 		return luaL_error(L, "clm.sleep: timer_set failed");
 	}
-	if (sr->inv != NULL)
-		clm_tool_invocation_set_cancel(sr->inv, lua_sleep_cancel, sr);
-
 	return lua_yield(L, 0);
+}
+
+struct lua_spawn_req {
+	struct clm_lua_pending pending;
+	struct clm_lua_coroutine *lco;
+	struct clm_agent *agent;
+	struct clm_timer *timer;
+	uint64_t timeout_ms;
+};
+
+static void
+lua_spawn_teardown(struct clm_lua_pending *pending)
+{
+	struct lua_spawn_req *req = (struct lua_spawn_req *)pending;
+
+	req->lco = NULL;
+	if (req->timer != NULL && req->agent != NULL && req->agent->host != NULL &&
+	    req->agent->host->timer_cancel != NULL)
+		req->agent->host->timer_cancel(req->timer);
+	free(req);
+}
+
+static void
+lua_spawn_start(void *arg)
+{
+	struct lua_spawn_req *req = arg;
+	struct clm_lua_coroutine *lco = req->pending.coroutine;
+	int nresults = 0, rc;
+
+	if (clm_lua_pending_remove(&req->pending) == NULL)
+		return;
+	if (req->timer != NULL && req->agent != NULL && req->agent->host != NULL &&
+	    req->agent->host->timer_cancel != NULL)
+		req->agent->host->timer_cancel(req->timer);
+	req->timer = NULL;
+	if (lco == NULL) {
+		free(req);
+		return;
+	}
+	rc = clm_lua_resume_with_deadline(lco->plugin, lco->co, lco->main_L,
+	    0, &nresults, req->timeout_ms);
+	if (rc != LUA_YIELD) {
+		const char *error = rc == LUA_OK ? NULL : lua_tostring(lco->co, -1);
+		clm_lua_coroutine_finish(lco, rc, nresults, error);
+	}
+	free(req);
+}
+
+static int
+lua_clm_spawn(lua_State *L)
+{
+	struct clm_lua_coroutine *parent, *child_lco;
+	struct clm_lua_task *task;
+	struct lua_spawn_req *req;
+	lua_State *child;
+	int r;
+
+	luaL_checktype(L, 1, LUA_TFUNCTION);
+	if (!clm_lua_coroutine_is_valid(L))
+		return luaL_error(L, "clm.spawn may only be called from within "
+		    "a tool coroutine");
+	parent = clm_lua_coroutine_find(L);
+	if (!parent->is_main)
+		return luaL_error(L, "clm.spawn may only be called from the main "
+		    "tool coroutine");
+	if (parent->agent == NULL || parent->agent->host == NULL ||
+	    parent->agent->host->timer_set == NULL)
+		return luaL_error(L, "clm.spawn: no scheduler available");
+
+	task = lua_newuserdatauv(L, sizeof(*task), 0);
+	memset(task, 0, sizeof(*task));
+	task->call = parent->call;
+	task->call_serial = parent->call->serial;
+	task->state = CLM_LUA_TASK_PENDING;
+	task->self_ref = LUA_NOREF;
+	task->results_ref = LUA_NOREF;
+	luaL_setmetatable(L, CLM_LUA_TASK_META);
+	lua_pushvalue(L, -1);
+	task->self_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+	child = lua_newthread(L);
+	child_lco = clm_lua_coroutine_register(parent->plugin, parent->call,
+	    L, child, false);
+	if (child_lco == NULL) {
+		lua_pop(L, 1);
+		lua_task_cancel_internal(task, "failed to register task coroutine");
+		return luaL_error(L, "clm.spawn: out of memory");
+	}
+	task->lco = child_lco;
+	child_lco->task = task;
+	lua_pushvalue(L, 1);
+	lua_xmove(L, child, 1);
+
+	req = calloc(1, sizeof(*req));
+	if (req == NULL) {
+		clm_lua_coroutine_unregister(child_lco);
+		lua_pop(L, 1);
+		return luaL_error(L, "clm.spawn: out of memory");
+	}
+	req->lco = child_lco;
+	req->agent = parent->agent;
+	req->timeout_ms = clm_tool_invocation_timeout_ms(parent->call->inv);
+	r = clm_lua_pending_add(parent->plugin, child, &req->pending,
+	    lua_spawn_teardown);
+	if (r < 0) {
+		free(req);
+		clm_lua_coroutine_unregister(child_lco);
+		lua_pop(L, 1);
+		return luaL_error(L, "clm.spawn: invocation is shutting down");
+	}
+	r = req->agent->host->timer_set(req->agent->host->ctx, 0,
+	    lua_spawn_start, req, &req->timer);
+	if (r < 0) {
+		(void)clm_lua_pending_remove(&req->pending);
+		free(req);
+		clm_lua_coroutine_unregister(child_lco);
+		lua_pop(L, 1);
+		return luaL_error(L, "clm.spawn: failed to schedule task");
+	}
+	lua_pop(L, 1);
+	return 1;
+}
+
+static int
+lua_clm_wait_any(lua_State *L)
+{
+	struct clm_lua_coroutine *parent;
+	struct clm_lua_task **tasks;
+	struct clm_lua_wait *wait;
+	lua_Integer lua_ntasks;
+	lua_Integer timeout_ms = 0;
+	size_t ntasks, ready = SIZE_MAX;
+	bool have_timeout = false;
+	int r;
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+	parent = lua_task_main_caller(L, "clm.wait_any");
+	if (!lua_isnoneornil(L, 2)) {
+		timeout_ms = luaL_checkinteger(L, 2);
+		if (timeout_ms < 0)
+			return luaL_error(L, "clm.wait_any: timeout must be nonnegative");
+		have_timeout = true;
+	}
+	lua_ntasks = luaL_len(L, 1);
+	if (lua_ntasks <= 0 || lua_ntasks > 128)
+		return luaL_error(L, "clm.wait_any: expected 1 to 128 tasks");
+	ntasks = (size_t)lua_ntasks;
+	tasks = calloc(ntasks, sizeof(*tasks));
+	if (tasks == NULL)
+		return luaL_error(L, "clm.wait_any: out of memory");
+	for (size_t i = 0; i < ntasks; i++) {
+		lua_rawgeti(L, 1, (lua_Integer)i + 1);
+		tasks[i] = luaL_testudata(L, -1, CLM_LUA_TASK_META);
+		lua_pop(L, 1);
+		if (tasks[i] == NULL) {
+			free(tasks);
+			return luaL_error(L, "clm.wait_any: expected task at index %zu",
+			    i + 1);
+		}
+		if (tasks[i]->call != parent->call ||
+		    tasks[i]->call_serial != parent->call->serial) {
+			free(tasks);
+			return luaL_error(L, "clm.wait_any: task belongs to another "
+			    "invocation");
+		}
+		if (tasks[i]->waiter != NULL) {
+			free(tasks);
+			return luaL_error(L, "clm.wait_any: task is already being "
+			    "waited on");
+		}
+		for (size_t j = 0; j < i; j++) {
+			if (tasks[j] == tasks[i]) {
+				free(tasks);
+				return luaL_error(L, "clm.wait_any: duplicate task");
+			}
+		}
+		if (ready == SIZE_MAX &&
+		    tasks[i]->state != CLM_LUA_TASK_PENDING)
+			ready = i;
+	}
+	if (ready != SIZE_MAX) {
+		free(tasks);
+		lua_pushinteger(L, (lua_Integer)ready + 1);
+		return 1;
+	}
+	wait = calloc(1, sizeof(*wait));
+	if (wait == NULL) {
+		free(tasks);
+		return luaL_error(L, "clm.wait_any: out of memory");
+	}
+	wait->tasks = tasks;
+	wait->ntasks = ntasks;
+	wait->agent = parent->agent;
+	wait->any = true;
+	r = clm_lua_pending_add(parent->plugin, L, &wait->pending,
+	    lua_wait_teardown);
+	if (r < 0) {
+		lua_wait_free(wait);
+		return luaL_error(L, "clm.wait_any: invocation is shutting down");
+	}
+	for (size_t i = 0; i < ntasks; i++)
+		tasks[i]->waiter = wait;
+	if (have_timeout) {
+		if (wait->agent == NULL || wait->agent->host == NULL ||
+		    wait->agent->host->timer_set == NULL) {
+			(void)clm_lua_pending_remove(&wait->pending);
+			lua_wait_detach(wait);
+			lua_wait_free(wait);
+			return luaL_error(L, "clm.wait_any: no timer available");
+		}
+		r = wait->agent->host->timer_set(wait->agent->host->ctx,
+		    (uint64_t)timeout_ms, lua_wait_timeout, wait, &wait->timer);
+		if (r < 0) {
+			(void)clm_lua_pending_remove(&wait->pending);
+			lua_wait_detach(wait);
+			lua_wait_free(wait);
+			return luaL_error(L, "clm.wait_any: timer_set failed");
+		}
+	}
+	return lua_yield(L, 0);
+}
+
+static const char task_helpers[] =
+    "function clm.await_all(tasks)\n"
+    "  local outcomes = {}\n"
+    "  for i, task in ipairs(tasks) do\n"
+    "    task:wait()\n"
+    "    outcomes[i] = task:result()\n"
+    "  end\n"
+    "  return outcomes\n"
+    "end\n"
+    "function clm.try_all(tasks)\n"
+    "  local pending = {}\n"
+    "  local results = {}\n"
+    "  for i, task in ipairs(tasks) do\n"
+    "    pending[i] = { index = i, task = task }\n"
+    "  end\n"
+    "  while #pending ~= 0 do\n"
+    "    local waiting = {}\n"
+    "    for i, item in ipairs(pending) do\n"
+    "      waiting[i] = item.task\n"
+    "    end\n"
+    "    local done, err = clm.wait_any(waiting)\n"
+    "    if done == nil then return nil, err end\n"
+    "    local item = table.remove(pending, done)\n"
+    "    local outcome = item.task:result()\n"
+    "    if not outcome.ok then\n"
+    "      for _, other in ipairs(pending) do\n"
+    "        other.task:cancel(\"sibling failed\")\n"
+    "        other.task:result()\n"
+    "      end\n"
+    "      return nil, outcome.error\n"
+    "    end\n"
+    "    results[item.index] = outcome.value\n"
+    "  end\n"
+    "  return results\n"
+    "end\n";
+
+static int
+install_task_helpers(lua_State *L)
+{
+	if (luaL_loadbuffer(L, task_helpers, sizeof(task_helpers) - 1,
+	    "=clm task helpers") != LUA_OK)
+		return -1;
+	if (lua_pcall(L, 0, 0, 0) != LUA_OK)
+		return -1;
+	return 0;
 }
 
 static void
@@ -1071,10 +1713,15 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 	lua_setfield(L, -2, "write_file");
 	lua_pushcfunction(L, lua_clm_sleep);
 	lua_setfield(L, -2, "sleep");
+	lua_pushcfunction(L, lua_clm_spawn);
+	lua_setfield(L, -2, "spawn");
+	lua_pushcfunction(L, lua_clm_wait_any);
+	lua_setfield(L, -2, "wait_any");
 	lua_setglobal(L, "clm");
 
-	/* Register ctx metatable. */
+	/* Register userdata metatables. */
 	register_ctx_meta(L);
+	register_task_meta(L);
 
 	/* Store plugin pointer in registry for the exec timeout hook. */
 	lua_pushlightuserdata(L, plugin);
@@ -1110,6 +1757,7 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	plugin->budget.http_max_per_call = env->http_max_per_call;
 	plugin->budget.json_decode_max = env->json_decode_max;
 	TAILQ_INIT(&plugin->pending);
+	TAILQ_INIT(&plugin->coroutines);
 	plugin->path = strdup(path);
 	if (plugin->path == NULL) {
 		free(plugin);
@@ -1125,8 +1773,16 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	}
 	plugin->L = L;
 
-	/* Set up the sandbox. */
+	/* set up the sandbox and composable task helpers. */
 	sandbox_state(L, plugin);
+	if (install_task_helpers(L) < 0) {
+		clm_debug("lua: failed to install task helpers for %s: %s", path,
+		    lua_tostring(L, -1));
+		lua_close(L);
+		free(plugin->path);
+		free(plugin);
+		return -EINVAL;
+	}
 
 	/* Inject per-plugin config as clm.config (scoped by plugin name). */
 	if (env->tool_config != NULL) {
@@ -1331,6 +1987,19 @@ clm_lua_env_free(struct clm_lua_env *env)
 	p = TAILQ_FIRST(&env->plugins);
 	while (p != NULL) {
 		tmp = TAILQ_NEXT(p, entry);
+		p->tearing_down = true;
+		while (!TAILQ_EMPTY(&p->coroutines)) {
+			struct clm_lua_coroutine *lco = TAILQ_FIRST(&p->coroutines);
+			struct clm_lua_call *call = lco->call;
+			if (!call->completed) {
+				lua_call_result(call, true,
+				    "lua plugin environment is shutting down", NULL);
+			} else {
+				clm_lua_coroutine_unregister(lco);
+				if (call->active_coroutines == 0)
+					lua_call_free(call);
+			}
+		}
 		clm_lua_pending_teardown_all(p);
 		/* Free tool user structs and unref invoke functions. */
 		for (size_t j = 0; j < p->tool_user_count; j++) {

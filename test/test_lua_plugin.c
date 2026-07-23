@@ -754,6 +754,210 @@ test_deadline_rearmed_after_yield(void)
 	    "execution deadline rearmed after sleep yield");
 }
 
+struct concurrent_result {
+	int count;
+	enum clm_tool_outcome outcome;
+	char content[256];
+};
+
+static void
+on_concurrent_result(const char *name, const char *content,
+    enum clm_tool_outcome outcome, void *user)
+{
+	struct concurrent_result *result = user;
+
+	(void)name;
+	result->count++;
+	result->outcome = outcome;
+	(void)snprintf(result->content, sizeof(result->content), "%s",
+	    content != NULL ? content : "");
+}
+
+static void
+test_concurrent_coroutines(void)
+{
+	uv_loop_t loop;
+	struct canned_server *srv;
+	struct clm_host *host = NULL;
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	struct concurrent_result result = {0};
+	const struct clm_callbacks callbacks = {
+		.on_tool_result = on_concurrent_result,
+	};
+	struct clm_cfg cfg = {
+		.api_key = "test",
+		.provider = CLM_PROVIDER_OPENAI,
+		.model = "test",
+		.max_iterations = 1,
+	};
+	char base_url[128], get_url[128], post_url[128], response[1024];
+	int port;
+
+	CHECK(uv_loop_init(&loop) == 0, "concurrent loop init");
+	srv = canned_start(&loop);
+	CHECK(srv != NULL, "concurrent canned server");
+	if (srv == NULL)
+		return;
+	port = canned_port(srv);
+	(void)snprintf(base_url, sizeof(base_url),
+	    "http://127.0.0.1:%d/v1/chat/completions", port);
+	(void)snprintf(get_url, sizeof(get_url),
+	    "http://127.0.0.1:%d/get", port);
+	(void)snprintf(post_url, sizeof(post_url),
+	    "http://127.0.0.1:%d/post", port);
+	cfg.base_url = base_url;
+
+	CHECK(clm_host_uv_new(&loop, &host) == 0, "concurrent host");
+	CHECK(clm_agent_new(&cfg, host, &callbacks, &result, &agent) == 0,
+	    "concurrent agent");
+	CHECK(clm_lua_env_new(agent, &env) == 0, "concurrent lua env");
+	CHECK(clm_lua_load_plugins(env, "test/plugins_concurrency") == 0,
+	    "concurrent plugin load");
+
+	(void)snprintf(response, sizeof(response),
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"concurrent-1\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"concurrent_async\","
+	    "\"arguments\":\"{\\\"get_url\\\":\\\"%s\\\","
+	    "\\\"post_url\\\":\\\"%s\\\"}\"}}]}}]}",
+	    get_url, post_url);
+	canned_reply(srv, response);
+	canned_reply(srv, "get");
+	canned_reply(srv, "post");
+
+	CHECK(clm_agent_submit(agent, "run concurrent async") == 0,
+	    "concurrent submit");
+	while (result.count == 0)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(result.count == 1, "concurrent result count");
+	CHECK(result.outcome == CLM_TOOL_OK, "concurrent result outcome");
+	CHECK(strcmp(result.content, "get:post:slept:multi:value") == 0,
+	    "concurrent result ordering");
+	CHECK(canned_request_count(srv) == 3,
+	    "both child http requests completed");
+
+	memset(&result, 0, sizeof(result));
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"concurrent-2\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"concurrent_error\","
+	    "\"arguments\":\"{}\"}}]}}]}");
+	CHECK(clm_agent_submit(agent, "run concurrent error") == 0,
+	    "concurrent error submit");
+	while (result.count == 0)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(result.count == 1, "concurrent error result count");
+	CHECK(result.outcome == CLM_TOOL_OK, "concurrent error result outcome");
+	CHECK(strstr(result.content, "survived:") != NULL &&
+	    strstr(result.content, "child boom") != NULL,
+	    "await_all preserved independent outcomes");
+	CHECK(canned_request_count(srv) == 4,
+	    "outcome join made no extra model request");
+
+	memset(&result, 0, sizeof(result));
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"concurrent-3\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"concurrent_try_error\","
+	    "\"arguments\":\"{}\"}}]}}]}");
+	CHECK(clm_agent_submit(agent, "run fail-fast tasks") == 0,
+	    "try_all error submit");
+	while (result.count == 0)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(result.count == 1, "try_all error result count");
+	CHECK(result.outcome == CLM_TOOL_OK, "try_all error result outcome");
+	CHECK(strstr(result.content, "try boom:cancelled") != NULL,
+	    "try_all returned the child error and cancelled its sibling");
+	CHECK(canned_request_count(srv) == 5,
+	    "fail-fast join made no extra model request");
+
+	memset(&result, 0, sizeof(result));
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"concurrent-4\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"wait_timeout_cancel\","
+	    "\"arguments\":\"{}\"}}]}}]}");
+	CHECK(clm_agent_submit(agent, "run wait timeout") == 0,
+	    "wait timeout submit");
+	while (result.count == 0)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(result.count == 1, "wait timeout result count");
+	CHECK(result.outcome == CLM_TOOL_OK, "wait timeout result outcome");
+	CHECK(strcmp(result.content, "timeout:cancelled") == 0,
+	    "wait timeout and cancellation result");
+	CHECK(canned_request_count(srv) == 6,
+	    "wait timeout made no extra model request");
+
+	memset(&result, 0, sizeof(result));
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"concurrent-5\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"complete_with_live_task\","
+	    "\"arguments\":\"{}\"}}]}}]}");
+	CHECK(clm_agent_submit(agent, "complete with live task") == 0,
+	    "live task completion submit");
+	while (result.count == 0)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(result.count == 1, "live task completion result count");
+	CHECK(result.outcome == CLM_TOOL_FAILED,
+	    "live task completion failed");
+	CHECK(strstr(result.content, "unawaited tasks") != NULL,
+	    "live task completion reported unawaited tasks");
+	CHECK(canned_request_count(srv) == 7,
+	    "live task completion made no extra model request");
+
+	memset(&result, 0, sizeof(result));
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"concurrent-6\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"complete_with_unobserved_error\","
+	    "\"arguments\":\"{}\"}}]}}]}");
+	CHECK(clm_agent_submit(agent, "complete with unobserved error") == 0,
+	    "unobserved error completion submit");
+	while (result.count == 0)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(result.count == 1, "unobserved error completion result count");
+	CHECK(result.outcome == CLM_TOOL_FAILED,
+	    "unobserved error completion failed");
+	CHECK(strstr(result.content, "unobserved boom") != NULL,
+	    "unobserved error completion reported child error");
+	CHECK(canned_request_count(srv) == 8,
+	    "unobserved error completion made no extra model request");
+
+	memset(&result, 0, sizeof(result));
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"concurrent-7\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"unawaited_task\","
+	    "\"arguments\":\"{}\"}}]}}]}");
+	CHECK(clm_agent_submit(agent, "run unawaited task") == 0,
+	    "unawaited task submit");
+	while (result.count == 0)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(result.count == 1, "unawaited task result count");
+	CHECK(result.outcome == CLM_TOOL_FAILED,
+	    "unawaited task result outcome");
+	CHECK(strstr(result.content, "unawaited tasks") != NULL,
+	    "unawaited task failed closed");
+	CHECK(canned_request_count(srv) == 9,
+	    "unawaited task made no extra model request");
+
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	clm_host_uv_free(host);
+	canned_stop(srv);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(uv_loop_close(&loop) == 0, "concurrent loop close");
+}
+
 int
 main(void)
 {
@@ -765,6 +969,7 @@ main(void)
 	test_pending_sleep_teardown();
 	test_inline_http_completion();
 	test_deadline_rearmed_after_yield();
+	test_concurrent_coroutines();
 
 	if (failures > 0) {
 		printf("test_lua_plugin: %d failure(s)\n", failures);
