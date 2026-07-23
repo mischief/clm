@@ -504,6 +504,7 @@ CLM_API int clm_agent_probe_models(struct clm_agent *agent,
 CLM_API const char *clm_agent_get_base_url(struct clm_agent *agent);
 CLM_API const char *clm_agent_get_api_key(struct clm_agent *agent);
 CLM_API enum clm_provider clm_agent_get_provider(struct clm_agent *agent);
+CLM_API const char *clm_agent_get_model(struct clm_agent *agent);
 
 /*
  * Cancel the turn in flight: aborts the model request (or running tools) and

@@ -28,6 +28,7 @@
 int clm_lua_json_open(lua_State *L);
 void clm_lua_push_json_value(lua_State *L, cJSON *obj);
 int clm_lua_http_open(lua_State *L, struct clm_agent *agent);
+int clm_lua_agent_open(lua_State *L);
 
 /* Invocation-thread guard, consulted by the http bindings (lua_http.c). */
 void clm_lua_mark_invocation_thread(lua_State *L, lua_State *co, int on);
@@ -888,6 +889,9 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 
 	/* Register http module (sets up ctx:http_get, ctx:http_post). */
 	clm_lua_http_open(L, plugin->agent);
+
+	/* Register agent module (subagent prototype: agent.new/:submit). */
+	clm_lua_agent_open(L);
 }
 
 /* ------------------------------------------------------------------ */

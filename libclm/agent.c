@@ -1677,6 +1677,12 @@ clm_agent_get_provider(struct clm_agent *agent)
 	                                            : CLM_PROVIDER_OPENAI;
 }
 
+const char *
+clm_agent_get_model(struct clm_agent *agent)
+{
+	return agent != NULL && agent->llm != NULL ? agent->llm->model : NULL;
+}
+
 int
 clm_agent_cancel(struct clm_agent *agent)
 {

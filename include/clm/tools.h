@@ -53,7 +53,7 @@ TAILQ_HEAD(clm_tool_list, clm_tool);
  * shell_exec/bg_exec are NOT here -- they're libclmuv's uv_spawn-based
  * tools (see clm_tools_register_shell in clm/host_uv.h), unavailable on a
  * host with no subprocess support (e.g. the ESP32 port). */
-int clm_tools_register_builtins(struct clm_agent *agent);
+CLM_API int clm_tools_register_builtins(struct clm_agent *agent);
 
 /* Free every node on a tool registry list (name/description/params_schema
  * strings, then the node itself). Used at agent teardown only -- by then no

@@ -7,7 +7,7 @@
 # clm_debug (../libclm/log.h) is CLM_API-exported from libclm itself, so
 # this archive just links clm_dep for it rather than compiling its own
 # private copy of log.c.
-clmlua_src = files('lua_plugin.c', 'lua_json.c', 'lua_http.c')
+clmlua_src = files('lua_plugin.c', 'lua_json.c', 'lua_http.c', 'lua_agent.c')
 
 if lua_dep.found()
   clm_lua_lib = static_library('clmlua', clmlua_src,

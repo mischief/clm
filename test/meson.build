@@ -47,6 +47,18 @@ if have_lua
     c_args: test_cflags,
   )
   test('lua_plugin', test_lua, workdir: meson.project_source_root())
+
+  # Subagent prototype test: agent.new()/:submit()/:free() (lua_agent.c),
+  # driven through a real tool-call turn against a canned HTTP server so
+  # both the parent's and child's async request/response paths run for
+  # real on one uv loop, same pattern as test_agent.c.
+  test_lua_agent = executable('test_lua_agent',
+    files('test_lua_agent.c', 'canned.c'),
+    dependencies: [clmuv_dep, clmlua_dep],
+    include_directories: [include_directories('.'), clm_inc, include_directories('../include')],
+    c_args: test_cflags,
+  )
+  test('lua_agent', test_lua_agent, workdir: meson.project_source_root())
 endif
 
 # md_render unit test: pure, links only the internal md_render static library
