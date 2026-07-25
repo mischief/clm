@@ -195,6 +195,7 @@ struct ui {
 	size_t hist_pos;
 	char hist_saved[1024];
 
+	bool color;       /* print text in color, otherwise just attributes */
 	bool dirty;       /* repaint requested */
 	bool full_redraw; /* force an artifact-free repaint (resize / ^L) */
 	bool quit;

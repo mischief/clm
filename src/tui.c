@@ -789,31 +789,55 @@ static const struct clm_callbacks tui_callbacks = {
 /* ---- rendering (all drawing happens here, from the repaint timer) ---- */
 
 static int
-seg_attr(enum ui_style style)
+seg_attr(struct ui *u, enum ui_style style)
 {
+	if (u->color) {
+		switch (style) {
+		case ST_USER:
+			return COLOR_PAIR(1);
+		case ST_LABEL:
+			return COLOR_PAIR(8);
+		case ST_PERM:
+			return COLOR_PAIR(9);
+		case ST_REASON:
+			return COLOR_PAIR(6);
+		case ST_TOOL:
+			return COLOR_PAIR(2);
+		case ST_ERROR:
+			return COLOR_PAIR(3);
+		case ST_TIMEOUT:
+			return COLOR_PAIR(4);
+		default:
+			break;
+		}
+	} else {
+		switch (style) {
+		case ST_USER:
+			return A_BOLD;
+		case ST_LABEL:
+			return A_BOLD;
+		case ST_PERM:
+			return A_BOLD | A_UNDERLINE;
+		case ST_REASON:
+			return A_DIM;
+		case ST_TOOL:
+			return A_UNDERLINE;
+		case ST_ERROR:
+			return A_BOLD | A_REVERSE;
+		case ST_TIMEOUT:
+			return A_REVERSE;
+		default:
+			break;
+		}
+	}
 	switch (style) {
-	case ST_USER:
-		return COLOR_PAIR(1);
 	case ST_ASSIST:
 		return A_NORMAL;
-	case ST_LABEL:
-		return COLOR_PAIR(8);
-	case ST_PERM:
-		return COLOR_PAIR(9);
-	case ST_REASON:
-		return COLOR_PAIR(6);
-	case ST_TOOL:
-		return COLOR_PAIR(2);
 	case ST_TOOL_OUT:
-		return A_DIM;
-	case ST_ERROR:
-		return COLOR_PAIR(3);
-	case ST_TIMEOUT:
-		return COLOR_PAIR(4);
 	case ST_META:
 	case ST_BATCH:
 		return A_DIM;
-	case ST_NORMAL:
+	default:
 		break;
 	}
 	return A_NORMAL;
@@ -880,8 +904,13 @@ draw_status(struct ui *u)
 	char sp = u->busy ? spin[u->spinner & 3] : ' ';
 
 	werase(u->stat);
-	wbkgd(u->stat, COLOR_PAIR(5));
-	wattron(u->stat, COLOR_PAIR(5));
+	if (u->color) {
+		wbkgd(u->stat, COLOR_PAIR(5));
+		wattron(u->stat, COLOR_PAIR(5));
+	} else {
+		wbkgd(u->stat, A_REVERSE);
+		wattron(u->stat, A_REVERSE);
+	}
 
 	/* Live status sits on the left, next to the model, so the eye doesn't
 	 * have to travel across the width of the terminal to read it. */
@@ -975,7 +1004,7 @@ draw_status(struct ui *u)
 			mvwprintw(u->stat, 0, w - hw, "%s", hints);
 	}
 
-	wattroff(u->stat, COLOR_PAIR(5));
+	wattroff(u->stat, u->color ? COLOR_PAIR(5) : A_REVERSE);
 	wnoutrefresh(u->stat);
 }
 
@@ -1200,8 +1229,13 @@ md_emit(const struct md_run *run, void *userdata)
 	unsigned attr = s->base_attr | md_style_to_attr(run->style);
 
 	/* Code carries its own colour, overriding the stream's default pair. */
-	if (run->style & MD_ST_CODE)
-		attr = (attr & ~(unsigned)A_COLOR) | (unsigned)COLOR_PAIR(7);
+	if (run->style & MD_ST_CODE) {
+		if (s->u->color)
+			attr = (attr & ~(unsigned)A_COLOR) |
+			    (unsigned)COLOR_PAIR(7);
+		else
+			attr = (attr & ~(unsigned)A_COLOR) | (unsigned)A_BOLD;
+	}
 
 	if (s->no_bold)
 		attr &= ~(unsigned)A_BOLD;
@@ -1262,13 +1296,13 @@ push_tool_output(struct ui *u, const char *text, bool is_latest)
 	char hint[64];
 
 	if (u->expand_output || (is_latest && total <= PREVIEW)) {
-		rseg_push(u, seg_attr(ST_TOOL_OUT), text, len);
+		rseg_push(u, seg_attr(u, ST_TOOL_OUT), text, len);
 		return;
 	}
 	if (!is_latest) {
 		snprintf(hint, sizeof(hint), "  ... (%d lines, ^O to expand)\n",
 		         total);
-		rseg_push(u, seg_attr(ST_TOOL_OUT), hint, strlen(hint));
+		rseg_push(u, seg_attr(u, ST_TOOL_OUT), hint, strlen(hint));
 		return;
 	}
 	cut = 0;
@@ -1278,10 +1312,10 @@ push_tool_output(struct ui *u, const char *text, bool is_latest)
 			seen++;
 		cut++;
 	}
-	rseg_push(u, seg_attr(ST_TOOL_OUT), text, cut);
+	rseg_push(u, seg_attr(u, ST_TOOL_OUT), text, cut);
 	snprintf(hint, sizeof(hint), "  ... (+%d lines, ^O to expand)\n",
 	         total - PREVIEW);
-	rseg_push(u, seg_attr(ST_TOOL_OUT), hint, strlen(hint));
+	rseg_push(u, seg_attr(u, ST_TOOL_OUT), hint, strlen(hint));
 }
 
 /* Render one combined "-- ran N commands, read N files, ..." line summarizing
@@ -1294,7 +1328,7 @@ push_collapsed_summary(struct ui *u, const int cnt[4])
 	char line[160];
 
 	if (format_tool_tally(line, sizeof(line), cnt, " (^O to expand)\n"))
-		rseg_push(u, seg_attr(ST_META), line, strlen(line));
+		rseg_push(u, seg_attr(u, ST_META), line, strlen(line));
 }
 
 /* Resolve the source span list into the rendered run cache for width w. */
@@ -1378,11 +1412,12 @@ rebuild_render(struct ui *u, int w)
 		if (g->style == ST_ASSIST && w >= 4)
 			render_markdown(u, g->text, w, A_NORMAL, false);
 		else if (g->style == ST_REASON && w >= 4)
-			render_markdown(u, g->text, w, COLOR_PAIR(6), true);
+			render_markdown(u, g->text, w,
+			    u->color ? COLOR_PAIR(6) : A_DIM, true);
 		else if (g->style == ST_TOOL_OUT)
 			push_tool_output(u, g->text, i == last_tool_out);
 		else
-			rseg_push(u, seg_attr(g->style), g->text,
+			rseg_push(u, seg_attr(u, g->style), g->text,
 			          strlen(g->text));
 	}
 	if (aggregating)
@@ -1577,11 +1612,11 @@ draw_transcript(struct ui *u)
 	for (size_t i = 0; i < u->steering_nqueue; i++) {
 		char line[600];
 
-		rseg_push(u, seg_attr(ST_USER), "\nyou> ", 6);
-		rseg_push(u, seg_attr(ST_USER), u->steering_queue[i],
+		rseg_push(u, seg_attr(u, ST_USER), "\nyou> ", 6);
+		rseg_push(u, seg_attr(u, ST_USER), u->steering_queue[i],
 		    strlen(u->steering_queue[i]));
 		(void)snprintf(line, sizeof(line), "  (queued)\n");
-		rseg_push(u, seg_attr(ST_META), line, strlen(line));
+		rseg_push(u, seg_attr(u, ST_META), line, strlen(line));
 	}
 
 	total = wrap_walk(u, w, h, 0, false, base);
@@ -2969,12 +3004,13 @@ on_winch(uv_signal_t *s, int signum)
  * only contributes attributes, never pair colours. Keep it this way.
  */
 static void
-init_colors(void)
+init_colors(struct ui *u)
 {
-	if (!has_colors())
+	if (getenv("NO_COLOR") != NULL || !has_colors())
 		return;
 	start_color();
 	use_default_colors();
+	u->color = true;
 	/*
 	 * Colours are chosen to read well on a stock Solarized 16-colour palette
 	 * where A_BOLD promotes 0-7 accents to the grey 8-15 base tones. So we
@@ -3145,7 +3181,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	nonl();
 	set_escdelay(25); /* make a lone Escape (cancel) responsive */
 	mousemask(BUTTON4_PRESSED | BUTTON5_PRESSED, NULL);
-	init_colors();
+	init_colors(u);
 	make_windows(u);
 
 	/*
