@@ -76,30 +76,29 @@ usage(const char *prog)
 	    "  Set CLM_API_KEY in the environment to send a bearer token.\n");
 }
 
-static int use_color = 1;
+/*
+ * Escapes for the non-TUI output paths, resolved once in main(): colour, or
+ * attributes only under NO_COLOR, or nothing when stdout is not a terminal.
+ */
+static const char *esc_warn = "\033[33m";
+static const char *esc_err = "\033[31m";
+static const char *esc_dim = "\033[2m";
+static const char *esc_reset = "\033[0m";
 
-static const char *
-esc_warn(void)
+static void
+init_escapes(void)
 {
-	return use_color ? "\033[33m" : "\033[1m";
-}
+	const char *term = getenv("TERM");
 
-static const char *
-esc_err(void)
-{
-	return use_color ? "\033[31m" : "\033[1;7m";
-}
-
-static const char *
-esc_dim(void)
-{
-	return "\033[2m";
-}
-
-static const char *
-esc_reset(void)
-{
-	return "\033[0m";
+	if (!isatty(STDOUT_FILENO) || term == NULL ||
+	    strcmp(term, "dumb") == 0) {
+		esc_warn = esc_err = esc_dim = esc_reset = "";
+		return;
+	}
+	if (getenv("NO_COLOR") != NULL) {
+		esc_warn = "\033[1m";
+		esc_err = "\033[1;7m";
+	}
 }
 
 struct cli_state {
@@ -140,7 +139,7 @@ static void
 cb_reasoning(const char *text, void *user)
 {
 	(void)user;
-	printf("%s%s%s", esc_dim(), text, esc_reset());
+	printf("%s%s%s", esc_dim, text, esc_reset);
 	fflush(stdout);
 }
 
@@ -149,11 +148,11 @@ cb_finish_reason(enum clm_finish_reason reason, void *user)
 {
 	(void)user;
 	if (reason == CLM_FINISH_LENGTH)
-		printf("\n%s[truncated: hit token limit]%s\n", esc_warn(),
-		    esc_reset());
+		printf("\n%s[truncated: hit token limit]%s\n", esc_warn,
+		    esc_reset);
 	else if (reason == CLM_FINISH_CONTENT_FILTER)
-		printf("\n%s[stopped: content filter]%s\n", esc_err(),
-		    esc_reset());
+		printf("\n%s[stopped: content filter]%s\n", esc_err,
+		    esc_reset);
 	fflush(stdout);
 }
 
@@ -161,11 +160,11 @@ static void
 cb_usage(const struct clm_usage *usage, void *user)
 {
 	(void)user;
-	printf("%s[%d+%d tok", esc_dim(), usage->prompt_tokens,
+	printf("%s[%d+%d tok", esc_dim, usage->prompt_tokens,
 	    usage->completion_tokens);
 	if (usage->tokens_per_sec > 0)
 		printf(", %.1f tok/s", usage->tokens_per_sec);
-	printf("]%s\n", esc_reset());
+	printf("]%s\n", esc_reset);
 	fflush(stdout);
 }
 
@@ -186,11 +185,11 @@ cb_tool_result(const char *name, const char *content, enum clm_tool_outcome outc
 		printf("[result: %s]\n%s\n", name, content ? content : "");
 		break;
 	case CLM_TOOL_FAILED:
-		printf("%s[x %s]%s %s\n", esc_err(), name, esc_reset(),
+		printf("%s[x %s]%s %s\n", esc_err, name, esc_reset,
 		    content ? content : "");
 		break;
 	case CLM_TOOL_TIMEDOUT:
-		printf("%s[timeout %s]%s %s\n", esc_warn(), name, esc_reset(),
+		printf("%s[timeout %s]%s %s\n", esc_warn, name, esc_reset,
 		    content ? content : "");
 		break;
 	}
@@ -494,8 +493,7 @@ main(int argc, char *argv[])
 	int opt, r;
 	struct clm_lua_cfg *lcfg = NULL;
 
-	if (getenv("NO_COLOR") != NULL)
-		use_color = 0;
+	init_escapes();
 
 	if (argc >= 2 && strcmp(argv[1], "setup") == 0)
 		return run_setup();
