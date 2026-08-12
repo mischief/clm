@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: ISC
 #include <dirent.h>
 #include <errno.h>
+#include <setjmp.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -88,6 +89,10 @@ struct clm_lua_plugin {
 	struct clm_lua_budget budget;
 	struct clm_lua_pending_list pending;
 	bool tearing_down;
+	/* Unprotected-call recovery: see lua_plugin_panic. */
+	jmp_buf panic_jmp;
+	bool panic_ready;
+	bool dead;
 };
 
 TAILQ_HEAD(clm_lua_plugin_list, clm_lua_plugin);
@@ -180,7 +185,11 @@ lua_capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 		free(ptr);
 		return NULL;
 	}
-	if (p->mem_used - real_osize + nsize > p->mem_limit)
+	/* Only growth is capped. A shrink already returns memory, and the
+	 * collector reallocates downward while it works, so refusing those
+	 * would make a plugin at its limit unable to get back under it. */
+	if (nsize > real_osize &&
+	    p->mem_used - real_osize + nsize > p->mem_limit)
 		return NULL; /* refused; Lua raises OOM */
 	void *np = realloc(ptr, nsize);
 	if (np == NULL)
@@ -189,6 +198,44 @@ lua_capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 	if (p->mem_used > p->budget.peak_mem)
 		p->budget.peak_mem = p->mem_used;
 	return np;
+}
+
+/* ------------------------------------------------------------------ */
+/* Panic and warning handlers                                          */
+/* ------------------------------------------------------------------ */
+
+/* Where an error raised outside any protected call lands; without this Lua
+ * aborts the process. Callers arm panic_ready around bare C API calls and
+ * recover through panic_jmp. Nothing unwound the state, so the plugin is
+ * then dead and L must never be touched again, lua_close included. */
+static int
+lua_plugin_panic(lua_State *L)
+{
+	struct clm_lua_plugin *p = NULL;
+	const char *msg = lua_tostring(L, -1);
+
+	(void)lua_getallocf(L, (void **)&p);
+	clm_debug("lua panic [%s]: %s", p && p->path ? p->path : "?",
+	    msg ? msg : "(unknown)");
+	if (p != NULL && p->panic_ready) {
+		p->panic_ready = false;
+		p->dead = true;
+		longjmp(p->panic_jmp, 1);
+	}
+	return 0; /* returning from here aborts, as before */
+}
+
+/* Where a Lua warning goes; with no warn function Lua drops them. The one
+ * that matters is an error inside a __gc handler: Lua reports a failing
+ * finalizer through this path instead of raising it. */
+static void
+lua_plugin_warn(void *ud, const char *msg, int tocont)
+{
+	struct clm_lua_plugin *p = ud;
+
+	(void)tocont;
+	clm_debug("lua warning [%s]: %s", p && p->path ? p->path : "?",
+	    msg ? msg : "");
 }
 
 /* ------------------------------------------------------------------ */
@@ -484,30 +531,25 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	plugin->budget.http_total = 0;
 	plugin->budget.call_start_ns = clock_ns();
 
-	/* lua_newthread() is a bare C-API call, not wrapped in lua_pcall (it
-	 * can't be -- there's no Lua frame to unwind into yet). If the
-	 * capped allocator refuses this allocation, Lua's OOM error has
-	 * nowhere protected to longjmp to, so its default panic handler
-	 * calls abort() and takes the whole process down -- lua_newthread()
-	 * does NOT return NULL on OOM the way the check below assumes; it
-	 * never returns at all. Refuse proactively instead, with a safety
-	 * margin covering what one invocation typically needs (the
-	 * coroutine object itself, its stack, the decoded args table, and
-	 * response bodies), so we fail this one tool call cleanly via
-	 * clm_tool_fail() instead of crashing every in-flight turn. */
-	if (plugin->mem_used + 262144 > plugin->mem_limit) {
+	if (plugin->dead) {
 		clm_tool_fail(inv,
-		    "plugin is low on memory, refusing to start "
-		    "a new invocation to avoid crashing");
+		    "plugin state is unusable after an earlier "
+		    "unrecoverable Lua error");
 		return;
 	}
 
-	/* Create a coroutine for this invocation. */
-	co = lua_newthread(L);
-	if (co == NULL) {
-		clm_tool_fail(inv, "failed to create Lua coroutine");
+	/* Everything from here to the resume below is bare C API: there is no
+	 * Lua frame to unwind into yet, so an allocation the cap refuses
+	 * raises with nowhere to go. lua_plugin_panic lands here instead, and
+	 * the plugin is dead once it does. */
+	if (setjmp(plugin->panic_jmp) != 0) {
+		clm_tool_fail(inv, "plugin ran out of memory");
 		return;
 	}
+	plugin->panic_ready = true;
+
+	/* Create a coroutine for this invocation. */
+	co = lua_newthread(L);
 	/* Keep coroutine rooted on the main stack while it runs. We'll pop
 	 * it once the tool completes (synchronously or after resume). */
 	int co_ref = luaL_ref(L, LUA_REGISTRYINDEX);
@@ -529,6 +571,7 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 		clm_tool_fail(inv, "invalid tool arguments (malformed JSON)");
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
+		plugin->panic_ready = false;
 		return;
 	}
 	clm_lua_push_json_value(co, args_obj);
@@ -554,6 +597,8 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	/* Store invocation pointer for error reporting from HTTP callbacks. */
 	lua_pushlightuserdata(co, inv);
 	lua_setfield(co, LUA_REGISTRYINDEX, "_clm_inv");
+
+	plugin->panic_ready = false;
 
 	/* resume the coroutine with (args_table, ctx). */
 	uint64_t timeout = clm_tool_invocation_timeout_ms(inv);
@@ -1055,6 +1100,8 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 		return -ENOMEM;
 	}
 	plugin->L = L;
+	lua_atpanic(L, lua_plugin_panic);
+	lua_setwarnf(L, lua_plugin_warn, plugin);
 
 	/* Set up the sandbox. */
 	sandbox_state(L, plugin);
@@ -1268,14 +1315,17 @@ clm_lua_env_free(struct clm_lua_env *env)
 	while (p != NULL) {
 		tmp = TAILQ_NEXT(p, entry);
 		clm_lua_pending_teardown_all(p);
-		/* Free tool user structs and unref invoke functions. */
+		/* Free tool user structs and unref invoke functions. A dead
+		 * state is left alone: its heap is bounded by mem_limit, and
+		 * touching it after a panic is worse than leaking it. */
 		for (size_t j = 0; j < p->tool_user_count; j++) {
-			luaL_unref(p->L, LUA_REGISTRYINDEX,
-			    p->tool_users[j]->invoke_ref);
+			if (!p->dead)
+				luaL_unref(p->L, LUA_REGISTRYINDEX,
+				    p->tool_users[j]->invoke_ref);
 			free(p->tool_users[j]);
 		}
 		free(p->tool_users);
-		if (p->L != NULL)
+		if (p->L != NULL && !p->dead)
 			lua_close(p->L);
 		free(p->path);
 		free(p);

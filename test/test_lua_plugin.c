@@ -761,6 +761,94 @@ test_deadline_rearmed_after_yield(void)
 	    "execution deadline rearmed after sleep yield");
 }
 
+/* Dispatch a tool call whose arguments are a megabyte of payload, which the
+ * prologue must copy into the plugin's heap. */
+static int
+start_big_args_tool(
+    struct clm_agent *agent, struct fake_host *fake, const char *name)
+{
+	const size_t payload = 1024 * 1024;
+	char *response;
+	size_t off;
+	int r;
+
+	response = malloc(payload + 512);
+	if (response == NULL)
+		return -1;
+	off = (size_t)snprintf(response, 512,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"oom\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"%s\",\"arguments\":\"{\\\"a\\\":\\\"",
+	    name);
+	memset(response + off, 'x', payload);
+	off += payload;
+	off += (size_t)snprintf(response + off, 64, "\\\"}\"}}]}}]}");
+	response[off] = '\0';
+
+	if (clm_agent_submit(agent, "run oom regression") != 0) {
+		free(response);
+		return -1;
+	}
+	r = fake_http_complete(fake, response);
+	free(response);
+	return r;
+}
+
+/* A plugin at its memory cap must fail the tool call rather than abort: the
+ * invocation prologue is unprotected Lua C API, so without a panic handler
+ * an allocation refused there kills the process. */
+static int
+run_oom_case(void)
+{
+	struct fake_host fake;
+	struct timeout_result result = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	const struct clm_callbacks callbacks = {
+	    .on_tool_result = on_timeout_result,
+	};
+	struct clm_cfg cfg = {
+	    .api_key = "test",
+	    .base_url = "http://test.invalid/v1/chat/completions",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 1,
+	};
+	int ok = 0;
+
+	fake_host_init(&fake);
+	if (clm_agent_new(&cfg, &fake.host, &callbacks, &result, &agent) != 0)
+		goto out;
+	if (clm_lua_env_new(agent, &env) != 0)
+		goto out;
+	if (clm_lua_load_plugins(env, "test/plugins_oom") != 0)
+		goto out;
+	if (start_big_args_tool(agent, &fake, "ballast") != 0)
+		goto out;
+	ok = result.count == 1 && result.outcome == CLM_TOOL_FAILED;
+out:
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	return ok;
+}
+
+static void
+test_oom_does_not_abort(void)
+{
+	pid_t pid;
+	int status;
+	int ok = 0;
+
+	pid = fork();
+	if (pid == 0)
+		_exit(run_oom_case() ? 0 : 1);
+	if (pid > 0 && waitpid(pid, &status, 0) == pid)
+		ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+	CHECK(
+	    ok, "plugin at its memory cap fails the call instead of aborting");
+}
+
 int
 main(void)
 {
@@ -772,6 +860,7 @@ main(void)
 	test_pending_sleep_teardown();
 	test_inline_http_completion();
 	test_deadline_rearmed_after_yield();
+	test_oom_does_not_abort();
 
 	if (failures > 0) {
 		printf("test_lua_plugin: %d failure(s)\n", failures);
