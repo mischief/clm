@@ -61,8 +61,8 @@ CLM_API enum clm_provider clm_provider_from_str(const char *kind);
  * happened when two call sites had their own copies and one was fixed
  * without the other.
  */
-CLM_API void clm_provider_build_url(char *buf, size_t bufsz,
-    const char *base_url, enum clm_provider provider);
+CLM_API void clm_provider_build_url(
+    char *buf, size_t bufsz, const char *base_url, enum clm_provider provider);
 
 /*
  * The server implementation behind the API, orthogonal to clm_provider (which
@@ -105,9 +105,11 @@ enum clm_permission_decision {
 struct clm_permission_req;
 
 /* The tool name being authorized. */
-CLM_API const char *clm_permission_req_name(const struct clm_permission_req *req);
+CLM_API const char *clm_permission_req_name(
+    const struct clm_permission_req *req);
 /* The raw JSON arguments of the call (for the frontend to display). */
-CLM_API const char *clm_permission_req_args(const struct clm_permission_req *req);
+CLM_API const char *clm_permission_req_args(
+    const struct clm_permission_req *req);
 
 /* Result of a server connectivity probe (see clm_agent_check_connection). */
 enum clm_conn_status {
@@ -188,15 +190,15 @@ typedef void (*clm_tool_detach_fn)(void *tool_user);
  * the strings it points to), so it need not outlive the call.
  */
 struct clm_tool_def {
-	const char *name;          /* unique; matches the model's function name */
+	const char *name; /* unique; matches the model's function name */
 	const char *description;
 	const char *params_schema; /* JSON "parameters" object, or NULL */
 	clm_tool_fn invoke;
 	void *user;
 
-	size_t   output_cap;       /* result clamp in bytes; 0 => library default */
-	uint64_t timeout_ms;       /* per-call deadline; 0 => no timeout */
-	unsigned flags;            /* enum clm_tool_flags */
+	size_t output_cap;   /* result clamp in bytes; 0 => library default */
+	uint64_t timeout_ms; /* per-call deadline; 0 => no timeout */
+	unsigned flags;      /* enum clm_tool_flags */
 	clm_tool_detach_fn detach;
 };
 
@@ -218,7 +220,7 @@ struct clm_cfg {
 	const char *api_key;
 	const char *base_url;
 	enum clm_provider provider;
-	enum clm_backend backend;  /* server impl; GENERIC (0) auto-detects */
+	enum clm_backend backend; /* server impl; GENERIC (0) auto-detects */
 	const char *model;
 	/* config.lua providers[] entry name this connection was resolved from
 	 * (e.g. "anthropic-work"), or NULL for a literal -u/--provider-less
@@ -228,14 +230,14 @@ struct clm_cfg {
 	 * which provider is active without re-deriving it from lcfg itself. */
 	const char *provider_name;
 	size_t max_iterations;
-	bool stream;              /* request streamed (SSE) responses */
+	bool stream;               /* request streamed (SSE) responses */
 	const char *system_prompt; /* system message; NULL uses a default */
 
 	/* Provider-specific overrides (0 = use defaults) */
-	int64_t context_size;     /* override ctx_max (tokens) */
-	int autocompact_pct;      /* override CLM_AUTOCOMPACT_PCT (1-99) */
+	int64_t context_size;        /* override ctx_max (tokens) */
+	int autocompact_pct;         /* override CLM_AUTOCOMPACT_PCT (1-99) */
 	int64_t rate_tokens_per_sec; /* token-bucket refill rate */
-	int64_t rate_burst;       /* token-bucket burst size */
+	int64_t rate_burst;          /* token-bucket burst size */
 
 	/*
 	 * Agent policy: NULL-terminated list of fnmatch(3) patterns naming
@@ -296,17 +298,18 @@ struct clm_callbacks {
 	/* A chunk of model reasoning, for models that emit a think channel. */
 	void (*on_reasoning)(const char *text, void *user);
 
-	/* The agent is about to execute a tool. args is the raw JSON arguments. */
+	/* The agent is about to execute a tool. args is the raw JSON arguments.
+	 */
 	void (*on_tool_begin)(const char *name, const char *args, void *user);
 
 	/*
 	 * A gated tool needs authorization before it runs. The frontend renders
 	 * a prompt however it likes and MUST eventually call
 	 * clm_tool_permission_respond(agent, req, decision) -- possibly much
-	 * later. Until then the invocation is parked and the turn waits. If this
-	 * callback is NULL, gated tools are DENIED (secure default: a frontend
-	 * that wires no policy runs no gated tools). req is valid only until it
-	 * is responded to.
+	 * later. Until then the invocation is parked and the turn waits. If
+	 * this callback is NULL, gated tools are DENIED (secure default: a
+	 * frontend that wires no policy runs no gated tools). req is valid only
+	 * until it is responded to.
 	 */
 	void (*on_permission)(const struct clm_permission_req *req, void *user);
 
@@ -331,13 +334,14 @@ struct clm_callbacks {
 	/* Result of a connectivity probe (clm_agent_check_connection). Fires
 	 * with CLM_CONN_CHECKING when a probe starts, then ONLINE or OFFLINE;
 	 * detail is a short human string (NULL when ONLINE/CHECKING). */
-	void (*on_connection)(enum clm_conn_status status, const char *detail,
-	    void *user);
+	void (*on_connection)(
+	    enum clm_conn_status status, const char *detail, void *user);
 
 	/* Agent state changed (e.g. for a ui spinner/status line). */
 	void (*on_state)(enum clm_agent_state state, void *user);
 
-	/* The turn finished. status is 0 on success, negative errno on failure. */
+	/* The turn finished. status is 0 on success, negative errno on failure.
+	 */
 	void (*on_turn_done)(int status, void *user);
 
 	/* An informational notice worth showing the user, distinct from an
@@ -364,12 +368,13 @@ struct clm_callbacks {
 };
 
 /*
- * Create an agent bound to a host (transport + optional timers; see clm/host.h).
+ * Create an agent bound to a host (transport + optional timers; see
+ * clm/host.h).
  *
- * The caller OWNS `host` and whatever it wraps (e.g. an event loop): the library
- * uses it but never tears it down. cb may be NULL (no events). user is passed
- * back to every callback. cfg and cb are copied/consumed at the call; host and
- * user must outlive the agent.
+ * The caller OWNS `host` and whatever it wraps (e.g. an event loop): the
+ * library uses it but never tears it down. cb may be NULL (no events). user is
+ * passed back to every callback. cfg and cb are copied/consumed at the call;
+ * host and user must outlive the agent.
  */
 CLM_API int clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
     const struct clm_callbacks *cb, void *user, struct clm_agent **out);
@@ -386,8 +391,8 @@ CLM_API void clm_agent_free(struct clm_agent *agent);
  * mid-history is unsupported (content already stored under the old
  * compressor could not be read back).
  */
-CLM_API void clm_agent_set_compressor(struct clm_agent *agent,
-    const struct clm_compressor *cz);
+CLM_API void clm_agent_set_compressor(
+    struct clm_agent *agent, const struct clm_compressor *cz);
 
 /*
  * Submit a user turn. Returns immediately (0 on accepted, negative errno on
@@ -443,7 +448,8 @@ CLM_API bool clm_agent_take_mid_chain_compact_started(struct clm_agent *agent);
  * and the interrupted chain is about to resume. Lets the UI print a
  * completion message. Consuming (clears on read).
  */
-CLM_API bool clm_agent_take_mid_chain_compact_succeeded(struct clm_agent *agent);
+CLM_API bool clm_agent_take_mid_chain_compact_succeeded(
+    struct clm_agent *agent);
 
 /*
  * True if the agent's last known context usage is at/above the autocompact
@@ -454,7 +460,8 @@ CLM_API bool clm_agent_take_mid_chain_compact_succeeded(struct clm_agent *agent)
  * so a frontend (e.g. tui.c's status bar) can reflect the same threshold
  * without keeping its own separate copy of the calc.
  */
-CLM_API bool clm_agent_over_autocompact_threshold(const struct clm_agent *agent);
+CLM_API bool clm_agent_over_autocompact_threshold(
+    const struct clm_agent *agent);
 
 /*
  * Probe the API endpoint for reachability (an async GET to its /v1/models).
@@ -480,8 +487,7 @@ CLM_API int clm_agent_check_connection(struct clm_agent *agent);
  */
 CLM_API int clm_agent_list_models(struct clm_agent *agent,
     void (*on_models)(char **ids, void *user),
-    void (*on_error)(const char *msg, void *user),
-    void *user);
+    void (*on_error)(const char *msg, void *user), void *user);
 
 /*
  * Like clm_agent_list_models(), but probes an arbitrary provider/endpoint
@@ -496,8 +502,7 @@ CLM_API int clm_agent_list_models(struct clm_agent *agent,
 CLM_API int clm_agent_probe_models(struct clm_agent *agent,
     const char *base_url, enum clm_provider provider, const char *api_key,
     void (*on_models)(char **ids, void *user),
-    void (*on_error)(const char *msg, void *user),
-    void *user);
+    void (*on_error)(const char *msg, void *user), void *user);
 
 /*
  * Read-only accessors for the connection currently active on a live agent
@@ -543,8 +548,8 @@ CLM_API int clm_agent_cancel(struct clm_agent *agent);
  * rate_burst of 0 leave the library default in place, same as at
  * clm_agent_new time.
  */
-CLM_API int clm_agent_set_provider(struct clm_agent *agent,
-    const struct clm_cfg *cfg);
+CLM_API int clm_agent_set_provider(
+    struct clm_agent *agent, const struct clm_cfg *cfg);
 
 /*
  * Reset conversation history to a fresh single-system-message state --
@@ -565,8 +570,8 @@ CLM_API int clm_agent_clear_history(struct clm_agent *agent);
  * -ENOMEM on allocation failure (history may then hold a partial
  * replay; callers should treat that as fatal for the resume).
  */
-CLM_API int clm_agent_restore_history(struct clm_agent *agent,
-    const struct clm_history *h);
+CLM_API int clm_agent_restore_history(
+    struct clm_agent *agent, const struct clm_history *h);
 
 /*
  * Summarize the conversation and fold old turns into that summary, keeping the
@@ -584,14 +589,16 @@ CLM_API int clm_agent_compact(struct clm_agent *agent);
  * on_permission (synchronous) or later (async). Returns 0, or negative errno.
  */
 CLM_API int clm_tool_permission_respond(struct clm_agent *agent,
-    const struct clm_permission_req *req, enum clm_permission_decision decision);
+    const struct clm_permission_req *req,
+    enum clm_permission_decision decision);
 
 /*
  * Register a tool. The agent copies def and its strings. The same name may
  * not be registered twice. Returns 0, or negative errno (-EEXIST on a
  * duplicate name, -EINVAL on a malformed def).
  */
-CLM_API int clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def);
+CLM_API int clm_tool_add(
+    struct clm_agent *agent, const struct clm_tool_def *def);
 
 /*
  * Unregister a tool by name. Safe to call at any time, including with an
@@ -604,16 +611,21 @@ CLM_API int clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def
 CLM_API int clm_tool_remove(struct clm_agent *agent, const char *name);
 
 /* --- accessors usable from inside a tool's invoke fn --- */
-CLM_API const char *clm_tool_invocation_name(const struct clm_tool_invocation *inv);
-CLM_API const char *clm_tool_invocation_args(const struct clm_tool_invocation *inv);
+CLM_API const char *clm_tool_invocation_name(
+    const struct clm_tool_invocation *inv);
+CLM_API const char *clm_tool_invocation_args(
+    const struct clm_tool_invocation *inv);
 /*
  * The host's native loop/context (clm_host.ctx) for tools that need to reach
  * the underlying platform — e.g. a subprocess tool casting it back to its
- * uv_loop_t*. Returns NULL if the host exposes no context. Most tools ignore it.
+ * uv_loop_t*. Returns NULL if the host exposes no context. Most tools ignore
+ * it.
  */
 CLM_API void *clm_tool_invocation_loop(const struct clm_tool_invocation *inv);
-CLM_API size_t clm_tool_invocation_output_cap(const struct clm_tool_invocation *inv);
-CLM_API uint64_t clm_tool_invocation_timeout_ms(const struct clm_tool_invocation *inv);
+CLM_API size_t clm_tool_invocation_output_cap(
+    const struct clm_tool_invocation *inv);
+CLM_API uint64_t clm_tool_invocation_timeout_ms(
+    const struct clm_tool_invocation *inv);
 
 /*
  * Optional: register a cancel callback the framework calls if the invocation
@@ -633,8 +645,10 @@ CLM_API void clm_tool_invocation_set_cancel(struct clm_tool_invocation *inv,
  * bytes (binary data) must use clm_tool_complete_buf instead, which takes an
  * explicit length and never truncates at a zero byte.
  */
-CLM_API void clm_tool_complete(struct clm_tool_invocation *inv, const char *content);
-CLM_API void clm_tool_complete_buf(struct clm_tool_invocation *inv, struct clm_buffer buf);
+CLM_API void clm_tool_complete(
+    struct clm_tool_invocation *inv, const char *content);
+CLM_API void clm_tool_complete_buf(
+    struct clm_tool_invocation *inv, struct clm_buffer buf);
 CLM_API void clm_tool_fail(struct clm_tool_invocation *inv, const char *msg);
 
 CLM_API void clm_agent_free_ptr(struct clm_agent **agent);

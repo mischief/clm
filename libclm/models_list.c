@@ -32,7 +32,8 @@ clm_parse_models_list(const char *body)
 	if (!cJSON_IsArray(data))
 		return NULL;
 
-	cJSON_ArrayForEach(item, data) {
+	cJSON_ArrayForEach(item, data)
+	{
 		cJSON *id = cJSON_GetObjectItemCaseSensitive(item, "id");
 		char *dup;
 
@@ -41,8 +42,8 @@ clm_parse_models_list(const char *body)
 
 		if (n + 1 >= cap) {
 			size_t newcap = cap ? cap * 2 : 16;
-			char **grown = realloc(list,
-			    (newcap + 1) * sizeof(*grown));
+			char **grown =
+			    realloc(list, (newcap + 1) * sizeof(*grown));
 			if (grown == NULL)
 				return NULL;
 			list = grown;

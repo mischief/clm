@@ -17,7 +17,7 @@ static int failures;
 
 #define CHECK(cond, msg)                                                       \
 	do {                                                                   \
-		if (!(cond)) {                                                  \
+		if (!(cond)) {                                                 \
 			fprintf(stderr, "FAIL: %s (%s:%d)\n", (msg), __FILE__, \
 			    __LINE__);                                         \
 			failures++;                                            \
@@ -45,7 +45,7 @@ struct tstate {
 	int got_usage;
 	struct clm_usage usage;
 	/* Permission-gate testing. */
-	int perm_prompts;                     /* times on_permission fired */
+	int perm_prompts; /* times on_permission fired */
 	enum clm_permission_decision perm_decision; /* what to answer */
 	int notices;
 	char notice[256];
@@ -62,7 +62,8 @@ on_assistant_text(const char *text, void *user)
 }
 
 static void
-on_tool_result(const char *name, const char *content, enum clm_tool_outcome outcome, void *user)
+on_tool_result(const char *name, const char *content,
+    enum clm_tool_outcome outcome, void *user)
 {
 	struct tstate *st = user;
 	(void)name;
@@ -78,7 +79,8 @@ on_tool_result(const char *name, const char *content, enum clm_tool_outcome outc
  * args_json is the tool's raw arguments object, e.g. {"path":"/x"}.
  */
 static void
-canned_tool_call(struct canned_server *srv, const char *name, const char *args_json)
+canned_tool_call(
+    struct canned_server *srv, const char *name, const char *args_json)
 {
 	cJSON *root = cJSON_CreateObject();
 	cJSON *choices = cJSON_CreateArray();
@@ -98,7 +100,8 @@ canned_tool_call(struct canned_server *srv, const char *name, const char *args_j
 	cJSON_AddItemToObject(message, "role", cJSON_CreateString("assistant"));
 	cJSON_AddItemToObject(message, "content", cJSON_CreateString(""));
 	cJSON_AddItemToObject(message, "tool_calls", calls);
-	cJSON_AddItemToObject(choice, "finish_reason", cJSON_CreateString("tool_calls"));
+	cJSON_AddItemToObject(
+	    choice, "finish_reason", cJSON_CreateString("tool_calls"));
 	cJSON_AddItemToObject(choice, "message", message);
 	cJSON_AddItemToArray(choices, choice);
 	cJSON_AddItemToObject(root, "choices", choices);
@@ -164,14 +167,14 @@ on_permission(const struct clm_permission_req *req, void *user)
 }
 
 static const struct clm_callbacks callbacks = {
-	.on_assistant_text = on_assistant_text,
-	.on_reasoning = on_reasoning,
-	.on_permission = on_permission,
-	.on_tool_result = on_tool_result,
-	.on_finish_reason = on_finish_reason,
-	.on_usage = on_usage,
-	.on_turn_done = on_turn_done,
-	.on_notice = on_notice,
+    .on_assistant_text = on_assistant_text,
+    .on_reasoning = on_reasoning,
+    .on_permission = on_permission,
+    .on_tool_result = on_tool_result,
+    .on_finish_reason = on_finish_reason,
+    .on_usage = on_usage,
+    .on_turn_done = on_turn_done,
+    .on_notice = on_notice,
 };
 
 /* A mock tool that completes synchronously with a fixed string. */
@@ -188,7 +191,7 @@ echo_hello(struct clm_tool_invocation *inv, void *user)
 static void
 emit_binary(struct clm_tool_invocation *inv, void *user)
 {
-	static const uint8_t data[] = { 'h', 'i', 0x00, 0x89, 'P', 'N', 'G' };
+	static const uint8_t data[] = {'h', 'i', 0x00, 0x89, 'P', 'N', 'G'};
 	struct clm_buffer buf;
 
 	(void)user;
@@ -205,8 +208,8 @@ make_agent(struct tstate *st, int port)
 	struct clm_cfg cfg = {0};
 	int r;
 
-	(void)snprintf(url, sizeof(url),
-	    "http://127.0.0.1:%d/v1/chat/completions", port);
+	(void)snprintf(
+	    url, sizeof(url), "http://127.0.0.1:%d/v1/chat/completions", port);
 	cfg.api_key = "test";
 	cfg.base_url = url;
 	cfg.provider = st->provider;
@@ -260,10 +263,11 @@ test_text_reply(uv_loop_t *loop)
 	run_until_done(&st);
 
 	CHECK(st.turn_status == 0, "text turn ok");
-	CHECK(strstr(st.assistant, "hi there") != NULL, "assistant text delivered");
+	CHECK(strstr(st.assistant, "hi there") != NULL,
+	    "assistant text delivered");
 	CHECK(canned_request_count(srv) == 1, "one request");
 	CHECK(canned_last_request(srv) != NULL &&
-	    strstr(canned_last_request(srv), "SENTINEL_SYS_PROMPT") != NULL,
+	        strstr(canned_last_request(srv), "SENTINEL_SYS_PROMPT") != NULL,
 	    "custom system prompt sent");
 
 	teardown(&st, srv);
@@ -301,9 +305,10 @@ test_tool_call(uv_loop_t *loop)
 	CHECK(st.last_outcome == CLM_TOOL_OK, "tool outcome ok");
 	CHECK(strstr(st.assistant, "done") != NULL, "final answer delivered");
 	CHECK(canned_request_count(srv) == 2, "two requests (call + result)");
-	/* The tool result must be fed back to the model on the second request. */
+	/* The tool result must be fed back to the model on the second request.
+	 */
 	CHECK(canned_last_request(srv) != NULL &&
-	    strstr(canned_last_request(srv), "hello") != NULL,
+	        strstr(canned_last_request(srv), "hello") != NULL,
 	    "tool result echoed back to model");
 
 	teardown(&st, srv);
@@ -344,11 +349,13 @@ test_binary_tool_output(uv_loop_t *loop)
 	CHECK(st.turn_status == 0, "binary tool turn ok");
 	CHECK(st.tool_results == 1, "one tool result");
 	CHECK(st.last_outcome == CLM_TOOL_OK, "tool outcome ok");
-	CHECK(strstr(st.tool_content, "binary data at byte offset 2 of 7") != NULL,
+	CHECK(strstr(st.tool_content, "binary data at byte offset 2 of 7") !=
+	        NULL,
 	    "on_tool_result sees the offset warning, not raw bytes");
 	CHECK(canned_request_count(srv) == 2, "two requests (call + result)");
 	CHECK(canned_last_request(srv) != NULL &&
-	    strstr(canned_last_request(srv), "binary data at byte offset 2 of 7") != NULL,
+	        strstr(canned_last_request(srv),
+	            "binary data at byte offset 2 of 7") != NULL,
 	    "warning (not raw binary) is what actually gets sent to the API");
 
 	teardown(&st, srv);
@@ -379,22 +386,28 @@ test_bg_exec(uv_loop_t *loop)
 	    "{\"command\":\"printf bgoutput123\",\"label\":\"probe\"}");
 	canned_reply(srv,
 	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
-	    "\"message\":{\"role\":\"assistant\",\"content\":\"started it\"}}]}");
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"started "
+	    "it\"}}]}");
 	canned_reply(srv,
 	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
-	    "\"message\":{\"role\":\"assistant\",\"content\":\"job acknowledged\"}}]}");
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"job "
+	    "acknowledged\"}}]}");
 
 	st.agent = make_agent(&st, canned_port(srv));
 
-	CHECK(clm_agent_submit(st.agent, "run a background job") == 0, "submit");
+	CHECK(
+	    clm_agent_submit(st.agent, "run a background job") == 0, "submit");
 	run_until_done(&st);
 
 	CHECK(st.turn_status == 0, "turn 1 ok");
 	CHECK(st.tool_results == 1, "bg_exec's own invocation completed once");
 	CHECK(strstr(st.tool_content, "started background job") != NULL,
-	    "bg_exec's immediate result is a start acknowledgement, not the job's output");
-	CHECK(strstr(st.assistant, "started it") != NULL, "turn 1 final answer delivered");
-	CHECK(canned_request_count(srv) == 2, "two requests for turn 1 (call + start ack)");
+	    "bg_exec's immediate result is a start acknowledgement, not the "
+	    "job's output");
+	CHECK(strstr(st.assistant, "started it") != NULL,
+	    "turn 1 final answer delivered");
+	CHECK(canned_request_count(srv) == 2,
+	    "two requests for turn 1 (call + start ack)");
 
 	/* Turn 1 is done, but the background job (a real subprocess) may not
 	 * have exited yet. Wait for the automatic follow-up turn its exit
@@ -409,10 +422,11 @@ test_bg_exec(uv_loop_t *loop)
 	CHECK(canned_request_count(srv) == 3,
 	    "job exit triggered a third request automatically");
 	CHECK(canned_last_request(srv) != NULL &&
-	    strstr(canned_last_request(srv), "bgoutput123") != NULL,
-	    "the job's real output reached the model in the auto-triggered turn");
+	        strstr(canned_last_request(srv), "bgoutput123") != NULL,
+	    "the job's real output reached the model in the auto-triggered "
+	    "turn");
 	CHECK(canned_last_request(srv) != NULL &&
-	    strstr(canned_last_request(srv), "probe") != NULL,
+	        strstr(canned_last_request(srv), "probe") != NULL,
 	    "the job's label reached the model in the auto-triggered turn");
 
 	teardown(&st, srv);
@@ -438,7 +452,8 @@ test_agent_free_during_bg_exec(uv_loop_t *loop)
 	(void)snprintf(marker, sizeof(marker), "%s/go", dir);
 	(void)snprintf(args, sizeof(args),
 	    "{\"command\":\"while [ ! -f %s ]; do sleep 0.01; done; "
-	    "printf bgdone\",\"label\":\"detach probe\"}", marker);
+	    "printf bgdone\",\"label\":\"detach probe\"}",
+	    marker);
 
 	srv = canned_start(loop);
 	CHECK(srv != NULL, "canned_start");
@@ -446,12 +461,14 @@ test_agent_free_during_bg_exec(uv_loop_t *loop)
 	canned_reply(srv, final_reply);
 
 	st.agent = make_agent(&st, canned_port(srv));
-	CHECK(clm_agent_submit(st.agent, "start a background job") == 0, "submit");
+	CHECK(clm_agent_submit(st.agent, "start a background job") == 0,
+	    "submit");
 	run_until_done(&st);
 
 	CHECK(st.turn_status == 0, "background job start turn ok");
 	CHECK(st.tool_results == 1, "bg_exec completed immediately");
-	CHECK(canned_request_count(srv) == 2, "background child is still blocked");
+	CHECK(canned_request_count(srv) == 2,
+	    "background child is still blocked");
 
 	clm_agent_free(st.agent);
 	st.agent = NULL;
@@ -504,7 +521,8 @@ test_autocompact_mid_chain(uv_loop_t *loop)
 	/* (1) Tool call, usage already past the 100000-token fallback. */
 	canned_reply(srv,
 	    "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,"
-	    "\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_"
+	    "calls\":"
 	    "[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":"
 	    "\"echo_hello\",\"arguments\":\"{}\"}}]}}],"
 	    "\"usage\":{\"prompt_tokens\":99000,\"completion_tokens\":2000,"
@@ -513,7 +531,8 @@ test_autocompact_mid_chain(uv_loop_t *loop)
 	canned_reply(srv,
 	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
 	    "\"message\":{\"role\":\"assistant\",\"content\":\"SUMMARY\"}}]}");
-	/* (3) Resumed turn's real next call -- must still happen automatically. */
+	/* (3) Resumed turn's real next call -- must still happen automatically.
+	 */
 	canned_reply(srv, final_reply);
 
 	st.agent = make_agent(&st, canned_port(srv));
@@ -617,7 +636,8 @@ test_tools_unsupported_retry(uv_loop_t *loop)
 	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
 	run_until_done(&st);
 
-	CHECK(st.turn_status == 0, "tools-unsupported: retry without tools succeeds");
+	CHECK(st.turn_status == 0,
+	    "tools-unsupported: retry without tools succeeds");
 	CHECK(st.notices == 1, "tools-unsupported: notice fired once");
 	CHECK(canned_request_count(srv) == 2,
 	    "tools-unsupported: failed attempt + retry");
@@ -682,7 +702,8 @@ test_file_tools(uv_loop_t *loop)
 		fclose(f);
 	}
 	CHECK(strstr(disk, "hello") != NULL, "file content written to disk");
-	CHECK(strstr(st.tool_content, "hello") != NULL, "read_file returned content");
+	CHECK(strstr(st.tool_content, "hello") != NULL,
+	    "read_file returned content");
 
 	teardown(&st, srv);
 	(void)unlink(path);
@@ -710,7 +731,8 @@ test_shell_exec(uv_loop_t *loop)
 	CHECK(st.turn_status == 0, "shell turn ok");
 	CHECK(st.tool_results == 1, "one tool result");
 	CHECK(st.last_outcome == CLM_TOOL_OK, "shell outcome ok");
-	CHECK(strstr(st.tool_content, "hello") != NULL, "shell output captured");
+	CHECK(
+	    strstr(st.tool_content, "hello") != NULL, "shell output captured");
 
 	teardown(&st, srv);
 }
@@ -798,8 +820,8 @@ test_shell_exec_cancel_backgrounded_job(uv_loop_t *loop)
 	srv = canned_start(loop);
 	CHECK(srv != NULL, "canned_start");
 
-	canned_tool_call(srv, "shell_exec",
-	    "{\"command\":\"sleep 30 & echo started\"}");
+	canned_tool_call(
+	    srv, "shell_exec", "{\"command\":\"sleep 30 & echo started\"}");
 
 	st.agent = make_agent(&st, canned_port(srv));
 	CHECK(clm_agent_submit(st.agent, "background a job") == 0, "submit");
@@ -817,7 +839,8 @@ test_shell_exec_cancel_backgrounded_job(uv_loop_t *loop)
 	 * kill, the orphaned `sleep 30` keeps the pipes open and this call
 	 * never returns (it just spins the loop). */
 	run_until_done(&st);
-	CHECK(st.turn_done, "turn finished after cancelling a backgrounded job");
+	CHECK(
+	    st.turn_done, "turn finished after cancelling a backgrounded job");
 
 	teardown(&st, srv);
 }
@@ -828,10 +851,15 @@ canned_stream_text(struct canned_server *srv, const char *a, const char *b)
 {
 	char body[1024];
 	(void)snprintf(body, sizeof(body),
-	    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"%s\"}}]}\n\n"
-	    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"%s\"}}]}\n\n"
-	    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
-	    "data: [DONE]\n\n", a, b);
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"%s\"}}]}\n\n"
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"%s\"}}]}\n\n"
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":"
+	    "\"stop\"}]}\n\n"
+	    "data: [DONE]\n\n",
+	    a, b);
 	canned_reply(srv, body);
 }
 
@@ -848,13 +876,20 @@ canned_stream_tool(struct canned_server *srv, const char *name)
 	if (body == NULL)
 		return;
 	(void)snprintf(body, CAP,
-	    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,"
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":"
+	    "0,"
 	    "\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"%s\","
 	    "\"arguments\":\"\"}}]}}]}\n\n"
-	    "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,"
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":"
+	    "0,"
 	    "\"function\":{\"arguments\":\"{}\"}}]}}]}\n\n"
-	    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
-	    "data: [DONE]\n\n", name);
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_"
+	    "calls\"}]}\n\n"
+	    "data: [DONE]\n\n",
+	    name);
 	canned_reply(srv, body);
 	free(body);
 }
@@ -884,7 +919,8 @@ test_stream_text(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
-/* (f) Streamed tool call (name + args in separate deltas), then a final answer. */
+/* (f) Streamed tool call (name + args in separate deltas), then a final answer.
+ */
 static void
 test_stream_tool(uv_loop_t *loop)
 {
@@ -916,7 +952,7 @@ test_stream_tool(uv_loop_t *loop)
 	CHECK(strstr(st.assistant, "done") != NULL, "final answer streamed");
 	CHECK(canned_request_count(srv) == 2, "two requests");
 	CHECK(canned_last_request(srv) != NULL &&
-	    strstr(canned_last_request(srv), "hello") != NULL,
+	        strstr(canned_last_request(srv), "hello") != NULL,
 	    "tool result fed back");
 
 	teardown(&st, srv);
@@ -935,11 +971,20 @@ test_stream_meta(uv_loop_t *loop)
 	CHECK(srv != NULL, "canned_start");
 
 	canned_reply(srv,
-	    "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\n"
-	    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"answer\"}}]}\n\n"
-	    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
-	    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,"
-	    "\"total_tokens\":15},\"timings\":{\"predicted_per_second\":42.5}}\n\n"
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":"
+	    "\"hmm\"}}]}\n\n"
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"answer\"}}]}"
+	    "\n\n"
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":"
+	    "\"stop\"}]}\n\n"
+	    "data: "
+	    "{\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_"
+	    "tokens\":5,"
+	    "\"total_tokens\":15},\"timings\":{\"predicted_per_second\":42.5}}"
+	    "\n\n"
 	    "data: [DONE]\n\n");
 
 	st.agent = make_agent(&st, canned_port(srv));
@@ -949,9 +994,11 @@ test_stream_meta(uv_loop_t *loop)
 	CHECK(st.turn_status == 0, "meta turn ok");
 	CHECK(strstr(st.reasoning, "hmm") != NULL, "reasoning delivered");
 	CHECK(strstr(st.assistant, "answer") != NULL, "content delivered");
-	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP, "finish_reason stop");
+	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP,
+	    "finish_reason stop");
 	CHECK(st.got_usage && st.usage.prompt_tokens == 10 &&
-	    st.usage.completion_tokens == 5, "usage tokens");
+	        st.usage.completion_tokens == 5,
+	    "usage tokens");
 	CHECK(st.usage.total_tokens == 15, "usage total");
 	CHECK(st.usage.tokens_per_sec > 42.0 && st.usage.tokens_per_sec < 43.0,
 	    "usage tok/s");
@@ -988,10 +1035,13 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	run_until_done(&st);
 
 	CHECK(st.turn_status == 0, "anthropic text turn ok");
-	CHECK(strstr(st.assistant, "hi there") != NULL, "assistant text delivered");
-	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP, "end_turn mapped to stop");
+	CHECK(strstr(st.assistant, "hi there") != NULL,
+	    "assistant text delivered");
+	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP,
+	    "end_turn mapped to stop");
 	CHECK(st.got_usage && st.usage.prompt_tokens == 11 &&
-	    st.usage.completion_tokens == 4, "anthropic usage translated");
+	        st.usage.completion_tokens == 4,
+	    "anthropic usage translated");
 
 	req = canned_last_request(srv);
 	CHECK(req != NULL && strstr(req, "x-api-key: test") != NULL,
@@ -1094,7 +1144,9 @@ test_anthropic_stream(uv_loop_t *loop)
 	    "event: content_block_stop\n"
 	    "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
 	    "event: message_delta\n"
-	    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},"
+	    "data: "
+	    "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_"
+	    "turn\"},"
 	    "\"usage\":{\"output_tokens\":3}}\n\n"
 	    "event: message_stop\n"
 	    "data: {\"type\":\"message_stop\"}\n\n");
@@ -1104,10 +1156,13 @@ test_anthropic_stream(uv_loop_t *loop)
 	run_until_done(&st);
 
 	CHECK(st.turn_status == 0, "anthropic stream ok");
-	CHECK(strstr(st.assistant, "hi there") != NULL, "streamed deltas assembled");
-	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP, "end_turn mapped to stop");
+	CHECK(strstr(st.assistant, "hi there") != NULL,
+	    "streamed deltas assembled");
+	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP,
+	    "end_turn mapped to stop");
 	CHECK(st.got_usage && st.usage.prompt_tokens == 9 &&
-	    st.usage.completion_tokens == 3, "input/output tokens combined");
+	        st.usage.completion_tokens == 3,
+	    "input/output tokens combined");
 
 	teardown(&st, srv);
 }
@@ -1127,10 +1182,12 @@ test_recover_after_error(uv_loop_t *loop)
 	/* Port 1 has nothing listening, so the turn fails to connect. */
 	st.agent = make_agent(&st, 1);
 
-	CHECK(clm_agent_submit(st.agent, "first") == 0, "first submit accepted");
+	CHECK(
+	    clm_agent_submit(st.agent, "first") == 0, "first submit accepted");
 	run_until_done(&st);
 	CHECK(st.turn_status != 0, "first turn errored (no server)");
-	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_ERROR, "left in error state");
+	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_ERROR,
+	    "left in error state");
 
 	/* The real assertion: a second prompt is not wedged by the error. */
 	st.turn_done = 0;
@@ -1166,7 +1223,8 @@ test_set_provider_after_error(uv_loop_t *loop)
 	CHECK(clm_agent_submit(st.agent, "first") == 0, "submit accepted");
 	run_until_done(&st);
 	CHECK(st.turn_status != 0, "turn errored (no server)");
-	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_ERROR, "left in error state");
+	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_ERROR,
+	    "left in error state");
 
 	/* The real assertion: reconfiguring is not wedged by the error. */
 	cfg.base_url = "http://127.0.0.1:1/v1/chat/completions";
@@ -1192,23 +1250,26 @@ test_parse_props(void)
 	/* Single slot: ctx is the full n_ctx. */
 	ctx = 0;
 	CHECK(clm_parse_props(
-	    "{\"build_info\":\"b1\",\"total_slots\":1,"
-	    "\"default_generation_settings\":{\"n_ctx\":262144}}", &ctx) == 0,
+	          "{\"build_info\":\"b1\",\"total_slots\":1,"
+	          "\"default_generation_settings\":{\"n_ctx\":262144}}",
+	          &ctx) == 0,
 	    "props: parses n_ctx");
 	CHECK(ctx == 262144, "props: single-slot ctx is full n_ctx");
 
 	/* Multiple slots: context is shared, so the budget is divided. */
 	ctx = 0;
 	CHECK(clm_parse_props(
-	    "{\"build_info\":\"b1\",\"total_slots\":4,"
-	    "\"default_generation_settings\":{\"n_ctx\":262144}}", &ctx) == 0,
+	          "{\"build_info\":\"b1\",\"total_slots\":4,"
+	          "\"default_generation_settings\":{\"n_ctx\":262144}}",
+	          &ctx) == 0,
 	    "props: parses with slots");
 	CHECK(ctx == 65536, "props: ctx divided across slots");
 
 	/* No build_info => not llama.cpp => rejected. */
 	ctx = -1;
 	CHECK(clm_parse_props(
-	    "{\"default_generation_settings\":{\"n_ctx\":262144}}", &ctx) < 0,
+	          "{\"default_generation_settings\":{\"n_ctx\":262144}}",
+	          &ctx) < 0,
 	    "props: no build_info rejected");
 	CHECK(ctx == -1, "props: ctx untouched on reject");
 
@@ -1235,8 +1296,10 @@ test_parse_models_list(void)
 	    "{\"id\":\"kimi-k2.6\",\"object\":\"model\"}]}");
 	CHECK(ids != NULL, "models_list: parses a two-entry catalog");
 	if (ids != NULL) {
-		CHECK(strcmp(ids[0], "auto") == 0, "models_list: first id in order");
-		CHECK(strcmp(ids[1], "kimi-k2.6") == 0, "models_list: second id in order");
+		CHECK(strcmp(ids[0], "auto") == 0,
+		    "models_list: first id in order");
+		CHECK(strcmp(ids[1], "kimi-k2.6") == 0,
+		    "models_list: second id in order");
 		CHECK(ids[2] == NULL, "models_list: NULL-terminated");
 		clm_free_models_list(ids);
 	}
@@ -1247,8 +1310,10 @@ test_parse_models_list(void)
 	    "{\"data\":[{\"object\":\"model\"},{\"id\":\"ok\"},{\"id\":123}]}");
 	CHECK(ids != NULL, "models_list: malformed entries skipped, not fatal");
 	if (ids != NULL) {
-		CHECK(strcmp(ids[0], "ok") == 0, "models_list: only the valid entry kept");
-		CHECK(ids[1] == NULL, "models_list: skipped entries don't appear");
+		CHECK(strcmp(ids[0], "ok") == 0,
+		    "models_list: only the valid entry kept");
+		CHECK(ids[1] == NULL,
+		    "models_list: skipped entries don't appear");
 		clm_free_models_list(ids);
 	}
 
@@ -1261,7 +1326,8 @@ test_parse_models_list(void)
 	    "models_list: non-array data rejected");
 	CHECK(clm_parse_models_list("not json") == NULL,
 	    "models_list: garbage rejected");
-	CHECK(clm_parse_models_list(NULL) == NULL, "models_list: NULL rejected");
+	CHECK(
+	    clm_parse_models_list(NULL) == NULL, "models_list: NULL rejected");
 }
 
 /* Count messages of a given role in a history. */
@@ -1271,8 +1337,8 @@ count_role(struct clm_history *h, enum clm_role role)
 	struct clm_message *m;
 	int n = 0;
 	TAILQ_FOREACH(m, h, entries)
-		if (m->role == role)
-			n++;
+	if (m->role == role)
+		n++;
 	return n;
 }
 
@@ -1300,7 +1366,8 @@ test_history_compact(void)
 	m = clm_history_add_assistant_tool_calls(&h);
 	tc = clm_message_add_tool_call(m, "call1", "shell_exec", "{}");
 	CHECK(tc != NULL, "compact: seed tool call");
-	clm_history_add_tool_result(&h, "call1", "shell_exec", "tool output", strlen("tool output"), NULL);
+	clm_history_add_tool_result(&h, "call1", "shell_exec", "tool output",
+	    strlen("tool output"), NULL);
 	clm_history_add_assistant_text(&h, "reply2", NULL);
 
 	clm_history_add_user(&h, "turn3", NULL);
@@ -1309,33 +1376,40 @@ test_history_compact(void)
 	clm_history_add_user(&h, "turn4", NULL);
 	clm_history_add_assistant_text(&h, "reply4", NULL);
 
-	/* Keep the last 2 user turns; summarize turns 1-2 (incl. the tool pair).
-	 * Returns the number of messages folded (> 0 here). */
+	/* Keep the last 2 user turns; summarize turns 1-2 (incl. the tool
+	 * pair). Returns the number of messages folded (> 0 here). */
 	CHECK(clm_history_compact(&h, "SUMMARY", 2, NULL) > 0, "compact: ok");
 
 	/* System message preserved exactly once, still first and unchanged. */
 	m = TAILQ_FIRST(&h);
 	CHECK(m != NULL && m->role == CLM_ROLE_SYSTEM &&
-	    strcmp(m->content, "SYSPROMPT") == 0, "compact: system preserved");
+	        strcmp(m->content, "SYSPROMPT") == 0,
+	    "compact: system preserved");
 	CHECK(count_role(&h, CLM_ROLE_SYSTEM) == 1, "compact: one system msg");
 
 	/* The summary replaced the old turns: it sits right after system. */
 	m = TAILQ_NEXT(m, entries);
 	CHECK(m != NULL && m->role == CLM_ROLE_USER &&
-	    strcmp(m->content, "SUMMARY") == 0, "compact: summary after system");
+	        strcmp(m->content, "SUMMARY") == 0,
+	    "compact: summary after system");
 
-	/* Recent turns kept verbatim; old ones (turn1/turn2 + tool pair) gone. */
+	/* Recent turns kept verbatim; old ones (turn1/turn2 + tool pair) gone.
+	 */
 	CHECK(count_role(&h, CLM_ROLE_TOOL) == 0,
 	    "compact: old tool result removed (not orphaned)");
 	{
 		int found_turn3 = 0, found_turn4 = 0, found_old = 0;
-		TAILQ_FOREACH(m, &h, entries) {
+		TAILQ_FOREACH(m, &h, entries)
+		{
 			if (m->content == NULL)
 				continue;
-			if (strcmp(m->content, "turn3") == 0) found_turn3 = 1;
-			if (strcmp(m->content, "turn4") == 0) found_turn4 = 1;
+			if (strcmp(m->content, "turn3") == 0)
+				found_turn3 = 1;
+			if (strcmp(m->content, "turn4") == 0)
+				found_turn4 = 1;
 			if (strcmp(m->content, "turn1") == 0 ||
-			    strcmp(m->content, "turn2") == 0) found_old = 1;
+			    strcmp(m->content, "turn2") == 0)
+				found_old = 1;
 		}
 		CHECK(found_turn3 && found_turn4, "compact: recent turns kept");
 		CHECK(!found_old, "compact: old turns dropped");
@@ -1352,7 +1426,8 @@ test_history_compact(void)
 		    "compact: too-short is ok");
 		{
 			int users = count_role(&h2, CLM_ROLE_USER);
-			CHECK(users == 1, "compact: too-short unchanged (no summary)");
+			CHECK(users == 1,
+			    "compact: too-short unchanged (no summary)");
 		}
 		clm_history_free(&h2);
 	}
@@ -1384,9 +1459,11 @@ test_history_compact_agentic(void)
 		snprintf(id, sizeof(id), "call%d", i);
 		snprintf(out, sizeof(out), "out%d", i);
 		m = clm_history_add_assistant_tool_calls(&h);
-		CHECK(clm_message_add_tool_call(m, id, "local_map", "{}") != NULL,
+		CHECK(
+		    clm_message_add_tool_call(m, id, "local_map", "{}") != NULL,
 		    "agentic compact: seed call");
-		clm_history_add_tool_result(&h, id, "local_map", out, strlen(out), NULL);
+		clm_history_add_tool_result(
+		    &h, id, "local_map", out, strlen(out), NULL);
 	}
 
 	/* Keep the last 2 exchanges; exchanges 0-1 fold into the summary. */
@@ -1399,10 +1476,11 @@ test_history_compact_agentic(void)
 	    "agentic compact: system first");
 	m = TAILQ_NEXT(m, entries);
 	CHECK(m != NULL && m->role == CLM_ROLE_USER &&
-	    strcmp(m->content, "MISSION") == 0, "agentic compact: mission kept");
+	        strcmp(m->content, "MISSION") == 0,
+	    "agentic compact: mission kept");
 	m = TAILQ_NEXT(m, entries);
 	CHECK(m != NULL && m->role == CLM_ROLE_USER &&
-	    strcmp(m->content, "SUMMARY") == 0,
+	        strcmp(m->content, "SUMMARY") == 0,
 	    "agentic compact: summary after mission");
 
 	/* Last 2 exchanges intact and still paired; older results folded. */
@@ -1410,7 +1488,8 @@ test_history_compact_agentic(void)
 	    "agentic compact: 2 results kept");
 	{
 		int found_old = 0, found_recent = 0;
-		TAILQ_FOREACH(m, &h, entries) {
+		TAILQ_FOREACH(m, &h, entries)
+		{
 			if (m->role != CLM_ROLE_TOOL || m->content == NULL)
 				continue;
 			if (strcmp(m->content, "out0") == 0 ||
@@ -1435,11 +1514,13 @@ test_history_compact_agentic(void)
 		m = clm_history_add_assistant_tool_calls(&h2);
 		CHECK(clm_message_add_tool_call(m, "c1", "t", "{}") != NULL,
 		    "agentic compact: seed short call1");
-		clm_history_add_tool_result(&h2, "c1", "t", "o1", strlen("o1"), NULL);
+		clm_history_add_tool_result(
+		    &h2, "c1", "t", "o1", strlen("o1"), NULL);
 		m = clm_history_add_assistant_tool_calls(&h2);
 		CHECK(clm_message_add_tool_call(m, "c2", "t", "{}") != NULL,
 		    "agentic compact: seed short call2");
-		clm_history_add_tool_result(&h2, "c2", "t", "o2", strlen("o2"), NULL);
+		clm_history_add_tool_result(
+		    &h2, "c2", "t", "o2", strlen("o2"), NULL);
 		CHECK(clm_history_compact(&h2, "SUMMARY", 2, NULL) == 0,
 		    "agentic compact: too-short no-op");
 		CHECK(count_role(&h2, CLM_ROLE_TOOL) == 2,
@@ -1465,8 +1546,10 @@ test_history_supersede(void)
 	m = clm_history_add_assistant_tool_calls(&h);
 	clm_message_add_tool_call(m, "c1", "local_map", "{}");
 	clm_message_add_tool_call(m, "c2", "examine", "{}");
-	clm_history_add_tool_result(&h, "c1", "local_map", "MAP v1", strlen("MAP v1"), NULL);
-	clm_history_add_tool_result(&h, "c2", "examine", "a door", strlen("a door"), NULL);
+	clm_history_add_tool_result(
+	    &h, "c1", "local_map", "MAP v1", strlen("MAP v1"), NULL);
+	clm_history_add_tool_result(
+	    &h, "c2", "examine", "a door", strlen("a door"), NULL);
 	clm_history_add_assistant_text(&h, "r1", NULL);
 
 	/* Turn 2: a fresh local_map batch (its result not yet recorded). */
@@ -1476,11 +1559,13 @@ test_history_supersede(void)
 
 	CHECK(clm_history_supersede_tool(&h, "local_map", stub) == 1,
 	    "supersede: one prior result stubbed");
-	clm_history_add_tool_result(&h, "c3", "local_map", "MAP v2", strlen("MAP v2"), NULL);
+	clm_history_add_tool_result(
+	    &h, "c3", "local_map", "MAP v2", strlen("MAP v2"), NULL);
 
 	{
 		int v1_stubbed = 0, v2_live = 0, examine_kept = 0;
-		TAILQ_FOREACH(m, &h, entries) {
+		TAILQ_FOREACH(m, &h, entries)
+		{
 			if (m->role != CLM_ROLE_TOOL || m->content == NULL)
 				continue;
 			if (strcmp(m->tool_call_id, "c1") == 0 &&
@@ -1616,9 +1701,9 @@ static void
 test_perm_no_handler(uv_loop_t *loop)
 {
 	static const struct clm_callbacks no_perm_cb = {
-		.on_assistant_text = on_assistant_text,
-		.on_tool_result = on_tool_result,
-		.on_turn_done = on_turn_done,
+	    .on_assistant_text = on_assistant_text,
+	    .on_tool_result = on_tool_result,
+	    .on_turn_done = on_turn_done,
 	};
 	struct tstate st = {0};
 	struct canned_server *srv;
@@ -1649,8 +1734,7 @@ test_perm_no_handler(uv_loop_t *loop)
 	CHECK(clm_agent_submit(st.agent, "use it") == 0, "perm: submit");
 	run_until_done(&st);
 
-	CHECK(st.last_outcome == CLM_TOOL_FAILED,
-	    "perm: no handler -> denied");
+	CHECK(st.last_outcome == CLM_TOOL_FAILED, "perm: no handler -> denied");
 	clm_agent_free(st.agent);
 	clm_host_uv_free(st.host);
 	canned_stop(srv);
@@ -1668,7 +1752,8 @@ test_hidden_tool(uv_loop_t *loop)
 
 	st.loop = loop;
 	srv = canned_start(loop);
-	canned_reply(srv, final_reply); /* plain answer; we inspect the request */
+	canned_reply(
+	    srv, final_reply); /* plain answer; we inspect the request */
 	st.agent = make_agent(&st, canned_port(srv));
 
 	vis.name = "visible_tool";

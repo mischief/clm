@@ -14,7 +14,8 @@
 #include "banned.h"
 
 static cJSON *
-openai_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools, bool stream)
+openai_build_request(
+    const struct clm_llm *llm, cJSON *messages, cJSON *tools, bool stream)
 {
 	cJSON *req, *jmodel, *jstream;
 
@@ -66,7 +67,8 @@ openai_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools, b
 		 * true when not needed, to match the API's own default and
 		 * let the model batch tool calls as it likes. */
 		if (llm->disable_parallel_tool_calls)
-			cJSON_AddItemToObject(req, "parallel_tool_calls", cJSON_CreateBool(0));
+			cJSON_AddItemToObject(
+			    req, "parallel_tool_calls", cJSON_CreateBool(0));
 	}
 
 	return req;
@@ -79,9 +81,9 @@ fail:
 }
 
 const struct clm_provider_ops clm_provider_ops_openai = {
-	.build_request = openai_build_request,
-	.build_auth_headers = NULL,
-	.normalize_response = NULL,
-	.normalize_stream_event = NULL,
-	.endpoint_path = "chat/completions",
+    .build_request = openai_build_request,
+    .build_auth_headers = NULL,
+    .normalize_response = NULL,
+    .normalize_stream_event = NULL,
+    .endpoint_path = "chat/completions",
 };

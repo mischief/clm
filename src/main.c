@@ -49,13 +49,15 @@ usage(const char *prog)
 	    "  -H, --headless        force the plain stdio REPL\n"
 	    "  -u, --url BASE        base API endpoint "
 	    "(default http://127.0.0.1:8081/v1);\n"
-	    "                        \"/messages\" is appended for an anthropic "
+	    "                        \"/messages\" is appended for an "
+	    "anthropic "
 	    "provider,\n"
 	    "                        \"/chat/completions\" otherwise\n"
 	    "  -m, --model PROVIDER/MODEL-ID\n"
 	    "                        a config.lua providers[PROVIDER].models"
 	    "[MODEL-ID] entry,\n"
-	    "                        or a literal model id (no \"/\") to request "
+	    "                        or a literal model id (no \"/\") to "
+	    "request "
 	    "on whatever\n"
 	    "                        connection is otherwise active\n"
 	    "  --provider NAME       name of an entry in config.lua's "
@@ -151,8 +153,7 @@ cb_finish_reason(enum clm_finish_reason reason, void *user)
 		printf("\n%s[truncated: hit token limit]%s\n", esc_warn,
 		    esc_reset);
 	else if (reason == CLM_FINISH_CONTENT_FILTER)
-		printf("\n%s[stopped: content filter]%s\n", esc_err,
-		    esc_reset);
+		printf("\n%s[stopped: content filter]%s\n", esc_err, esc_reset);
 	fflush(stdout);
 }
 
@@ -177,7 +178,8 @@ cb_tool_begin(const char *name, const char *args, void *user)
 }
 
 static void
-cb_tool_result(const char *name, const char *content, enum clm_tool_outcome outcome, void *user)
+cb_tool_result(const char *name, const char *content,
+    enum clm_tool_outcome outcome, void *user)
 {
 	(void)user;
 	switch (outcome) {
@@ -221,7 +223,8 @@ cb_turn_done(int status, void *user)
 {
 	struct cli_state *state = (struct cli_state *)user;
 	if (status != 0) {
-		fprintf(stderr, "error: %s\n", clm_agent_get_last_error(state->agent));
+		fprintf(stderr, "error: %s\n",
+		    clm_agent_get_last_error(state->agent));
 	}
 	if (state->oneshot) {
 		state->turn_done = 1;
@@ -245,17 +248,17 @@ cb_permission(const struct clm_permission_req *req, void *user)
 }
 
 static const struct clm_callbacks cli_callbacks = {
-	.on_assistant_text = cb_assistant_text,
-	.on_reasoning = cb_reasoning,
-	.on_tool_begin = cb_tool_begin,
-	.on_permission = cb_permission,
-	.on_tool_result = cb_tool_result,
-	.on_tool_batch = cb_tool_batch,
-	.on_finish_reason = cb_finish_reason,
-	.on_usage = cb_usage,
-	.on_state = cb_state,
-	.on_turn_done = cb_turn_done,
-	.on_notice = cb_notice,
+    .on_assistant_text = cb_assistant_text,
+    .on_reasoning = cb_reasoning,
+    .on_tool_begin = cb_tool_begin,
+    .on_permission = cb_permission,
+    .on_tool_result = cb_tool_result,
+    .on_tool_batch = cb_tool_batch,
+    .on_finish_reason = cb_finish_reason,
+    .on_usage = cb_usage,
+    .on_state = cb_state,
+    .on_turn_done = cb_turn_done,
+    .on_notice = cb_notice,
 };
 
 static void
@@ -306,22 +309,29 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 			state->prompt_line[state->prompt_len++] = buf->base[i];
 		}
 		if (buf->base[i] == '\n' || buf->base[i] == '\r') {
-			if (state->prompt_len > 0 && state->prompt_line[state->prompt_len - 1] == '\r')
+			if (state->prompt_len > 0 &&
+			    state->prompt_line[state->prompt_len - 1] == '\r')
 				state->prompt_len--;
-			if (state->prompt_len > 0 && state->prompt_line[state->prompt_len - 1] == '\n')
+			if (state->prompt_len > 0 &&
+			    state->prompt_line[state->prompt_len - 1] == '\n')
 				state->prompt_len--;
 			state->prompt_line[state->prompt_len] = '\0';
 
 			if (state->prompt_len > 0) {
-				if (strcmp(state->prompt_line, "quit") == 0 || strcmp(state->prompt_line, "exit") == 0) {
+				if (strcmp(state->prompt_line, "quit") == 0 ||
+				    strcmp(state->prompt_line, "exit") == 0) {
 					free(buf->base);
-					uv_close((uv_handle_t *)stream, on_stdin_close);
+					uv_close((uv_handle_t *)stream,
+					    on_stdin_close);
 					return;
 				}
 
-				int r = clm_agent_submit(state->agent, state->prompt_line);
+				int r = clm_agent_submit(
+				    state->agent, state->prompt_line);
 				if (r < 0) {
-					fprintf(stderr, "error: %s\n", clm_agent_get_last_error(state->agent));
+					fprintf(stderr, "error: %s\n",
+					    clm_agent_get_last_error(
+					        state->agent));
 				}
 			}
 
@@ -388,10 +398,12 @@ pick_session(void)
 		struct tm tm;
 
 		if (created > 0 && localtime_r(&created, &tm) != NULL)
-			(void)strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &tm);
+			(void)strftime(
+			    when, sizeof(when), "%Y-%m-%d %H:%M", &tm);
 		printf("%3zu) %s  %s  %s\n     %s\n", i + 1, infos[i].id, when,
 		    infos[i].model != NULL ? infos[i].model : "",
-		    infos[i].first_user != NULL ? infos[i].first_user : "(empty)");
+		    infos[i].first_user != NULL ? infos[i].first_user
+		                                : "(empty)");
 	}
 	printf("resume which session? [1-%zu] ", n);
 	fflush(stdout);
@@ -427,7 +439,8 @@ run_setup(void)
 
 	if (cfg_path == NULL || secrets_path == NULL || agents_dir == NULL ||
 	    plugins_dir == NULL) {
-		fprintf(stderr, "setup: could not determine config path "
+		fprintf(stderr,
+		    "setup: could not determine config path "
 		    "($XDG_CONFIG_HOME or $HOME not set)\n");
 		return 1;
 	}
@@ -449,8 +462,8 @@ run_setup(void)
 	printf("agent profiles in %s\n", agents_dir);
 
 	/* 0600: secrets.lua holds API keys, unlike config.lua. */
-	int xr = write_new_file(secrets_path,
-	    (const char *)secrets_lua_tpl_data, 0600);
+	int xr = write_new_file(
+	    secrets_path, (const char *)secrets_lua_tpl_data, 0600);
 	if (xr < 0) {
 		fprintf(stderr, "setup: writing %s: %s\n", secrets_path,
 		    strerror(-xr));
@@ -458,10 +471,11 @@ run_setup(void)
 	}
 	printf("%s %s\n", xr == 1 ? "kept existing" : "wrote", secrets_path);
 
-	int cr = write_new_file(cfg_path, (const char *)config_lua_tpl_data, 0644);
+	int cr =
+	    write_new_file(cfg_path, (const char *)config_lua_tpl_data, 0644);
 	if (cr < 0) {
-		fprintf(stderr, "setup: writing %s: %s\n", cfg_path,
-		    strerror(-cr));
+		fprintf(
+		    stderr, "setup: writing %s: %s\n", cfg_path, strerror(-cr));
 		return 1;
 	}
 	printf("%s %s\n", cr == 1 ? "kept existing" : "wrote", cfg_path);
@@ -472,8 +486,10 @@ int
 main(int argc, char *argv[])
 {
 	const char *api_base = NULL;
-	const char *model_name = NULL; /* -m/--model: a "provider/model-id" spec, or a literal wire id */
-	const char *provider_name = NULL; /* --provider: a config providers[] name override */
+	const char *model_name = NULL; /* -m/--model: a "provider/model-id"
+	                                  spec, or a literal wire id */
+	const char *provider_name =
+	    NULL; /* --provider: a config providers[] name override */
 	/* Owned copy of a "provider/model-id" spec's provider half (see
 	 * split_provider_model() in model_spec.h), process-lifetime like
 	 * plenty else in this function -- cfg.provider_name below may alias
@@ -503,24 +519,27 @@ main(int argc, char *argv[])
 
 	enum { OPT_PROVIDER = 256 };
 	const struct option opts[] = {
-		{"oneshot", required_argument, NULL, 'o'},
-		{"forever", required_argument, NULL, 'f'},
-		{"url", required_argument, NULL, 'u'},
-		{"model", required_argument, NULL, 'm'},
-		{"provider", required_argument, NULL, OPT_PROVIDER},
-		{"plugins", required_argument, NULL, 'p'},
-		{"agent", required_argument, NULL, 'a'},
-		{"resume", optional_argument, NULL, 'r'},
-		{"headless", no_argument, NULL, 'H'},
-		{"no-stream", no_argument, NULL, 'S'},
-		{"version", no_argument, NULL, 'V'},
-		{"help", no_argument, NULL, 'h'},
-		{NULL, 0, NULL, 0},
+	    {"oneshot", required_argument, NULL, 'o'},
+	    {"forever", required_argument, NULL, 'f'},
+	    {"url", required_argument, NULL, 'u'},
+	    {"model", required_argument, NULL, 'm'},
+	    {"provider", required_argument, NULL, OPT_PROVIDER},
+	    {"plugins", required_argument, NULL, 'p'},
+	    {"agent", required_argument, NULL, 'a'},
+	    {"resume", optional_argument, NULL, 'r'},
+	    {"headless", no_argument, NULL, 'H'},
+	    {"no-stream", no_argument, NULL, 'S'},
+	    {"version", no_argument, NULL, 'V'},
+	    {"help", no_argument, NULL, 'h'},
+	    {NULL, 0, NULL, 0},
 	};
 
-	while ((opt = getopt_long(argc, argv, "a:o:f:u:m:p:r::HSVh", opts, NULL)) != -1) {
+	while ((opt = getopt_long(
+	            argc, argv, "a:o:f:u:m:p:r::HSVh", opts, NULL)) != -1) {
 		switch (opt) {
-		case 'a': agent_name = optarg; break;
+		case 'a':
+			agent_name = optarg;
+			break;
 		case 'r':
 			resume = 1;
 			/* getopt's optional_argument only binds --resume=ID /
@@ -530,17 +549,39 @@ main(int argc, char *argv[])
 			else if (optind < argc && argv[optind][0] != '-')
 				resume_id = argv[optind++];
 			break;
-		case 'o': oneshot = optarg; break;
-		case 'f': forever_prompt = optarg; break;
-		case 'u': api_base = optarg; break;
-		case 'm': model_name = optarg; break;
-		case OPT_PROVIDER: provider_name = optarg; break;
-		case 'p': plugin_dir = optarg; break;
-		case 'H': headless = 1; break;
-		case 'V': printf("clm %s\n", CLM_VERSION); return 0;
-		case 'S': stream = 0; break;
-		case 'h': usage(argv[0]); return 0;
-		default: usage(argv[0]); return 1;
+		case 'o':
+			oneshot = optarg;
+			break;
+		case 'f':
+			forever_prompt = optarg;
+			break;
+		case 'u':
+			api_base = optarg;
+			break;
+		case 'm':
+			model_name = optarg;
+			break;
+		case OPT_PROVIDER:
+			provider_name = optarg;
+			break;
+		case 'p':
+			plugin_dir = optarg;
+			break;
+		case 'H':
+			headless = 1;
+			break;
+		case 'V':
+			printf("clm %s\n", CLM_VERSION);
+			return 0;
+		case 'S':
+			stream = 0;
+			break;
+		case 'h':
+			usage(argv[0]);
+			return 0;
+		default:
+			usage(argv[0]);
+			return 1;
 		}
 	}
 
@@ -566,29 +607,37 @@ main(int argc, char *argv[])
 		const char *spec_model = NULL;
 		split_provider_model(model_name, &spec_provider, &spec_model);
 
-		const char *prov_name = provider_name != NULL ? provider_name
-		    : spec_provider;
+		const char *prov_name =
+		    provider_name != NULL ? provider_name : spec_provider;
 
 		if (prov_name != NULL) {
-			const char *purl = clm_lua_cfg_provider_str(lcfg, prov_name, "url");
-			const char *pkey = clm_lua_cfg_provider_str(lcfg, prov_name, "api_key");
-			const char *pkind = clm_lua_cfg_provider_str(lcfg, prov_name, "kind");
+			const char *purl =
+			    clm_lua_cfg_provider_str(lcfg, prov_name, "url");
+			const char *pkey = clm_lua_cfg_provider_str(
+			    lcfg, prov_name, "api_key");
+			const char *pkind =
+			    clm_lua_cfg_provider_str(lcfg, prov_name, "kind");
 			if (api_base == NULL && purl != NULL)
 				api_base = purl;
 			if (pkey != NULL && getenv("CLM_API_KEY") == NULL)
 				cfg.api_key = pkey;
 			cfg.provider = clm_provider_from_str(pkind);
 			cfg.provider_name = prov_name;
-			cfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_tokens_per_sec", 0);
-			cfg.rate_burst = clm_lua_cfg_provider_int(lcfg, prov_name, "rate_burst", 0);
-			cfg.disable_parallel_tool_calls = clm_lua_cfg_provider_int(lcfg,
-			    prov_name, "disable_parallel_tool_calls", 0) != 0;
+			cfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(
+			    lcfg, prov_name, "rate_tokens_per_sec", 0);
+			cfg.rate_burst = clm_lua_cfg_provider_int(
+			    lcfg, prov_name, "rate_burst", 0);
+			cfg.disable_parallel_tool_calls =
+			    clm_lua_cfg_provider_int(lcfg, prov_name,
+			        "disable_parallel_tool_calls", 0) != 0;
 		}
 		if (spec_provider != NULL && spec_model != NULL) {
-			cfg.context_size = clm_lua_cfg_provider_model_int(lcfg,
-			    spec_provider, spec_model, "context_size", 0);
-			cfg.autocompact_pct = (int)clm_lua_cfg_provider_model_int(lcfg,
-			    spec_provider, spec_model, "autocompact_pct", 0);
+			cfg.context_size = clm_lua_cfg_provider_model_int(
+			    lcfg, spec_provider, spec_model, "context_size", 0);
+			cfg.autocompact_pct =
+			    (int)clm_lua_cfg_provider_model_int(lcfg,
+			        spec_provider, spec_model, "autocompact_pct",
+			        0);
 		}
 		if (spec_model != NULL)
 			model_name = spec_model;
@@ -603,7 +652,8 @@ main(int argc, char *argv[])
 	/* -u takes the base endpoint; the provider-specific path is appended
 	 * by clm_provider_build_url() -- see clm/provider.h's endpoint_path
 	 * for why this must be the one place that logic lives. */
-	clm_provider_build_url(endpoint, sizeof(endpoint), api_base, cfg.provider);
+	clm_provider_build_url(
+	    endpoint, sizeof(endpoint), api_base, cfg.provider);
 
 	/* API key: env > config > none. An empty string is a valid, explicit
 	 * "this connection needs no key" (e.g. config.lua's api_key =
@@ -624,8 +674,9 @@ main(int argc, char *argv[])
 		 * get stubbed once a newer one lands (see clm_cfg). Never
 		 * freed: the agent borrows it for the process lifetime, same
 		 * as lcfg itself. */
-		cfg.volatile_tools = (const char *const *)
-		    clm_lua_cfg_get_str_list(lcfg, "volatile_tools");
+		cfg.volatile_tools =
+		    (const char *const *)clm_lua_cfg_get_str_list(
+		        lcfg, "volatile_tools");
 	}
 
 	/*
@@ -634,7 +685,8 @@ main(int argc, char *argv[])
 	 * through to the plain stdio path (works for pipes and --oneshot).
 	 */
 	if (resume && (oneshot != NULL || headless)) {
-		fprintf(stderr, "error: --resume needs the interactive TUI "
+		fprintf(stderr,
+		    "error: --resume needs the interactive TUI "
 		    "(not --oneshot/--headless)\n");
 		return 1;
 	}
@@ -671,17 +723,20 @@ main(int argc, char *argv[])
 			r = clm_session_create(NULL, model_name,
 			    cfg.provider_name, agent_name, &sess);
 			if (r < 0)
-				fprintf(stderr, "warning: session logging "
-				    "disabled: %s\n", strerror(-r));
+				fprintf(stderr,
+				    "warning: session logging "
+				    "disabled: %s\n",
+				    strerror(-r));
 		}
 
-		rc = tui_run(&cfg, plugin_dir, lcfg, forever_prompt, sess,
-		    restorep);
+		rc = tui_run(
+		    &cfg, plugin_dir, lcfg, forever_prompt, sess, restorep);
 		clm_history_free(&restore);
 		return rc;
 	}
 
-	/* Heap-allocated so the 1 KB input buffer stays off main's stack frame. */
+	/* Heap-allocated so the 1 KB input buffer stays off main's stack frame.
+	 */
 	state = calloc(1, sizeof(*state));
 	if (state == NULL) {
 		fprintf(stderr, "error: out of memory\n");
@@ -700,14 +755,16 @@ main(int argc, char *argv[])
 		return 1;
 	}
 
-	r = clm_agent_new(&cfg, state->host, &cli_callbacks, state, &state->agent);
+	r = clm_agent_new(
+	    &cfg, state->host, &cli_callbacks, state, &state->agent);
 	if (r < 0) {
 		fprintf(stderr, "error: failed to create agent (%d)\n", r);
 		clm_host_uv_free(state->host);
 		free(state);
 		return 1;
 	}
-	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the portable core). */
+	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the
+	 * portable core). */
 	clm_tools_register_shell(state->agent);
 	clm_tools_register_bg(state->agent);
 
@@ -724,15 +781,17 @@ main(int argc, char *argv[])
 			}
 		}
 	}
-	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop, lcfg,
-	    cb_mcp_status, state, &state->mcp_client_count);
+	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop,
+	    lcfg, cb_mcp_status, state, &state->mcp_client_count);
 
 	if (oneshot != NULL) {
 		r = clm_agent_submit(state->agent, oneshot);
 		if (r < 0) {
-			fprintf(stderr, "error: %s\n", clm_agent_get_last_error(state->agent));
+			fprintf(stderr, "error: %s\n",
+			    clm_agent_get_last_error(state->agent));
 			clm_lua_env_free(state->lua_env);
-			clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
+			clm_cli_free_mcp_servers(
+			    state->mcp_clients, state->mcp_client_count);
 			clm_agent_free(state->agent);
 			clm_host_uv_free(state->host);
 			free(state);
@@ -744,7 +803,8 @@ main(int argc, char *argv[])
 
 		printf("\n");
 		clm_lua_env_free(state->lua_env);
-		clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
+		clm_cli_free_mcp_servers(
+		    state->mcp_clients, state->mcp_client_count);
 		clm_agent_free(state->agent);
 		clm_host_uv_free(state->host);
 		r = state->turn_status;
@@ -760,7 +820,8 @@ main(int argc, char *argv[])
 	uv_pipe_init(loop, &state->stdin_pipe, 0);
 	uv_pipe_open(&state->stdin_pipe, fileno(stdin));
 	state->stdin_pipe.data = (uv_handle_t *)state;
-	uv_read_start((uv_stream_t *)&state->stdin_pipe, on_alloc_buffer, on_stdin_read);
+	uv_read_start(
+	    (uv_stream_t *)&state->stdin_pipe, on_alloc_buffer, on_stdin_read);
 
 	uv_run(loop, UV_RUN_DEFAULT);
 

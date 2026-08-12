@@ -10,8 +10,8 @@ static int callbacks;
 
 #define CHECK(cond, msg)                                                       \
 	do {                                                                   \
-		if (!(cond)) {                                                  \
-			fprintf(stderr, "fail: %s (%s:%d)\n", (msg), __FILE__,  \
+		if (!(cond)) {                                                 \
+			fprintf(stderr, "fail: %s (%s:%d)\n", (msg), __FILE__, \
 			    __LINE__);                                         \
 			failures++;                                            \
 		}                                                              \
@@ -47,8 +47,8 @@ main(void)
 	CHECK(mux != NULL, "mux init");
 	if (mux == NULL)
 		return 1;
-	r = clm_http_async_post(mux, "://invalid", NULL, NULL, NULL,
-	    on_success, on_error, NULL, NULL, NULL, &req);
+	r = clm_http_async_post(mux, "://invalid", NULL, NULL, NULL, on_success,
+	    on_error, NULL, NULL, NULL, &req);
 	CHECK(r == 0, "inline completion accepted");
 	CHECK(req == NULL, "inline completion returned no handle");
 	uv_run(&loop, UV_RUN_DEFAULT);

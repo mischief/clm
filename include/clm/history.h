@@ -96,22 +96,20 @@ CLM_API void clm_history_free(struct clm_history *h);
  * NULL to always store content plain (the default for embedders that never
  * call clm_agent_set_compressor).
  */
-CLM_API struct clm_message *
-clm_history_add_system(struct clm_history *h, const char *content,
-                       const struct clm_compressor *cz);
-CLM_API struct clm_message *
-clm_history_add_user(struct clm_history *h, const char *content,
-                     const struct clm_compressor *cz);
-CLM_API struct clm_message *
-clm_history_add_assistant_text(struct clm_history *h, const char *content,
-                               const struct clm_compressor *cz);
+CLM_API struct clm_message *clm_history_add_system(struct clm_history *h,
+    const char *content, const struct clm_compressor *cz);
+CLM_API struct clm_message *clm_history_add_user(struct clm_history *h,
+    const char *content, const struct clm_compressor *cz);
+CLM_API struct clm_message *clm_history_add_assistant_text(
+    struct clm_history *h, const char *content,
+    const struct clm_compressor *cz);
 
 /*
  * Append an assistant message that requests tool calls. Returns an empty
  * message whose tool_calls list is populated via clm_message_add_tool_call.
  */
-CLM_API struct clm_message *
-clm_history_add_assistant_tool_calls(struct clm_history *h);
+CLM_API struct clm_message *clm_history_add_assistant_tool_calls(
+    struct clm_history *h);
 
 /*
  * Append a tool result, linked to a prior call by tool_call_id. tool_name
@@ -120,9 +118,9 @@ clm_history_add_assistant_tool_calls(struct clm_history *h);
  * this is not assumed to be a plain C string); pass strlen(content) for
  * ordinary text. See cz above.
  */
-CLM_API struct clm_message *clm_history_add_tool_result(
-    struct clm_history *h, const char *tool_call_id, const char *tool_name,
-    const char *content, size_t content_len, const struct clm_compressor *cz);
+CLM_API struct clm_message *clm_history_add_tool_result(struct clm_history *h,
+    const char *tool_call_id, const char *tool_name, const char *content,
+    size_t content_len, const struct clm_compressor *cz);
 
 /*
  * Replace the content of every tool result from tool_name that precedes
@@ -134,14 +132,12 @@ CLM_API struct clm_message *clm_history_add_tool_result(
  * the most recent prior result actually changes on a typical call.
  * Returns the number of results stubbed, or a negative errno.
  */
-CLM_API int clm_history_supersede_tool(struct clm_history *h,
-                                       const char *tool_name, const char *stub);
+CLM_API int clm_history_supersede_tool(
+    struct clm_history *h, const char *tool_name, const char *stub);
 
 /* Attach a tool call to an assistant message. Returns the call or NULL. */
-CLM_API struct clm_tool_call *clm_message_add_tool_call(struct clm_message *m,
-                                                        const char *id,
-                                                        const char *name,
-                                                        const char *args);
+CLM_API struct clm_tool_call *clm_message_add_tool_call(
+    struct clm_message *m, const char *id, const char *name, const char *args);
 
 /*
  * Replace old turns with a single summary message, keeping the leading system
@@ -155,8 +151,7 @@ CLM_API struct clm_tool_call *clm_message_add_tool_call(struct clm_message *m,
  * or a negative errno on allocation failure. See cz above.
  */
 CLM_API int clm_history_compact(struct clm_history *h, const char *summary,
-                                size_t keep_recent,
-                                const struct clm_compressor *cz);
+    size_t keep_recent, const struct clm_compressor *cz);
 
 /*
  * Serialize the entire history into a cJSON array suitable for the
@@ -167,8 +162,8 @@ CLM_API int clm_history_compact(struct clm_history *h, const char *summary,
  * compressed messages -- it decompresses content marked content_compressed
  * before serializing. Pass NULL if no compressor was ever installed.
  */
-CLM_API cJSON *clm_history_to_json(const struct clm_history *h,
-                                   const struct clm_compressor *cz);
+CLM_API cJSON *clm_history_to_json(
+    const struct clm_history *h, const struct clm_compressor *cz);
 
 /*
  * Lossless single-message serialization, for persisting history to disk
@@ -180,8 +175,8 @@ CLM_API cJSON *clm_history_to_json(const struct clm_history *h,
  * content_compressed itself is not persisted. Caller owns the returned
  * object (cJSON_Delete). Returns NULL on failure.
  */
-CLM_API cJSON *clm_message_to_json_full(const struct clm_message *m,
-                                        const struct clm_compressor *cz);
+CLM_API cJSON *clm_message_to_json_full(
+    const struct clm_message *m, const struct clm_compressor *cz);
 
 /*
  * Inverse of clm_message_to_json_full: parse obj and append the message
@@ -189,7 +184,7 @@ CLM_API cJSON *clm_message_to_json_full(const struct clm_message *m,
  * above). Returns 0 on success, -EINVAL on a malformed object, -ENOMEM
  * on allocation failure.
  */
-CLM_API int clm_message_from_json(struct clm_history *h, const cJSON *obj,
-                                  const struct clm_compressor *cz);
+CLM_API int clm_message_from_json(
+    struct clm_history *h, const cJSON *obj, const struct clm_compressor *cz);
 
 #endif /* CLM_HISTORY_H */

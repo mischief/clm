@@ -31,34 +31,48 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
 static int
 stub_http_post(void *ctx, const struct clm_http_req *req,
-               clm_http_success_cb success, clm_http_error_cb error,
-               clm_http_data_cb data, void *user,
-               struct clm_http_call **out)
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
 {
-	(void)ctx; (void)req; (void)success; (void)error;
-	(void)data; (void)user;
+	(void)ctx;
+	(void)req;
+	(void)success;
+	(void)error;
+	(void)data;
+	(void)user;
 	if (out != NULL)
 		*out = NULL;
 	return -ENOSYS;
 }
 
 static int
-stub_timer_set(void *ctx, uint64_t ms, clm_timer_cb cb, void *arg,
-               struct clm_timer **out)
+stub_timer_set(
+    void *ctx, uint64_t ms, clm_timer_cb cb, void *arg, struct clm_timer **out)
 {
-	(void)ctx; (void)ms; (void)cb; (void)arg;
+	(void)ctx;
+	(void)ms;
+	(void)cb;
+	(void)arg;
 	*out = NULL; /* no timer; dispatch runs immediately */
 	return 0;
 }
 
-static void stub_timer_cancel(struct clm_timer *t) { (void)t; }
-static void stub_http_cancel(struct clm_http_call *c) { (void)c; }
+static void
+stub_timer_cancel(struct clm_timer *t)
+{
+	(void)t;
+}
+static void
+stub_http_cancel(struct clm_http_call *c)
+{
+	(void)c;
+}
 
 static struct clm_host stub_host = {
-	.http_post    = stub_http_post,
-	.http_cancel  = stub_http_cancel,
-	.timer_set    = stub_timer_set,
-	.timer_cancel = stub_timer_cancel,
+    .http_post = stub_http_post,
+    .http_cancel = stub_http_cancel,
+    .timer_set = stub_timer_set,
+    .timer_cancel = stub_timer_cancel,
 };
 
 /* ------------------------------------------------------------------ */
@@ -76,13 +90,13 @@ static void
 register_tool(struct clm_agent *agent, const char *name)
 {
 	struct clm_tool_def def = {
-		.name          = name,
-		.description   = "dummy",
-		.params_schema = "{}",
-		.invoke        = noop_invoke,
-		.output_cap    = 4096,
-		.timeout_ms    = 5000,
-		.flags         = CLM_TOOL_NO_PROMPT, /* skip permission gate */
+	    .name = name,
+	    .description = "dummy",
+	    .params_schema = "{}",
+	    .invoke = noop_invoke,
+	    .output_cap = 4096,
+	    .timeout_ms = 5000,
+	    .flags = CLM_TOOL_NO_PROMPT, /* skip permission gate */
 	};
 	clm_tool_add(agent, &def);
 }
@@ -101,21 +115,25 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		return 0;
 
 	/* Parse fuzz input as JSON. Invalid input returns NULL, which is safe.
-	 * require_null_terminated=0: fuzz input is not guaranteed NUL-terminated
-	 * by the harness, but we pass an explicit length either way. */
+	 * require_null_terminated=0: fuzz input is not guaranteed
+	 * NUL-terminated by the harness, but we pass an explicit length either
+	 * way. */
 	root = cJSON_ParseWithLengthOpts((const char *)data, size, NULL, 0);
 	if (root == NULL)
 		return 0;
 
-	/* Extract a JSON array (either top-level or nested under common keys). */
+	/* Extract a JSON array (either top-level or nested under common keys).
+	 */
 	if (cJSON_IsArray(root)) {
 		tool_calls = root;
 	} else if (cJSON_IsObject(root)) {
-		cJSON *tc = cJSON_GetObjectItemCaseSensitive(root, "tool_calls");
+		cJSON *tc =
+		    cJSON_GetObjectItemCaseSensitive(root, "tool_calls");
 		if (tc == NULL)
 			tc = cJSON_GetObjectItemCaseSensitive(root, "choices");
 		if (tc == NULL)
-			tc = cJSON_GetObjectItemCaseSensitive(root, "arguments");
+			tc =
+			    cJSON_GetObjectItemCaseSensitive(root, "arguments");
 		if (tc != NULL && cJSON_IsArray(tc))
 			tool_calls = tc;
 	}
@@ -125,10 +143,10 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 	/* Build a fresh agent per input. */
 	memset(&cfg, 0, sizeof(cfg));
-	cfg.api_key       = "fuzz";
-	cfg.base_url      = "http://localhost/v1/chat/completions";
-	cfg.provider      = CLM_PROVIDER_OPENAI;
-	cfg.model         = "fuzz-model";
+	cfg.api_key = "fuzz";
+	cfg.base_url = "http://localhost/v1/chat/completions";
+	cfg.provider = CLM_PROVIDER_OPENAI;
+	cfg.model = "fuzz-model";
 	cfg.system_prompt = "fuzz";
 
 	if (clm_agent_new(&cfg, &stub_host, NULL, NULL, &agent) < 0)

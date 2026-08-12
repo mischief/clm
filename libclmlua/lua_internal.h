@@ -17,7 +17,6 @@ struct clm_lua_pending {
 
 int clm_lua_pending_add(struct clm_lua_plugin *plugin,
     struct clm_lua_pending *pending, clm_lua_pending_teardown_fn teardown);
-struct clm_lua_plugin *clm_lua_pending_remove(
-    struct clm_lua_pending *pending);
+struct clm_lua_plugin *clm_lua_pending_remove(struct clm_lua_pending *pending);
 
 #endif /* CLMLUA_INTERNAL_H */

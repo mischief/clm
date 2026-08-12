@@ -41,12 +41,13 @@ struct clm_tool {
 	unsigned flags;
 
 	/* Session memory of an _ALWAYS permission decision for this tool. */
-	bool remembered;      /* a decision has been made */
-	bool remember_allow;  /* true=always allow, false=always deny */
+	bool remembered;     /* a decision has been made */
+	bool remember_allow; /* true=always allow, false=always deny */
 
 	/* Removal bookkeeping; see the struct comment above. */
-	bool removed;      /* clm_tool_remove was called; unlinked, zombie */
-	unsigned inflight; /* invocations with def == this node, not yet finalized */
+	bool removed; /* clm_tool_remove was called; unlinked, zombie */
+	unsigned
+	    inflight; /* invocations with def == this node, not yet finalized */
 };
 TAILQ_HEAD(clm_tool_list, clm_tool);
 

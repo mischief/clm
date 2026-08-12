@@ -28,7 +28,8 @@
 #define CLM_DEFAULT_LLM_RL_TOKENS_PER_SEC 1000000
 #define CLM_DEFAULT_LLM_RL_BURST 5000000
 
-/* struct clm_host, clm_http_call, clm_timer come from clm/host.h (via clm.h). */
+/* struct clm_host, clm_http_call, clm_timer come from clm/host.h (via clm.h).
+ */
 
 struct clm_agent {
 	struct clm_llm *llm;
@@ -36,28 +37,31 @@ struct clm_agent {
 	enum clm_agent_state state;
 	char *last_error;
 	struct clm_history history;
-	/* Base system prompt as given at clm_agent_new() time (cfg->system_prompt),
-	 * or NULL meaning "use the built-in default_system_prompt". Retained
-	 * (owned, strdup'd) purely so clm_agent_clear_history() can rebuild
-	 * the same system message a fresh clm_agent_new() would produce --
-	 * current-time stamp included -- without the caller having to supply
-	 * it again. */
+	/* Base system prompt as given at clm_agent_new() time
+	 * (cfg->system_prompt), or NULL meaning "use the built-in
+	 * default_system_prompt". Retained (owned, strdup'd) purely so
+	 * clm_agent_clear_history() can rebuild the same system message a fresh
+	 * clm_agent_new() would produce -- current-time stamp included --
+	 * without the caller having to supply it again. */
 	char *system_prompt_base;
 	struct clm_tool_list tools;
 	size_t tool_count; /* live (non-removed) tools; diagnostics only */
 	size_t max_iterations;
 	size_t iteration;
 	bool stream;
-	enum clm_backend backend; /* server impl, for gating quirks like /props */
-	int64_t ctx_max;          /* per-conversation context tokens, 0 = unknown */
-	int64_t ctx_used;         /* last known prompt+completion tokens, 0 = unknown;
-	                           * updated in emit_usage(), read by
-	                           * clm_agent_over_autocompact_threshold() */
-	int autocompact_pct;      /* 0 = use default CLM_AUTOCOMPACT_PCT */
+	enum clm_backend
+	    backend;      /* server impl, for gating quirks like /props */
+	int64_t ctx_max;  /* per-conversation context tokens, 0 = unknown */
+	int64_t ctx_used; /* last known prompt+completion tokens, 0 = unknown;
+	                   * updated in emit_usage(), read by
+	                   * clm_agent_over_autocompact_threshold() */
+	int autocompact_pct; /* 0 = use default CLM_AUTOCOMPACT_PCT */
 	const char *const *volatile_tools; /* borrowed from cfg; see clm_cfg */
-	char *props_url;          /* llama.cpp GET /props, or NULL */
-	char *compact_body;       /* POST body for an in-flight /compact, freed on done */
-	time_t last_time_stamp; /* wall clock of the last injected time context */
+	char *props_url;                   /* llama.cpp GET /props, or NULL */
+	char *compact_body; /* POST body for an in-flight /compact, freed on
+	                       done */
+	time_t
+	    last_time_stamp; /* wall clock of the last injected time context */
 	struct clm_tool_batch *active_batch;
 
 	/* Token-bucket rate limiter for tool dispatch (NULL = unlimited). */
@@ -84,7 +88,8 @@ struct clm_agent {
 	 * message -- so on any long-running conversation that "safe"
 	 * default started silently throttling every single turn. */
 	struct clm_ratelimit *llm_rl;
-	struct clm_timer *llm_rl_timer; /* non-NULL while a start_turn retry is parked */
+	struct clm_timer
+	    *llm_rl_timer; /* non-NULL while a start_turn retry is parked */
 
 	/* Text queued by clm_agent_notify() while a turn was in flight, to be
 	 * submitted as a fresh turn once the current one lands (see
@@ -148,7 +153,8 @@ struct clm_agent {
 	void (*cb_on_reasoning)(const char *, void *);
 	void (*cb_on_tool_begin)(const char *, const char *, void *);
 	void (*cb_on_permission)(const struct clm_permission_req *, void *);
-	void (*cb_on_tool_result)(const char *, const char *, enum clm_tool_outcome, void *);
+	void (*cb_on_tool_result)(
+	    const char *, const char *, enum clm_tool_outcome, void *);
 	void (*cb_on_tool_batch)(size_t, size_t, void *);
 	void (*cb_on_finish_reason)(enum clm_finish_reason, void *);
 	void (*cb_on_usage)(const struct clm_usage *, void *);
@@ -168,8 +174,8 @@ void clm_agent_set_error(struct clm_agent *agent, const char *msg);
 
 /* Fire cb_on_message for a message just appended to agent->history. NULL
  * agent/m or an uninstalled callback is a no-op. */
-void clm_agent_emit_message(struct clm_agent *agent,
-    const struct clm_message *m);
+void clm_agent_emit_message(
+    struct clm_agent *agent, const struct clm_message *m);
 
 /*
  * Called by the tool framework when a dispatched batch finishes. status 0

@@ -39,8 +39,8 @@ static esp_lcd_panel_handle_t s_panel;
 static SemaphoreHandle_t s_draw_done;
 
 static bool
-lcd_trans_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *ed,
-    void *ctx)
+lcd_trans_done(
+    esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *ed, void *ctx)
 {
 	(void)io;
 	(void)ed;
@@ -68,24 +68,24 @@ display_init(void)
 
 	/* Backlight on. */
 	gpio_config_t bl = {
-		.pin_bit_mask = 1ULL << LCD_BL,
-		.mode = GPIO_MODE_OUTPUT,
+	    .pin_bit_mask = 1ULL << LCD_BL,
+	    .mode = GPIO_MODE_OUTPUT,
 	};
 	gpio_config(&bl);
 	gpio_set_level(LCD_BL, 1);
 
 	esp_lcd_panel_io_handle_t io = NULL;
 	esp_lcd_panel_io_spi_config_t io_cfg = {
-		.cs_gpio_num = LCD_CS,
-		.dc_gpio_num = LCD_DC,
-		.pclk_hz = LCD_PCLK_HZ,
-		.lcd_cmd_bits = 8,
-		.lcd_param_bits = 8,
-		.spi_mode = 0,
-		.trans_queue_depth = 10,
+	    .cs_gpio_num = LCD_CS,
+	    .dc_gpio_num = LCD_DC,
+	    .pclk_hz = LCD_PCLK_HZ,
+	    .lcd_cmd_bits = 8,
+	    .lcd_param_bits = 8,
+	    .spi_mode = 0,
+	    .trans_queue_depth = 10,
 	};
-	err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg,
-	    &io);
+	err = esp_lcd_new_panel_io_spi(
+	    (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io);
 	if (err != ESP_OK) {
 		ESP_LOGE(TAG, "panel_io_spi: %s", esp_err_to_name(err));
 		return -1;
@@ -93,13 +93,14 @@ display_init(void)
 
 	s_draw_done = xSemaphoreCreateBinary();
 	xSemaphoreGive(s_draw_done); /* first draw is free to proceed */
-	esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = lcd_trans_done };
+	esp_lcd_panel_io_callbacks_t cbs = {
+	    .on_color_trans_done = lcd_trans_done};
 	esp_lcd_panel_io_register_event_callbacks(io, &cbs, NULL);
 
 	esp_lcd_panel_dev_config_t panel_cfg = {
-		.reset_gpio_num = LCD_RST,
-		.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
-		.bits_per_pixel = 16,
+	    .reset_gpio_num = LCD_RST,
+	    .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+	    .bits_per_pixel = 16,
 	};
 	err = esp_lcd_new_panel_st7789(io, &panel_cfg, &s_panel);
 	if (err != ESP_OK) {
@@ -111,16 +112,18 @@ display_init(void)
 	esp_lcd_panel_init(s_panel);
 	esp_lcd_panel_invert_color(s_panel, LCD_INVERT);
 
-	/* Wipe the entire 240x320 GRAM in native orientation (before rotation/gap,
-	 * with the display still off) so no boot-time leftovers linger in the panel
-	 * margins the char grid never repaints. */
+	/* Wipe the entire 240x320 GRAM in native orientation (before
+	 * rotation/gap, with the display still off) so no boot-time leftovers
+	 * linger in the panel margins the char grid never repaints. */
 	uint16_t bg = (uint16_t)((s_bg << 8) | (s_bg >> 8));
 	for (int i = 0; i < LCD_H_RES * FONT_H; i++)
 		s_rowbuf[i] = bg;
 	for (int y = 0; y < ST7789_RAM_H; y += FONT_H) {
-		int h = (y + FONT_H <= ST7789_RAM_H) ? FONT_H : (ST7789_RAM_H - y);
+		int h =
+		    (y + FONT_H <= ST7789_RAM_H) ? FONT_H : (ST7789_RAM_H - y);
 		xSemaphoreTake(s_draw_done, portMAX_DELAY);
-		esp_lcd_panel_draw_bitmap(s_panel, 0, y, ST7789_RAM_W, y + h, s_rowbuf);
+		esp_lcd_panel_draw_bitmap(
+		    s_panel, 0, y, ST7789_RAM_W, y + h, s_rowbuf);
 	}
 
 	/* native portrait -> landscape, per-board mirror + centering gap. */
@@ -152,13 +155,14 @@ draw_row(int r)
 			uint16_t *dst = &s_rowbuf[gy * LCD_H_RES + c * FONT_W];
 			for (int gx = 0; gx < FONT_W; gx++) {
 				uint16_t px = (bits & (0x80 >> gx)) ? fg : s_bg;
-				/* esp_lcd sends bytes as-is; ST7789 wants big-endian. */
+				/* esp_lcd sends bytes as-is; ST7789 wants
+				 * big-endian. */
 				dst[gx] = (uint16_t)((px << 8) | (px >> 8));
 			}
 		}
 	}
-	esp_lcd_panel_draw_bitmap(s_panel, 0, r * FONT_H, LCD_H_RES,
-	    (r + 1) * FONT_H, s_rowbuf);
+	esp_lcd_panel_draw_bitmap(
+	    s_panel, 0, r * FONT_H, LCD_H_RES, (r + 1) * FONT_H, s_rowbuf);
 }
 
 void
@@ -195,8 +199,10 @@ console_set_color(uint16_t fg)
 static void
 scroll_up(void)
 {
-	memmove(&s_ch[0][0], &s_ch[1][0], (ROWS - 1) * COLS * sizeof(s_ch[0][0]));
-	memmove(&s_fg[0][0], &s_fg[1][0], (ROWS - 1) * COLS * sizeof(s_fg[0][0]));
+	memmove(
+	    &s_ch[0][0], &s_ch[1][0], (ROWS - 1) * COLS * sizeof(s_ch[0][0]));
+	memmove(
+	    &s_fg[0][0], &s_fg[1][0], (ROWS - 1) * COLS * sizeof(s_fg[0][0]));
 	for (int c = 0; c < COLS; c++) {
 		s_ch[ROWS - 1][c] = ' ';
 		s_fg[ROWS - 1][c] = s_cur_fg;
@@ -328,8 +334,8 @@ void
 console_putc(char c)
 {
 	/* Decode UTF-8 across calls: the agent output streams byte-by-byte. */
-	static uint32_t cp;   /* codepoint being assembled */
-	static int need;      /* continuation bytes still expected */
+	static uint32_t cp; /* codepoint being assembled */
+	static int need;    /* continuation bytes still expected */
 	unsigned char b = (unsigned char)c;
 
 	if (need > 0) {
@@ -342,8 +348,10 @@ console_putc(char c)
 				else if ((gi = symbol_index(cp)) >= 0)
 					put_cell((uint8_t)gi); /* real glyph */
 				else
-					for (const char *r = translit(cp); *r; r++)
-						put_glyph(*r); /* ASCII fallback */
+					for (const char *r = translit(cp); *r;
+					    r++)
+						put_glyph(
+						    *r); /* ASCII fallback */
 			}
 			return;
 		}
@@ -394,18 +402,23 @@ console_screenshot(void)
 		int tr = py / FONT_H, gy = py % FONT_H;
 		char *dst = line;
 		for (int c = 0; c < COLS; c++) {
-			const uint8_t *glyph = font8x16[(unsigned char)s_ch[tr][c]];
+			const uint8_t *glyph =
+			    font8x16[(unsigned char)s_ch[tr][c]];
 			uint8_t bits = glyph[gy];
 			uint16_t fg = s_fg[tr][c];
 			for (int gx = 0; gx < FONT_W; gx++) {
 				uint16_t px = (bits & (0x80 >> gx)) ? fg : s_bg;
-				uint8_t r = (px >> 11) & 0x1F, g = (px >> 5) & 0x3F,
-					b = px & 0x1F;
+				uint8_t r = (px >> 11) & 0x1F,
+				        g = (px >> 5) & 0x3F, b = px & 0x1F;
 				uint8_t r8 = (r << 3) | (r >> 2),
-					g8 = (g << 2) | (g >> 4), b8 = (b << 3) | (b >> 2);
-				*dst++ = hexd[r8 >> 4]; *dst++ = hexd[r8 & 0xf];
-				*dst++ = hexd[g8 >> 4]; *dst++ = hexd[g8 & 0xf];
-				*dst++ = hexd[b8 >> 4]; *dst++ = hexd[b8 & 0xf];
+				        g8 = (g << 2) | (g >> 4),
+				        b8 = (b << 3) | (b >> 2);
+				*dst++ = hexd[r8 >> 4];
+				*dst++ = hexd[r8 & 0xf];
+				*dst++ = hexd[g8 >> 4];
+				*dst++ = hexd[g8 & 0xf];
+				*dst++ = hexd[b8 >> 4];
+				*dst++ = hexd[b8 & 0xf];
 			}
 		}
 		*dst++ = '\n';

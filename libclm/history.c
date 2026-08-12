@@ -45,7 +45,8 @@ clm_message_free(struct clm_message *m)
 		free(m->tool_call_id);
 		free(m->tool_name);
 		struct clm_tool_call *tc, *tc_next;
-		for (tc = TAILQ_FIRST(&m->tool_calls); tc != NULL; tc = tc_next) {
+		for (tc = TAILQ_FIRST(&m->tool_calls); tc != NULL;
+		    tc = tc_next) {
 			tc_next = TAILQ_NEXT(tc, entries);
 			TAILQ_REMOVE(&m->tool_calls, tc, entries);
 			clm_tool_call_free(tc);
@@ -110,7 +111,8 @@ message_set_content_len(struct clm_message *m, const char *content, size_t len,
 	if (cz != NULL && cz->write != NULL && len >= cz->min_len) {
 		char *packed = NULL;
 		size_t packed_len = 0;
-		if (cz->write(cz->ctx, content, len, &packed, &packed_len) == 0 &&
+		if (cz->write(cz->ctx, content, len, &packed, &packed_len) ==
+		        0 &&
 		    packed_len < len && packed_len <= UINT16_MAX) {
 			free(m->content);
 			m->content = packed;
@@ -118,7 +120,8 @@ message_set_content_len(struct clm_message *m, const char *content, size_t len,
 			m->content_compressed = true;
 			return 0;
 		}
-		free(packed); /* NULL-safe: discard a failed/unhelpful attempt */
+		free(
+		    packed); /* NULL-safe: discard a failed/unhelpful attempt */
 	}
 
 	char *copy = malloc(len + 1);
@@ -140,11 +143,11 @@ message_set_content_len(struct clm_message *m, const char *content, size_t len,
  * (e.g. binary tool output) must call message_set_content_len directly with
  * the real byte count instead. */
 static int
-message_set_content(struct clm_message *m, const char *content,
-    const struct clm_compressor *cz)
+message_set_content(
+    struct clm_message *m, const char *content, const struct clm_compressor *cz)
 {
-	return message_set_content_len(m, content,
-	    content ? strlen(content) : 0, cz);
+	return message_set_content_len(
+	    m, content, content ? strlen(content) : 0, cz);
 }
 
 /*
@@ -181,8 +184,8 @@ message_set_content(struct clm_message *m, const char *content,
  * re-triggering compaction on an unchanged history will no-op forever.
  */
 int
-clm_history_compact(struct clm_history *h, const char *summary, size_t keep_recent,
-    const struct clm_compressor *cz)
+clm_history_compact(struct clm_history *h, const char *summary,
+    size_t keep_recent, const struct clm_compressor *cz)
 {
 	struct clm_message *m, *cut = NULL, *sys_last = NULL, *summ;
 	struct clm_message *first_nonsys, *start;
@@ -195,22 +198,23 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 		return -EINVAL;
 
 	/* Find the end of the leading system prologue (kept as-is). */
-	TAILQ_FOREACH(m, h, entries) {
+	TAILQ_FOREACH(m, h, entries)
+	{
 		if (m->role != CLM_ROLE_SYSTEM)
 			break;
 		sys_last = m;
 	}
 	first_nonsys = m; /* first message we might summarize, or NULL */
 	if (first_nonsys == NULL)
-		return 0; /* nothing but system messages */
+		return 0;     /* nothing but system messages */
 	start = first_nonsys; /* first message actually folded */
 
 	/*
 	 * Walk backward from the tail, counting user messages. The cut is the
 	 * keep_recent-th user message from the end -- the oldest turn we keep.
 	 * Everything strictly before it (and after the system prologue) is
-	 * summarized. Cutting at a user message keeps whole turns, so tool pairs
-	 * stay intact.
+	 * summarized. Cutting at a user message keeps whole turns, so tool
+	 * pairs stay intact.
 	 */
 	for (m = TAILQ_LAST(h, clm_history); m != NULL;
 	    m = TAILQ_PREV(m, clm_history, entries)) {
@@ -261,10 +265,12 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 			}
 		}
 		if (cut == NULL || cut == start)
-			return 0; /* <= keep_recent exchanges: nothing to fold */
+			return 0; /* <= keep_recent exchanges: nothing to fold
+			           */
 	}
 
-	/* Build the summary message before mutating, so a failure is a no-op. */
+	/* Build the summary message before mutating, so a failure is a no-op.
+	 */
 	summ = clm_message_create(CLM_ROLE_USER);
 	if (summ == NULL)
 		return -ENOMEM;
@@ -289,8 +295,8 @@ clm_history_compact(struct clm_history *h, const char *summary, size_t keep_rece
 }
 
 struct clm_message *
-clm_history_add_system(struct clm_history *h, const char *content,
-    const struct clm_compressor *cz)
+clm_history_add_system(
+    struct clm_history *h, const char *content, const struct clm_compressor *cz)
 {
 	struct clm_message *m = clm_message_create(CLM_ROLE_SYSTEM);
 	if (m == NULL)
@@ -306,8 +312,8 @@ clm_history_add_system(struct clm_history *h, const char *content,
 }
 
 struct clm_message *
-clm_history_add_user(struct clm_history *h, const char *content,
-    const struct clm_compressor *cz)
+clm_history_add_user(
+    struct clm_history *h, const char *content, const struct clm_compressor *cz)
 {
 	struct clm_message *m = clm_message_create(CLM_ROLE_USER);
 	if (m == NULL)
@@ -323,8 +329,8 @@ clm_history_add_user(struct clm_history *h, const char *content,
 }
 
 struct clm_message *
-clm_history_add_assistant_text(struct clm_history *h, const char *content,
-    const struct clm_compressor *cz)
+clm_history_add_assistant_text(
+    struct clm_history *h, const char *content, const struct clm_compressor *cz)
 {
 	struct clm_message *m = clm_message_create(CLM_ROLE_ASSISTANT);
 	if (m == NULL)
@@ -346,7 +352,8 @@ clm_history_add_assistant_tool_calls(struct clm_history *h)
 	if (m == NULL)
 		return NULL;
 
-	/* content/content_len already NULL/0 from calloc in clm_message_create. */
+	/* content/content_len already NULL/0 from calloc in clm_message_create.
+	 */
 	TAILQ_INSERT_TAIL(h, m, entries);
 	return m;
 }
@@ -386,8 +393,8 @@ clm_history_add_tool_result(struct clm_history *h, const char *tool_call_id,
 }
 
 int
-clm_history_supersede_tool(struct clm_history *h, const char *tool_name,
-    const char *stub)
+clm_history_supersede_tool(
+    struct clm_history *h, const char *tool_name, const char *stub)
 {
 	struct clm_message *m, *batch_head = NULL;
 	int stubbed = 0;
@@ -403,13 +410,15 @@ clm_history_supersede_tool(struct clm_history *h, const char *tool_name,
 	 */
 	for (m = TAILQ_LAST(h, clm_history); m != NULL;
 	    m = TAILQ_PREV(m, clm_history, entries)) {
-		if (m->role == CLM_ROLE_ASSISTANT && !TAILQ_EMPTY(&m->tool_calls)) {
+		if (m->role == CLM_ROLE_ASSISTANT &&
+		    !TAILQ_EMPTY(&m->tool_calls)) {
 			batch_head = m;
 			break;
 		}
 	}
 
-	TAILQ_FOREACH(m, h, entries) {
+	TAILQ_FOREACH(m, h, entries)
+	{
 		if (m == batch_head)
 			break;
 		if (m->role != CLM_ROLE_TOOL || m->tool_name == NULL)
@@ -432,7 +441,8 @@ clm_history_supersede_tool(struct clm_history *h, const char *tool_name,
 }
 
 struct clm_tool_call *
-clm_message_add_tool_call(struct clm_message *m, const char *id, const char *name, const char *args)
+clm_message_add_tool_call(
+    struct clm_message *m, const char *id, const char *name, const char *args)
 {
 	if (m == NULL || m->role != CLM_ROLE_ASSISTANT)
 		return NULL;
@@ -475,9 +485,11 @@ clm_tool_call_to_json(const struct clm_tool_call *tc)
 		return NULL;
 
 	if (tc->id) {
-		cJSON_AddItemToObject(tool_call, "id", cJSON_CreateString(tc->id));
+		cJSON_AddItemToObject(
+		    tool_call, "id", cJSON_CreateString(tc->id));
 	}
-	cJSON_AddItemToObject(tool_call, "type", cJSON_CreateString("function"));
+	cJSON_AddItemToObject(
+	    tool_call, "type", cJSON_CreateString("function"));
 
 	cJSON *func = cJSON_CreateObject();
 	if (func == NULL) {
@@ -486,10 +498,12 @@ clm_tool_call_to_json(const struct clm_tool_call *tc)
 	}
 
 	if (tc->name) {
-		cJSON_AddItemToObject(func, "name", cJSON_CreateString(tc->name));
+		cJSON_AddItemToObject(
+		    func, "name", cJSON_CreateString(tc->name));
 	}
 	if (tc->args) {
-		cJSON_AddItemToObject(func, "arguments", cJSON_CreateString(tc->args));
+		cJSON_AddItemToObject(
+		    func, "arguments", cJSON_CreateString(tc->args));
 	}
 	cJSON_AddItemToObject(tool_call, "function", func);
 
@@ -497,7 +511,8 @@ clm_tool_call_to_json(const struct clm_tool_call *tc)
 }
 
 static cJSON *
-clm_message_to_json(const struct clm_message *m, const struct clm_compressor *cz)
+clm_message_to_json(
+    const struct clm_message *m, const struct clm_compressor *cz)
 {
 	json_cleanup cJSON *msg = NULL;
 	msg = cJSON_CreateObject();
@@ -532,11 +547,12 @@ clm_message_to_json(const struct clm_message *m, const struct clm_compressor *cz
 		bool free_plain = false;
 
 		if (m->content_compressed) {
-			/* Content was stored compressed but there is no decompressor
-			 * to reverse it -- a caller/config mismatch, not recoverable
-			 * here. */
+			/* Content was stored compressed but there is no
+			 * decompressor to reverse it -- a caller/config
+			 * mismatch, not recoverable here. */
 			ASSERT_RETURN(cz != NULL && cz->read != NULL, NULL);
-			if (cz->read(cz->ctx, m->content, m->content_len, &plain) < 0) {
+			if (cz->read(cz->ctx, m->content, m->content_len,
+			        &plain) < 0) {
 				cJSON_Delete(msg);
 				return NULL;
 			}
@@ -574,7 +590,8 @@ clm_message_to_json(const struct clm_message *m, const struct clm_compressor *cz
 		}
 
 		struct clm_tool_call *tc;
-		TAILQ_FOREACH(tc, &m->tool_calls, entries) {
+		TAILQ_FOREACH(tc, &m->tool_calls, entries)
+		{
 			cJSON *tc_json = clm_tool_call_to_json(tc);
 			if (tc_json == NULL) {
 				cJSON_Delete(tool_calls_arr);
@@ -626,8 +643,8 @@ role_from_str(const char *s, enum clm_role *out)
 }
 
 cJSON *
-clm_message_to_json_full(const struct clm_message *m,
-    const struct clm_compressor *cz)
+clm_message_to_json_full(
+    const struct clm_message *m, const struct clm_compressor *cz)
 {
 	json_cleanup cJSON *msg = NULL;
 
@@ -650,12 +667,13 @@ clm_message_to_json_full(const struct clm_message *m,
 			 * caller/config mismatch, not recoverable here. */
 			ASSERT_RETURN(cz != NULL && cz->read != NULL, NULL);
 			if (cz->read(cz->ctx, m->content, m->content_len,
-			    &plain) < 0)
+			        &plain) < 0)
 				return NULL;
 			free_plain = true;
 		}
 
-		cJSON *jcontent = cJSON_AddStringToObject(msg, "content", plain);
+		cJSON *jcontent =
+		    cJSON_AddStringToObject(msg, "content", plain);
 		if (free_plain)
 			free(plain);
 		if (jcontent == NULL)
@@ -663,7 +681,8 @@ clm_message_to_json_full(const struct clm_message *m,
 	}
 
 	if (m->tool_call_id &&
-	    cJSON_AddStringToObject(msg, "tool_call_id", m->tool_call_id) == NULL)
+	    cJSON_AddStringToObject(msg, "tool_call_id", m->tool_call_id) ==
+	        NULL)
 		return NULL;
 
 	if (m->tool_name &&
@@ -676,7 +695,8 @@ clm_message_to_json_full(const struct clm_message *m,
 			return NULL;
 
 		struct clm_tool_call *tc;
-		TAILQ_FOREACH(tc, &m->tool_calls, entries) {
+		TAILQ_FOREACH(tc, &m->tool_calls, entries)
+		{
 			cJSON *jtc = cJSON_CreateObject();
 			if (jtc == NULL)
 				return NULL;
@@ -685,10 +705,12 @@ clm_message_to_json_full(const struct clm_message *m,
 			    cJSON_AddStringToObject(jtc, "id", tc->id) == NULL)
 				return NULL;
 			if (tc->name &&
-			    cJSON_AddStringToObject(jtc, "name", tc->name) == NULL)
+			    cJSON_AddStringToObject(jtc, "name", tc->name) ==
+			        NULL)
 				return NULL;
 			if (tc->args &&
-			    cJSON_AddStringToObject(jtc, "args", tc->args) == NULL)
+			    cJSON_AddStringToObject(jtc, "args", tc->args) ==
+			        NULL)
 				return NULL;
 		}
 	}
@@ -699,8 +721,8 @@ clm_message_to_json_full(const struct clm_message *m,
 }
 
 int
-clm_message_from_json(struct clm_history *h, const cJSON *obj,
-    const struct clm_compressor *cz)
+clm_message_from_json(
+    struct clm_history *h, const cJSON *obj, const struct clm_compressor *cz)
 {
 	const cJSON *jrole, *jcontent, *jtcs;
 	const char *content = NULL;
@@ -743,8 +765,9 @@ clm_message_from_json(struct clm_history *h, const cJSON *obj,
 
 	jtcs = cJSON_GetObjectItemCaseSensitive(obj, "tool_calls");
 	if (jtcs == NULL)
-		return clm_history_add_assistant_text(h, content, cz) != NULL ?
-		    0 : -ENOMEM;
+		return clm_history_add_assistant_text(h, content, cz) != NULL
+		    ? 0
+		    : -ENOMEM;
 
 	if (!cJSON_IsArray(jtcs))
 		return -EINVAL;
@@ -757,7 +780,8 @@ clm_message_from_json(struct clm_history *h, const cJSON *obj,
 		goto fail_nomem;
 
 	const cJSON *jtc;
-	cJSON_ArrayForEach(jtc, jtcs) {
+	cJSON_ArrayForEach(jtc, jtcs)
+	{
 		if (!cJSON_IsObject(jtc))
 			goto fail_inval;
 		const char *id = cJSON_GetStringValue(
@@ -784,14 +808,16 @@ fail_nomem:
 }
 
 cJSON *
-clm_history_to_json(const struct clm_history *h, const struct clm_compressor *cz)
+clm_history_to_json(
+    const struct clm_history *h, const struct clm_compressor *cz)
 {
 	cJSON *messages_arr = cJSON_CreateArray();
 	if (messages_arr == NULL)
 		return NULL;
 
 	struct clm_message *m;
-	TAILQ_FOREACH(m, h, entries) {
+	TAILQ_FOREACH(m, h, entries)
+	{
 		cJSON *msg_json = clm_message_to_json(m, cz);
 		if (msg_json == NULL) {
 			cJSON_Delete(messages_arr);

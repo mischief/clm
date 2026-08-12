@@ -93,20 +93,23 @@ tool_call_to_tool_use(const cJSON *tc)
 
 	jid = cJSON_GetObjectItemCaseSensitive(tc, "id");
 	cJSON_AddItemToObject(block, "id",
-	    cJSON_CreateString(jid != NULL && cJSON_IsString(jid)
-	        ? jid->valuestring : ""));
+	    cJSON_CreateString(
+	        jid != NULL && cJSON_IsString(jid) ? jid->valuestring : ""));
 
 	func = cJSON_GetObjectItemCaseSensitive(tc, "function");
 	jname = func ? cJSON_GetObjectItemCaseSensitive(func, "name") : NULL;
 	cJSON_AddItemToObject(block, "name",
 	    cJSON_CreateString(jname != NULL && cJSON_IsString(jname)
-	        ? jname->valuestring : ""));
+	            ? jname->valuestring
+	            : ""));
 
 	/* function.arguments is a JSON-encoded string in the canonical shape;
 	 * Anthropic's "input" is the decoded object itself. */
-	jargs = func ? cJSON_GetObjectItemCaseSensitive(func, "arguments") : NULL;
+	jargs =
+	    func ? cJSON_GetObjectItemCaseSensitive(func, "arguments") : NULL;
 	input = (jargs != NULL && cJSON_IsString(jargs))
-	    ? cJSON_Parse(jargs->valuestring) : NULL;
+	    ? cJSON_Parse(jargs->valuestring)
+	    : NULL;
 	if (input == NULL || !cJSON_IsObject(input)) {
 		cJSON_Delete(input);
 		input = cJSON_CreateObject();
@@ -138,7 +141,8 @@ is_tool_result_carrier(const cJSON *msg)
 	if (first == NULL)
 		return false;
 	cJSON *type = cJSON_GetObjectItemCaseSensitive(first, "type");
-	return cJSON_IsString(type) && strcmp(type->valuestring, "tool_result") == 0;
+	return cJSON_IsString(type) &&
+	    strcmp(type->valuestring, "tool_result") == 0;
 }
 
 /*
@@ -163,13 +167,18 @@ convert_messages(cJSON *messages, char **system_out)
 	n = cJSON_GetArraySize(in);
 	for (i = 0; i < n; i++) {
 		cJSON *m = cJSON_GetArrayItem(in, i);
-		cJSON *jrole = m ? cJSON_GetObjectItemCaseSensitive(m, "role") : NULL;
-		cJSON *jcontent = m ? cJSON_GetObjectItemCaseSensitive(m, "content") : NULL;
-		const char *role = cJSON_IsString(jrole) ? jrole->valuestring : "";
-		const char *content = cJSON_IsString(jcontent) ? jcontent->valuestring : NULL;
+		cJSON *jrole =
+		    m ? cJSON_GetObjectItemCaseSensitive(m, "role") : NULL;
+		cJSON *jcontent =
+		    m ? cJSON_GetObjectItemCaseSensitive(m, "content") : NULL;
+		const char *role =
+		    cJSON_IsString(jrole) ? jrole->valuestring : "";
+		const char *content =
+		    cJSON_IsString(jcontent) ? jcontent->valuestring : NULL;
 
 		if (strcmp(role, "system") == 0) {
-			if (content != NULL && append_system_text(&sys, content) < 0) {
+			if (content != NULL &&
+			    append_system_text(&sys, content) < 0) {
 				cJSON_Delete(out);
 				return NULL;
 			}
@@ -177,27 +186,33 @@ convert_messages(cJSON *messages, char **system_out)
 		}
 
 		if (strcmp(role, "tool") == 0) {
-			cJSON *jtid = cJSON_GetObjectItemCaseSensitive(m, "tool_call_id");
+			cJSON *jtid =
+			    cJSON_GetObjectItemCaseSensitive(m, "tool_call_id");
 			cJSON *carrier, *carr_content, *block;
 
-			carrier = cJSON_GetArrayItem(out, cJSON_GetArraySize(out) - 1);
-			if (carrier == NULL || !is_tool_result_carrier(carrier)) {
+			carrier = cJSON_GetArrayItem(
+			    out, cJSON_GetArraySize(out) - 1);
+			if (carrier == NULL ||
+			    !is_tool_result_carrier(carrier)) {
 				carrier = cJSON_CreateObject();
 				if (carrier == NULL) {
 					cJSON_Delete(out);
 					return NULL;
 				}
-				cJSON_AddItemToObject(carrier, "role", cJSON_CreateString("user"));
+				cJSON_AddItemToObject(carrier, "role",
+				    cJSON_CreateString("user"));
 				carr_content = cJSON_CreateArray();
 				if (carr_content == NULL) {
 					cJSON_Delete(carrier);
 					cJSON_Delete(out);
 					return NULL;
 				}
-				cJSON_AddItemToObject(carrier, "content", carr_content);
+				cJSON_AddItemToObject(
+				    carrier, "content", carr_content);
 				cJSON_AddItemToArray(out, carrier);
 			} else {
-				carr_content = cJSON_GetObjectItemCaseSensitive(carrier, "content");
+				carr_content = cJSON_GetObjectItemCaseSensitive(
+				    carrier, "content");
 			}
 
 			block = cJSON_CreateObject();
@@ -206,9 +221,11 @@ convert_messages(cJSON *messages, char **system_out)
 				return NULL;
 			}
 			cJSON_AddItemToArray(carr_content, block);
-			cJSON_AddItemToObject(block, "type", cJSON_CreateString("tool_result"));
+			cJSON_AddItemToObject(
+			    block, "type", cJSON_CreateString("tool_result"));
 			cJSON_AddItemToObject(block, "tool_use_id",
-			    cJSON_CreateString(cJSON_IsString(jtid) ? jtid->valuestring : ""));
+			    cJSON_CreateString(
+			        cJSON_IsString(jtid) ? jtid->valuestring : ""));
 			cJSON_AddItemToObject(block, "content",
 			    cJSON_CreateString(content ? content : ""));
 			continue;
@@ -216,16 +233,20 @@ convert_messages(cJSON *messages, char **system_out)
 
 		/* user / assistant. */
 		{
-			cJSON *tool_calls = m ? cJSON_GetObjectItemCaseSensitive(m, "tool_calls") : NULL;
+			cJSON *tool_calls = m
+			    ? cJSON_GetObjectItemCaseSensitive(m, "tool_calls")
+			    : NULL;
 			cJSON *out_msg = cJSON_CreateObject();
 
 			if (out_msg == NULL) {
 				cJSON_Delete(out);
 				return NULL;
 			}
-			cJSON_AddItemToObject(out_msg, "role", cJSON_CreateString(role));
+			cJSON_AddItemToObject(
+			    out_msg, "role", cJSON_CreateString(role));
 
-			if (cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0) {
+			if (cJSON_IsArray(tool_calls) &&
+			    cJSON_GetArraySize(tool_calls) > 0) {
 				cJSON *blocks = cJSON_CreateArray();
 				cJSON *tc;
 				int j, m2;
@@ -235,21 +256,31 @@ convert_messages(cJSON *messages, char **system_out)
 					cJSON_Delete(out);
 					return NULL;
 				}
-				cJSON_AddItemToObject(out_msg, "content", blocks);
+				cJSON_AddItemToObject(
+				    out_msg, "content", blocks);
 				if (content != NULL && content[0] != '\0') {
 					cJSON *tblock = cJSON_CreateObject();
 					if (tblock != NULL) {
-						cJSON_AddItemToObject(tblock, "type", cJSON_CreateString("text"));
-						cJSON_AddItemToObject(tblock, "text", cJSON_CreateString(content));
-						cJSON_AddItemToArray(blocks, tblock);
+						cJSON_AddItemToObject(tblock,
+						    "type",
+						    cJSON_CreateString("text"));
+						cJSON_AddItemToObject(tblock,
+						    "text",
+						    cJSON_CreateString(
+						        content));
+						cJSON_AddItemToArray(
+						    blocks, tblock);
 					}
 				}
 				m2 = cJSON_GetArraySize(tool_calls);
 				for (j = 0; j < m2; j++) {
 					tc = cJSON_GetArrayItem(tool_calls, j);
-					cJSON *block = tc ? tool_call_to_tool_use(tc) : NULL;
+					cJSON *block = tc
+					    ? tool_call_to_tool_use(tc)
+					    : NULL;
 					if (block != NULL)
-						cJSON_AddItemToArray(blocks, block);
+						cJSON_AddItemToArray(
+						    blocks, block);
 				}
 			} else {
 				cJSON_AddItemToObject(out_msg, "content",
@@ -286,7 +317,8 @@ convert_tools(cJSON *tools)
 	n = cJSON_GetArraySize(in);
 	for (i = 0; i < n; i++) {
 		cJSON *t = cJSON_GetArrayItem(in, i);
-		cJSON *func = t ? cJSON_GetObjectItemCaseSensitive(t, "function") : NULL;
+		cJSON *func =
+		    t ? cJSON_GetObjectItemCaseSensitive(t, "function") : NULL;
 		cJSON *jname, *jdesc, *params, *out_t;
 
 		if (func == NULL)
@@ -302,17 +334,21 @@ convert_tools(cJSON *tools)
 		 * to "custom"), but at least one Anthropic-compatible endpoint
 		 * has been observed rejecting tool objects that omit it --
 		 * send it explicitly rather than relying on the default. */
-		cJSON_AddItemToObject(out_t, "type", cJSON_CreateString("custom"));
+		cJSON_AddItemToObject(
+		    out_t, "type", cJSON_CreateString("custom"));
 		jname = cJSON_GetObjectItemCaseSensitive(func, "name");
 		jdesc = cJSON_GetObjectItemCaseSensitive(func, "description");
 		cJSON_AddItemToObject(out_t, "name",
-		    cJSON_CreateString(cJSON_IsString(jname) ? jname->valuestring : ""));
+		    cJSON_CreateString(
+		        cJSON_IsString(jname) ? jname->valuestring : ""));
 		cJSON_AddItemToObject(out_t, "description",
-		    cJSON_CreateString(cJSON_IsString(jdesc) ? jdesc->valuestring : ""));
+		    cJSON_CreateString(
+		        cJSON_IsString(jdesc) ? jdesc->valuestring : ""));
 
-		/* Detach (not duplicate) -- this function owns `in` outright and
-		 * nothing else references the parameters subtree. */
-		params = cJSON_DetachItemFromObjectCaseSensitive(func, "parameters");
+		/* Detach (not duplicate) -- this function owns `in` outright
+		 * and nothing else references the parameters subtree. */
+		params =
+		    cJSON_DetachItemFromObjectCaseSensitive(func, "parameters");
 		cJSON_AddItemToObject(out_t, "input_schema",
 		    params != NULL ? params : cJSON_CreateObject());
 
@@ -323,7 +359,8 @@ convert_tools(cJSON *tools)
 }
 
 static cJSON *
-anthropic_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools, bool stream)
+anthropic_build_request(
+    const struct clm_llm *llm, cJSON *messages, cJSON *tools, bool stream)
 {
 	json_cleanup cJSON *req = NULL;
 	autofree char *system = NULL;
@@ -350,9 +387,11 @@ anthropic_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools
 
 	cJSON_AddItemToObject(req, "model", cJSON_CreateString(llm->model));
 	if (system != NULL)
-		cJSON_AddItemToObject(req, "system", cJSON_CreateString(system));
+		cJSON_AddItemToObject(
+		    req, "system", cJSON_CreateString(system));
 	cJSON_AddItemToObject(req, "messages", anth_messages);
-	cJSON_AddItemToObject(req, "max_tokens", cJSON_CreateNumber(CLM_ANTHROPIC_MAX_TOKENS));
+	cJSON_AddItemToObject(
+	    req, "max_tokens", cJSON_CreateNumber(CLM_ANTHROPIC_MAX_TOKENS));
 	cJSON_AddItemToObject(req, "stream", cJSON_CreateBool(stream));
 
 	/* Top-level auto-caching: caches the last cacheable block (tools,
@@ -367,8 +406,10 @@ anthropic_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools
 	{
 		cJSON *cache_control = cJSON_CreateObject();
 		if (cache_control != NULL) {
-			cJSON_AddItemToObject(cache_control, "type", cJSON_CreateString("ephemeral"));
-			cJSON_AddItemToObject(req, "cache_control", cache_control);
+			cJSON_AddItemToObject(cache_control, "type",
+			    cJSON_CreateString("ephemeral"));
+			cJSON_AddItemToObject(
+			    req, "cache_control", cache_control);
 		}
 	}
 
@@ -382,9 +423,13 @@ anthropic_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools
 			cJSON *tool_choice = cJSON_CreateObject();
 
 			if (tool_choice != NULL) {
-				cJSON_AddItemToObject(tool_choice, "type", cJSON_CreateString("auto"));
-				cJSON_AddItemToObject(tool_choice, "disable_parallel_tool_use", cJSON_CreateBool(1));
-				cJSON_AddItemToObject(req, "tool_choice", tool_choice);
+				cJSON_AddItemToObject(tool_choice, "type",
+				    cJSON_CreateString("auto"));
+				cJSON_AddItemToObject(tool_choice,
+				    "disable_parallel_tool_use",
+				    cJSON_CreateBool(1));
+				cJSON_AddItemToObject(
+				    req, "tool_choice", tool_choice);
 			}
 		}
 	} else {
@@ -449,7 +494,8 @@ map_stop_reason(const char *reason)
 {
 	if (reason == NULL)
 		return NULL;
-	if (strcmp(reason, "end_turn") == 0 || strcmp(reason, "stop_sequence") == 0)
+	if (strcmp(reason, "end_turn") == 0 ||
+	    strcmp(reason, "stop_sequence") == 0)
 		return "stop";
 	if (strcmp(reason, "max_tokens") == 0)
 		return "length";
@@ -475,11 +521,14 @@ anthropic_normalize_response(cJSON *raw)
 	n = cJSON_GetArraySize(content_blocks);
 	for (i = 0; i < n; i++) {
 		cJSON *b = cJSON_GetArrayItem(content_blocks, i);
-		cJSON *jtype = b ? cJSON_GetObjectItemCaseSensitive(b, "type") : NULL;
-		const char *btype = cJSON_IsString(jtype) ? jtype->valuestring : "";
+		cJSON *jtype =
+		    b ? cJSON_GetObjectItemCaseSensitive(b, "type") : NULL;
+		const char *btype =
+		    cJSON_IsString(jtype) ? jtype->valuestring : "";
 
 		if (strcmp(btype, "text") == 0) {
-			cJSON *jtext = cJSON_GetObjectItemCaseSensitive(b, "text");
+			cJSON *jtext =
+			    cJSON_GetObjectItemCaseSensitive(b, "text");
 			if (cJSON_IsString(jtext)) {
 				size_t old = text_buf ? strlen(text_buf) : 0;
 				size_t add = strlen(jtext->valuestring);
@@ -490,9 +539,11 @@ anthropic_normalize_response(cJSON *raw)
 				text_buf = p;
 			}
 		} else if (strcmp(btype, "thinking") == 0) {
-			cJSON *jthink = cJSON_GetObjectItemCaseSensitive(b, "thinking");
+			cJSON *jthink =
+			    cJSON_GetObjectItemCaseSensitive(b, "thinking");
 			if (cJSON_IsString(jthink)) {
-				size_t old = reasoning_buf ? strlen(reasoning_buf) : 0;
+				size_t old =
+				    reasoning_buf ? strlen(reasoning_buf) : 0;
 				size_t add = strlen(jthink->valuestring);
 				char *p = realloc(reasoning_buf, old + add + 1);
 				if (p == NULL)
@@ -502,9 +553,12 @@ anthropic_normalize_response(cJSON *raw)
 			}
 		} else if (strcmp(btype, "tool_use") == 0) {
 			cJSON *jid = cJSON_GetObjectItemCaseSensitive(b, "id");
-			cJSON *jname = cJSON_GetObjectItemCaseSensitive(b, "name");
-			cJSON *jinput = cJSON_GetObjectItemCaseSensitive(b, "input");
-			autofree char *args_str = jinput ? cJSON_PrintUnformatted(jinput) : NULL;
+			cJSON *jname =
+			    cJSON_GetObjectItemCaseSensitive(b, "name");
+			cJSON *jinput =
+			    cJSON_GetObjectItemCaseSensitive(b, "input");
+			autofree char *args_str =
+			    jinput ? cJSON_PrintUnformatted(jinput) : NULL;
 			cJSON *call, *func;
 
 			if (tool_calls == NULL) {
@@ -517,14 +571,18 @@ anthropic_normalize_response(cJSON *raw)
 				return NULL;
 			cJSON_AddItemToArray(tool_calls, call);
 			cJSON_AddItemToObject(call, "id",
-			    cJSON_CreateString(cJSON_IsString(jid) ? jid->valuestring : ""));
-			cJSON_AddItemToObject(call, "type", cJSON_CreateString("function"));
+			    cJSON_CreateString(
+			        cJSON_IsString(jid) ? jid->valuestring : ""));
+			cJSON_AddItemToObject(
+			    call, "type", cJSON_CreateString("function"));
 			func = cJSON_CreateObject();
 			if (func == NULL)
 				return NULL;
 			cJSON_AddItemToObject(call, "function", func);
 			cJSON_AddItemToObject(func, "name",
-			    cJSON_CreateString(cJSON_IsString(jname) ? jname->valuestring : ""));
+			    cJSON_CreateString(cJSON_IsString(jname)
+			            ? jname->valuestring
+			            : ""));
 			cJSON_AddItemToObject(func, "arguments",
 			    cJSON_CreateString(args_str ? args_str : "{}"));
 		}
@@ -552,11 +610,13 @@ anthropic_normalize_response(cJSON *raw)
 
 	cJSON_AddItemToObject(message, "role", cJSON_CreateString("assistant"));
 	if (text_buf != NULL)
-		cJSON_AddItemToObject(message, "content", cJSON_CreateString(text_buf));
+		cJSON_AddItemToObject(
+		    message, "content", cJSON_CreateString(text_buf));
 	else
 		cJSON_AddItemToObject(message, "content", cJSON_CreateNull());
 	if (reasoning_buf != NULL)
-		cJSON_AddItemToObject(message, "reasoning_content", cJSON_CreateString(reasoning_buf));
+		cJSON_AddItemToObject(message, "reasoning_content",
+		    cJSON_CreateString(reasoning_buf));
 	if (tool_calls != NULL)
 		cJSON_AddItemToObject(message, "tool_calls", tool_calls);
 
@@ -564,21 +624,27 @@ anthropic_normalize_response(cJSON *raw)
 	if (cJSON_IsString(jstop)) {
 		const char *mapped = map_stop_reason(jstop->valuestring);
 		if (mapped != NULL)
-			cJSON_AddItemToObject(choice0, "finish_reason", cJSON_CreateString(mapped));
+			cJSON_AddItemToObject(choice0, "finish_reason",
+			    cJSON_CreateString(mapped));
 	}
 
 	jusage = cJSON_GetObjectItemCaseSensitive(in, "usage");
 	if (cJSON_IsObject(jusage)) {
-		cJSON *jin = cJSON_GetObjectItemCaseSensitive(jusage, "input_tokens");
-		cJSON *jout = cJSON_GetObjectItemCaseSensitive(jusage, "output_tokens");
+		cJSON *jin =
+		    cJSON_GetObjectItemCaseSensitive(jusage, "input_tokens");
+		cJSON *jout =
+		    cJSON_GetObjectItemCaseSensitive(jusage, "output_tokens");
 		double itok = cJSON_IsNumber(jin) ? jin->valuedouble : 0;
 		double otok = cJSON_IsNumber(jout) ? jout->valuedouble : 0;
 
 		usage = cJSON_CreateObject();
 		if (usage != NULL) {
-			cJSON_AddItemToObject(usage, "prompt_tokens", cJSON_CreateNumber(itok));
-			cJSON_AddItemToObject(usage, "completion_tokens", cJSON_CreateNumber(otok));
-			cJSON_AddItemToObject(usage, "total_tokens", cJSON_CreateNumber(itok + otok));
+			cJSON_AddItemToObject(
+			    usage, "prompt_tokens", cJSON_CreateNumber(itok));
+			cJSON_AddItemToObject(usage, "completion_tokens",
+			    cJSON_CreateNumber(otok));
+			cJSON_AddItemToObject(usage, "total_tokens",
+			    cJSON_CreateNumber(itok + otok));
 			cJSON_AddItemToObject(out, "usage", usage);
 		}
 	}
@@ -628,14 +694,16 @@ make_delta_chunk(const char *key, const char *value)
 	cJSON_AddItemToArray(choices, choice0);
 	cJSON_AddItemToObject(choice0, "delta", delta);
 	if (key != NULL)
-		cJSON_AddItemToObject(delta, key, cJSON_CreateString(value ? value : ""));
+		cJSON_AddItemToObject(
+		    delta, key, cJSON_CreateString(value ? value : ""));
 	return out;
 }
 
 /* Build a canonical delta chunk carrying one tool_calls[] entry at `index`,
  * with optional id/name (first mention) and/or an arguments fragment. */
 static cJSON *
-make_tool_delta_chunk(int index, const char *id, const char *name, const char *args_frag)
+make_tool_delta_chunk(
+    int index, const char *id, const char *name, const char *args_frag)
 {
 	cJSON *out, *choices, *choice0, *delta, *tool_calls, *tc, *func;
 
@@ -646,8 +714,8 @@ make_tool_delta_chunk(int index, const char *id, const char *name, const char *a
 	tool_calls = cJSON_CreateArray();
 	tc = cJSON_CreateObject();
 	func = cJSON_CreateObject();
-	if (out == NULL || choices == NULL || choice0 == NULL || delta == NULL ||
-	    tool_calls == NULL || tc == NULL || func == NULL) {
+	if (out == NULL || choices == NULL || choice0 == NULL ||
+	    delta == NULL || tool_calls == NULL || tc == NULL || func == NULL) {
 		cJSON_Delete(out);
 		cJSON_Delete(choices);
 		cJSON_Delete(choice0);
@@ -668,7 +736,8 @@ make_tool_delta_chunk(int index, const char *id, const char *name, const char *a
 	cJSON_AddItemToObject(tc, "function", func);
 	if (name != NULL)
 		cJSON_AddItemToObject(func, "name", cJSON_CreateString(name));
-	cJSON_AddItemToObject(func, "arguments", cJSON_CreateString(args_frag ? args_frag : ""));
+	cJSON_AddItemToObject(
+	    func, "arguments", cJSON_CreateString(args_frag ? args_frag : ""));
 	return out;
 }
 
@@ -680,17 +749,24 @@ anthropic_normalize_stream_event(cJSON *raw, void **state)
 
 	if (strcmp(type, "content_block_start") == 0) {
 		cJSON *jindex = cJSON_GetObjectItemCaseSensitive(raw, "index");
-		cJSON *block = cJSON_GetObjectItemCaseSensitive(raw, "content_block");
-		cJSON *jbtype = block ? cJSON_GetObjectItemCaseSensitive(block, "type") : NULL;
-		int index = cJSON_IsNumber(jindex) ? (int)jindex->valuedouble : 0;
+		cJSON *block =
+		    cJSON_GetObjectItemCaseSensitive(raw, "content_block");
+		cJSON *jbtype = block
+		    ? cJSON_GetObjectItemCaseSensitive(block, "type")
+		    : NULL;
+		int index =
+		    cJSON_IsNumber(jindex) ? (int)jindex->valuedouble : 0;
 
 		if (block != NULL && cJSON_IsString(jbtype) &&
 		    strcmp(jbtype->valuestring, "tool_use") == 0) {
-			cJSON *jid = cJSON_GetObjectItemCaseSensitive(block, "id");
-			cJSON *jname = cJSON_GetObjectItemCaseSensitive(block, "name");
+			cJSON *jid =
+			    cJSON_GetObjectItemCaseSensitive(block, "id");
+			cJSON *jname =
+			    cJSON_GetObjectItemCaseSensitive(block, "name");
 			return make_tool_delta_chunk(index,
 			    cJSON_IsString(jid) ? jid->valuestring : "",
-			    cJSON_IsString(jname) ? jname->valuestring : "", NULL);
+			    cJSON_IsString(jname) ? jname->valuestring : "",
+			    NULL);
 		}
 		return NULL;
 	}
@@ -698,21 +774,29 @@ anthropic_normalize_stream_event(cJSON *raw, void **state)
 	if (strcmp(type, "content_block_delta") == 0) {
 		cJSON *jindex = cJSON_GetObjectItemCaseSensitive(raw, "index");
 		cJSON *delta = cJSON_GetObjectItemCaseSensitive(raw, "delta");
-		cJSON *jdtype = delta ? cJSON_GetObjectItemCaseSensitive(delta, "type") : NULL;
-		const char *dtype = cJSON_IsString(jdtype) ? jdtype->valuestring : "";
-		int index = cJSON_IsNumber(jindex) ? (int)jindex->valuedouble : 0;
+		cJSON *jdtype = delta
+		    ? cJSON_GetObjectItemCaseSensitive(delta, "type")
+		    : NULL;
+		const char *dtype =
+		    cJSON_IsString(jdtype) ? jdtype->valuestring : "";
+		int index =
+		    cJSON_IsNumber(jindex) ? (int)jindex->valuedouble : 0;
 
 		if (strcmp(dtype, "text_delta") == 0) {
-			cJSON *jtext = cJSON_GetObjectItemCaseSensitive(delta, "text");
-			return make_delta_chunk("content", cJSON_IsString(jtext) ? jtext->valuestring : "");
+			cJSON *jtext =
+			    cJSON_GetObjectItemCaseSensitive(delta, "text");
+			return make_delta_chunk("content",
+			    cJSON_IsString(jtext) ? jtext->valuestring : "");
 		}
 		if (strcmp(dtype, "thinking_delta") == 0) {
-			cJSON *jthink = cJSON_GetObjectItemCaseSensitive(delta, "thinking");
+			cJSON *jthink =
+			    cJSON_GetObjectItemCaseSensitive(delta, "thinking");
 			return make_delta_chunk("reasoning_content",
 			    cJSON_IsString(jthink) ? jthink->valuestring : "");
 		}
 		if (strcmp(dtype, "input_json_delta") == 0) {
-			cJSON *jpart = cJSON_GetObjectItemCaseSensitive(delta, "partial_json");
+			cJSON *jpart = cJSON_GetObjectItemCaseSensitive(
+			    delta, "partial_json");
 			return make_tool_delta_chunk(index, NULL, NULL,
 			    cJSON_IsString(jpart) ? jpart->valuestring : "");
 		}
@@ -720,9 +804,14 @@ anthropic_normalize_stream_event(cJSON *raw, void **state)
 	}
 
 	if (strcmp(type, "message_start") == 0) {
-		cJSON *message = cJSON_GetObjectItemCaseSensitive(raw, "message");
-		cJSON *usage = message ? cJSON_GetObjectItemCaseSensitive(message, "usage") : NULL;
-		cJSON *jin = usage ? cJSON_GetObjectItemCaseSensitive(usage, "input_tokens") : NULL;
+		cJSON *message =
+		    cJSON_GetObjectItemCaseSensitive(raw, "message");
+		cJSON *usage = message
+		    ? cJSON_GetObjectItemCaseSensitive(message, "usage")
+		    : NULL;
+		cJSON *jin = usage
+		    ? cJSON_GetObjectItemCaseSensitive(usage, "input_tokens")
+		    : NULL;
 		struct anth_stream_state *st = stream_state(state);
 
 		if (st != NULL && cJSON_IsNumber(jin))
@@ -732,9 +821,13 @@ anthropic_normalize_stream_event(cJSON *raw, void **state)
 
 	if (strcmp(type, "message_delta") == 0) {
 		cJSON *delta = cJSON_GetObjectItemCaseSensitive(raw, "delta");
-		cJSON *jstop = delta ? cJSON_GetObjectItemCaseSensitive(delta, "stop_reason") : NULL;
+		cJSON *jstop = delta
+		    ? cJSON_GetObjectItemCaseSensitive(delta, "stop_reason")
+		    : NULL;
 		cJSON *usage = cJSON_GetObjectItemCaseSensitive(raw, "usage");
-		cJSON *jout = usage ? cJSON_GetObjectItemCaseSensitive(usage, "output_tokens") : NULL;
+		cJSON *jout = usage
+		    ? cJSON_GetObjectItemCaseSensitive(usage, "output_tokens")
+		    : NULL;
 		struct anth_stream_state *st = stream_state(state);
 		cJSON *out, *choices, *choice0;
 
@@ -750,17 +843,23 @@ anthropic_normalize_stream_event(cJSON *raw, void **state)
 		cJSON_AddItemToObject(out, "choices", choices);
 		cJSON_AddItemToArray(choices, choice0);
 		if (cJSON_IsString(jstop)) {
-			const char *mapped = map_stop_reason(jstop->valuestring);
+			const char *mapped =
+			    map_stop_reason(jstop->valuestring);
 			if (mapped != NULL)
-				cJSON_AddItemToObject(choice0, "finish_reason", cJSON_CreateString(mapped));
+				cJSON_AddItemToObject(choice0, "finish_reason",
+				    cJSON_CreateString(mapped));
 		}
 		if (cJSON_IsNumber(jout)) {
 			double itok = st != NULL ? st->input_tokens : 0;
 			cJSON *cu = cJSON_CreateObject();
 			if (cu != NULL) {
-				cJSON_AddItemToObject(cu, "prompt_tokens", cJSON_CreateNumber(itok));
-				cJSON_AddItemToObject(cu, "completion_tokens", cJSON_CreateNumber(jout->valuedouble));
-				cJSON_AddItemToObject(cu, "total_tokens", cJSON_CreateNumber(itok + jout->valuedouble));
+				cJSON_AddItemToObject(cu, "prompt_tokens",
+				    cJSON_CreateNumber(itok));
+				cJSON_AddItemToObject(cu, "completion_tokens",
+				    cJSON_CreateNumber(jout->valuedouble));
+				cJSON_AddItemToObject(cu, "total_tokens",
+				    cJSON_CreateNumber(
+				        itok + jout->valuedouble));
 				cJSON_AddItemToObject(out, "usage", cu);
 			}
 		}
@@ -772,9 +871,9 @@ anthropic_normalize_stream_event(cJSON *raw, void **state)
 }
 
 const struct clm_provider_ops clm_provider_ops_anthropic = {
-	.build_request = anthropic_build_request,
-	.build_auth_headers = anthropic_build_auth_headers,
-	.normalize_response = anthropic_normalize_response,
-	.normalize_stream_event = anthropic_normalize_stream_event,
-	.endpoint_path = "messages",
+    .build_request = anthropic_build_request,
+    .build_auth_headers = anthropic_build_auth_headers,
+    .normalize_response = anthropic_normalize_response,
+    .normalize_stream_event = anthropic_normalize_stream_event,
+    .endpoint_path = "messages",
 };

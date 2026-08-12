@@ -15,7 +15,7 @@ static int failures;
 
 #define check(cond, msg)                                                       \
 	do {                                                                   \
-		if (!(cond)) {                                                  \
+		if (!(cond)) {                                                 \
 			fprintf(stderr, "fail: %s (%s:%d)\n", (msg), __FILE__, \
 			    __LINE__);                                         \
 			failures++;                                            \
@@ -96,9 +96,9 @@ on_turn_done(int status, void *user)
 }
 
 static const struct clm_callbacks callbacks = {
-	.on_permission = on_permission,
-	.on_tool_result = on_tool_result,
-	.on_turn_done = on_turn_done,
+    .on_permission = on_permission,
+    .on_tool_result = on_tool_result,
+    .on_turn_done = on_turn_done,
 };
 
 static int
@@ -216,8 +216,8 @@ test_http_timeout(uv_loop_t *loop)
 	canned_reply(mcp, mcp_init_response);
 	canned_reply(mcp, mcp_list_response);
 	canned_reply(mcp, mcp_call_response);
-	(void)snprintf(url, sizeof(url), "http://127.0.0.1:%d/mcp",
-	    canned_port(mcp));
+	(void)snprintf(
+	    url, sizeof(url), "http://127.0.0.1:%d/mcp", canned_port(mcp));
 	cfg.name = "http";
 	cfg.transport = CLM_MCP_HTTP;
 	cfg.url = url;

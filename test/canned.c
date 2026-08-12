@@ -124,14 +124,22 @@ static const char *
 status_line_for(int status)
 {
 	switch (status) {
-	case 200: return "200 OK";
-	case 400: return "400 Bad Request";
-	case 401: return "401 Unauthorized";
-	case 403: return "403 Forbidden";
-	case 404: return "404 Not Found";
-	case 429: return "429 Too Many Requests";
-	case 500: return "500 Internal Server Error";
-	default: return "500 Internal Server Error";
+	case 200:
+		return "200 OK";
+	case 400:
+		return "400 Bad Request";
+	case 401:
+		return "401 Unauthorized";
+	case 403:
+		return "403 Forbidden";
+	case 404:
+		return "404 Not Found";
+	case 429:
+		return "429 Too Many Requests";
+	case 500:
+		return "500 Internal Server Error";
+	default:
+		return "500 Internal Server Error";
 	}
 }
 
@@ -159,11 +167,10 @@ send_response(struct conn *c)
 	int status;
 	const char *body = canned_pop(srv, &status);
 	size_t blen = strlen(body);
-	const char *fmt =
-	    "HTTP/1.1 %s\r\n"
-	    "Content-Type: application/json\r\n"
-	    "Content-Length: %zu\r\n"
-	    "Connection: close\r\n\r\n";
+	const char *fmt = "HTTP/1.1 %s\r\n"
+	                  "Content-Type: application/json\r\n"
+	                  "Content-Length: %zu\r\n"
+	                  "Connection: close\r\n\r\n";
 	const char *status_line = status_line_for(status);
 	int hlen;
 	uv_buf_t b;
@@ -261,13 +268,15 @@ canned_start(uv_loop_t *loop)
 		return NULL;
 	}
 	srv->listener.data = srv;
-	if (uv_tcp_bind(&srv->listener, (const struct sockaddr *)&addr, 0) != 0 ||
+	if (uv_tcp_bind(&srv->listener, (const struct sockaddr *)&addr, 0) !=
+	        0 ||
 	    uv_listen((uv_stream_t *)&srv->listener, 16, on_connection) != 0) {
 		uv_close((uv_handle_t *)&srv->listener, NULL);
 		free(srv);
 		return NULL;
 	}
-	if (uv_tcp_getsockname(&srv->listener, (struct sockaddr *)&ss, &namelen) != 0) {
+	if (uv_tcp_getsockname(
+	        &srv->listener, (struct sockaddr *)&ss, &namelen) != 0) {
 		uv_close((uv_handle_t *)&srv->listener, NULL);
 		free(srv);
 		return NULL;

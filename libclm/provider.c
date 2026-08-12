@@ -29,8 +29,8 @@ clm_provider_ops_get(enum clm_provider provider)
 }
 
 void
-clm_provider_build_url(char *buf, size_t bufsz, const char *base_url,
-    enum clm_provider provider)
+clm_provider_build_url(
+    char *buf, size_t bufsz, const char *base_url, enum clm_provider provider)
 {
 	size_t len = strlen(base_url);
 

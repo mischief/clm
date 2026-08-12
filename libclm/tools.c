@@ -20,10 +20,10 @@
 #include "useful.h"
 #include "banned.h"
 
-#define CLM_TOOL_OUTPUT_CAP_DEFAULT (64 * 1024)    /* bytes returned to model */
-#define CLM_TOOL_OUTPUT_CAP_MAX (1024 * 1024)      /* ceiling for overrides */
-#define CLM_TOOL_TIMEOUT_MAX_MS 600000u            /* 10 minutes */
-#define CLM_READ_DEFAULT_LIMIT 200                 /* lines */
+#define CLM_TOOL_OUTPUT_CAP_DEFAULT (64 * 1024) /* bytes returned to model */
+#define CLM_TOOL_OUTPUT_CAP_MAX (1024 * 1024)   /* ceiling for overrides */
+#define CLM_TOOL_TIMEOUT_MAX_MS 600000u         /* 10 minutes */
+#define CLM_READ_DEFAULT_LIMIT 200              /* lines */
 
 /*
  * One in-flight tool call. Owned by its batch. Completed exactly once via
@@ -41,15 +41,15 @@ static void run_invoke(struct clm_tool_invocation *inv);
 
 struct clm_tool_invocation {
 	struct clm_tool_batch *batch;
-	const struct clm_tool *def;   /* resolved tool, or NULL if unknown */
+	const struct clm_tool *def; /* resolved tool, or NULL if unknown */
 	char *id;
 	char *name;
-	char *args;                   /* raw JSON args string */
+	char *args; /* raw JSON args string */
 
-	size_t output_cap;            /* effective for this call */
-	uint64_t timeout_ms;          /* effective for this call */
+	size_t output_cap;   /* effective for this call */
+	uint64_t timeout_ms; /* effective for this call */
 
-	struct clm_timer *timer;      /* per-call timeout, via host; NULL if none */
+	struct clm_timer *timer; /* per-call timeout, via host; NULL if none */
 	bool timed_out;
 	bool completed;
 
@@ -57,13 +57,15 @@ struct clm_tool_invocation {
 	void *cancel_user;
 
 	/* Permission gate: while awaiting a decision the invocation is parked
- *	 * (on_permission fired, invoke deferred). perm_req is the opaque handle
- *	 * that the frontend answers against; it points back to this invocation. */
+	 *	 * (on_permission fired, invoke deferred). perm_req is the
+	 * opaque handle
+	 *	 * that the frontend answers against; it points back to this
+	 * invocation. */
 	bool awaiting_perm;
 	struct clm_permission_req perm_req;
 
 	/* Rate-limit deferral: when the token bucket is empty, the invocation
- *	 * is parked on rl_timer and dispatched when tokens refill. */
+	 *	 * is parked on rl_timer and dispatched when tokens refill. */
 	struct clm_timer *rl_timer;
 };
 
@@ -72,9 +74,9 @@ struct clm_tool_batch {
 	struct clm_agent *agent;
 	struct clm_tool_invocation *inv;
 	size_t n;
-	size_t pending;   /* outstanding completions + a dispatch hold */
-	size_t done;      /* completed calls, for progress reporting */
-	int status;       /* first hard error encountered, else 0 */
+	size_t pending; /* outstanding completions + a dispatch hold */
+	size_t done;    /* completed calls, for progress reporting */
+	int status;     /* first hard error encountered, else 0 */
 
 	/* Set by clm_tools_detach() when the owning agent is torn down while
 	 * this batch still has invocations genuinely in flight. Once set,
@@ -150,7 +152,8 @@ static const struct clm_tool *
 find_tool(const struct clm_agent *agent, const char *name)
 {
 	const struct clm_tool *t;
-	TAILQ_FOREACH(t, &agent->tools, entries) {
+	TAILQ_FOREACH(t, &agent->tools, entries)
+	{
 		if (!t->removed && strcmp(t->name, name) == 0)
 			return t;
 	}
@@ -176,7 +179,8 @@ clm_tool_add(struct clm_agent *agent, const struct clm_tool_def *def)
 
 	t->name = strdup(def->name);
 	t->description = def->description ? strdup(def->description) : NULL;
-	t->params_schema = def->params_schema ? strdup(def->params_schema) : NULL;
+	t->params_schema =
+	    def->params_schema ? strdup(def->params_schema) : NULL;
 	if (t->name == NULL ||
 	    (def->description != NULL && t->description == NULL) ||
 	    (def->params_schema != NULL && t->params_schema == NULL)) {
@@ -228,7 +232,8 @@ clm_tool_remove(struct clm_agent *agent, const char *name)
 	ASSERT_RETURN(agent != NULL, -EINVAL);
 	ASSERT_RETURN(name != NULL, -EINVAL);
 
-	TAILQ_FOREACH(t, &agent->tools, entries) {
+	TAILQ_FOREACH(t, &agent->tools, entries)
+	{
 		if (t->removed || strcmp(t->name, name) != 0)
 			continue;
 		tool_detach(t);
@@ -237,7 +242,8 @@ clm_tool_remove(struct clm_agent *agent, const char *name)
 		if (t->inflight == 0)
 			tool_node_free(t);
 		else
-			t->removed = true; /* freed once the last invocation finalizes */
+			t->removed =
+			    true; /* freed once the last invocation finalizes */
 		return 0;
 	}
 	return -ENOENT;
@@ -278,7 +284,8 @@ inject_prop(cJSON *props, const char *name, const char *desc)
 {
 	cJSON *exist = cJSON_GetObjectItemCaseSensitive(props, name);
 	if (exist != NULL) {
-		clm_debug("schema: skip reserved param '%s' (tool defines it)", name);
+		clm_debug(
+		    "schema: skip reserved param '%s' (tool defines it)", name);
 		return;
 	}
 	cJSON *p = int_prop(desc);
@@ -305,7 +312,8 @@ tool_schema(const struct clm_tool *t)
 	cJSON_AddItemToObject(tool, "function", func);
 
 	cJSON_AddItemToObject(func, "name", cJSON_CreateString(t->name));
-	cJSON_AddItemToObject(func, "description", cJSON_CreateString(t->description ? t->description : ""));
+	cJSON_AddItemToObject(func, "description",
+	    cJSON_CreateString(t->description ? t->description : ""));
 
 	/* Parse the tool's parameters schema, or synthesize an empty object. */
 	params = t->params_schema ? cJSON_Parse(t->params_schema) : NULL;
@@ -321,7 +329,8 @@ tool_schema(const struct clm_tool *t)
 	cJSON_AddItemToObject(func, "parameters", params);
 
 	if (cJSON_GetObjectItemCaseSensitive(params, "type") == NULL)
-		cJSON_AddItemToObject(params, "type", cJSON_CreateString("object"));
+		cJSON_AddItemToObject(
+		    params, "type", cJSON_CreateString("object"));
 
 	props = cJSON_GetObjectItemCaseSensitive(params, "properties");
 	if (props == NULL) {
@@ -334,9 +343,11 @@ tool_schema(const struct clm_tool *t)
 	}
 
 	if (t->flags & CLM_TOOL_TIMEOUT_OVERRIDABLE)
-		inject_prop(props, "timeout_ms", "optional: max milliseconds before this call is aborted");
+		inject_prop(props, "timeout_ms",
+		    "optional: max milliseconds before this call is aborted");
 	if (t->flags & CLM_TOOL_OUTPUT_CAP_OVERRIDABLE)
-		inject_prop(props, "output_cap", "optional: max bytes of output to return");
+		inject_prop(props, "output_cap",
+		    "optional: max bytes of output to return");
 
 	return tool;
 }
@@ -353,7 +364,8 @@ clm_tools_build_schema(const struct clm_agent *agent)
 	if (arr == NULL)
 		return NULL;
 
-	TAILQ_FOREACH(t, &agent->tools, entries) {
+	TAILQ_FOREACH(t, &agent->tools, entries)
+	{
 		if (t->removed || (t->flags & CLM_TOOL_HIDDEN))
 			continue;
 		cJSON *sch = tool_schema(t);
@@ -404,7 +416,8 @@ static struct clm_tool *
 find_tool_mut(struct clm_agent *agent, const char *name)
 {
 	struct clm_tool *t;
-	TAILQ_FOREACH(t, &agent->tools, entries) {
+	TAILQ_FOREACH(t, &agent->tools, entries)
+	{
 		if (!t->removed && strcmp(t->name, name) == 0)
 			return t;
 	}
@@ -427,7 +440,7 @@ clm_tool_permission_respond(struct clm_agent *agent,
 	inv->awaiting_perm = false;
 
 	allow = (decision == CLM_PERM_ALLOW_ONCE ||
-	         decision == CLM_PERM_ALLOW_ALWAYS);
+	    decision == CLM_PERM_ALLOW_ALWAYS);
 
 	/* Remember _ALWAYS decisions for the rest of the session, per tool. */
 	if (decision == CLM_PERM_ALLOW_ALWAYS ||
@@ -618,9 +631,10 @@ fail_wrap(const char *msg)
 
 /*
  * Agent policy check for clm_history_supersede_tool(): does this tool's
- * output go stale the moment a newer one exists? Driven by the config's volatile_tools fnmatch(3)
- * patterns (see clm_cfg), not by the tool definition -- volatility is a property of
- * how an agent uses a tool (a map snapshot in a game loop) rather than of the tool itself.
+ * output go stale the moment a newer one exists? Driven by the config's
+ * volatile_tools fnmatch(3) patterns (see clm_cfg), not by the tool definition
+ * -- volatility is a property of how an agent uses a tool (a map snapshot in a
+ * game loop) rather than of the tool itself.
  */
 static bool
 tool_is_volatile(const struct clm_agent *agent, const char *name)
@@ -637,8 +651,8 @@ tool_is_volatile(const struct clm_agent *agent, const char *name)
 }
 
 static void
-inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content, size_t content_len,
-    enum clm_tool_outcome outcome)
+inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content,
+    size_t content_len, enum clm_tool_outcome outcome)
 {
 	struct clm_tool_batch *batch = inv->batch;
 	struct clm_agent *agent = batch->agent;
@@ -668,8 +682,9 @@ inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content, size_t con
 	}
 
 	/* Release this invocation's pin on its tool node; if clm_tool_remove
- *	 * already unlinked it (removed) and we were the last one holding it
- *	 * alive, free it now. See struct clm_tool in clm/tools.h. */
+	 *	 * already unlinked it (removed) and we were the last one
+	 * holding it
+	 *	 * alive, free it now. See struct clm_tool in clm/tools.h. */
 	if (inv->def != NULL) {
 		struct clm_tool *t = (struct clm_tool *)inv->def;
 		t->inflight--;
@@ -684,14 +699,17 @@ inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content, size_t con
 	if (bin_off < content_len) {
 		int n = snprintf(binary_warning, sizeof(binary_warning),
 		    "[tool output contained binary data at byte offset %zu "
-		    "of %zu; not displayed]", bin_off, content_len);
+		    "of %zu; not displayed]",
+		    bin_off, content_len);
 		effective = (const uint8_t *)binary_warning;
 		effective_len = n > 0 ? (size_t)n : 0;
 		if (effective_len > sizeof(binary_warning))
-			effective_len = sizeof(binary_warning); /* snprintf truncated */
+			effective_len =
+			    sizeof(binary_warning); /* snprintf truncated */
 	}
 
-	clamped = clamp_dup(effective, effective_len, inv->output_cap, &out_len);
+	clamped =
+	    clamp_dup(effective, effective_len, inv->output_cap, &out_len);
 	if (clamped != NULL) {
 		out = clamped;
 	} else {
@@ -700,7 +718,8 @@ inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content, size_t con
 	}
 
 	if (agent->cb_on_tool_result)
-		agent->cb_on_tool_result(inv->name, (const char *)out, outcome, agent->cb_user);
+		agent->cb_on_tool_result(
+		    inv->name, (const char *)out, outcome, agent->cb_user);
 
 	/*
 	 * Stub prior results of a volatile tool before recording the fresh
@@ -711,10 +730,10 @@ inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content, size_t con
 	 */
 	if (tool_is_volatile(agent, inv->name)) {
 		char stub[128];
-		(void)snprintf(stub, sizeof(stub),
-		    "[superseded by newer %s]", inv->name);
-		(void)clm_history_supersede_tool(&agent->history, inv->name,
-		    stub);
+		(void)snprintf(
+		    stub, sizeof(stub), "[superseded by newer %s]", inv->name);
+		(void)clm_history_supersede_tool(
+		    &agent->history, inv->name, stub);
 	}
 
 	{
@@ -785,7 +804,8 @@ clm_tool_fail(struct clm_tool_invocation *inv, const char *msg)
 	}
 	wrapped = fail_wrap(msg);
 	if (wrapped != NULL)
-		inv_finalize(inv, (const uint8_t *)wrapped, strlen(wrapped), CLM_TOOL_FAILED);
+		inv_finalize(inv, (const uint8_t *)wrapped, strlen(wrapped),
+		    CLM_TOOL_FAILED);
 	else
 		inv_finalize(inv, (const uint8_t *)"[tool failed]",
 		    strlen("[tool failed]"), CLM_TOOL_FAILED);
@@ -820,7 +840,7 @@ inv_compute_limits(struct clm_tool_invocation *inv)
 {
 	const struct clm_tool *t = inv->def;
 	size_t cap = (t != NULL && t->output_cap) ? t->output_cap
-	                                           : CLM_TOOL_OUTPUT_CAP_DEFAULT;
+	                                          : CLM_TOOL_OUTPUT_CAP_DEFAULT;
 	uint64_t to = t != NULL ? t->timeout_ms : 0;
 
 	if (t != NULL && inv->args != NULL) {
@@ -828,14 +848,16 @@ inv_compute_limits(struct clm_tool_invocation *inv)
 		cJSON *v;
 		if (a != NULL && cJSON_IsObject(a)) {
 			if ((t->flags & CLM_TOOL_OUTPUT_CAP_OVERRIDABLE) &&
-			    (v = cJSON_GetObjectItemCaseSensitive(a, "output_cap")) &&
+			    (v = cJSON_GetObjectItemCaseSensitive(
+			         a, "output_cap")) &&
 			    cJSON_IsNumber(v)) {
 				int64_t x = (int64_t)v->valuedouble;
 				if (x > 0)
 					cap = (size_t)x;
 			}
 			if ((t->flags & CLM_TOOL_TIMEOUT_OVERRIDABLE) &&
-			    (v = cJSON_GetObjectItemCaseSensitive(a, "timeout_ms")) &&
+			    (v = cJSON_GetObjectItemCaseSensitive(
+			         a, "timeout_ms")) &&
 			    cJSON_IsNumber(v)) {
 				int64_t x = (int64_t)v->valuedouble;
 				if (x > 0)
@@ -864,7 +886,8 @@ run_invoke(struct clm_tool_invocation *inv)
 	struct clm_agent *agent = inv->batch->agent;
 
 	/* Arm the per-call timeout if the host provides timers; otherwise the
- *	 * tool simply runs without one (a blocking transport enforces its own). */
+	 *	 * tool simply runs without one (a blocking transport enforces
+	 * its own). */
 	if (inv->timeout_ms > 0 && inv->timer == NULL &&
 	    agent->host->timer_set != NULL) {
 		agent->host->timer_set(agent->host->ctx, inv->timeout_ms,
@@ -908,9 +931,11 @@ dispatch_one(struct clm_tool_invocation *inv)
 	}
 
 	/* Permission gate (default-deny). NO_PROMPT tools run unconditionally.
- *	 * A remembered _ALWAYS decision short-circuits. Otherwise, if a handler
- *	 * is registered, park the invocation and ask; with no handler, deny --
- *	 * a frontend that wires no policy runs no gated tools. */
+	 *	 * A remembered _ALWAYS decision short-circuits. Otherwise, if a
+	 * handler
+	 *	 * is registered, park the invocation and ask; with no handler,
+	 * deny --
+	 *	 * a frontend that wires no policy runs no gated tools. */
 	if (t->flags & CLM_TOOL_NO_PROMPT) {
 		run_invoke(inv);
 		return;
@@ -985,7 +1010,8 @@ clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls)
 		}
 		if (func != NULL) {
 			name = cJSON_GetObjectItemCaseSensitive(func, "name");
-			args = cJSON_GetObjectItemCaseSensitive(func, "arguments");
+			args =
+			    cJSON_GetObjectItemCaseSensitive(func, "arguments");
 		}
 		if (args != NULL && cJSON_IsString(args)) {
 			args_str = args->valuestring;
@@ -996,15 +1022,18 @@ clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls)
 		}
 
 		inv->id = strdup(id != NULL ? cJSON_GetStringValue(id) : "");
-		inv->name = strdup(name != NULL ? cJSON_GetStringValue(name) : "");
+		inv->name =
+		    strdup(name != NULL ? cJSON_GetStringValue(name) : "");
 		inv->args = strdup(args_str);
 		clm_debug("[tool] %s(%.*s)", inv->name,
-		    (int)(strlen(args_str) > 120 ? 120 : strlen(args_str)), args_str);
+		    (int)(strlen(args_str) > 120 ? 120 : strlen(args_str)),
+		    args_str);
 		if (inv->id == NULL || inv->name == NULL || inv->args == NULL)
 			batch->status = -ENOMEM;
 
 		if (inv->id != NULL && inv->name != NULL && inv->args != NULL)
-			clm_message_add_tool_call(amsg, inv->id, inv->name, inv->args);
+			clm_message_add_tool_call(
+			    amsg, inv->id, inv->name, inv->args);
 
 		inv->def = find_tool(agent, inv->name ? inv->name : "");
 		if (inv->def != NULL)
@@ -1016,8 +1045,8 @@ clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls)
 	clm_agent_emit_message(agent, amsg);
 
 	/* Dispatch.
- *	 * Synchronous completers (e.g. file tools) finalize inline
- *	 * but cannot drop pending to zero thanks to the hold. */
+	 *	 * Synchronous completers (e.g. file tools) finalize inline
+	 *	 * but cannot drop pending to zero thanks to the hold. */
 	for (i = 0; i < n; i++) {
 		struct clm_tool_invocation *inv = &batch->inv[i];
 		if (clm_ratelimit_allow(agent->tool_rl, 1) ||
@@ -1026,7 +1055,8 @@ clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls)
 			dispatch_one(inv);
 		} else {
 			/* Park until tokens refill. */
-			uint64_t delay_us = clm_ratelimit_delay(agent->tool_rl, 1);
+			uint64_t delay_us =
+			    clm_ratelimit_delay(agent->tool_rl, 1);
 			uint64_t delay_ms = delay_us / 1000;
 			if (delay_ms == 0)
 				delay_ms = 1;
@@ -1073,7 +1103,7 @@ clm_tools_detach(struct clm_agent *agent)
 		return;
 
 	TAILQ_FOREACH(tool, &agent->tools, entries)
-		tool_detach(tool);
+	tool_detach(tool);
 
 	batch = agent->active_batch;
 	if (batch == NULL)
@@ -1184,7 +1214,8 @@ tool_file_read(struct clm_tool_invocation *inv, void *user)
 	fp = fopen(path, "re");
 	if (fp == NULL) {
 		char buf[256];
-		(void)snprintf(buf, sizeof(buf), "cannot open '%s': %s", path, strerror(errno));
+		(void)snprintf(buf, sizeof(buf), "cannot open '%s': %s", path,
+		    strerror(errno));
 		clm_tool_fail(inv, buf);
 		return;
 	}
@@ -1224,7 +1255,8 @@ tool_file_read(struct clm_tool_invocation *inv, void *user)
 	if (shown == 0) {
 		char buf[128];
 		(void)snprintf(buf, sizeof(buf),
-		    "(file has %d lines; offset %d is past end)", total, offset);
+		    "(file has %d lines; offset %d is past end)", total,
+		    offset);
 		clm_tool_complete(inv, buf);
 		return;
 	}
@@ -1262,7 +1294,8 @@ tool_file_write(struct clm_tool_invocation *inv, void *user)
 	path = arg_string(args, "path");
 	content = arg_string(args, "content");
 	if (path == NULL || content == NULL) {
-		clm_tool_fail(inv, "write_file requires 'path' and 'content' strings");
+		clm_tool_fail(
+		    inv, "write_file requires 'path' and 'content' strings");
 		return;
 	}
 	{
@@ -1276,7 +1309,8 @@ tool_file_write(struct clm_tool_invocation *inv, void *user)
 	fp = fopen(path, "we");
 	if (fp == NULL) {
 		char buf[256];
-		(void)snprintf(buf, sizeof(buf), "cannot write '%s': %s", path, strerror(errno));
+		(void)snprintf(buf, sizeof(buf), "cannot write '%s': %s", path,
+		    strerror(errno));
 		clm_tool_fail(inv, buf);
 		return;
 	}
@@ -1348,7 +1382,8 @@ tool_list_dir(struct clm_tool_invocation *inv, void *user)
 		size_t nlen;
 		char *nm;
 
-		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+		if (strcmp(ent->d_name, ".") == 0 ||
+		    strcmp(ent->d_name, "..") == 0)
 			continue;
 
 #ifdef DT_DIR
@@ -1360,13 +1395,14 @@ tool_list_dir(struct clm_tool_invocation *inv, void *user)
 #endif
 		{
 			/* Heap, not a stack char[PATH_MAX]: that tripped
-			 * -Wframe-larger-than (this runs per readdir() entry, and
-			 * PATH_MAX can be 4096). */
-			size_t flen = strlen(path) + 1 + strlen(ent->d_name) + 1;
+			 * -Wframe-larger-than (this runs per readdir() entry,
+			 * and PATH_MAX can be 4096). */
+			size_t flen =
+			    strlen(path) + 1 + strlen(ent->d_name) + 1;
 			autofree char *full = malloc(flen);
 			if (full != NULL) {
-				(void)snprintf(full, flen, "%s/%s", path,
-				    ent->d_name);
+				(void)snprintf(
+				    full, flen, "%s/%s", path, ent->d_name);
 				if (stat(full, &st) == 0)
 					is_dir = S_ISDIR(st.st_mode);
 			}
@@ -1433,40 +1469,43 @@ clm_tools_register_builtins(struct clm_agent *agent)
 {
 	int r;
 	const struct clm_tool_def read_def = {
-		.name = "read_file",
-		.description = "read a window of lines from a text file",
-		.params_schema =
-		    "{\"type\":\"object\","
-		    "\"properties\":{"
-		    "\"path\":{\"type\":\"string\",\"description\":\"path to the file\"},"
-		    "\"offset\":{\"type\":\"integer\",\"description\":\"starting line, 1-indexed (default 1)\"},"
-		    "\"limit\":{\"type\":\"integer\",\"description\":\"max lines to return (default 200)\"}},"
-		    "\"required\":[\"path\"]}",
-		.invoke = tool_file_read,
-		.flags = CLM_TOOL_NO_PROMPT, /* read-only: safe to run unprompted */
+	    .name = "read_file",
+	    .description = "read a window of lines from a text file",
+	    .params_schema = "{\"type\":\"object\","
+	                     "\"properties\":{"
+	                     "\"path\":{\"type\":\"string\",\"description\":"
+	                     "\"path to the file\"},"
+	                     "\"offset\":{\"type\":\"integer\",\"description\":"
+	                     "\"starting line, 1-indexed (default 1)\"},"
+	                     "\"limit\":{\"type\":\"integer\",\"description\":"
+	                     "\"max lines to return (default 200)\"}},"
+	                     "\"required\":[\"path\"]}",
+	    .invoke = tool_file_read,
+	    .flags = CLM_TOOL_NO_PROMPT, /* read-only: safe to run unprompted */
 	};
 	const struct clm_tool_def write_def = {
-		.name = "write_file",
-		.description = "write content to a file, overwriting it",
-		.params_schema =
-		    "{\"type\":\"object\","
-		    "\"properties\":{"
-		    "\"path\":{\"type\":\"string\",\"description\":\"path to the file\"},"
-		    "\"content\":{\"type\":\"string\",\"description\":\"content to write\"}},"
-		    "\"required\":[\"path\",\"content\"]}",
-		.invoke = tool_file_write,
+	    .name = "write_file",
+	    .description = "write content to a file, overwriting it",
+	    .params_schema = "{\"type\":\"object\","
+	                     "\"properties\":{"
+	                     "\"path\":{\"type\":\"string\",\"description\":"
+	                     "\"path to the file\"},"
+	                     "\"content\":{\"type\":\"string\",\"description\":"
+	                     "\"content to write\"}},"
+	                     "\"required\":[\"path\",\"content\"]}",
+	    .invoke = tool_file_write,
 	};
 	const struct clm_tool_def list_def = {
-		.name = "list_dir",
-		.description = "list a directory's entries, one per line, "
-		    "directories suffixed with '/'",
-		.params_schema =
-		    "{\"type\":\"object\","
-		    "\"properties\":{"
-		    "\"path\":{\"type\":\"string\",\"description\":\"directory to list (default '.')\"}},"
-		    "\"required\":[]}",
-		.invoke = tool_list_dir,
-		.flags = CLM_TOOL_NO_PROMPT, /* read-only: safe to run unprompted */
+	    .name = "list_dir",
+	    .description = "list a directory's entries, one per line, "
+	                   "directories suffixed with '/'",
+	    .params_schema = "{\"type\":\"object\","
+	                     "\"properties\":{"
+	                     "\"path\":{\"type\":\"string\",\"description\":"
+	                     "\"directory to list (default '.')\"}},"
+	                     "\"required\":[]}",
+	    .invoke = tool_list_dir,
+	    .flags = CLM_TOOL_NO_PROMPT, /* read-only: safe to run unprompted */
 	};
 
 	r = clm_tool_add(agent, &read_def);

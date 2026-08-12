@@ -22,7 +22,7 @@ static int failures;
 	do {                                                                   \
 		if (!(cond)) {                                                 \
 			fprintf(stderr, "FAIL: %s (%s:%d)\n", (msg), __FILE__, \
-			        __LINE__);                                     \
+			    __LINE__);                                         \
 			failures++;                                            \
 		}                                                              \
 	} while (0)
@@ -34,15 +34,15 @@ fill_history(struct clm_history *h)
 	struct clm_message *m;
 
 	clm_history_add_system(h, "you are test", NULL);
-	clm_history_add_user(h, "hello\nworld \"quoted\" \xf0\x9f\xa6\xb4",
-	                     NULL);
+	clm_history_add_user(
+	    h, "hello\nworld \"quoted\" \xf0\x9f\xa6\xb4", NULL);
 	m = clm_history_add_assistant_tool_calls(h);
-	clm_message_add_tool_call(m, "call_1", "shell_exec",
-	                          "{\"cmd\":\"ls\"}");
-	clm_message_add_tool_call(m, "call_2", "read_file",
-	                          "{\"path\":\"/etc/motd\"}");
+	clm_message_add_tool_call(
+	    m, "call_1", "shell_exec", "{\"cmd\":\"ls\"}");
+	clm_message_add_tool_call(
+	    m, "call_2", "read_file", "{\"path\":\"/etc/motd\"}");
 	clm_history_add_tool_result(h, "call_1", "shell_exec", "file1\nfile2",
-	                            strlen("file1\nfile2"), NULL);
+	    strlen("file1\nfile2"), NULL);
 	clm_history_add_assistant_text(h, "there are two files", NULL);
 }
 
@@ -72,7 +72,7 @@ test_message_roundtrip(void)
 		cJSON *obj = clm_message_to_json_full(m, NULL);
 		CHECK(obj != NULL, "serialize message");
 		CHECK(clm_message_from_json(&out, obj, NULL) == 0,
-		      "deserialize message");
+		    "deserialize message");
 		cJSON_Delete(obj);
 	}
 
@@ -84,9 +84,9 @@ test_message_roundtrip(void)
 
 	r = TAILQ_NEXT(r, entries);
 	CHECK(r->role == CLM_ROLE_USER, "user role survives");
-	CHECK(strcmp(r->content, "hello\nworld \"quoted\" \xf0\x9f\xa6\xb4") ==
-	          0,
-	      "newlines/quotes/utf-8 survive");
+	CHECK(
+	    strcmp(r->content, "hello\nworld \"quoted\" \xf0\x9f\xa6\xb4") == 0,
+	    "newlines/quotes/utf-8 survive");
 
 	r = TAILQ_NEXT(r, entries);
 	CHECK(r->role == CLM_ROLE_ASSISTANT, "assistant tool-call role");
@@ -94,25 +94,25 @@ test_message_roundtrip(void)
 	{
 		const struct clm_tool_call *tc = TAILQ_FIRST(&r->tool_calls);
 		CHECK(tc != NULL && strcmp(tc->id, "call_1") == 0 &&
-		          strcmp(tc->name, "shell_exec") == 0 &&
-		          strcmp(tc->args, "{\"cmd\":\"ls\"}") == 0,
-		      "first tool call survives");
+		        strcmp(tc->name, "shell_exec") == 0 &&
+		        strcmp(tc->args, "{\"cmd\":\"ls\"}") == 0,
+		    "first tool call survives");
 		tc = tc != NULL ? TAILQ_NEXT(tc, entries) : NULL;
 		CHECK(tc != NULL && strcmp(tc->id, "call_2") == 0,
-		      "second tool call survives");
+		    "second tool call survives");
 	}
 
 	r = TAILQ_NEXT(r, entries);
 	CHECK(r->role == CLM_ROLE_TOOL, "tool result role");
 	CHECK(r->tool_call_id != NULL && strcmp(r->tool_call_id, "call_1") == 0,
-	      "tool_call_id survives");
+	    "tool_call_id survives");
 	CHECK(r->tool_name != NULL && strcmp(r->tool_name, "shell_exec") == 0,
-	      "tool_name survives (the field the wire format drops)");
+	    "tool_name survives (the field the wire format drops)");
 
 	r = TAILQ_NEXT(r, entries);
 	CHECK(r->role == CLM_ROLE_ASSISTANT, "assistant text role");
 	CHECK(strcmp(r->content, "there are two files") == 0,
-	      "assistant text survives");
+	    "assistant text survives");
 
 	clm_history_free(&in);
 	clm_history_free(&out);
@@ -138,7 +138,7 @@ test_from_json_rejects_garbage(void)
 
 	obj = cJSON_Parse("{\"role\":\"assistant\",\"tool_calls\":\"nope\"}");
 	CHECK(clm_message_from_json(&h, obj, NULL) == -EINVAL,
-	      "non-array tool_calls");
+	    "non-array tool_calls");
 	cJSON_Delete(obj);
 
 	CHECK(history_len(&h) == 0, "nothing appended on rejects");
@@ -158,9 +158,9 @@ test_session_file_roundtrip(const char *dir)
 	clm_history_init(&out);
 	fill_history(&in);
 
-	CHECK(clm_session_create(dir, "test-model", "test-provider",
-	                         "test-agent", &s) == 0,
-	      "create session");
+	CHECK(clm_session_create(
+	          dir, "test-model", "test-provider", "test-agent", &s) == 0,
+	    "create session");
 	CHECK(clm_session_is_empty(s), "fresh session is empty");
 
 	TAILQ_FOREACH(m, &in, entries)
@@ -176,13 +176,13 @@ test_session_file_roundtrip(const char *dir)
 
 	CHECK(clm_session_load(dir, id, &out, &meta) == 0, "load session");
 	CHECK(history_len(&out) == history_len(&in) - 1,
-	      "all non-system messages loaded");
+	    "all non-system messages loaded");
 	CHECK(meta != NULL, "meta line parsed");
 	if (meta != NULL) {
 		CHECK(
 		    strcmp(cJSON_GetStringValue(
 		               cJSON_GetObjectItemCaseSensitive(meta, "model")),
-		           "test-model") == 0,
+		        "test-model") == 0,
 		    "meta model");
 		cJSON_Delete(meta);
 	}
@@ -193,7 +193,7 @@ test_session_file_roundtrip(const char *dir)
 	CHECK(!clm_session_is_empty(s), "reopened session not empty");
 	CHECK(clm_session_discard(s) == 0, "discard deletes");
 	CHECK(clm_session_load(dir, id, &out, NULL) == -ENOENT,
-	      "discarded session gone");
+	    "discarded session gone");
 
 	clm_history_free(&in);
 	clm_history_free(&out);
@@ -223,7 +223,7 @@ test_crash_tolerance(const char *dir)
 	clm_history_init(&h);
 
 	CHECK(clm_session_create(dir, NULL, NULL, NULL, &s) == 0,
-	      "create session");
+	    "create session");
 	(void)snprintf(id, sizeof(id), "%s", clm_session_id(s));
 	{
 		struct clm_history tmp;
@@ -240,8 +240,8 @@ test_crash_tolerance(const char *dir)
 	append_raw(dir, id, "this is not json\n");
 	append_raw(dir, id, "{\"type\":\"msg\",\"role\":\"assistant\",\"con");
 
-	CHECK(clm_session_load(dir, id, &h, NULL) == 0,
-	      "load survives garbage");
+	CHECK(
+	    clm_session_load(dir, id, &h, NULL) == 0, "load survives garbage");
 	CHECK(history_len(&h) == 1, "only the good message loaded");
 	clm_history_free(&h);
 
@@ -249,7 +249,7 @@ test_crash_tolerance(const char *dir)
 	clm_history_init(&h);
 	append_raw(dir, id, "\n{\"type\":\"meta\",\"v\":99}\n");
 	CHECK(clm_session_load(dir, id, &h, NULL) == -EPROTONOSUPPORT,
-	      "newer format version rejected");
+	    "newer format version rejected");
 	clm_history_free(&h);
 }
 
@@ -261,12 +261,12 @@ test_id_validation(const char *dir)
 
 	clm_history_init(&h);
 	CHECK(clm_session_open(dir, "../evil", &s) == -EINVAL,
-	      "path traversal id rejected on open");
+	    "path traversal id rejected on open");
 	CHECK(clm_session_load(dir, "a/b", &h, NULL) == -EINVAL,
-	      "slash id rejected on load");
+	    "slash id rejected on load");
 	CHECK(clm_session_open(dir, "", &s) == -EINVAL, "empty id rejected");
 	CHECK(clm_session_open(dir, "no-such-session", &s) == -ENOENT,
-	      "missing session is ENOENT");
+	    "missing session is ENOENT");
 	clm_history_free(&h);
 }
 
@@ -283,7 +283,7 @@ test_listing(const char *dir)
 		struct clm_message *m;
 
 		CHECK(clm_session_create(dir, "m", NULL, NULL, &s) == 0,
-		      "create listed session");
+		    "create listed session");
 		clm_history_init(&tmp);
 		m = clm_history_add_user(&tmp, "list me", NULL);
 		CHECK(clm_session_append(s, m, NULL) == 0, "append");
@@ -300,8 +300,8 @@ test_listing(const char *dir)
 	clm_session_list_free(infos, n);
 
 	CHECK(clm_session_list("/nonexistent-dir-xyzzy", &infos, &n) == 0 &&
-	          n == 0,
-	      "missing dir is an empty listing");
+	        n == 0,
+	    "missing dir is an empty listing");
 }
 
 int

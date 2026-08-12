@@ -13,8 +13,8 @@
  * Allocate a clm_host backed by esp_http_client. Requests run synchronously on
  * the calling task: http_post blocks, streaming body chunks to data_cb as they
  * arrive, then fires success/error before returning. timer_set is left NULL, so
- * the core disables per-tool timeouts. Returns 0 and stores the host in *out, or
- * a negative errno. Free with clm_host_esp32_free.
+ * the core disables per-tool timeouts. Returns 0 and stores the host in *out,
+ * or a negative errno. Free with clm_host_esp32_free.
  */
 int clm_host_esp32_new(struct clm_host **out);
 

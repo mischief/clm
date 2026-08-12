@@ -15,7 +15,9 @@ struct clm_llm {
 	bool disable_parallel_tool_calls;
 };
 
-int clm_llm_new(struct clm_llm **ret, enum clm_provider provider, const char *api_key, const char *base_url, const char *model, bool disable_parallel_tool_calls);
+int clm_llm_new(struct clm_llm **ret, enum clm_provider provider,
+    const char *api_key, const char *base_url, const char *model,
+    bool disable_parallel_tool_calls);
 void clm_llm_free(struct clm_llm *llm);
 
 #endif /* CLM_LLM_H */

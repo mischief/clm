@@ -79,7 +79,8 @@ clm_lua_push_json_value(lua_State *L, cJSON *obj)
 	}
 	if (cJSON_IsObject(obj)) {
 		lua_newtable(L);
-		for (cJSON *child = obj->child; child != NULL; child = child->next) {
+		for (cJSON *child = obj->child; child != NULL;
+		    child = child->next) {
 			lua_pushstring(L, child->string);
 			clm_lua_push_json_value(L, child);
 			lua_rawset(L, -3);
@@ -113,7 +114,8 @@ lua_json_decode(lua_State *L)
 	if (obj == NULL) {
 		const char *error_ptr = cJSON_GetErrorPtr();
 		if (error_ptr != NULL) {
-			return luaL_error(L, "json.decode: invalid JSON at offset %td",
+			return luaL_error(L,
+			    "json.decode: invalid JSON at offset %td",
 			    error_ptr - str);
 		} else {
 			return luaL_error(L, "json.decode: out of memory");
@@ -131,7 +133,8 @@ lua_json_decode(lua_State *L)
 
 static cJSON *lua_to_json(lua_State *L, int idx, int depth);
 
-/* Registry key for the metatable set by json.array() to force array encoding. */
+/* Registry key for the metatable set by json.array() to force array encoding.
+ */
 #define CLM_JSON_ARRAY_MT "clm_json_array"
 
 /* True if the table at idx carries the json.array() marker metatable. */
@@ -174,7 +177,7 @@ is_lua_array(lua_State *L, int idx)
 		count++;
 		if (count > (lua_Integer)len) {
 			lua_pop(L, 1); /* pop the key before returning */
-			return false; /* extra keys beyond rawlen */
+			return false;  /* extra keys beyond rawlen */
 		}
 	}
 	return count == (lua_Integer)len;
@@ -184,7 +187,8 @@ static cJSON *
 lua_to_json(lua_State *L, int idx, int depth)
 {
 	if (depth > 64)
-		return NULL; /* prevent stack overflow on deeply nested tables */
+		return NULL; /* prevent stack overflow on deeply nested tables
+		              */
 
 	idx = lua_absindex(L, idx);
 
@@ -213,7 +217,8 @@ lua_to_json(lua_State *L, int idx, int depth)
 			cJSON *arr = cJSON_CreateArray();
 			for (size_t i = 1; i <= len; i++) {
 				lua_rawgeti(L, idx, (lua_Integer)i);
-				cJSON_AddItemToArray(arr, lua_to_json(L, -1, depth + 1));
+				cJSON_AddItemToArray(
+				    arr, lua_to_json(L, -1, depth + 1));
 				lua_pop(L, 1);
 			}
 			return arr;
@@ -223,7 +228,8 @@ lua_to_json(lua_State *L, int idx, int depth)
 		while (lua_next(L, idx) != 0) {
 			if (lua_type(L, -2) == LUA_TSTRING) {
 				const char *key = lua_tostring(L, -2);
-				cJSON_AddItemToObject(obj, key, lua_to_json(L, -1, depth + 1));
+				cJSON_AddItemToObject(
+				    obj, key, lua_to_json(L, -1, depth + 1));
 			}
 			lua_pop(L, 1);
 		}
@@ -279,10 +285,10 @@ lua_json_array(lua_State *L)
 }
 
 static const luaL_Reg json_funcs[] = {
-	{"decode", lua_json_decode},
-	{"encode", lua_json_encode},
-	{"array", lua_json_array},
-	{NULL, NULL},
+    {"decode", lua_json_decode},
+    {"encode", lua_json_encode},
+    {"array", lua_json_array},
+    {NULL, NULL},
 };
 
 int

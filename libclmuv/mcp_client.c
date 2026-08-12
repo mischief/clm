@@ -41,11 +41,16 @@
  * a genuine crash loop backs off instead of hammering fork/exec forever.
  */
 #define MCP_RESTART_BURST 3.0
-#define MCP_RESTART_RATE_SECONDS 30.0 /* 1 token refilled per this many seconds */
+#define MCP_RESTART_RATE_SECONDS                                               \
+	30.0 /* 1 token refilled per this many seconds */
 
 /* What to do once a stdio client's handles finish closing; see
  * mcp_begin_close's comment further down for why this is needed. */
-enum mcp_close_intent { MCP_CLOSE_THEN_IDLE, MCP_CLOSE_THEN_RESPAWN, MCP_CLOSE_THEN_FREE };
+enum mcp_close_intent {
+	MCP_CLOSE_THEN_IDLE,
+	MCP_CLOSE_THEN_RESPAWN,
+	MCP_CLOSE_THEN_FREE
+};
 
 struct mcp_tool_ctx; /* full definition further down, near mcp_register_tools */
 struct mcp_http_ctx;
@@ -54,7 +59,7 @@ struct mcp_pending {
 	int id;
 	enum { MCP_PEND_INIT, MCP_PEND_LIST, MCP_PEND_CALL } kind;
 	struct clm_tool_invocation *inv; /* MCP_PEND_CALL only */
-	struct clm_mcp_client *client; /* MCP_PEND_CALL cancellation owner */
+	struct clm_mcp_client *client;   /* MCP_PEND_CALL cancellation owner */
 	struct mcp_pending *next;
 };
 
@@ -89,14 +94,16 @@ struct clm_mcp_client {
 	/* Full ("<server>__<tool>") names of every tool this client has
 	 * registered on the agent, so a disconnect can unregister them all. */
 	char **registered_names;
-	struct mcp_tool_ctx **registered_ctxs; /* parallel to registered_names */
+	struct mcp_tool_ctx *
+	    *registered_ctxs; /* parallel to registered_names */
 	size_t registered_count;
 
 	/* stdio only */
 	uv_process_t proc;
 	uv_pipe_t in, out;
 	bool proc_spawned; /* handles are live (spawned, not yet closed) */
-	bool dead; /* the subprocess exited or the pipe broke; see mcp_go_dead */
+	bool
+	    dead; /* the subprocess exited or the pipe broke; see mcp_go_dead */
 	char *linebuf;
 	size_t linelen, linecap;
 
@@ -107,7 +114,8 @@ struct clm_mcp_client {
 
 	/* Deep copy of server_cfg->argv, kept alive so a dead client can
 	 * re-exec the same command; see mcp_go_dead / mcp_do_respawn. NULL for
-	 * the HTTP transport (nothing to restart -- each call is independent). */
+	 * the HTTP transport (nothing to restart -- each call is independent).
+	 */
 	char **argv_copy;
 
 	/* Restart token bucket; see MCP_RESTART_BURST/RATE_SECONDS above. */
@@ -155,7 +163,8 @@ static bool
 mcp_restart_allowed(struct clm_mcp_client *client)
 {
 	uint64_t now = mcp_now_usec();
-	double elapsed_sec = (double)(now - client->last_refill_usec) / 1000000.0;
+	double elapsed_sec =
+	    (double)(now - client->last_refill_usec) / 1000000.0;
 
 	client->last_refill_usec = now;
 	client->restart_tokens += elapsed_sec / MCP_RESTART_RATE_SECONDS;
@@ -231,8 +240,9 @@ mcp_do_respawn(struct clm_mcp_client *client)
 
 	r = mcp_spawn(client, client->argv_copy);
 	if (r != 0) {
-		/* The exec itself failed (e.g. binary missing/removed) -- retrying
-		 * later won't help, so stay dead rather than looping. */
+		/* The exec itself failed (e.g. binary missing/removed) --
+		 * retrying later won't help, so stay dead rather than looping.
+		 */
 		if (client->on_ready != NULL)
 			client->on_ready(r, 0, client->user);
 		return;
@@ -245,7 +255,8 @@ mcp_do_respawn(struct clm_mcp_client *client)
 }
 
 /* Shared close_cb for in, out, AND proc (the latter only ever passed to
- * uv_close from mcp_on_exit). h->data is always `client` -- never repurposed. */
+ * uv_close from mcp_on_exit). h->data is always `client` -- never repurposed.
+ */
 static void
 mcp_handle_closed(uv_handle_t *h)
 {
@@ -254,9 +265,14 @@ mcp_handle_closed(uv_handle_t *h)
 		enum mcp_close_intent intent = client->close_intent;
 		client->closing = false;
 		switch (intent) {
-		case MCP_CLOSE_THEN_RESPAWN: mcp_do_respawn(client); break;
-		case MCP_CLOSE_THEN_IDLE: break;
-		case MCP_CLOSE_THEN_FREE: mcp_client_free_now(client); break;
+		case MCP_CLOSE_THEN_RESPAWN:
+			mcp_do_respawn(client);
+			break;
+		case MCP_CLOSE_THEN_IDLE:
+			break;
+		case MCP_CLOSE_THEN_FREE:
+			mcp_client_free_now(client);
+			break;
 		}
 	}
 }
@@ -265,9 +281,9 @@ mcp_handle_closed(uv_handle_t *h)
  * Start (or fold into an already-running) teardown of this client's stdio
  * handles, resolving to `intent` once fully closed. Idempotent: if a close is
  * already in flight (from the other trigger path racing in) or already
- * finished, this only ever *upgrades* the eventual outcome -- MCP_CLOSE_THEN_FREE
- * always wins, since an explicit clm_mcp_client_free must never lose to a
- * concurrent auto-restart decision.
+ * finished, this only ever *upgrades* the eventual outcome --
+ * MCP_CLOSE_THEN_FREE always wins, since an explicit clm_mcp_client_free must
+ * never lose to a concurrent auto-restart decision.
  */
 static void
 mcp_begin_close(struct clm_mcp_client *client, enum mcp_close_intent intent)
@@ -285,7 +301,8 @@ mcp_begin_close(struct clm_mcp_client *client, enum mcp_close_intent intent)
 	client->closing = true;
 	client->proc_spawned = false; /* handles are on their way down */
 	client->close_intent = intent;
-	client->close_remaining = 3; /* in, out (closed here) + proc (mcp_on_exit) */
+	client->close_remaining =
+	    3; /* in, out (closed here) + proc (mcp_on_exit) */
 
 	uv_read_stop((uv_stream_t *)&client->out);
 	uv_close((uv_handle_t *)&client->in, mcp_handle_closed);
@@ -414,13 +431,14 @@ mcp_register_tools(struct clm_mcp_client *client, cJSON *tools)
 			continue;
 		rname = cJSON_GetStringValue(jname);
 
-		/* "mcp__<server>__<tool>": matches the scheme Claude Code uses for
-		 * MCP-sourced tools (native/Lua tools stay bare -- only MCP can pull
-		 * in same-named tools from independent third-party servers, so only
-		 * MCP needs the collision guard a prefix buys). */
+		/* "mcp__<server>__<tool>": matches the scheme Claude Code uses
+		 * for MCP-sourced tools (native/Lua tools stay bare -- only MCP
+		 * can pull in same-named tools from independent third-party
+		 * servers, so only MCP needs the collision guard a prefix
+		 * buys). */
 		{
-			size_t full_len = sizeof("mcp__") - 1 + strlen(client->name) +
-			    2 + strlen(rname) + 1;
+			size_t full_len = sizeof("mcp__") - 1 +
+			    strlen(client->name) + 2 + strlen(rname) + 1;
 			full_name = malloc(full_len);
 			if (full_name == NULL)
 				continue;
@@ -430,11 +448,13 @@ mcp_register_tools(struct clm_mcp_client *client, cJSON *tools)
 
 		jdesc = cJSON_GetObjectItemCaseSensitive(t, "description");
 		desc = strdup(jdesc != NULL && cJSON_IsString(jdesc)
-		    ? cJSON_GetStringValue(jdesc) : rname);
+		        ? cJSON_GetStringValue(jdesc)
+		        : rname);
 
 		jschema = cJSON_GetObjectItemCaseSensitive(t, "inputSchema");
 		if (jschema != NULL) {
-			autofree char *printed = cJSON_PrintUnformatted(jschema);
+			autofree char *printed =
+			    cJSON_PrintUnformatted(jschema);
 			schema = printed != NULL ? strdup(printed) : NULL;
 		} else {
 			schema = strdup("{\"type\":\"object\"}");
@@ -518,9 +538,11 @@ mcp_http_success(struct clm_http_response *resp, void *user)
 			 * {code, message, data}, never a bare string --
 			 * cJSON_GetStringValue(error) would just return NULL
 			 * here and lose the real diagnostic. */
-			cJSON *jmsg = cJSON_GetObjectItemCaseSensitive(error, "message");
+			cJSON *jmsg =
+			    cJSON_GetObjectItemCaseSensitive(error, "message");
 			err_msg = jmsg != NULL && cJSON_IsString(jmsg)
-			    ? cJSON_GetStringValue(jmsg) : "MCP error";
+			    ? cJSON_GetStringValue(jmsg)
+			    : "MCP error";
 		}
 	}
 	if (hctx->client->discarded)
@@ -530,14 +552,16 @@ mcp_http_success(struct clm_http_response *resp, void *user)
 	case MCP_HTTP_INIT:
 		if (err_msg != NULL || result == NULL) {
 			if (hctx->client->on_ready != NULL)
-				hctx->client->on_ready(-EPROTO, 0, hctx->client->user);
+				hctx->client->on_ready(
+				    -EPROTO, 0, hctx->client->user);
 		} else {
 			mcp_send_tools_list(hctx->client);
 		}
 		break;
 	case MCP_HTTP_LIST: {
 		cJSON *tools = result != NULL
-		    ? cJSON_GetObjectItemCaseSensitive(result, "tools") : NULL;
+		    ? cJSON_GetObjectItemCaseSensitive(result, "tools")
+		    : NULL;
 		if (tools != NULL && cJSON_IsArray(tools))
 			mcp_register_tools(hctx->client, tools);
 		else if (hctx->client->on_ready != NULL)
@@ -549,15 +573,18 @@ mcp_http_success(struct clm_http_response *resp, void *user)
 		if (err_msg != NULL) {
 			clm_tool_fail(hctx->inv, err_msg);
 		} else if (result != NULL &&
-		    (content = cJSON_GetObjectItemCaseSensitive(result, "content")) != NULL &&
-		    cJSON_IsArray(content) &&
-		    cJSON_GetArraySize(content) > 0 &&
+		    (content = cJSON_GetObjectItemCaseSensitive(
+		         result, "content")) != NULL &&
+		    cJSON_IsArray(content) && cJSON_GetArraySize(content) > 0 &&
 		    (first = cJSON_GetArrayItem(content, 0)) != NULL &&
-		    (text = cJSON_GetObjectItemCaseSensitive(first, "text")) != NULL) {
-			clm_tool_complete(hctx->inv, cJSON_GetStringValue(text));
+		    (text = cJSON_GetObjectItemCaseSensitive(first, "text")) !=
+		        NULL) {
+			clm_tool_complete(
+			    hctx->inv, cJSON_GetStringValue(text));
 		} else if (result != NULL) {
 			autofree char *printed = cJSON_PrintUnformatted(result);
-			clm_tool_complete(hctx->inv, printed != NULL ? printed : "{}");
+			clm_tool_complete(
+			    hctx->inv, printed != NULL ? printed : "{}");
 		} else {
 			clm_tool_fail(hctx->inv, "malformed MCP response");
 		}
@@ -584,7 +611,8 @@ mcp_http_error(int error_code, const char *error_msg, void *user)
 		case MCP_HTTP_INIT:
 		case MCP_HTTP_LIST:
 			if (hctx->client->on_ready != NULL)
-				hctx->client->on_ready(-EIO, 0, hctx->client->user);
+				hctx->client->on_ready(
+				    -EIO, 0, hctx->client->user);
 			break;
 		case MCP_HTTP_CALL:
 			clm_tool_fail(hctx->inv, error_msg);
@@ -617,8 +645,8 @@ mcp_http_send(struct clm_mcp_client *client, char *body,
 	if (inv != NULL)
 		clm_tool_invocation_set_cancel(inv, mcp_http_cancel, hctx);
 
-	r = clm_http_async_post(client->http_mux, client->url, client->api_key, body,
-	    NULL, mcp_http_success, mcp_http_error, NULL, "mcp", hctx,
+	r = clm_http_async_post(client->http_mux, client->url, client->api_key,
+	    body, NULL, mcp_http_success, mcp_http_error, NULL, "mcp", hctx,
 	    &hctx->request);
 	free(body);
 	if (r != 0) {
@@ -671,7 +699,7 @@ mcp_stdio_send(struct clm_mcp_client *client, char *body)
 
 	wr->buf = uv_buf_init(framed, (unsigned)(len + 1));
 	if (uv_write(&wr->req, (uv_stream_t *)&client->in, &wr->buf, 1,
-	    mcp_on_write_done) < 0) {
+	        mcp_on_write_done) < 0) {
 		free(framed);
 		free(wr);
 		return -EIO;
@@ -725,7 +753,8 @@ mcp_process_line(struct clm_mcp_client *client, char *line)
 	struct mcp_pending *pend;
 	const char *err_msg = NULL;
 
-	jid = parsed != NULL ? cJSON_GetObjectItemCaseSensitive(parsed, "id") : NULL;
+	jid = parsed != NULL ? cJSON_GetObjectItemCaseSensitive(parsed, "id")
+	                     : NULL;
 	if (jid == NULL)
 		return; /* notification from the server; ignore */
 
@@ -738,9 +767,11 @@ mcp_process_line(struct clm_mcp_client *client, char *line)
 	if (error != NULL) {
 		/* See the matching comment in mcp_http_success(): "error" is
 		 * always a JSON-RPC error object, never a bare string. */
-		cJSON *jmsg = cJSON_GetObjectItemCaseSensitive(error, "message");
+		cJSON *jmsg =
+		    cJSON_GetObjectItemCaseSensitive(error, "message");
 		err_msg = jmsg != NULL && cJSON_IsString(jmsg)
-		    ? cJSON_GetStringValue(jmsg) : "MCP error";
+		    ? cJSON_GetStringValue(jmsg)
+		    : "MCP error";
 	}
 
 	mcp_handle_result(client, pend, result, err_msg);
@@ -757,7 +788,8 @@ mcp_handle_result(struct clm_mcp_client *client, struct mcp_pending *pend,
 			if (client->on_ready != NULL)
 				client->on_ready(-EPROTO, 0, client->user);
 		} else {
-			char *note = mcp_build_notification("notifications/initialized");
+			char *note =
+			    mcp_build_notification("notifications/initialized");
 			if (note != NULL)
 				mcp_stdio_send(client, note);
 			mcp_send_tools_list(client);
@@ -765,7 +797,8 @@ mcp_handle_result(struct clm_mcp_client *client, struct mcp_pending *pend,
 		break;
 	case MCP_PEND_LIST: {
 		cJSON *tools = result != NULL
-		    ? cJSON_GetObjectItemCaseSensitive(result, "tools") : NULL;
+		    ? cJSON_GetObjectItemCaseSensitive(result, "tools")
+		    : NULL;
 		if (tools != NULL && cJSON_IsArray(tools))
 			mcp_register_tools(client, tools);
 		else if (client->on_ready != NULL)
@@ -777,15 +810,18 @@ mcp_handle_result(struct clm_mcp_client *client, struct mcp_pending *pend,
 		if (err != NULL) {
 			clm_tool_fail(pend->inv, err);
 		} else if (result != NULL &&
-		    (content = cJSON_GetObjectItemCaseSensitive(result, "content")) != NULL &&
-		    cJSON_IsArray(content) &&
-		    cJSON_GetArraySize(content) > 0 &&
+		    (content = cJSON_GetObjectItemCaseSensitive(
+		         result, "content")) != NULL &&
+		    cJSON_IsArray(content) && cJSON_GetArraySize(content) > 0 &&
 		    (first = cJSON_GetArrayItem(content, 0)) != NULL &&
-		    (text = cJSON_GetObjectItemCaseSensitive(first, "text")) != NULL) {
-			clm_tool_complete(pend->inv, cJSON_GetStringValue(text));
+		    (text = cJSON_GetObjectItemCaseSensitive(first, "text")) !=
+		        NULL) {
+			clm_tool_complete(
+			    pend->inv, cJSON_GetStringValue(text));
 		} else if (result != NULL) {
 			autofree char *printed = cJSON_PrintUnformatted(result);
-			clm_tool_complete(pend->inv, printed != NULL ? printed : "{}");
+			clm_tool_complete(
+			    pend->inv, printed != NULL ? printed : "{}");
 		} else {
 			clm_tool_fail(pend->inv, "malformed MCP response");
 		}
@@ -804,8 +840,8 @@ mcp_stdio_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 		free(buf->base);
 		/* nread == 0 just means "nothing to read right now"; a negative
 		 * value (including UV_EOF) means the pipe is gone -- the child
-		 * died or closed stdout. mcp_go_dead is idempotent, so this races
-		 * harmlessly against mcp_on_exit picking it up first. */
+		 * died or closed stdout. mcp_go_dead is idempotent, so this
+		 * races harmlessly against mcp_on_exit picking it up first. */
 		if (nread < 0)
 			mcp_go_dead(client, -ECONNRESET);
 		return;
@@ -893,7 +929,8 @@ mcp_spawn(struct clm_mcp_client *client, char *const *argv)
 		return r;
 
 	client->proc_spawned = true;
-	uv_read_start((uv_stream_t *)&client->out, mcp_alloc_cb, mcp_stdio_read);
+	uv_read_start(
+	    (uv_stream_t *)&client->out, mcp_alloc_cb, mcp_stdio_read);
 	return 0;
 }
 
@@ -920,9 +957,15 @@ mcp_send(struct clm_mcp_client *client, char *body, enum mcp_http_kind kind,
 	pend->next = client->pending;
 
 	switch (kind) {
-	case MCP_HTTP_INIT: pend->kind = MCP_PEND_INIT; break;
-	case MCP_HTTP_LIST: pend->kind = MCP_PEND_LIST; break;
-	default: pend->kind = MCP_PEND_CALL; break;
+	case MCP_HTTP_INIT:
+		pend->kind = MCP_PEND_INIT;
+		break;
+	case MCP_HTTP_LIST:
+		pend->kind = MCP_PEND_LIST;
+		break;
+	default:
+		pend->kind = MCP_PEND_CALL;
+		break;
 	}
 
 	r = mcp_stdio_send(client, body);
@@ -953,20 +996,20 @@ static void
 mcp_tool_invoke(struct clm_tool_invocation *inv, void *user)
 {
 	struct mcp_tool_ctx *ctx = user;
-	json_cleanup cJSON *args =
-	    cJSON_Parse(clm_tool_invocation_args(inv));
+	json_cleanup cJSON *args = cJSON_Parse(clm_tool_invocation_args(inv));
 	cJSON *params = cJSON_CreateObject();
 	int id;
 	char *body;
 
-	cJSON_AddItemToObject(params, "name",
-	    cJSON_CreateString(ctx->remote_name));
+	cJSON_AddItemToObject(
+	    params, "name", cJSON_CreateString(ctx->remote_name));
 	if (args != NULL && cJSON_IsObject(args)) {
 		cJSON *args_copy = cJSON_Duplicate(args, true);
 		cJSON_AddItemToObject(params, "arguments",
 		    args_copy != NULL ? args_copy : cJSON_CreateObject());
 	} else {
-		cJSON_AddItemToObject(params, "arguments", cJSON_CreateObject());
+		cJSON_AddItemToObject(
+		    params, "arguments", cJSON_CreateObject());
 	}
 
 	id = ctx->client->next_id++;
@@ -1017,8 +1060,9 @@ mcp_unregister_all(struct clm_mcp_client *client)
 		clm_tool_remove(client->agent, client->registered_names[i]);
 		free(client->registered_names[i]);
 		/* Safe regardless of the core's internal inflight/removed
-		 * bookkeeping for the clm_tool node itself: nothing ever touches
-		 * this ctx after mcp_tool_invoke's initial (synchronous) dispatch
+		 * bookkeeping for the clm_tool node itself: nothing ever
+		 * touches this ctx after mcp_tool_invoke's initial
+		 * (synchronous) dispatch
 		 * -- no async completion path holds onto it. */
 		mcp_tool_ctx_free(client->registered_ctxs[i]);
 	}
@@ -1090,11 +1134,13 @@ mcp_go_dead(struct clm_mcp_client *client, int status)
 		client->on_ready(status, 0, client->user);
 
 	if (client->transport == CLM_MCP_STDIO) {
-		bool restart = client->argv_copy != NULL && mcp_restart_allowed(client);
+		bool restart =
+		    client->argv_copy != NULL && mcp_restart_allowed(client);
 		/* Always close (releases the fds) even when not restarting -- a
 		 * dead client with an exhausted budget should not sit on open
 		 * pipe/process handles forever. */
-		mcp_begin_close(client, restart ? MCP_CLOSE_THEN_RESPAWN : MCP_CLOSE_THEN_IDLE);
+		mcp_begin_close(client,
+		    restart ? MCP_CLOSE_THEN_RESPAWN : MCP_CLOSE_THEN_IDLE);
 	}
 }
 
@@ -1126,9 +1172,11 @@ clm_mcp_connect(struct clm_agent *agent, struct uv_loop_s *loop,
 	client->transport = server_cfg->transport;
 	client->name = strdup(server_cfg->name);
 	client->url = server_cfg->url != NULL ? strdup(server_cfg->url) : NULL;
-	client->api_key = server_cfg->api_key != NULL ? strdup(server_cfg->api_key) : NULL;
-	client->timeout_ms = server_cfg->timeout_ms != 0 ? server_cfg->timeout_ms
-	                                                  : MCP_DEFAULT_TIMEOUT_MS;
+	client->api_key =
+	    server_cfg->api_key != NULL ? strdup(server_cfg->api_key) : NULL;
+	client->timeout_ms = server_cfg->timeout_ms != 0
+	    ? server_cfg->timeout_ms
+	    : MCP_DEFAULT_TIMEOUT_MS;
 	client->on_ready = on_ready;
 	client->user = user;
 	client->free_user = free_user;
@@ -1214,11 +1262,12 @@ clm_mcp_client_free(struct clm_mcp_client *client)
 	}
 
 	if (!client->dead && client->proc_spawned) {
-		/* Still alive: kill it now. mcp_begin_close below only closes the
-		 * pipes; proc itself is closed from mcp_on_exit once this kill
-		 * actually takes effect (see mcp_begin_close's comment) -- mark
-		 * dead here so that eventual exit_cb's call into mcp_go_dead is a
-		 * pure no-op (we've already done its bookkeeping ourselves). */
+		/* Still alive: kill it now. mcp_begin_close below only closes
+		 * the pipes; proc itself is closed from mcp_on_exit once this
+		 * kill actually takes effect (see mcp_begin_close's comment) --
+		 * mark dead here so that eventual exit_cb's call into
+		 * mcp_go_dead is a pure no-op (we've already done its
+		 * bookkeeping ourselves). */
 		uv_process_kill(&client->proc, SIGKILL);
 		client->dead = true;
 	}

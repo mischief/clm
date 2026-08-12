@@ -36,7 +36,8 @@ enum clm_mcp_transport {
  * duration of clm_mcp_connect (copied internally); they need not outlive it.
  */
 struct clm_mcp_server_cfg {
-	const char *name; /* short, unique; prefixed onto registered tool names */
+	const char
+	    *name; /* short, unique; prefixed onto registered tool names */
 	enum clm_mcp_transport transport;
 
 	/* CLM_MCP_STDIO: argv[0] is the executable, NULL-terminated. */

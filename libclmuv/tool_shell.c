@@ -43,16 +43,16 @@ sh_arg_string(cJSON *args, const char *key)
 struct shell_state {
 	struct clm_tool_invocation *inv;
 	uv_process_t proc;
-	uv_pipe_t in;         /* present only when stdin is supplied */
+	uv_pipe_t in; /* present only when stdin is supplied */
 	uv_pipe_t out;
 	uv_pipe_t err;
 	uv_write_t wreq;
-	char *in_buf;         /* stdin blob, kept alive across the write */
+	char *in_buf; /* stdin blob, kept alive across the write */
 	bool has_stdin;
 	char *buf;
 	size_t len;
 	size_t bufcap;
-	int handles;          /* uv handles still open (proc + pipes) */
+	int handles; /* uv handles still open (proc + pipes) */
 	int64_t exit_status;
 	int term_signal;
 	char *spawn_err;
@@ -106,21 +106,25 @@ shell_finish(struct shell_state *s)
 		size_t mlen = s->len + 128;
 		autofree char *msg = malloc(mlen);
 		if (msg != NULL) {
-			/* A signal-terminated process has no real exit status --
-			 * uv_process_t's exit callback reports exit_status as 0
-			 * in that case, not the process's own value (there isn't
-			 * one; it never called exit()). Printing "exit status 0"
-			 * alongside "killed by signal" was actively misleading
-			 * (reads as "succeeded, but also killed?"), so show the
-			 * actual signal instead of the meaningless exit status
-			 * when term_signal is set, rather than both at once. */
+			/* A signal-terminated process has no real exit status
+			 * -- uv_process_t's exit callback reports exit_status
+			 * as 0 in that case, not the process's own value (there
+			 * isn't one; it never called exit()). Printing "exit
+			 * status 0" alongside "killed by signal" was actively
+			 * misleading (reads as "succeeded, but also killed?"),
+			 * so show the actual signal instead of the meaningless
+			 * exit status when term_signal is set, rather than both
+			 * at once. */
 			if (s->term_signal != 0) {
 				const char *signame = strsignal(s->term_signal);
-				(void)snprintf(msg, mlen, "%s%s(killed by signal %d: %s)",
+				(void)snprintf(msg, mlen,
+				    "%s%s(killed by signal %d: %s)",
 				    s->len ? s->buf : "", s->len ? "\n" : "",
-				    s->term_signal, signame != NULL ? signame : "unknown");
+				    s->term_signal,
+				    signame != NULL ? signame : "unknown");
 			} else {
-				(void)snprintf(msg, mlen, "%s%s(exit status %lld)",
+				(void)snprintf(msg, mlen,
+				    "%s%s(exit status %lld)",
 				    s->len ? s->buf : "", s->len ? "\n" : "",
 				    (long long)s->exit_status);
 			}
@@ -129,7 +133,8 @@ shell_finish(struct shell_state *s)
 			clm_tool_fail(inv, "command failed");
 		}
 	} else {
-		clm_tool_complete(inv, s->len ? s->buf : "(command produced no output)");
+		clm_tool_complete(
+		    inv, s->len ? s->buf : "(command produced no output)");
 	}
 
 	free(s->spawn_err);
@@ -199,8 +204,7 @@ shell_on_stdin_written(uv_write_t *req, int status)
 static void
 tool_shell_exec(struct clm_tool_invocation *inv, void *user)
 {
-	json_cleanup cJSON *args =
-	    cJSON_Parse(clm_tool_invocation_args(inv));
+	json_cleanup cJSON *args = cJSON_Parse(clm_tool_invocation_args(inv));
 	autofree char *command = NULL;
 	autoclose int devnull = -1;
 	struct shell_state *s;
@@ -218,7 +222,8 @@ tool_shell_exec(struct clm_tool_invocation *inv, void *user)
 	}
 	command = sh_arg_string(args, "command");
 	if (command == NULL) {
-		clm_tool_fail(inv, "missing required string argument 'command'");
+		clm_tool_fail(
+		    inv, "missing required string argument 'command'");
 		return;
 	}
 
@@ -292,10 +297,11 @@ tool_shell_exec(struct clm_tool_invocation *inv, void *user)
 	uv_read_start((uv_stream_t *)&s->err, shell_alloc, shell_read);
 
 	if (s->has_stdin) {
-		uv_buf_t b = uv_buf_init(s->in_buf, (unsigned)strlen(s->in_buf));
+		uv_buf_t b =
+		    uv_buf_init(s->in_buf, (unsigned)strlen(s->in_buf));
 		s->wreq.data = s;
 		if (uv_write(&s->wreq, (uv_stream_t *)&s->in, &b, 1,
-		    shell_on_stdin_written) < 0)
+		        shell_on_stdin_written) < 0)
 			uv_close((uv_handle_t *)&s->in, shell_on_close);
 	}
 }
@@ -304,19 +310,21 @@ int
 clm_tools_register_shell(struct clm_agent *agent)
 {
 	const struct clm_tool_def shell_def = {
-		.name = "shell_exec",
-		.description = "execute a shell command and return its output",
-		.params_schema =
-		    "{\"type\":\"object\","
-		    "\"properties\":{"
-		    "\"command\":{\"type\":\"string\","
-		    "\"description\":\"the shell command to execute\"},"
-		    "\"stdin\":{\"type\":\"string\","
-		    "\"description\":\"optional: data to write to the command's standard input\"}},"
-		    "\"required\":[\"command\"]}",
-		.invoke = tool_shell_exec,
-		.timeout_ms = CLM_SHELL_DEFAULT_TIMEOUT_MS,
-		.flags = CLM_TOOL_TIMEOUT_OVERRIDABLE | CLM_TOOL_OUTPUT_CAP_OVERRIDABLE,
+	    .name = "shell_exec",
+	    .description = "execute a shell command and return its output",
+	    .params_schema =
+	        "{\"type\":\"object\","
+	        "\"properties\":{"
+	        "\"command\":{\"type\":\"string\","
+	        "\"description\":\"the shell command to execute\"},"
+	        "\"stdin\":{\"type\":\"string\","
+	        "\"description\":\"optional: data to write to the command's "
+	        "standard input\"}},"
+	        "\"required\":[\"command\"]}",
+	    .invoke = tool_shell_exec,
+	    .timeout_ms = CLM_SHELL_DEFAULT_TIMEOUT_MS,
+	    .flags =
+	        CLM_TOOL_TIMEOUT_OVERRIDABLE | CLM_TOOL_OUTPUT_CAP_OVERRIDABLE,
 	};
 	return clm_tool_add(agent, &shell_def);
 }

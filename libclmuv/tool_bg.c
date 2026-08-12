@@ -52,7 +52,7 @@ bg_arg_string(cJSON *args, const char *key)
 struct clm_bg_job {
 	uint64_t id;
 	struct clm_agent *agent; /* where the eventual result is delivered */
-	char *label;             /* the "label" arg, or the command if none given */
+	char *label; /* the "label" arg, or the command if none given */
 
 	uv_process_t proc;
 	uv_pipe_t out, err;
@@ -81,7 +81,8 @@ bg_detach(void *user)
 	struct clm_agent *agent = user;
 	struct clm_bg_job *j;
 
-	TAILQ_FOREACH(j, &bg_jobs, entries) {
+	TAILQ_FOREACH(j, &bg_jobs, entries)
+	{
 		if (j->agent == agent)
 			j->agent = NULL;
 	}
@@ -130,7 +131,8 @@ bg_finish(struct clm_bg_job *j)
 {
 	/* uv_spawn itself failed: clm_tool_fail() already reported this
 	 * synchronously to the invocation, before the job was even started.
-	 * Nothing more to deliver -- just release the uv handles' bookkeeping. */
+	 * Nothing more to deliver -- just release the uv handles' bookkeeping.
+	 */
 	if (j->started && j->agent != NULL) {
 		autofree char *msg = NULL;
 
@@ -146,16 +148,20 @@ bg_finish(struct clm_bg_job *j)
 		if (j->term_signal != 0) {
 			const char *signame = strsignal(j->term_signal);
 			if (asprintf(&msg,
-			    "[background job %llu (\"%s\") finished, killed by "
-			    "signal %d: %s]\n%s",
-			    (unsigned long long)j->id, j->label, j->term_signal,
-			    signame != NULL ? signame : "unknown",
-			    j->len ? j->buf : "(no output)") < 0)
+			        "[background job %llu (\"%s\") finished, "
+			        "killed by "
+			        "signal %d: %s]\n%s",
+			        (unsigned long long)j->id, j->label,
+			        j->term_signal,
+			        signame != NULL ? signame : "unknown",
+			        j->len ? j->buf : "(no output)") < 0)
 				msg = NULL;
 		} else if (asprintf(&msg,
-		    "[background job %llu (\"%s\") finished, exit status %lld]\n%s",
-		    (unsigned long long)j->id, j->label, (long long)j->exit_status,
-		    j->len ? j->buf : "(no output)") < 0)
+		               "[background job %llu (\"%s\") finished, exit "
+		               "status %lld]\n%s",
+		               (unsigned long long)j->id, j->label,
+		               (long long)j->exit_status,
+		               j->len ? j->buf : "(no output)") < 0)
 			msg = NULL;
 		/* On OOM building msg: drop the notification silently. The
 		 * process itself already ran to completion -- losing the
@@ -204,8 +210,7 @@ static void
 tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 {
 	struct clm_agent *agent = user;
-	json_cleanup cJSON *args =
-	    cJSON_Parse(clm_tool_invocation_args(inv));
+	json_cleanup cJSON *args = cJSON_Parse(clm_tool_invocation_args(inv));
 	autofree char *command = NULL;
 	autofree char *label = NULL;
 	autofree char *started_msg = NULL;
@@ -223,7 +228,8 @@ tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 	}
 	command = bg_arg_string(args, "command");
 	if (command == NULL) {
-		clm_tool_fail(inv, "missing required string argument 'command'");
+		clm_tool_fail(
+		    inv, "missing required string argument 'command'");
 		return;
 	}
 	label = bg_arg_string(args, "label");
@@ -293,38 +299,42 @@ tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 	/* Same asprintf-failure caveat as bg_finish above: check the return
 	 * value rather than trusting started_msg to still be NULL. */
 	if (asprintf(&started_msg,
-	    "started background job %llu: %s (result will arrive later as a "
-	    "new message, not as this call's result)",
-	    (unsigned long long)j->id, j->label) < 0)
+	        "started background job %llu: %s (result will arrive later as "
+	        "a "
+	        "new message, not as this call's result)",
+	        (unsigned long long)j->id, j->label) < 0)
 		started_msg = NULL;
-	clm_tool_complete(inv, started_msg != NULL ? started_msg
-	                                            : "started background job");
+	clm_tool_complete(
+	    inv, started_msg != NULL ? started_msg : "started background job");
 }
 
 int
 clm_tools_register_bg(struct clm_agent *agent)
 {
 	const struct clm_tool_def bg_def = {
-		.name = "bg_exec",
-		.description =
-		    "start a shell command running in the background and return "
-		    "immediately with a job id, instead of waiting for it to finish "
-		    "(use shell_exec for that). The command's real output arrives "
-		    "later as a separate message tagged with the same job id, not "
-		    "as this call's result -- do not wait for it, continue with "
-		    "other work.",
-		.params_schema =
-		    "{\"type\":\"object\","
-		    "\"properties\":{"
-		    "\"command\":{\"type\":\"string\","
-		    "\"description\":\"the shell command to run in the background\"},"
-		    "\"label\":{\"type\":\"string\","
-		    "\"description\":\"optional short label to identify this job in "
-		    "its later result message; defaults to the command itself\"}},"
-		    "\"required\":[\"command\"]}",
-		.invoke = tool_bg_exec,
-		.detach = bg_detach,
-		.user = agent,
+	    .name = "bg_exec",
+	    .description =
+	        "start a shell command running in the background and return "
+	        "immediately with a job id, instead of waiting for it to "
+	        "finish "
+	        "(use shell_exec for that). The command's real output arrives "
+	        "later as a separate message tagged with the same job id, not "
+	        "as this call's result -- do not wait for it, continue with "
+	        "other work.",
+	    .params_schema =
+	        "{\"type\":\"object\","
+	        "\"properties\":{"
+	        "\"command\":{\"type\":\"string\","
+	        "\"description\":\"the shell command to run in the "
+	        "background\"},"
+	        "\"label\":{\"type\":\"string\","
+	        "\"description\":\"optional short label to identify this job "
+	        "in "
+	        "its later result message; defaults to the command itself\"}},"
+	        "\"required\":[\"command\"]}",
+	    .invoke = tool_bg_exec,
+	    .detach = bg_detach,
+	    .user = agent,
 	};
 	return clm_tool_add(agent, &bg_def);
 }

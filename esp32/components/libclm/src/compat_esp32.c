@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
-/* Public getline/getdelim wrappers over newlib's __getdelim (see clm_compat.h). */
+/* Public getline/getdelim wrappers over newlib's __getdelim (see clm_compat.h).
+ */
 #include <stdio.h>
 #include <sys/types.h>
 

@@ -53,20 +53,27 @@ tool_call_to_function_call_item(const cJSON *tc)
 	if (item == NULL)
 		return NULL;
 
-	cJSON_AddItemToObject(item, "type", cJSON_CreateString("function_call"));
+	cJSON_AddItemToObject(
+	    item, "type", cJSON_CreateString("function_call"));
 
 	jid = cJSON_GetObjectItemCaseSensitive(tc, "id");
 	cJSON_AddItemToObject(item, "call_id",
-	    cJSON_CreateString(jid != NULL && cJSON_IsString(jid) ? jid->valuestring : ""));
+	    cJSON_CreateString(
+	        jid != NULL && cJSON_IsString(jid) ? jid->valuestring : ""));
 
 	func = cJSON_GetObjectItemCaseSensitive(tc, "function");
 	jname = func ? cJSON_GetObjectItemCaseSensitive(func, "name") : NULL;
 	cJSON_AddItemToObject(item, "name",
-	    cJSON_CreateString(jname != NULL && cJSON_IsString(jname) ? jname->valuestring : ""));
+	    cJSON_CreateString(jname != NULL && cJSON_IsString(jname)
+	            ? jname->valuestring
+	            : ""));
 
-	jargs = func ? cJSON_GetObjectItemCaseSensitive(func, "arguments") : NULL;
+	jargs =
+	    func ? cJSON_GetObjectItemCaseSensitive(func, "arguments") : NULL;
 	cJSON_AddItemToObject(item, "arguments",
-	    cJSON_CreateString(jargs != NULL && cJSON_IsString(jargs) ? jargs->valuestring : "{}"));
+	    cJSON_CreateString(jargs != NULL && cJSON_IsString(jargs)
+	            ? jargs->valuestring
+	            : "{}"));
 
 	return item;
 }
@@ -99,37 +106,52 @@ convert_messages(cJSON *messages)
 	n = cJSON_GetArraySize(in);
 	for (i = 0; i < n; i++) {
 		cJSON *m = cJSON_GetArrayItem(in, i);
-		cJSON *jrole = m ? cJSON_GetObjectItemCaseSensitive(m, "role") : NULL;
-		cJSON *jcontent = m ? cJSON_GetObjectItemCaseSensitive(m, "content") : NULL;
-		const char *role = cJSON_IsString(jrole) ? jrole->valuestring : "";
-		const char *content = cJSON_IsString(jcontent) ? jcontent->valuestring : NULL;
+		cJSON *jrole =
+		    m ? cJSON_GetObjectItemCaseSensitive(m, "role") : NULL;
+		cJSON *jcontent =
+		    m ? cJSON_GetObjectItemCaseSensitive(m, "content") : NULL;
+		const char *role =
+		    cJSON_IsString(jrole) ? jrole->valuestring : "";
+		const char *content =
+		    cJSON_IsString(jcontent) ? jcontent->valuestring : NULL;
 
 		if (strcmp(role, "tool") == 0) {
-			cJSON *jtid = cJSON_GetObjectItemCaseSensitive(m, "tool_call_id");
+			cJSON *jtid =
+			    cJSON_GetObjectItemCaseSensitive(m, "tool_call_id");
 			cJSON *item = cJSON_CreateObject();
 
 			if (item == NULL) {
 				cJSON_Delete(out);
 				return NULL;
 			}
-			cJSON_AddItemToObject(item, "type", cJSON_CreateString("function_call_output"));
+			cJSON_AddItemToObject(item, "type",
+			    cJSON_CreateString("function_call_output"));
 			cJSON_AddItemToObject(item, "call_id",
-			    cJSON_CreateString(cJSON_IsString(jtid) ? jtid->valuestring : ""));
-			cJSON_AddItemToObject(item, "output", cJSON_CreateString(content ? content : ""));
+			    cJSON_CreateString(
+			        cJSON_IsString(jtid) ? jtid->valuestring : ""));
+			cJSON_AddItemToObject(item, "output",
+			    cJSON_CreateString(content ? content : ""));
 			cJSON_AddItemToArray(out, item);
 			continue;
 		}
 
 		{
-			cJSON *tool_calls = m ? cJSON_GetObjectItemCaseSensitive(m, "tool_calls") : NULL;
+			cJSON *tool_calls = m
+			    ? cJSON_GetObjectItemCaseSensitive(m, "tool_calls")
+			    : NULL;
 
-			if (strcmp(role, "assistant") == 0 && cJSON_IsArray(tool_calls) &&
+			if (strcmp(role, "assistant") == 0 &&
+			    cJSON_IsArray(tool_calls) &&
 			    cJSON_GetArraySize(tool_calls) > 0) {
 				int j, m2 = cJSON_GetArraySize(tool_calls);
 
 				for (j = 0; j < m2; j++) {
-					cJSON *tc = cJSON_GetArrayItem(tool_calls, j);
-					cJSON *item = tc ? tool_call_to_function_call_item(tc) : NULL;
+					cJSON *tc =
+					    cJSON_GetArrayItem(tool_calls, j);
+					cJSON *item = tc
+					    ? tool_call_to_function_call_item(
+					          tc)
+					    : NULL;
 
 					if (item != NULL)
 						cJSON_AddItemToArray(out, item);
@@ -144,8 +166,10 @@ convert_messages(cJSON *messages)
 					cJSON_Delete(out);
 					return NULL;
 				}
-				cJSON_AddItemToObject(item, "role", cJSON_CreateString(role));
-				cJSON_AddItemToObject(item, "content", cJSON_CreateString(content ? content : ""));
+				cJSON_AddItemToObject(
+				    item, "role", cJSON_CreateString(role));
+				cJSON_AddItemToObject(item, "content",
+				    cJSON_CreateString(content ? content : ""));
 				cJSON_AddItemToArray(out, item);
 			}
 		}
@@ -172,7 +196,8 @@ convert_tools(cJSON *tools)
 	n = cJSON_GetArraySize(in);
 	for (i = 0; i < n; i++) {
 		cJSON *t = cJSON_GetArrayItem(in, i);
-		cJSON *func = t ? cJSON_GetObjectItemCaseSensitive(t, "function") : NULL;
+		cJSON *func =
+		    t ? cJSON_GetObjectItemCaseSensitive(t, "function") : NULL;
 		cJSON *jname, *jdesc, *params, *out_t;
 
 		if (func == NULL)
@@ -182,16 +207,21 @@ convert_tools(cJSON *tools)
 			cJSON_Delete(out);
 			return NULL;
 		}
-		cJSON_AddItemToObject(out_t, "type", cJSON_CreateString("function"));
+		cJSON_AddItemToObject(
+		    out_t, "type", cJSON_CreateString("function"));
 		jname = cJSON_GetObjectItemCaseSensitive(func, "name");
 		jdesc = cJSON_GetObjectItemCaseSensitive(func, "description");
 		cJSON_AddItemToObject(out_t, "name",
-		    cJSON_CreateString(cJSON_IsString(jname) ? jname->valuestring : ""));
+		    cJSON_CreateString(
+		        cJSON_IsString(jname) ? jname->valuestring : ""));
 		cJSON_AddItemToObject(out_t, "description",
-		    cJSON_CreateString(cJSON_IsString(jdesc) ? jdesc->valuestring : ""));
+		    cJSON_CreateString(
+		        cJSON_IsString(jdesc) ? jdesc->valuestring : ""));
 
-		/* Detach (not duplicate) -- this function owns `in` outright. */
-		params = cJSON_DetachItemFromObjectCaseSensitive(func, "parameters");
+		/* Detach (not duplicate) -- this function owns `in` outright.
+		 */
+		params =
+		    cJSON_DetachItemFromObjectCaseSensitive(func, "parameters");
 		cJSON_AddItemToObject(out_t, "parameters",
 		    params != NULL ? params : cJSON_CreateObject());
 
@@ -202,7 +232,8 @@ convert_tools(cJSON *tools)
 }
 
 static cJSON *
-responses_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools, bool stream)
+responses_build_request(
+    const struct clm_llm *llm, cJSON *messages, cJSON *tools, bool stream)
 {
 	json_cleanup cJSON *req = NULL;
 	cJSON *input, *rtools;
@@ -246,10 +277,12 @@ responses_build_request(const struct clm_llm *llm, cJSON *messages, cJSON *tools
 			 * Responses API's equivalent knob is top-level
 			 * "parallel_tool_calls". */
 			if (llm->disable_parallel_tool_calls)
-				cJSON_AddItemToObject(req, "parallel_tool_calls", cJSON_CreateBool(0));
+				cJSON_AddItemToObject(req,
+				    "parallel_tool_calls", cJSON_CreateBool(0));
 			tool_choice = cJSON_CreateString("auto");
 			if (tool_choice != NULL)
-				cJSON_AddItemToObject(req, "tool_choice", tool_choice);
+				cJSON_AddItemToObject(
+				    req, "tool_choice", tool_choice);
 		} else {
 			cJSON_Delete(rtools);
 		}
@@ -295,52 +328,83 @@ responses_normalize_response(cJSON *raw)
 	n = cJSON_GetArraySize(output);
 	for (i = 0; i < n; i++) {
 		cJSON *item = cJSON_GetArrayItem(output, i);
-		cJSON *jtype = item ? cJSON_GetObjectItemCaseSensitive(item, "type") : NULL;
-		const char *itype = cJSON_IsString(jtype) ? jtype->valuestring : "";
+		cJSON *jtype = item
+		    ? cJSON_GetObjectItemCaseSensitive(item, "type")
+		    : NULL;
+		const char *itype =
+		    cJSON_IsString(jtype) ? jtype->valuestring : "";
 
 		if (strcmp(itype, "message") == 0) {
-			cJSON *content = cJSON_GetObjectItemCaseSensitive(item, "content");
-			int j, cn = cJSON_IsArray(content) ? cJSON_GetArraySize(content) : 0;
+			cJSON *content =
+			    cJSON_GetObjectItemCaseSensitive(item, "content");
+			int j,
+			    cn = cJSON_IsArray(content)
+			    ? cJSON_GetArraySize(content)
+			    : 0;
 
 			for (j = 0; j < cn; j++) {
 				cJSON *c = cJSON_GetArrayItem(content, j);
-				cJSON *jctype = c ? cJSON_GetObjectItemCaseSensitive(c, "type") : NULL;
-				cJSON *jtext = c ? cJSON_GetObjectItemCaseSensitive(c, "text") : NULL;
+				cJSON *jctype = c
+				    ? cJSON_GetObjectItemCaseSensitive(
+				          c, "type")
+				    : NULL;
+				cJSON *jtext = c
+				    ? cJSON_GetObjectItemCaseSensitive(
+				          c, "text")
+				    : NULL;
 
 				if (cJSON_IsString(jctype) &&
-				    strcmp(jctype->valuestring, "output_text") == 0 &&
+				    strcmp(jctype->valuestring,
+				        "output_text") == 0 &&
 				    cJSON_IsString(jtext)) {
-					size_t old = text_buf ? strlen(text_buf) : 0;
+					size_t old =
+					    text_buf ? strlen(text_buf) : 0;
 					size_t add = strlen(jtext->valuestring);
-					char *p = realloc(text_buf, old + add + 1);
+					char *p =
+					    realloc(text_buf, old + add + 1);
 					if (p == NULL)
 						return NULL;
-					memcpy(p + old, jtext->valuestring, add + 1);
+					memcpy(p + old, jtext->valuestring,
+					    add + 1);
 					text_buf = p;
 				}
 			}
 		} else if (strcmp(itype, "reasoning") == 0) {
-			cJSON *summary = cJSON_GetObjectItemCaseSensitive(item, "summary");
-			int j, sn = cJSON_IsArray(summary) ? cJSON_GetArraySize(summary) : 0;
+			cJSON *summary =
+			    cJSON_GetObjectItemCaseSensitive(item, "summary");
+			int j,
+			    sn = cJSON_IsArray(summary)
+			    ? cJSON_GetArraySize(summary)
+			    : 0;
 
 			for (j = 0; j < sn; j++) {
 				cJSON *s = cJSON_GetArrayItem(summary, j);
-				cJSON *jtext = s ? cJSON_GetObjectItemCaseSensitive(s, "text") : NULL;
+				cJSON *jtext = s
+				    ? cJSON_GetObjectItemCaseSensitive(
+				          s, "text")
+				    : NULL;
 
 				if (cJSON_IsString(jtext)) {
-					size_t old = reasoning_buf ? strlen(reasoning_buf) : 0;
+					size_t old = reasoning_buf
+					    ? strlen(reasoning_buf)
+					    : 0;
 					size_t add = strlen(jtext->valuestring);
-					char *p = realloc(reasoning_buf, old + add + 1);
+					char *p = realloc(
+					    reasoning_buf, old + add + 1);
 					if (p == NULL)
 						return NULL;
-					memcpy(p + old, jtext->valuestring, add + 1);
+					memcpy(p + old, jtext->valuestring,
+					    add + 1);
 					reasoning_buf = p;
 				}
 			}
 		} else if (strcmp(itype, "function_call") == 0) {
-			cJSON *jcid = cJSON_GetObjectItemCaseSensitive(item, "call_id");
-			cJSON *jname = cJSON_GetObjectItemCaseSensitive(item, "name");
-			cJSON *jargs = cJSON_GetObjectItemCaseSensitive(item, "arguments");
+			cJSON *jcid =
+			    cJSON_GetObjectItemCaseSensitive(item, "call_id");
+			cJSON *jname =
+			    cJSON_GetObjectItemCaseSensitive(item, "name");
+			cJSON *jargs =
+			    cJSON_GetObjectItemCaseSensitive(item, "arguments");
 			cJSON *call, *func;
 
 			if (tool_calls == NULL) {
@@ -353,16 +417,22 @@ responses_normalize_response(cJSON *raw)
 				return NULL;
 			cJSON_AddItemToArray(tool_calls, call);
 			cJSON_AddItemToObject(call, "id",
-			    cJSON_CreateString(cJSON_IsString(jcid) ? jcid->valuestring : ""));
-			cJSON_AddItemToObject(call, "type", cJSON_CreateString("function"));
+			    cJSON_CreateString(
+			        cJSON_IsString(jcid) ? jcid->valuestring : ""));
+			cJSON_AddItemToObject(
+			    call, "type", cJSON_CreateString("function"));
 			func = cJSON_CreateObject();
 			if (func == NULL)
 				return NULL;
 			cJSON_AddItemToObject(call, "function", func);
 			cJSON_AddItemToObject(func, "name",
-			    cJSON_CreateString(cJSON_IsString(jname) ? jname->valuestring : ""));
+			    cJSON_CreateString(cJSON_IsString(jname)
+			            ? jname->valuestring
+			            : ""));
 			cJSON_AddItemToObject(func, "arguments",
-			    cJSON_CreateString(cJSON_IsString(jargs) ? jargs->valuestring : "{}"));
+			    cJSON_CreateString(cJSON_IsString(jargs)
+			            ? jargs->valuestring
+			            : "{}"));
 		}
 	}
 
@@ -388,34 +458,43 @@ responses_normalize_response(cJSON *raw)
 
 	cJSON_AddItemToObject(message, "role", cJSON_CreateString("assistant"));
 	if (text_buf != NULL)
-		cJSON_AddItemToObject(message, "content", cJSON_CreateString(text_buf));
+		cJSON_AddItemToObject(
+		    message, "content", cJSON_CreateString(text_buf));
 	else
 		cJSON_AddItemToObject(message, "content", cJSON_CreateNull());
 	if (reasoning_buf != NULL)
-		cJSON_AddItemToObject(message, "reasoning_content", cJSON_CreateString(reasoning_buf));
+		cJSON_AddItemToObject(message, "reasoning_content",
+		    cJSON_CreateString(reasoning_buf));
 	if (tool_calls != NULL)
 		cJSON_AddItemToObject(message, "tool_calls", tool_calls);
 
 	jstatus = cJSON_GetObjectItemCaseSensitive(in, "status");
 	{
-		const char *mapped = map_status(cJSON_IsString(jstatus) ? jstatus->valuestring : NULL,
+		const char *mapped = map_status(
+		    cJSON_IsString(jstatus) ? jstatus->valuestring : NULL,
 		    tool_calls != NULL);
 		if (mapped != NULL)
-			cJSON_AddItemToObject(choice0, "finish_reason", cJSON_CreateString(mapped));
+			cJSON_AddItemToObject(choice0, "finish_reason",
+			    cJSON_CreateString(mapped));
 	}
 
 	jusage = cJSON_GetObjectItemCaseSensitive(in, "usage");
 	if (cJSON_IsObject(jusage)) {
-		cJSON *jin = cJSON_GetObjectItemCaseSensitive(jusage, "input_tokens");
-		cJSON *jout = cJSON_GetObjectItemCaseSensitive(jusage, "output_tokens");
+		cJSON *jin =
+		    cJSON_GetObjectItemCaseSensitive(jusage, "input_tokens");
+		cJSON *jout =
+		    cJSON_GetObjectItemCaseSensitive(jusage, "output_tokens");
 		double itok = cJSON_IsNumber(jin) ? jin->valuedouble : 0;
 		double otok = cJSON_IsNumber(jout) ? jout->valuedouble : 0;
 
 		usage = cJSON_CreateObject();
 		if (usage != NULL) {
-			cJSON_AddItemToObject(usage, "prompt_tokens", cJSON_CreateNumber(itok));
-			cJSON_AddItemToObject(usage, "completion_tokens", cJSON_CreateNumber(otok));
-			cJSON_AddItemToObject(usage, "total_tokens", cJSON_CreateNumber(itok + otok));
+			cJSON_AddItemToObject(
+			    usage, "prompt_tokens", cJSON_CreateNumber(itok));
+			cJSON_AddItemToObject(usage, "completion_tokens",
+			    cJSON_CreateNumber(otok));
+			cJSON_AddItemToObject(usage, "total_tokens",
+			    cJSON_CreateNumber(itok + otok));
 			cJSON_AddItemToObject(out, "usage", usage);
 		}
 	}
@@ -462,14 +541,16 @@ make_delta_chunk(const char *key, const char *value)
 	cJSON_AddItemToArray(choices, choice0);
 	cJSON_AddItemToObject(choice0, "delta", delta);
 	if (key != NULL)
-		cJSON_AddItemToObject(delta, key, cJSON_CreateString(value ? value : ""));
+		cJSON_AddItemToObject(
+		    delta, key, cJSON_CreateString(value ? value : ""));
 	return out;
 }
 
 /* Build a canonical delta chunk carrying one tool_calls[] entry at `index`,
  * with optional id/name (first mention) and/or an arguments fragment. */
 static cJSON *
-make_tool_delta_chunk(int index, const char *id, const char *name, const char *args_frag)
+make_tool_delta_chunk(
+    int index, const char *id, const char *name, const char *args_frag)
 {
 	cJSON *out, *choices, *choice0, *delta, *tool_calls, *tc, *func;
 
@@ -480,8 +561,8 @@ make_tool_delta_chunk(int index, const char *id, const char *name, const char *a
 	tool_calls = cJSON_CreateArray();
 	tc = cJSON_CreateObject();
 	func = cJSON_CreateObject();
-	if (out == NULL || choices == NULL || choice0 == NULL || delta == NULL ||
-	    tool_calls == NULL || tc == NULL || func == NULL) {
+	if (out == NULL || choices == NULL || choice0 == NULL ||
+	    delta == NULL || tool_calls == NULL || tc == NULL || func == NULL) {
 		cJSON_Delete(out);
 		cJSON_Delete(choices);
 		cJSON_Delete(choice0);
@@ -502,7 +583,8 @@ make_tool_delta_chunk(int index, const char *id, const char *name, const char *a
 	cJSON_AddItemToObject(tc, "function", func);
 	if (name != NULL)
 		cJSON_AddItemToObject(func, "name", cJSON_CreateString(name));
-	cJSON_AddItemToObject(func, "arguments", cJSON_CreateString(args_frag ? args_frag : ""));
+	cJSON_AddItemToObject(
+	    func, "arguments", cJSON_CreateString(args_frag ? args_frag : ""));
 	return out;
 }
 
@@ -515,49 +597,66 @@ responses_normalize_stream_event(cJSON *raw, void **state)
 
 	if (strcmp(type, "response.output_text.delta") == 0) {
 		cJSON *jdelta = cJSON_GetObjectItemCaseSensitive(raw, "delta");
-		return make_delta_chunk("content", cJSON_IsString(jdelta) ? jdelta->valuestring : "");
+		return make_delta_chunk("content",
+		    cJSON_IsString(jdelta) ? jdelta->valuestring : "");
 	}
 
 	if (strcmp(type, "response.reasoning_summary_text.delta") == 0) {
 		cJSON *jdelta = cJSON_GetObjectItemCaseSensitive(raw, "delta");
-		return make_delta_chunk("reasoning_content", cJSON_IsString(jdelta) ? jdelta->valuestring : "");
+		return make_delta_chunk("reasoning_content",
+		    cJSON_IsString(jdelta) ? jdelta->valuestring : "");
 	}
 
 	if (strcmp(type, "response.output_item.added") == 0) {
 		cJSON *item = cJSON_GetObjectItemCaseSensitive(raw, "item");
-		cJSON *jitype = item ? cJSON_GetObjectItemCaseSensitive(item, "type") : NULL;
-		cJSON *jindex = cJSON_GetObjectItemCaseSensitive(raw, "output_index");
-		int index = cJSON_IsNumber(jindex) ? (int)jindex->valuedouble : 0;
+		cJSON *jitype = item
+		    ? cJSON_GetObjectItemCaseSensitive(item, "type")
+		    : NULL;
+		cJSON *jindex =
+		    cJSON_GetObjectItemCaseSensitive(raw, "output_index");
+		int index =
+		    cJSON_IsNumber(jindex) ? (int)jindex->valuedouble : 0;
 
 		if (item != NULL && cJSON_IsString(jitype) &&
 		    strcmp(jitype->valuestring, "function_call") == 0) {
-			cJSON *jcid = cJSON_GetObjectItemCaseSensitive(item, "call_id");
-			cJSON *jname = cJSON_GetObjectItemCaseSensitive(item, "name");
+			cJSON *jcid =
+			    cJSON_GetObjectItemCaseSensitive(item, "call_id");
+			cJSON *jname =
+			    cJSON_GetObjectItemCaseSensitive(item, "name");
 
 			st = stream_state(state);
 			if (st != NULL)
 				st->saw_tool_call = true;
 			return make_tool_delta_chunk(index,
 			    cJSON_IsString(jcid) ? jcid->valuestring : "",
-			    cJSON_IsString(jname) ? jname->valuestring : "", NULL);
+			    cJSON_IsString(jname) ? jname->valuestring : "",
+			    NULL);
 		}
 		return NULL;
 	}
 
 	if (strcmp(type, "response.function_call_arguments.delta") == 0) {
-		cJSON *jindex = cJSON_GetObjectItemCaseSensitive(raw, "output_index");
+		cJSON *jindex =
+		    cJSON_GetObjectItemCaseSensitive(raw, "output_index");
 		cJSON *jdelta = cJSON_GetObjectItemCaseSensitive(raw, "delta");
-		int index = cJSON_IsNumber(jindex) ? (int)jindex->valuedouble : 0;
+		int index =
+		    cJSON_IsNumber(jindex) ? (int)jindex->valuedouble : 0;
 
 		return make_tool_delta_chunk(index, NULL, NULL,
 		    cJSON_IsString(jdelta) ? jdelta->valuestring : "");
 	}
 
-	if (strcmp(type, "response.completed") == 0 || strcmp(type, "response.incomplete") == 0 ||
+	if (strcmp(type, "response.completed") == 0 ||
+	    strcmp(type, "response.incomplete") == 0 ||
 	    strcmp(type, "response.failed") == 0) {
-		cJSON *response = cJSON_GetObjectItemCaseSensitive(raw, "response");
-		cJSON *jstatus = response ? cJSON_GetObjectItemCaseSensitive(response, "status") : NULL;
-		cJSON *jusage = response ? cJSON_GetObjectItemCaseSensitive(response, "usage") : NULL;
+		cJSON *response =
+		    cJSON_GetObjectItemCaseSensitive(raw, "response");
+		cJSON *jstatus = response
+		    ? cJSON_GetObjectItemCaseSensitive(response, "status")
+		    : NULL;
+		cJSON *jusage = response
+		    ? cJSON_GetObjectItemCaseSensitive(response, "usage")
+		    : NULL;
 		cJSON *out, *choices, *choice0;
 		const char *mapped;
 
@@ -574,22 +673,31 @@ responses_normalize_stream_event(cJSON *raw, void **state)
 		cJSON_AddItemToObject(out, "choices", choices);
 		cJSON_AddItemToArray(choices, choice0);
 
-		mapped = map_status(cJSON_IsString(jstatus) ? jstatus->valuestring : NULL,
+		mapped = map_status(
+		    cJSON_IsString(jstatus) ? jstatus->valuestring : NULL,
 		    st != NULL && st->saw_tool_call);
 		if (mapped != NULL)
-			cJSON_AddItemToObject(choice0, "finish_reason", cJSON_CreateString(mapped));
+			cJSON_AddItemToObject(choice0, "finish_reason",
+			    cJSON_CreateString(mapped));
 
 		if (cJSON_IsObject(jusage)) {
-			cJSON *jin = cJSON_GetObjectItemCaseSensitive(jusage, "input_tokens");
-			cJSON *jout = cJSON_GetObjectItemCaseSensitive(jusage, "output_tokens");
-			double itok = cJSON_IsNumber(jin) ? jin->valuedouble : 0;
-			double otok = cJSON_IsNumber(jout) ? jout->valuedouble : 0;
+			cJSON *jin = cJSON_GetObjectItemCaseSensitive(
+			    jusage, "input_tokens");
+			cJSON *jout = cJSON_GetObjectItemCaseSensitive(
+			    jusage, "output_tokens");
+			double itok =
+			    cJSON_IsNumber(jin) ? jin->valuedouble : 0;
+			double otok =
+			    cJSON_IsNumber(jout) ? jout->valuedouble : 0;
 			cJSON *cu = cJSON_CreateObject();
 
 			if (cu != NULL) {
-				cJSON_AddItemToObject(cu, "prompt_tokens", cJSON_CreateNumber(itok));
-				cJSON_AddItemToObject(cu, "completion_tokens", cJSON_CreateNumber(otok));
-				cJSON_AddItemToObject(cu, "total_tokens", cJSON_CreateNumber(itok + otok));
+				cJSON_AddItemToObject(cu, "prompt_tokens",
+				    cJSON_CreateNumber(itok));
+				cJSON_AddItemToObject(cu, "completion_tokens",
+				    cJSON_CreateNumber(otok));
+				cJSON_AddItemToObject(cu, "total_tokens",
+				    cJSON_CreateNumber(itok + otok));
 				cJSON_AddItemToObject(out, "usage", cu);
 			}
 		}
@@ -602,9 +710,9 @@ responses_normalize_stream_event(cJSON *raw, void **state)
 }
 
 const struct clm_provider_ops clm_provider_ops_responses = {
-	.build_request = responses_build_request,
-	.build_auth_headers = NULL,
-	.normalize_response = responses_normalize_response,
-	.normalize_stream_event = responses_normalize_stream_event,
-	.endpoint_path = "responses",
+    .build_request = responses_build_request,
+    .build_auth_headers = NULL,
+    .normalize_response = responses_normalize_response,
+    .normalize_stream_event = responses_normalize_stream_event,
+    .endpoint_path = "responses",
 };

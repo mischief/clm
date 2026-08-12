@@ -17,7 +17,7 @@ static int failures;
 
 #define CHECK(cond, msg)                                                       \
 	do {                                                                   \
-		if (!(cond)) {                                                  \
+		if (!(cond)) {                                                 \
 			fprintf(stderr, "fail: %s (%s:%d)\n", (msg), __FILE__, \
 			    __LINE__);                                         \
 			failures++;                                            \
@@ -67,10 +67,10 @@ static size_t mock_cancel_count;
 
 int
 clm_http_async_post(struct clm_http_mux *mux, const char *url,
-    const char *api_key, const char *json_body, struct curl_slist *extra_headers,
-    clm_http_success_cb success_cb, clm_http_error_cb error_cb,
-    clm_http_data_cb data_cb, const char *client_suffix, void *user,
-    struct clm_http_request **out_req)
+    const char *api_key, const char *json_body,
+    struct curl_slist *extra_headers, clm_http_success_cb success_cb,
+    clm_http_error_cb error_cb, clm_http_data_cb data_cb,
+    const char *client_suffix, void *user, struct clm_http_request **out_req)
 {
 	struct clm_http_request *req;
 
@@ -116,8 +116,8 @@ static void
 mock_success(struct clm_http_request *req, const char *body)
 {
 	struct clm_http_response resp = {
-		.status_code = 200,
-		.body = strdup(body),
+	    .status_code = 200,
+	    .body = strdup(body),
 	};
 
 	CHECK(resp.body != NULL, "copy mock response");
@@ -135,8 +135,8 @@ mock_error(struct clm_http_request *req)
 
 static int
 host_http_post(void *ctx, const struct clm_http_req *req,
-    clm_http_success_cb success, clm_http_error_cb error,
-    clm_http_data_cb data, void *user, struct clm_http_call **out)
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
 {
 	(void)ctx;
 	(void)req;
@@ -155,8 +155,8 @@ host_http_cancel(struct clm_http_call *call)
 }
 
 static int
-host_timer_set(void *ctx, uint64_t ms, clm_timer_cb cb, void *arg,
-    struct clm_timer **out)
+host_timer_set(
+    void *ctx, uint64_t ms, clm_timer_cb cb, void *arg, struct clm_timer **out)
 {
 	(void)ctx;
 	(void)ms;
@@ -173,10 +173,10 @@ host_timer_cancel(struct clm_timer *timer)
 }
 
 static struct clm_host host = {
-	.http_post = host_http_post,
-	.http_cancel = host_http_cancel,
-	.timer_set = host_timer_set,
-	.timer_cancel = host_timer_cancel,
+    .http_post = host_http_post,
+    .http_cancel = host_http_cancel,
+    .timer_set = host_timer_set,
+    .timer_cancel = host_timer_cancel,
 };
 
 static void
@@ -194,8 +194,9 @@ on_permission(const struct clm_permission_req *req, void *user)
 {
 	struct test_state *st = user;
 
-	CHECK(clm_tool_permission_respond(st->agent, req,
-	    CLM_PERM_ALLOW_ONCE) == 0, "allow mcp tool");
+	CHECK(clm_tool_permission_respond(
+	          st->agent, req, CLM_PERM_ALLOW_ONCE) == 0,
+	    "allow mcp tool");
 }
 
 static void
@@ -211,17 +212,17 @@ on_tool_result(const char *name, const char *content,
 }
 
 static const struct clm_callbacks callbacks = {
-	.on_permission = on_permission,
-	.on_tool_result = on_tool_result,
+    .on_permission = on_permission,
+    .on_tool_result = on_tool_result,
 };
 
 static struct clm_agent *
 make_agent(struct test_state *st)
 {
 	struct clm_cfg cfg = {
-		.api_key = "",
-		.base_url = "http://unused/v1/chat/completions",
-		.model = "test-model",
+	    .api_key = "",
+	    .base_url = "http://unused/v1/chat/completions",
+	    .model = "test-model",
 	};
 	struct clm_agent *agent = NULL;
 
@@ -235,14 +236,15 @@ static struct clm_mcp_client *
 connect_client(struct test_state *st, uv_loop_t *loop)
 {
 	struct clm_mcp_server_cfg cfg = {
-		.name = "test",
-		.transport = CLM_MCP_HTTP,
-		.url = "http://unused/mcp",
+	    .name = "test",
+	    .transport = CLM_MCP_HTTP,
+	    .url = "http://unused/mcp",
 	};
 	struct clm_mcp_client *client = NULL;
 
-	CHECK(clm_mcp_connect(st->agent, loop, &cfg, on_ready, st, NULL,
-	    &client) == 0, "connect mcp client");
+	CHECK(clm_mcp_connect(
+	          st->agent, loop, &cfg, on_ready, st, NULL, &client) == 0,
+	    "connect mcp client");
 	CHECK(client != NULL, "mcp client returned");
 	return client;
 }
@@ -279,8 +281,8 @@ test_free_pending_tools_list(void)
 	CHECK(uv_loop_init(&loop) == 0, "initialize loop");
 	st.agent = make_agent(&st);
 	client = connect_client(&st, &loop);
-	mock_success(mock_requests[0],
-	    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
+	mock_success(
+	    mock_requests[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
 	CHECK(mock_request_count == 2, "tools list request pending");
 
 	clm_mcp_client_free(client);
@@ -313,8 +315,8 @@ test_free_pending_tool_call(void)
 	CHECK(uv_loop_init(&loop) == 0, "initialize loop");
 	st.agent = make_agent(&st);
 	client = connect_client(&st, &loop);
-	mock_success(mock_requests[0],
-	    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
+	mock_success(
+	    mock_requests[0], "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
 	mock_success(mock_requests[1],
 	    "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":["
 	    "{\"name\":\"ping\",\"description\":\"ping\",\"inputSchema\":"

@@ -67,24 +67,25 @@ wifi_init(void)
 
 	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
 	ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-	ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-	    wifi_event_handler, NULL));
-	ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-	    wifi_event_handler, NULL));
+	ESP_ERROR_CHECK(esp_event_handler_register(
+	    WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL));
+	ESP_ERROR_CHECK(esp_event_handler_register(
+	    IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL));
 
 	wifi_config_t wc = {
-		.sta = {
-			.ssid = WIFI_SSID,
-			.password = WIFI_PASS,
-		},
+	    .sta =
+	        {
+	            .ssid = WIFI_SSID,
+	            .password = WIFI_PASS,
+	        },
 	};
 	ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 	ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
 	ESP_ERROR_CHECK(esp_wifi_start());
 
 	ESP_LOGI(TAG, "connecting to %s ...", WIFI_SSID);
-	xEventGroupWaitBits(s_wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE,
-	    portMAX_DELAY);
+	xEventGroupWaitBits(
+	    s_wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 }
 
 /* ------------------------------------------------------------------ */
@@ -117,7 +118,8 @@ tool_device_info(struct clm_tool_invocation *inv, void *user)
 static void
 console_init(void)
 {
-	usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+	usb_serial_jtag_driver_config_t cfg =
+	    USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
 	usb_serial_jtag_driver_install(&cfg);
 	usb_serial_jtag_vfs_use_driver();
 }
@@ -198,7 +200,8 @@ on_reasoning(const char *text, void *user)
 	(void)user;
 	printf("%s", text);
 	fflush(stdout);
-	console_set_color(DISP_GRAY); /* dim: chain-of-thought, not the answer */
+	console_set_color(
+	    DISP_GRAY); /* dim: chain-of-thought, not the answer */
 	console_puts(text);
 }
 
@@ -238,7 +241,8 @@ on_turn_done(int status, void *user)
 	(void)user;
 	printf("\n");
 	console_putc('\n');
-	ESP_LOGI(TAG, "turn done (status=%d) heap: %u free / %u total, %u min free",
+	ESP_LOGI(TAG,
+	    "turn done (status=%d) heap: %u free / %u total, %u min free",
 	    status, (unsigned)esp_get_free_heap_size(),
 	    (unsigned)heap_caps_get_total_size(MALLOC_CAP_DEFAULT),
 	    (unsigned)esp_get_minimum_free_heap_size());
@@ -257,22 +261,23 @@ agent_task(void *arg)
 	struct clm_host *host = NULL;
 
 	struct clm_cfg cfg = {
-		.api_key = CLM_API_KEY,
-		.base_url = CLM_BASE_URL,
-		.provider = CLM_PROVIDER_OPENAI,
-		.model = CLM_MODEL,
-		.max_iterations = 5,
-		.stream = true, /* SSE: the esp32 host streams body chunks to data_cb */
-		.system_prompt = NULL,
+	    .api_key = CLM_API_KEY,
+	    .base_url = CLM_BASE_URL,
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = CLM_MODEL,
+	    .max_iterations = 5,
+	    .stream =
+	        true, /* SSE: the esp32 host streams body chunks to data_cb */
+	    .system_prompt = NULL,
 	};
 
 	struct clm_callbacks cb = {
-		.on_assistant_text = on_assistant_text,
-		.on_reasoning = on_reasoning,
-		.on_tool_begin = on_tool_begin,
-		.on_tool_result = on_tool_result,
-		.on_permission = on_permission,
-		.on_turn_done = on_turn_done,
+	    .on_assistant_text = on_assistant_text,
+	    .on_reasoning = on_reasoning,
+	    .on_tool_begin = on_tool_begin,
+	    .on_tool_result = on_tool_result,
+	    .on_permission = on_permission,
+	    .on_turn_done = on_turn_done,
 	};
 
 	int r = clm_host_esp32_new(&host);
@@ -294,11 +299,11 @@ agent_task(void *arg)
 	clm_tools_register_builtins(agent);
 
 	struct clm_tool_def dev = {
-		.name = "device_info",
-		.description = "Return this device's chip and memory information",
-		.params_schema = "{\"type\":\"object\",\"properties\":{}}",
-		.invoke = tool_device_info,
-		.flags = CLM_TOOL_NO_PROMPT,
+	    .name = "device_info",
+	    .description = "Return this device's chip and memory information",
+	    .params_schema = "{\"type\":\"object\",\"properties\":{}}",
+	    .invoke = tool_device_info,
+	    .flags = CLM_TOOL_NO_PROMPT,
 	};
 	clm_tool_add(agent, &dev);
 
@@ -308,7 +313,8 @@ agent_task(void *arg)
 	console_init();
 	printf("\n=== clm serial chat ===\n");
 	printf("model: %s @ %s\n", CLM_MODEL, CLM_BASE_URL);
-	printf("type a message and press enter. '/quit' resets the session.\n\n");
+	printf(
+	    "type a message and press enter. '/quit' resets the session.\n\n");
 
 	static char line[1024];
 	for (;;) {
@@ -363,7 +369,8 @@ app_main(void)
 		ESP_ERROR_CHECK(nvs_flash_init());
 	}
 
-	/* Board bring-up (power/SPI/SD/keyboard), then the display on that bus. */
+	/* Board bring-up (power/SPI/SD/keyboard), then the display on that bus.
+	 */
 	board_init();
 	if (display_init() == 0) {
 		console_set_color(DISP_CYAN);
@@ -374,7 +381,7 @@ app_main(void)
 
 	wifi_init();
 
-	/* Large stack: the port drives the agent (HTTP + tool loop) synchronously
-	 * and recursively across turns. */
+	/* Large stack: the port drives the agent (HTTP + tool loop)
+	 * synchronously and recursively across turns. */
 	xTaskCreate(agent_task, "clm", 32768, NULL, 5, NULL);
 }

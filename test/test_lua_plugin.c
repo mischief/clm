@@ -25,10 +25,10 @@
 static int failures;
 
 #define CHECK(cond, msg)                                                       \
-	do {                                                                    \
-		if (!(cond)) {                                                  \
+	do {                                                                   \
+		if (!(cond)) {                                                 \
 			fprintf(stderr, "FAIL: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                          \
+			    __LINE__);                                         \
 			failures++;                                            \
 		}                                                              \
 	} while (0)
@@ -62,8 +62,8 @@ struct pending_host {
 
 static int
 pending_http_post(void *ctx, const struct clm_http_req *req,
-    clm_http_success_cb success, clm_http_error_cb error,
-    clm_http_data_cb data, void *user, struct clm_http_call **out)
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
 {
 	struct pending_host *pending = ctx;
 
@@ -84,8 +84,8 @@ pending_http_cancel(struct clm_http_call *call)
 }
 
 static int
-pending_timer_set(void *ctx, uint64_t ms, clm_timer_cb cb, void *arg,
-    struct clm_timer **out)
+pending_timer_set(
+    void *ctx, uint64_t ms, clm_timer_cb cb, void *arg, struct clm_timer **out)
 {
 	struct pending_host *pending = ctx;
 
@@ -104,8 +104,8 @@ pending_timer_cancel(struct clm_timer *timer)
 }
 
 static int
-start_pending_tool(struct clm_agent *agent, struct pending_host *pending,
-    const char *name)
+start_pending_tool(
+    struct clm_agent *agent, struct pending_host *pending, const char *name)
 {
 	clm_http_success_cb completion;
 	struct clm_http_response response = {0};
@@ -137,12 +137,12 @@ pending_setup(struct pending_host *pending, struct clm_host *host,
     struct clm_agent **agent, struct clm_lua_env **env)
 {
 	struct clm_cfg cfg = {
-		.api_key = "test",
-		.base_url = "http://pending.invalid/v1/chat/completions",
-		.provider = CLM_PROVIDER_OPENAI,
-		.model = "test",
-		.max_iterations = 1,
-		.stream = 0,
+	    .api_key = "test",
+	    .base_url = "http://pending.invalid/v1/chat/completions",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 1,
+	    .stream = 0,
 	};
 	int r;
 
@@ -220,12 +220,12 @@ test_plugin_loads(void)
 	struct clm_lua_env *env = NULL;
 	uv_loop_t *loop = uv_default_loop();
 	struct clm_cfg cfg = {
-		.api_key = "test",
-		.base_url = "http://127.0.0.1:1/v1/chat/completions",
-		.provider = CLM_PROVIDER_OPENAI,
-		.model = "test",
-		.max_iterations = 1,
-		.stream = 0,
+	    .api_key = "test",
+	    .base_url = "http://127.0.0.1:1/v1/chat/completions",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 1,
+	    .stream = 0,
 	};
 	int r;
 
@@ -246,11 +246,13 @@ test_plugin_loads(void)
 	/* Verify the reverse_string tool was registered. */
 	int found = 0;
 	struct clm_tool *rt;
-	TAILQ_FOREACH(rt, &agent->tools, entries) {
+	TAILQ_FOREACH(rt, &agent->tools, entries)
+	{
 		if (strcmp(rt->name, "reverse_string") == 0) {
 			found = 1;
 			CHECK(rt->description != NULL, "tool has description");
-			CHECK(rt->params_schema != NULL, "tool has params_schema");
+			CHECK(rt->params_schema != NULL,
+			    "tool has params_schema");
 			CHECK(rt->invoke != NULL, "tool has invoke function");
 			break;
 		}
@@ -259,18 +261,20 @@ test_plugin_loads(void)
 
 	/* Verify the schema is valid JSON. */
 	if (found) {
-		TAILQ_FOREACH(rt, &agent->tools, entries) {
+		TAILQ_FOREACH(rt, &agent->tools, entries)
+		{
 			if (strcmp(rt->name, "reverse_string") != 0)
 				continue;
 			cJSON *schema = cJSON_Parse(rt->params_schema);
 			CHECK(schema != NULL, "params_schema is valid JSON");
 			if (schema) {
-				cJSON *props =
-				    cJSON_GetObjectItemCaseSensitive(schema, "properties");
+				cJSON *props = cJSON_GetObjectItemCaseSensitive(
+				    schema, "properties");
 				CHECK(props != NULL, "schema has properties");
 				if (props) {
 					cJSON *text_prop =
-					    cJSON_GetObjectItemCaseSensitive(props, "text");
+					    cJSON_GetObjectItemCaseSensitive(
+					        props, "text");
 					CHECK(text_prop != NULL,
 					    "schema has 'text' property");
 				}
@@ -292,12 +296,12 @@ test_nonexistent_dir(void)
 	struct clm_lua_env *env = NULL;
 	uv_loop_t *loop = uv_default_loop();
 	struct clm_cfg cfg = {
-		.api_key = "test",
-		.base_url = "http://127.0.0.1:1/v1/chat/completions",
-		.provider = CLM_PROVIDER_OPENAI,
-		.model = "test",
-		.max_iterations = 1,
-		.stream = 0,
+	    .api_key = "test",
+	    .base_url = "http://127.0.0.1:1/v1/chat/completions",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 1,
+	    .stream = 0,
 	};
 	int r;
 
@@ -327,8 +331,8 @@ tool_registered(struct clm_agent *agent, const char *name)
 {
 	struct clm_tool *t;
 	TAILQ_FOREACH(t, &agent->tools, entries)
-		if (strcmp(t->name, name) == 0)
-			return 1;
+	if (strcmp(t->name, name) == 0)
+		return 1;
 	return 0;
 }
 
@@ -346,12 +350,12 @@ test_sandbox_and_load_failures(void)
 	struct clm_lua_env *env = NULL;
 	uv_loop_t *loop = uv_default_loop();
 	struct clm_cfg cfg = {
-		.api_key = "test",
-		.base_url = "http://127.0.0.1:1/v1/chat/completions",
-		.provider = CLM_PROVIDER_OPENAI,
-		.model = "test",
-		.max_iterations = 1,
-		.stream = 0,
+	    .api_key = "test",
+	    .base_url = "http://127.0.0.1:1/v1/chat/completions",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 1,
+	    .stream = 0,
 	};
 	int r;
 
@@ -406,8 +410,8 @@ struct inline_http_state {
 
 static int
 inline_http_post(void *ctx, const struct clm_http_req *req,
-    clm_http_success_cb success, clm_http_error_cb error,
-    clm_http_data_cb data, void *user, struct clm_http_call **out)
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
 {
 	struct inline_http_host *host = ctx;
 
@@ -415,28 +419,30 @@ inline_http_post(void *ctx, const struct clm_http_req *req,
 		*out = NULL;
 	if (strcmp(req->url, "test://inline/success") == 0) {
 		struct clm_http_response resp = {
-			.status_code = 200,
-			.body = strdup("inline body"),
+		    .status_code = 200,
+		    .body = strdup("inline body"),
 		};
 		host->calls++;
 		if (resp.body == NULL)
-			error((int)CURLE_OUT_OF_MEMORY, "curl error: out of memory", user);
+			error((int)CURLE_OUT_OF_MEMORY,
+			    "curl error: out of memory", user);
 		else
 			success(&resp, user);
 		return 0;
 	}
 	if (strcmp(req->url, "test://inline/connect-error") == 0) {
 		host->calls++;
-		error((int)CURLE_COULDNT_CONNECT, "curl error: could not connect", user);
+		error((int)CURLE_COULDNT_CONNECT,
+		    "curl error: could not connect", user);
 		return 0;
 	}
-	return host->uv_host->http_post(host->uv_host->ctx, req, success, error,
-	    data, user, out);
+	return host->uv_host->http_post(
+	    host->uv_host->ctx, req, success, error, data, user, out);
 }
 
 static int
-inline_timer_set(void *ctx, uint64_t ms, clm_timer_cb cb, void *arg,
-    struct clm_timer **out)
+inline_timer_set(
+    void *ctx, uint64_t ms, clm_timer_cb cb, void *arg, struct clm_timer **out)
 {
 	struct inline_http_host *host = ctx;
 
@@ -475,14 +481,14 @@ test_inline_http_completion(void)
 	struct clm_agent *agent = NULL;
 	struct clm_lua_env *env = NULL;
 	struct clm_callbacks callbacks = {
-		.on_tool_result = inline_on_tool_result,
-		.on_turn_done = inline_on_turn_done,
+	    .on_tool_result = inline_on_tool_result,
+	    .on_turn_done = inline_on_turn_done,
 	};
 	struct clm_cfg cfg = {
-		.api_key = "test",
-		.provider = CLM_PROVIDER_OPENAI,
-		.model = "test",
-		.max_iterations = 2,
+	    .api_key = "test",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 2,
 	};
 	char url[128];
 	int r;
@@ -527,7 +533,7 @@ test_inline_http_completion(void)
 	CHECK(state.status == 0, "inline turn status");
 	CHECK(state.results == 1, "inline tool result count");
 	CHECK(strcmp(state.content,
-	    "inline body:curl error: could not connect") == 0,
+	          "inline body:curl error: could not connect") == 0,
 	    "inline tool result content");
 	CHECK(host.calls == 2, "inline host call count");
 
@@ -558,8 +564,8 @@ struct timeout_result {
 
 static int
 fake_http_post(void *arg, const struct clm_http_req *req,
-    clm_http_success_cb success, clm_http_error_cb error,
-    clm_http_data_cb data, void *user, struct clm_http_call **out)
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
 {
 	struct fake_host *fake = arg;
 
@@ -581,8 +587,8 @@ fake_http_cancel(struct clm_http_call *call)
 }
 
 static int
-fake_timer_set(void *arg, uint64_t ms, clm_timer_cb cb, void *user,
-    struct clm_timer **out)
+fake_timer_set(
+    void *arg, uint64_t ms, clm_timer_cb cb, void *user, struct clm_timer **out)
 {
 	struct fake_host *fake = arg;
 	struct clm_timer *timer;
@@ -620,8 +626,8 @@ static int
 fake_http_complete(struct fake_host *fake, const char *body)
 {
 	struct clm_http_response response = {
-		.status_code = 200,
-		.body = strdup(body),
+	    .status_code = 200,
+	    .body = strdup(body),
 	};
 	clm_http_success_cb cb = fake->http_success;
 	void *user = fake->http_user;
@@ -665,8 +671,8 @@ on_timeout_result(const char *name, const char *content,
 }
 
 static int
-start_timeout_tool(struct clm_agent *agent, struct fake_host *fake,
-    const char *name)
+start_timeout_tool(
+    struct clm_agent *agent, struct fake_host *fake, const char *name)
 {
 	char response[512];
 
@@ -689,14 +695,14 @@ run_yield_timeout_case(const char *name, int use_http)
 	struct clm_agent *agent = NULL;
 	struct clm_lua_env *env = NULL;
 	const struct clm_callbacks callbacks = {
-		.on_tool_result = on_timeout_result,
+	    .on_tool_result = on_timeout_result,
 	};
 	struct clm_cfg cfg = {
-		.api_key = "test",
-		.base_url = "http://test.invalid/v1/chat/completions",
-		.provider = CLM_PROVIDER_OPENAI,
-		.model = "test",
-		.max_iterations = 1,
+	    .api_key = "test",
+	    .base_url = "http://test.invalid/v1/chat/completions",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 1,
 	};
 	int ok = 0;
 
@@ -716,7 +722,8 @@ run_yield_timeout_case(const char *name, int use_http)
 		goto out;
 	}
 	ok = result.count == 1 && result.outcome == CLM_TOOL_FAILED &&
-	    strstr(result.content, "plugin exceeded execution time budget") != NULL;
+	    strstr(result.content, "plugin exceeded execution time budget") !=
+	        NULL;
 out:
 	clm_lua_env_free(env);
 	clm_agent_free(agent);

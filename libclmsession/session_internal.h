@@ -14,7 +14,7 @@
  * object into *out_meta (may be NULL). Returns 0 (bad lines are
  * skipped), -ENOMEM, or -EPROTONOSUPPORT for a too-new meta version.
  */
-int session_parse_line(struct clm_history *hist, const char *line, size_t len,
-                       cJSON **out_meta);
+int session_parse_line(
+    struct clm_history *hist, const char *line, size_t len, cJSON **out_meta);
 
 #endif /* CLM_SESSION_INTERNAL_H */

@@ -48,15 +48,14 @@ struct clm_host {
 	 * start an http request. a negative return means startup failed: no
 	 * callback is invoked and *out remains null. zero means accepted and
 	 * exactly one of success/error is invoked, either before returning or
-	 * later. data may be null. on a 2xx streamed response, data receives body
-	 * chunks and success gets a null body. *out is cleared before startup and
-	 * receives a cancellable handle only when the request remains in flight
-	 * after this call returns.
+	 * later. data may be null. on a 2xx streamed response, data receives
+	 * body chunks and success gets a null body. *out is cleared before
+	 * startup and receives a cancellable handle only when the request
+	 * remains in flight after this call returns.
 	 */
 	int (*http_post)(void *ctx, const struct clm_http_req *req,
-	                 clm_http_success_cb success, clm_http_error_cb error,
-	                 clm_http_data_cb data, void *user,
-	                 struct clm_http_call **out);
+	    clm_http_success_cb success, clm_http_error_cb error,
+	    clm_http_data_cb data, void *user, struct clm_http_call **out);
 
 	/* abort an in-flight request; delivers the error callback with
 	 * -ECANCELED. safe once on a non-null handle returned by http_post,
@@ -71,7 +70,7 @@ struct clm_host {
 	 * with timer_cancel.
 	 */
 	int (*timer_set)(void *ctx, uint64_t ms, clm_timer_cb cb, void *arg,
-	                 struct clm_timer **out);
+	    struct clm_timer **out);
 
 	/* Cancel and free a pending timer (the callback will not fire
 	 * afterward). */

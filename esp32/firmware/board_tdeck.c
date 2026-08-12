@@ -48,8 +48,8 @@ static void
 board_power_on(void)
 {
 	gpio_config_t io = {
-		.pin_bit_mask = 1ULL << TDECK_POWERON_GPIO,
-		.mode = GPIO_MODE_OUTPUT,
+	    .pin_bit_mask = 1ULL << TDECK_POWERON_GPIO,
+	    .mode = GPIO_MODE_OUTPUT,
 	};
 	gpio_config(&io);
 	gpio_set_level(TDECK_POWERON_GPIO, 1);
@@ -65,9 +65,9 @@ static void
 board_spi_init(void)
 {
 	gpio_config_t cs = {
-		.pin_bit_mask = (1ULL << TDECK_SD_CS) | (1ULL << TDECK_TFT_CS) |
-		    (1ULL << TDECK_RADIO_CS),
-		.mode = GPIO_MODE_OUTPUT,
+	    .pin_bit_mask = (1ULL << TDECK_SD_CS) | (1ULL << TDECK_TFT_CS) |
+	        (1ULL << TDECK_RADIO_CS),
+	    .mode = GPIO_MODE_OUTPUT,
 	};
 	gpio_config(&cs);
 	gpio_set_level(TDECK_SD_CS, 1);
@@ -75,12 +75,12 @@ board_spi_init(void)
 	gpio_set_level(TDECK_RADIO_CS, 1);
 
 	spi_bus_config_t bus = {
-		.mosi_io_num = TDECK_SPI_MOSI,
-		.miso_io_num = TDECK_SPI_MISO,
-		.sclk_io_num = TDECK_SPI_SCK,
-		.quadwp_io_num = -1,
-		.quadhd_io_num = -1,
-		.max_transfer_sz = 320 * 16 * 2,
+	    .mosi_io_num = TDECK_SPI_MOSI,
+	    .miso_io_num = TDECK_SPI_MISO,
+	    .sclk_io_num = TDECK_SPI_SCK,
+	    .quadwp_io_num = -1,
+	    .quadhd_io_num = -1,
+	    .max_transfer_sz = 320 * 16 * 2,
 	};
 	ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO));
 }
@@ -105,31 +105,35 @@ sd_mount(void)
 	slot.host_id = SPI2_HOST;
 
 	esp_vfs_fat_sdmmc_mount_config_t mcfg = {
-		.format_if_mount_failed = false, /* never reformat the user's card */
-		.max_files = 5,
-		.allocation_unit_size = 16 * 1024,
+	    .format_if_mount_failed =
+	        false, /* never reformat the user's card */
+	    .max_files = 5,
+	    .allocation_unit_size = 16 * 1024,
 	};
 
-	err = esp_vfs_fat_sdspi_mount(TDECK_SD_MOUNT, &host, &slot, &mcfg, &card);
+	err =
+	    esp_vfs_fat_sdspi_mount(TDECK_SD_MOUNT, &host, &slot, &mcfg, &card);
 	if (err != ESP_OK) {
-		ESP_LOGW(TAG, "SD: mount failed: %s (no card, or wiring/power?)",
+		ESP_LOGW(TAG,
+		    "SD: mount failed: %s (no card, or wiring/power?)",
 		    esp_err_to_name(err));
 		return;
 	}
 	ESP_LOGI(TAG, "SD mounted at %s: %lluMB", TDECK_SD_MOUNT,
-	    ((uint64_t)card->csd.capacity * card->csd.sector_size) / (1024 * 1024));
+	    ((uint64_t)card->csd.capacity * card->csd.sector_size) /
+	        (1024 * 1024));
 }
 
 static void
 keyboard_init(void)
 {
 	i2c_master_bus_config_t bus = {
-		.i2c_port = I2C_NUM_0,
-		.sda_io_num = TDECK_I2C_SDA,
-		.scl_io_num = TDECK_I2C_SCL,
-		.clk_source = I2C_CLK_SRC_DEFAULT,
-		.glitch_ignore_cnt = 7,
-		.flags.enable_internal_pullup = true,
+	    .i2c_port = I2C_NUM_0,
+	    .sda_io_num = TDECK_I2C_SDA,
+	    .scl_io_num = TDECK_I2C_SCL,
+	    .clk_source = I2C_CLK_SRC_DEFAULT,
+	    .glitch_ignore_cnt = 7,
+	    .flags.enable_internal_pullup = true,
 	};
 	i2c_master_bus_handle_t bushandle;
 	if (i2c_new_master_bus(&bus, &bushandle) != ESP_OK) {
@@ -137,9 +141,9 @@ keyboard_init(void)
 		return;
 	}
 	i2c_device_config_t dev = {
-		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
-		.device_address = TDECK_KB_ADDR,
-		.scl_speed_hz = 100000,
+	    .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+	    .device_address = TDECK_KB_ADDR,
+	    .scl_speed_hz = 100000,
 	};
 	if (i2c_master_bus_add_device(bushandle, &dev, &s_kb) != ESP_OK) {
 		ESP_LOGW(TAG, "keyboard: add device failed");

@@ -43,7 +43,7 @@ strp_cmp(const void *a, const void *b)
  */
 static bool
 extract_word(const char *input, size_t input_len, size_t input_pos,
-             size_t *wstart, size_t *wlen)
+    size_t *wstart, size_t *wlen)
 {
 	size_t wend = input_pos;
 
@@ -114,8 +114,8 @@ apply_insert(struct ui *u, size_t wstart, size_t wlen, size_t replace_off,
 	if (new_len >= sizeof(u->input))
 		return;
 
-	memmove(u->input + replace_start + insert_len,
-	    u->input + replace_end, tail_len + 1);
+	memmove(u->input + replace_start + insert_len, u->input + replace_end,
+	    tail_len + 1);
 	memcpy(u->input + replace_start, candidates[0], base_len);
 	if (has_suffix)
 		u->input[replace_start + base_len] = suffix;
@@ -188,8 +188,8 @@ list_columns(struct ui *u, const char *const *items, size_t n,
 		if (cell == NULL)
 			break;
 		snprintf(cell, maxw + 1, "%s%s%s", prefix, items[i], suffix);
-		blen += snprintf(buf + blen, 4096 - (size_t)blen, "%-*s",
-		    (int)maxw, cell);
+		blen += snprintf(
+		    buf + blen, 4096 - (size_t)blen, "%-*s", (int)maxw, cell);
 		if ((i + 1) % cols == 0 || i + 1 == n)
 			blen += snprintf(buf + blen, 4096 - (size_t)blen, "\n");
 	}
@@ -206,8 +206,15 @@ list_columns(struct ui *u, const char *const *items, size_t n,
  * exist for people who already know them.
  */
 static const char *const command_names[] = {
-	"help", "clear", "agent", "model", "provider",
-	"reasoning", "output", "compact", "quit",
+    "help",
+    "clear",
+    "agent",
+    "model",
+    "provider",
+    "reasoning",
+    "output",
+    "compact",
+    "quit",
 };
 #define N_COMMAND_NAMES (sizeof(command_names) / sizeof(command_names[0]))
 
@@ -232,8 +239,8 @@ complete_command_name(struct ui *u, size_t wstart, size_t wlen)
 			int wrote = snprintf(buf, 512, "\n");
 			size_t off = wrote > 0 ? (size_t)wrote : 0;
 			for (size_t i = 0; i < ncandidates && off < 512; i++) {
-				wrote = snprintf(buf + off, 512 - off, "  /%s\n",
-				    candidates[i]);
+				wrote = snprintf(buf + off, 512 - off,
+				    "  /%s\n", candidates[i]);
 				off += wrote > 0 ? (size_t)wrote : 0;
 				if (off > 512)
 					off = 512;
@@ -324,7 +331,8 @@ match_config_names(struct clm_lua_cfg *lcfg, const char *table,
 }
 
 static void
-source_provider_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
+source_provider_names(
+    struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
 {
 	(void)generation; /* fully synchronous; nothing to go stale */
 	const char *prefix = u->input + wstart;
@@ -332,8 +340,8 @@ source_provider_names(struct ui *u, uint64_t generation, size_t wstart, size_t w
 	const char *matches[MAX_CANDIDATES];
 	char **names = NULL;
 
-	size_t n = match_config_names(u->lcfg, "providers", prefix, typed,
-	    matches, &names);
+	size_t n = match_config_names(
+	    u->lcfg, "providers", prefix, typed, matches, &names);
 	if (n == 0)
 		return;
 
@@ -345,7 +353,8 @@ source_provider_names(struct ui *u, uint64_t generation, size_t wstart, size_t w
 }
 
 static void
-source_agent_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
+source_agent_names(
+    struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
 {
 	(void)generation;
 	const char *prefix = u->input + wstart;
@@ -367,7 +376,8 @@ source_agent_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen
 	struct dirent *ent;
 	while ((ent = readdir(d)) != NULL && nmatches < MAX_CANDIDATES) {
 		size_t namelen = strlen(ent->d_name);
-		if (namelen <= 4 || strcmp(ent->d_name + namelen - 4, ".lua") != 0)
+		if (namelen <= 4 ||
+		    strcmp(ent->d_name + namelen - 4, ".lua") != 0)
 			continue;
 
 		if (strncmp(ent->d_name, prefix, typed) == 0) {
@@ -415,9 +425,9 @@ struct model_complete_req {
 	uint64_t generation;
 	size_t wstart, wlen;
 	char *provider_name; /* the provider this live catalog was probed
-	                       * against -- not necessarily u->provider_name,
-	                       * see source_model_names(). Owned by the req,
-	                       * freed alongside it. */
+	                      * against -- not necessarily u->provider_name,
+	                      * see source_model_names(). Owned by the req,
+	                      * freed alongside it. */
 };
 
 static void
@@ -451,29 +461,35 @@ model_live_result(char **ids, void *user)
 		 * trips -Wframe-larger-than, and this callback isn't a hot
 		 * path worth a bigger stack budget for. */
 		char **prefixed = malloc(MAX_CANDIDATES * sizeof(*prefixed));
-		const char **matches = malloc(MAX_CANDIDATES * sizeof(*matches));
+		const char **matches =
+		    malloc(MAX_CANDIDATES * sizeof(*matches));
 		size_t nprefixed = 0, n = 0;
 
 		if (prefixed != NULL && matches != NULL) {
-			for (size_t i = 0; ids[i] != NULL && nprefixed < MAX_CANDIDATES; i++) {
-				size_t need = strlen(req->provider_name) + 1 + strlen(ids[i]) + 1;
+			for (size_t i = 0;
+			    ids[i] != NULL && nprefixed < MAX_CANDIDATES; i++) {
+				size_t need = strlen(req->provider_name) + 1 +
+				    strlen(ids[i]) + 1;
 				char *spec = malloc(need);
 				if (spec == NULL)
 					continue;
-				(void)snprintf(spec, need, "%s/%s", req->provider_name, ids[i]);
+				(void)snprintf(spec, need, "%s/%s",
+				    req->provider_name, ids[i]);
 				prefixed[nprefixed++] = spec;
 			}
 
-			for (size_t i = 0; i < nprefixed && n < MAX_CANDIDATES; i++) {
+			for (size_t i = 0; i < nprefixed && n < MAX_CANDIDATES;
+			    i++) {
 				if (strncmp(prefixed[i], prefix, typed) == 0)
 					matches[n++] = prefixed[i];
 			}
 			if (n > 0) {
 				qsort(matches, n, sizeof(*matches), strp_cmp);
 				if (n > 1)
-					list_plain(u, "from server:", matches, n);
-				apply_insert(u, req->wstart, req->wlen, 0, matches, n,
-				    typed, '\0');
+					list_plain(
+					    u, "from server:", matches, n);
+				apply_insert(u, req->wstart, req->wlen, 0,
+				    matches, n, typed, '\0');
 			}
 		}
 		for (size_t i = 0; i < nprefixed; i++)
@@ -493,8 +509,8 @@ model_live_error(const char *msg, void *user)
 	if (u->complete_generation == req->generation) {
 		autofree char *buf = malloc(256);
 		if (buf != NULL) {
-			(void)snprintf(buf, 256,
-			    "\n(live model fetch failed: %s)\n", msg);
+			(void)snprintf(
+			    buf, 256, "\n(live model fetch failed: %s)\n", msg);
 			ui_push(u, ST_META, buf);
 		}
 	}
@@ -512,7 +528,8 @@ model_live_error(const char *msg, void *user)
  * extend/refine the candidates a moment later if the user pauses.
  */
 static void
-source_model_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
+source_model_names(
+    struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
 {
 	const char *prefix = u->input + wstart;
 	size_t typed = wlen;
@@ -529,19 +546,20 @@ source_model_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen
 	 * that one provider. Suffix with '/' on an unambiguous match so
 	 * the next TAB moves straight on to that provider's models. */
 	if (memchr(prefix, '/', typed) == NULL) {
-		size_t pn = match_config_names(u->lcfg, "providers", prefix, typed,
-		    matches, &names);
+		size_t pn = match_config_names(
+		    u->lcfg, "providers", prefix, typed, matches, &names);
 		if (pn > 0) {
 			if (pn > 1)
 				list_plain(u, NULL, matches, pn);
-			apply_insert(u, wstart, wlen, 0, matches, pn, typed, '/');
+			apply_insert(
+			    u, wstart, wlen, 0, matches, pn, typed, '/');
 			clm_lua_cfg_free_str_list(names);
 		}
 		return;
 	}
 
-	size_t n = match_config_names(u->lcfg, "models", prefix, typed,
-	    matches, &names);
+	size_t n = match_config_names(
+	    u->lcfg, "models", prefix, typed, matches, &names);
 	if (n > 0) {
 		if (n > 1)
 			list_plain(u, "from config:", matches, n);
@@ -565,9 +583,11 @@ source_model_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen
 		typed = u->input_pos - wstart;
 		const char *slash = memchr(prefix, '/', typed);
 		if (slash == NULL)
-			return; /* shouldn't happen: we're past the no-'/' branch */
+			return; /* shouldn't happen: we're past the no-'/'
+			           branch */
 
-		autofree char *spec_provider = strndup(prefix, (size_t)(slash - prefix));
+		autofree char *spec_provider =
+		    strndup(prefix, (size_t)(slash - prefix));
 		if (spec_provider == NULL)
 			return;
 
@@ -591,18 +611,22 @@ source_model_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen
 		}
 
 		const char *purl = u->lcfg != NULL
-		    ? clm_lua_cfg_provider_str(u->lcfg, spec_provider, "url") : NULL;
+		    ? clm_lua_cfg_provider_str(u->lcfg, spec_provider, "url")
+		    : NULL;
 
 		if (purl != NULL) {
-			enum clm_provider provider = clm_provider_from_str(
-			    clm_lua_cfg_provider_str(u->lcfg, spec_provider, "kind"));
-			const char *api_key =
-			    clm_lua_cfg_provider_str(u->lcfg, spec_provider, "api_key");
+			enum clm_provider provider =
+			    clm_provider_from_str(clm_lua_cfg_provider_str(
+			        u->lcfg, spec_provider, "kind"));
+			const char *api_key = clm_lua_cfg_provider_str(
+			    u->lcfg, spec_provider, "api_key");
 			char url_buf[512];
 
-			clm_provider_build_url(url_buf, sizeof(url_buf), purl, provider);
-			if (clm_agent_probe_models(u->agent, url_buf, provider, api_key,
-			    model_live_result, model_live_error, req) != 0)
+			clm_provider_build_url(
+			    url_buf, sizeof(url_buf), purl, provider);
+			if (clm_agent_probe_models(u->agent, url_buf, provider,
+			        api_key, model_live_result, model_live_error,
+			        req) != 0)
 				model_complete_req_free(req);
 		} else if (u->provider_name != NULL &&
 		    strcmp(spec_provider, u->provider_name) == 0) {
@@ -611,7 +635,7 @@ source_model_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen
 			 * live, same as before this function learned to look
 			 * beyond the active provider. */
 			if (clm_agent_list_models(u->agent, model_live_result,
-			    model_live_error, req) != 0)
+			        model_live_error, req) != 0)
 				model_complete_req_free(req);
 		} else {
 			/* Unknown provider name and it's not the active
@@ -621,8 +645,8 @@ source_model_names(struct ui *u, uint64_t generation, size_t wstart, size_t wlen
 	}
 }
 
-typedef void (*arg_complete_fn)(struct ui *u, uint64_t generation,
-    size_t wstart, size_t wlen);
+typedef void (*arg_complete_fn)(
+    struct ui *u, uint64_t generation, size_t wstart, size_t wlen);
 
 struct arg_source {
 	const char *command; /* without the leading '/' */
@@ -633,9 +657,9 @@ struct arg_source {
  * Which commands have a completable argument, and what completes it.
  */
 static const struct arg_source arg_sources[] = {
-	{ "agent",    source_agent_names },
-	{ "provider", source_provider_names },
-	{ "model",    source_model_names },
+    {"agent", source_agent_names},
+    {"provider", source_provider_names},
+    {"model", source_model_names},
 };
 #define N_ARG_SOURCES (sizeof(arg_sources) / sizeof(arg_sources[0]))
 
@@ -742,7 +766,8 @@ complete_path(struct ui *u, size_t wstart, size_t wlen)
 	size_t plen = strlen(prefix);
 
 	while (ncandidates < MAX_CANDIDATES && (ent = readdir(d)) != NULL) {
-		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+		if (strcmp(ent->d_name, ".") == 0 ||
+		    strcmp(ent->d_name, "..") == 0)
 			continue;
 		if (strncmp(ent->d_name, prefix, plen) == 0) {
 			char *c = strdup(ent->d_name);
@@ -772,11 +797,12 @@ complete_path(struct ui *u, size_t wstart, size_t wlen)
 	/* Ambiguous match: columnated, not list_plain's one-per-line -- file
 	 * listings can be wide and dense. */
 	if (ncandidates > 1)
-		list_columns(u, (const char *const *)candidates, ncandidates, "",
-		    "");
+		list_columns(
+		    u, (const char *const *)candidates, ncandidates, "", "");
 
-	apply_insert(u, wstart, wlen, dir_offset, (const char *const *)candidates,
-	    ncandidates, plen, append_slash ? '/' : '\0');
+	apply_insert(u, wstart, wlen, dir_offset,
+	    (const char *const *)candidates, ncandidates, plen,
+	    append_slash ? '/' : '\0');
 
 	for (size_t i = 0; i < ncandidates; i++)
 		free(candidates[i]);
@@ -793,8 +819,8 @@ complete_input(struct ui *u, uint64_t generation)
 	 * whenever it returns true), but GCC's flow analysis can't correlate
 	 * the bool with these output params across that path. */
 	size_t wstart = 0, wlen = 0;
-	bool have_word = extract_word(u->input, u->input_len, u->input_pos,
-	    &wstart, &wlen);
+	bool have_word =
+	    extract_word(u->input, u->input_len, u->input_pos, &wstart, &wlen);
 
 	/* First word starting with '/' is a slash command, not a path --
 	 * checked before looks_like_path, which would otherwise treat the
@@ -821,8 +847,8 @@ complete_input(struct ui *u, uint64_t generation)
 		                     * space if any, else input_len */
 		while (cmd_len < u->input_len && u->input[cmd_len] != ' ')
 			cmd_len++;
-		bool past_command = cmd_len < u->input_len &&
-		    u->input_pos > cmd_len;
+		bool past_command =
+		    cmd_len < u->input_len && u->input_pos > cmd_len;
 
 		if (past_command) {
 			size_t use_wstart, use_wlen;
@@ -838,7 +864,8 @@ complete_input(struct ui *u, uint64_t generation)
 			size_t cmd_name_len = cmd_len - 1;
 
 			for (size_t i = 0; i < N_ARG_SOURCES; i++) {
-				if (strlen(arg_sources[i].command) == cmd_name_len &&
+				if (strlen(arg_sources[i].command) ==
+				        cmd_name_len &&
 				    strncmp(arg_sources[i].command, cmd,
 				        cmd_name_len) == 0) {
 					arg_sources[i].fn(u, generation,
@@ -874,8 +901,8 @@ complete_input(struct ui *u, uint64_t generation)
 				found_colon = true;
 				break;
 			}
-			if (!(isalnum((unsigned char)c) || c == '_' || c == '+' ||
-			        c == '-'))
+			if (!(isalnum((unsigned char)c) || c == '_' ||
+			        c == '+' || c == '-'))
 				break;
 			if (cpos - i > 64) /* no shortcode is this long; bail */
 				break;

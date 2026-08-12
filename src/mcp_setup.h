@@ -12,10 +12,11 @@ struct clm_lua_cfg;
 typedef void (*clm_cli_mcp_status_cb)(const char *msg, void *user);
 
 /*
- * Read config.mcp_servers from lcfg (may be NULL, e.g. no config file found) and start a clm_mcp_connect() for each entry, on loop.
- * connections are asynchronous and fire-and-forget: failures are reported
- * through status_cb but never abort startup, since a dead mcp server shouldn't
- * block using clm for anything else.
+ * Read config.mcp_servers from lcfg (may be NULL, e.g. no config file found)
+ * and start a clm_mcp_connect() for each entry, on loop. connections are
+ * asynchronous and fire-and-forget: failures are reported through status_cb but
+ * never abort startup, since a dead mcp server shouldn't block using clm for
+ * anything else.
  *
  * returns a malloc'd array of *out_count client handles (NULL and *out_count
  * == 0 if none configured, lcfg is NULL, or every connect attempt failed to

@@ -18,7 +18,8 @@
 struct clm_ratelimit;
 
 /* Create a rate limiter. rate=tokens/sec, burst=max tokens (0 = unlimited). */
-int clm_ratelimit_new(struct clm_ratelimit **out, uint64_t rate, uint64_t burst);
+int clm_ratelimit_new(
+    struct clm_ratelimit **out, uint64_t rate, uint64_t burst);
 void clm_ratelimit_free(struct clm_ratelimit *rl);
 
 /* Can n tokens be consumed right now? Consumes tokens if true. */

@@ -42,7 +42,7 @@ id_valid(const char *id)
 	for (i = 0; id[i] != '\0'; i++) {
 		char c = id[i];
 		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
-		      (c >= 'A' && c <= 'Z') || c == '-'))
+		        (c >= 'A' && c <= 'Z') || c == '-'))
 			return false;
 		if (i >= SESSION_ID_MAX)
 			return false;
@@ -160,8 +160,8 @@ generate_id(char *buf, size_t bufsz)
 
 	int n =
 	    snprintf(buf, bufsz, "%04d%02d%02d-%02d%02d%02d-%02x%02x%02x%02x",
-	             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
-	             tm.tm_min, tm.tm_sec, rnd[0], rnd[1], rnd[2], rnd[3]);
+	        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+	        tm.tm_min, tm.tm_sec, rnd[0], rnd[1], rnd[2], rnd[3]);
 	if (n < 0 || (size_t)n >= bufsz)
 		return -ENAMETOOLONG;
 	return 0;
@@ -215,8 +215,7 @@ session_alloc(int fd, const char *id, const char *path)
 
 int
 clm_session_create(const char *dir, const char *model,
-                   const char *provider_name, const char *agent_name,
-                   struct clm_session **out)
+    const char *provider_name, const char *agent_name, struct clm_session **out)
 {
 	char id[SESSION_ID_MAX];
 	autofree char *path = NULL;
@@ -235,8 +234,8 @@ clm_session_create(const char *dir, const char *model,
 	if (r < 0)
 		return r;
 
-	fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_EXCL | O_CLOEXEC,
-	          0600);
+	fd = open(
+	    path, O_WRONLY | O_APPEND | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
 	if (fd < 0)
 		return -errno;
 
@@ -310,7 +309,7 @@ clm_session_open(const char *dir, const char *id, struct clm_session **out)
 
 int
 clm_session_append(struct clm_session *s, const struct clm_message *m,
-                   const struct clm_compressor *cz)
+    const struct clm_compressor *cz)
 {
 	json_cleanup cJSON *obj = NULL;
 	int r;
@@ -376,8 +375,8 @@ clm_session_free(struct clm_session *s)
  * out_meta is non-NULL and still empty, handed to the caller.
  */
 int
-session_parse_line(struct clm_history *hist, const char *line, size_t len,
-                   cJSON **out_meta)
+session_parse_line(
+    struct clm_history *hist, const char *line, size_t len, cJSON **out_meta)
 {
 	json_cleanup cJSON *obj = NULL;
 	const char *type;
@@ -413,8 +412,8 @@ session_parse_line(struct clm_history *hist, const char *line, size_t len,
 }
 
 int
-clm_session_load(const char *dir, const char *id, struct clm_history *hist,
-                 cJSON **out_meta)
+clm_session_load(
+    const char *dir, const char *id, struct clm_history *hist, cJSON **out_meta)
 {
 	autofree char *path = NULL;
 	autoclosefile FILE *f = NULL;
@@ -530,7 +529,7 @@ info_fill(const char *dir, const char *id, struct clm_session_info *info)
 		if (m->role != CLM_ROLE_USER || m->content == NULL)
 			continue;
 		if (strncmp(m->content, "[context update]",
-		            strlen("[context update]")) == 0)
+		        strlen("[context update]")) == 0)
 			continue;
 		info->first_user = snippet(m->content);
 		break;

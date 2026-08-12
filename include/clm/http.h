@@ -14,7 +14,8 @@ void clm_http_response_free(struct clm_http_response *resp);
 
 /* HTTP completion callbacks. Exactly one of success/error fires per request. */
 typedef void (*clm_http_success_cb)(struct clm_http_response *resp, void *user);
-typedef void (*clm_http_error_cb)(int error_code, const char *error_msg, void *user);
+typedef void (*clm_http_error_cb)(
+    int error_code, const char *error_msg, void *user);
 
 /*
  * optional callback delivering response body bytes as they arrive. only invoked

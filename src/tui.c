@@ -52,7 +52,7 @@
  * (0777) so they can't collide with any real curses key code.
  */
 #define UI_KEY_PASTE_START 0x1000
-#define UI_KEY_PASTE_END   0x1001
+#define UI_KEY_PASTE_END 0x1001
 
 /* ---- UI model mutation (called from libclm callbacks; keep cheap) ---- */
 
@@ -63,11 +63,11 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 		return;
 
 	/* A markdown reparse (gen bump) only makes sense at a line boundary --
-	 * a partial trailing line ("**bol", an unfinished table row) must not be
-	 * rendered until it completes. So bump gen (triggering rebuild_render)
-	 * only when this chunk closes a line; otherwise just append and mark
-	 * dirty, and the last complete render stays on screen. Turn-end pushes a
-	 * trailing newline, which flushes the final line. */
+	 * a partial trailing line ("**bol", an unfinished table row) must not
+	 * be rendered until it completes. So bump gen (triggering
+	 * rebuild_render) only when this chunk closes a line; otherwise just
+	 * append and mark dirty, and the last complete render stays on screen.
+	 * Turn-end pushes a trailing newline, which flushes the final line. */
 	bool has_nl = strchr(text, '\n') != NULL;
 
 	/* Coalesce consecutive same-style pushes into one span. This keeps the
@@ -104,7 +104,8 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 	memset(u->segs[u->nsegs].cnt, 0, sizeof(u->segs[u->nsegs].cnt));
 	u->nsegs++;
 	/* A new span of a different style closes the previous line's context;
-	 * bump gen so the switch is rendered even without an embedded newline. */
+	 * bump gen so the switch is rendered even without an embedded newline.
+	 */
 	u->gen++;
 	u->dirty = true;
 }
@@ -140,7 +141,8 @@ static void
 cb_assistant_text(const char *text, void *user)
 {
 	struct ui *u = user;
-	clm_debug("[content] %.*s", (int)(strlen(text) > 200 ? 200 : strlen(text)), text);
+	clm_debug("[content] %.*s",
+	    (int)(strlen(text) > 200 ? 200 : strlen(text)), text);
 	if (!u->started_assist) {
 		ui_push(u, ST_LABEL, "\nclm>\n");
 		u->started_assist = true;
@@ -151,7 +153,8 @@ cb_assistant_text(const char *text, void *user)
 static void
 cb_reasoning(const char *text, void *user)
 {
-	clm_debug("[reason] %.*s", (int)(strlen(text) > 200 ? 200 : strlen(text)), text);
+	clm_debug("[reason] %.*s",
+	    (int)(strlen(text) > 200 ? 200 : strlen(text)), text);
 	ui_push(user, ST_REASON, text);
 }
 
@@ -240,15 +243,16 @@ render_tool_args(cJSON *obj, char *buf, size_t bufsz, const char *skip_key)
 			printed = cJSON_PrintUnformatted(val);
 			vstr = printed != NULL ? printed : "";
 		}
-		written = snprintf(buf + n, bufsz - n, "%s%s=%s",
-		    first ? "" : " ", key, vstr);
+		written = snprintf(
+		    buf + n, bufsz - n, "%s%s=%s", first ? "" : " ", key, vstr);
 		if (written < 0 || (size_t)written >= bufsz - n) {
 			/* Would overflow -- truncate with an ellipsis rather
 			 * than a partially-written garbled field. */
 			const char *ell = "...";
 			size_t ell_len = strlen(ell);
 			if (bufsz > ell_len)
-				memcpy(buf + bufsz - 1 - ell_len, ell, ell_len + 1);
+				memcpy(buf + bufsz - 1 - ell_len, ell,
+				    ell_len + 1);
 			return buf;
 		}
 		n += (size_t)written;
@@ -264,8 +268,8 @@ cb_tool_begin(const char *name, const char *args, void *user)
 	cJSON *obj = args ? cJSON_Parse(args) : NULL;
 
 	if (strcmp(name, "shell_exec") == 0) {
-		push_tool_summary(u, "executing shell command",
-		                  json_field(obj, "command"));
+		push_tool_summary(
+		    u, "executing shell command", json_field(obj, "command"));
 		u->n_cmd++;
 	} else if (strcmp(name, "read_file") == 0) {
 		push_tool_summary(u, "reading file", json_field(obj, "path"));
@@ -294,7 +298,9 @@ cb_tool_begin(const char *name, const char *args, void *user)
 		 * watch scroll by. */
 	} else if (strcmp(name, "cdda_overmap") == 0) {
 		char buf[32];
-		cJSON *jr = obj != NULL ? cJSON_GetObjectItemCaseSensitive(obj, "radius") : NULL;
+		cJSON *jr = obj != NULL
+		    ? cJSON_GetObjectItemCaseSensitive(obj, "radius")
+		    : NULL;
 		snprintf(buf, sizeof(buf), "radius=%d",
 		    jr != NULL ? (int)cJSON_GetNumberValue(jr) : 10);
 		push_tool_summary(u, "overmap", buf);
@@ -324,7 +330,7 @@ cb_tool_begin(const char *name, const char *args, void *user)
 
 static void
 cb_tool_result(const char *name, const char *content,
-               enum clm_tool_outcome outcome, void *user)
+    enum clm_tool_outcome outcome, void *user)
 {
 	struct ui *u = user;
 	size_t clen;
@@ -390,10 +396,11 @@ format_tool_tally(char *line, size_t cap, const int cnt[4], const char *suffix)
 		if (parts++ > 0 && n < cap - 4)
 			n += (size_t)snprintf(line + n, cap - n, ", ");
 		if (cnt[i] == 1)
-			n += (size_t)snprintf(line + n, cap - n, "%s", cats[i].one);
+			n += (size_t)snprintf(
+			    line + n, cap - n, "%s", cats[i].one);
 		else
 			n += (size_t)snprintf(line + n, cap - n, "%s %d %s",
-			                      verb[i], cnt[i], cats[i].many);
+			    verb[i], cnt[i], cats[i].many);
 	}
 	if (n < cap - 1)
 		snprintf(line + n, cap - n, "%s", suffix);
@@ -434,7 +441,7 @@ cb_tool_batch(size_t completed, size_t total, void *user)
 		u->batch[0] = '\0';
 	} else {
 		snprintf(u->batch, sizeof(u->batch), "tools %zu/%zu", completed,
-		         total);
+		    total);
 	}
 	u->dirty = true;
 }
@@ -468,7 +475,7 @@ cb_usage(const struct clm_usage *usage, void *user)
 
 	if (usage->tokens_per_sec > 0)
 		snprintf(u->usage, sizeof(u->usage), "%.0f tok/s",
-		         usage->tokens_per_sec);
+		    usage->tokens_per_sec);
 	else
 		u->usage[0] = '\0';
 	u->dirty = true;
@@ -496,7 +503,8 @@ cb_state(enum clm_agent_state st, void *user)
 		u->dirty = true;
 	}
 	if (clm_agent_take_mid_chain_compact_error(u->agent)) {
-		ui_push(u, ST_META, "\n[autocompact failed, continuing anyway: ");
+		ui_push(
+		    u, ST_META, "\n[autocompact failed, continuing anyway: ");
 		ui_push(u, ST_META, clm_agent_get_last_error(u->agent));
 		ui_push(u, ST_META, "]\n");
 		u->dirty = true;
@@ -507,10 +515,13 @@ cb_state(enum clm_agent_state st, void *user)
 	if (u->steering_nqueue > 0) {
 		enum clm_agent_state prev = u->prev_state;
 		/* Inject after tools finish (CALLING_TOOL→THINKING), after LLM
-		 * finishes thinking (THINKING→CALLING_TOOL or THINKING→COMPLETE). */
-		if ((prev == CLM_STATE_CALLING_TOOL && st == CLM_STATE_THINKING) ||
+		 * finishes thinking (THINKING→CALLING_TOOL or
+		 * THINKING→COMPLETE). */
+		if ((prev == CLM_STATE_CALLING_TOOL &&
+		        st == CLM_STATE_THINKING) ||
 		    (prev == CLM_STATE_THINKING &&
-		        (st == CLM_STATE_CALLING_TOOL || st == CLM_STATE_COMPLETE)))
+		        (st == CLM_STATE_CALLING_TOOL ||
+		            st == CLM_STATE_COMPLETE)))
 			drain_steering_queue(u);
 	}
 
@@ -551,13 +562,14 @@ cb_turn_done(int status, void *user)
 		/* A failed turn may mean the server went away; re-probe. */
 		clm_agent_check_connection(u->agent);
 	} else if (was_compacting && status != 0 && status != -ECANCELED) {
-		ui_push(u, ST_META, "\n[autocompact failed, continuing anyway: ");
+		ui_push(
+		    u, ST_META, "\n[autocompact failed, continuing anyway: ");
 		ui_push(u, ST_META, clm_agent_get_last_error(u->agent));
 		ui_push(u, ST_META, "]\n");
 	}
 	ui_push(u, ST_NORMAL, "\n");
 	u->busy = false;
-	u->perm_count = 0;    /* no prompt outlives its turn */
+	u->perm_count = 0; /* no prompt outlives its turn */
 	u->perm_showing = false;
 	u->batch[0] = '\0';
 	u->dirty = true;
@@ -658,14 +670,16 @@ push_perm_args(struct ui *u, const char *args)
 
 	ui_push(u, ST_PERM, ": ");
 	{
-		int n = cJSON_GetArraySize(obj); /* member count works for objects too */
+		int n = cJSON_GetArraySize(
+		    obj); /* member count works for objects too */
 		for (cJSON *v = obj->child; v != NULL; v = v->next) {
 			autofree char *printed = NULL;
 
 			if (!first)
 				ui_push(u, ST_PERM, "  ");
 			first = false;
-			/* For a lone arg, the key is noise; show only the value. */
+			/* For a lone arg, the key is noise; show only the
+			 * value. */
 			if (n > 1 && v->string != NULL) {
 				ui_push(u, ST_PERM, v->string);
 				ui_push(u, ST_PERM, ": ");
@@ -674,7 +688,8 @@ push_perm_args(struct ui *u, const char *args)
 				ui_push(u, ST_PERM, cJSON_GetStringValue(v));
 			} else {
 				printed = cJSON_PrintUnformatted(v);
-				ui_push(u, ST_PERM, printed != NULL ? printed : "");
+				ui_push(
+				    u, ST_PERM, printed != NULL ? printed : "");
 			}
 		}
 	}
@@ -708,7 +723,8 @@ show_next_perm(struct ui *u)
 	ui_push(u, ST_PERM, name ? name : "?");
 	push_perm_args(u, args);
 	ui_push(u, ST_PERM,
-	    "\n(y) once  (n) deny  (a) always  (d) never  [esc = deny+cancel]\n");
+	    "\n(y) once  (n) deny  (a) always  (d) never  [esc = "
+	    "deny+cancel]\n");
 	u->dirty = true;
 }
 
@@ -720,8 +736,8 @@ cb_permission(const struct clm_permission_req *req, void *user)
 	/* Enqueue the request. */
 	if (u->perm_count >= u->perm_cap) {
 		size_t ncap = u->perm_cap ? u->perm_cap * 2 : 16;
-		const struct clm_permission_req **nq = realloc(u->perm_queue,
-		    ncap * sizeof(*nq));
+		const struct clm_permission_req **nq =
+		    realloc(u->perm_queue, ncap * sizeof(*nq));
 		if (nq == NULL)
 			return; /* drop on OOM; tool will time out */
 		u->perm_queue = nq;
@@ -854,7 +870,8 @@ state_label(enum clm_agent_state st)
 	case CLM_STATE_CALLING_TOOL:
 		return "tool";
 	case CLM_STATE_RATE_LIMITED:
-		return "waiting"; /* animated with dots in draw_status directly */
+		return "waiting"; /* animated with dots in draw_status directly
+		                   */
 	case CLM_STATE_COMPLETE:
 		return "done";
 	case CLM_STATE_ERROR:
@@ -918,7 +935,8 @@ draw_status(struct ui *u)
 	 * the turn is parked nothing else is in flight, and a stale "N tok/s"
 	 * would hide the only signal that explains the silence. */
 	if (u->state == CLM_STATE_RATE_LIMITED) {
-		static const char *dots[] = {"waiting.", "waiting..", "waiting..."};
+		static const char *dots[] = {
+		    "waiting.", "waiting..", "waiting..."};
 		info = dots[((unsigned)u->spinner / 4) % 3];
 	} else if (u->batch[0] != '\0')
 		info = u->batch;
@@ -1065,7 +1083,8 @@ input_rows(struct ui *u, int w)
 		size_t k = mbrtowc(&wc, u->input + i, u->input_len - i, &ps);
 		int cw = 1;
 		if (k == (size_t)-1 || k == (size_t)-2 || k == 0) {
-			k = 1; /* invalid/incomplete byte: one column, advance one byte */
+			k = 1; /* invalid/incomplete byte: one column, advance
+			          one byte */
 		} else {
 			cw = wcwidth(wc);
 			if (cw < 0)
@@ -1251,12 +1270,13 @@ md_emit(const struct md_run *run, void *userdata)
  * emitted runs is still done later by wrap_walk.
  */
 static void
-render_markdown(struct ui *u, const char *md, int w, int base_attr, bool no_bold)
+render_markdown(
+    struct ui *u, const char *md, int w, int base_attr, bool no_bold)
 {
 	struct md_sink sink = {
-		.u = u,
-		.base_attr = (unsigned)base_attr,
-		.no_bold = no_bold,
+	    .u = u,
+	    .base_attr = (unsigned)base_attr,
+	    .no_bold = no_bold,
 	};
 	struct md_opts opts = {.width = w, .tables = MD_TABLE_AUTO};
 
@@ -1301,7 +1321,7 @@ push_tool_output(struct ui *u, const char *text, bool is_latest)
 	}
 	if (!is_latest) {
 		snprintf(hint, sizeof(hint), "  ... (%d lines, ^O to expand)\n",
-		         total);
+		    total);
 		rseg_push(u, seg_attr(u, ST_TOOL_OUT), hint, strlen(hint));
 		return;
 	}
@@ -1314,7 +1334,7 @@ push_tool_output(struct ui *u, const char *text, bool is_latest)
 	}
 	rseg_push(u, seg_attr(u, ST_TOOL_OUT), text, cut);
 	snprintf(hint, sizeof(hint), "  ... (+%d lines, ^O to expand)\n",
-	         total - PREVIEW);
+	    total - PREVIEW);
 	rseg_push(u, seg_attr(u, ST_TOOL_OUT), hint, strlen(hint));
 }
 
@@ -1393,7 +1413,7 @@ rebuild_render(struct ui *u, int w)
 		 * ordering stays correct. */
 		if (collapse_end != (size_t)-1 && i <= collapse_end &&
 		    (g->style == ST_TOOL || g->style == ST_TOOL_OUT ||
-		     g->style == ST_BATCH)) {
+		        g->style == ST_BATCH)) {
 			if (g->style == ST_BATCH) {
 				agg[0] += g->cnt[0];
 				agg[1] += g->cnt[1];
@@ -1417,8 +1437,8 @@ rebuild_render(struct ui *u, int w)
 		else if (g->style == ST_TOOL_OUT)
 			push_tool_output(u, g->text, i == last_tool_out);
 		else
-			rseg_push(u, seg_attr(u, g->style), g->text,
-			          strlen(g->text));
+			rseg_push(
+			    u, seg_attr(u, g->style), g->text, strlen(g->text));
 	}
 	if (aggregating)
 		push_collapsed_summary(u, agg);
@@ -1441,8 +1461,8 @@ rebuild_render(struct ui *u, int w)
  * where lines wrap.
  */
 static void
-wrap_span(struct ui *u, size_t i0, size_t iN, int *row, int *col, int w,
-    int h, int start, bool draw, int *ckpt_row, int *ckpt_col)
+wrap_span(struct ui *u, size_t i0, size_t iN, int *row, int *col, int w, int h,
+    int start, bool draw, int *ckpt_row, int *ckpt_col)
 {
 	for (size_t i = i0; i < iN; i++) {
 		const char *s = u->rsegs[i].text;
@@ -1543,8 +1563,8 @@ wrap_ensure_checkpoints(struct ui *u, int w, size_t base)
 		u->cap_wrap = ncap;
 	}
 
-	wrap_span(u, 0, base, &row, &col, w, 0, 0, false, u->wrap_row,
-	    u->wrap_col);
+	wrap_span(
+	    u, 0, base, &row, &col, w, 0, 0, false, u->wrap_row, u->wrap_col);
 	u->wrap_row[base] = row;
 	u->wrap_col[base] = col;
 	u->wrap_width = w;
@@ -1607,7 +1627,8 @@ draw_transcript(struct ui *u)
 	 * enqueue_steering): they haven't happened yet, so rather than mixing
 	 * them into segs/rsegs (and the gen-keyed rebuild cache) they're
 	 * appended here as a transient tail, pinned below whatever the real
-	 * cache holds, then trimmed back off below so next frame starts clean. */
+	 * cache holds, then trimmed back off below so next frame starts clean.
+	 */
 	base = u->nrsegs;
 	for (size_t i = 0; i < u->steering_nqueue; i++) {
 		char line[600];
@@ -1664,8 +1685,8 @@ on_repaint(uv_timer_t *t)
 	struct ui *u = t->data;
 
 	/* Also drain input here so a lone Escape (held by ncurses waiting for a
-	 * possible escape sequence) is flushed within a tick, even if no further
-	 * keystroke arrives to trigger the stdin poll. */
+	 * possible escape sequence) is flushed within a tick, even if no
+	 * further keystroke arrives to trigger the stdin poll. */
 	handle_keys(u);
 
 	if (u->busy)
@@ -1850,8 +1871,8 @@ strp_cmp(const void *a, const void *b)
  * <name>"/"/provider <name>").
  */
 static void
-list_config_names(struct ui *u, const char *table, const char *label,
-    const char *cmd)
+list_config_names(
+    struct ui *u, const char *table, const char *label, const char *cmd)
 {
 	char **names;
 	char msg[1024];
@@ -1865,8 +1886,8 @@ list_config_names(struct ui *u, const char *table, const char *label,
 	names = clm_lua_cfg_list_names(u->lcfg, table);
 	if (names == NULL) {
 		char nomsg[128];
-		(void)snprintf(nomsg, sizeof(nomsg),
-		    "\nno %ss configured\n", label);
+		(void)snprintf(
+		    nomsg, sizeof(nomsg), "\nno %ss configured\n", label);
 		ui_push(u, ST_META, nomsg);
 		return;
 	}
@@ -1880,20 +1901,21 @@ list_config_names(struct ui *u, const char *table, const char *label,
 	 * can exceed the remaining space on truncation -- clamp off after
 	 * every call or "sizeof(msg) - off" underflows (size_t) on the next
 	 * one and hands snprintf a huge bogus size. */
-	int wrote = snprintf(msg + off, sizeof(msg) - off,
-	    "\navailable %ss:\n", label);
+	int wrote =
+	    snprintf(msg + off, sizeof(msg) - off, "\navailable %ss:\n", label);
 	off += (wrote > 0) ? (size_t)wrote : 0;
 	if (off > sizeof(msg))
 		off = sizeof(msg);
 	for (size_t i = 0; i < n && off < sizeof(msg); i++) {
-		wrote = snprintf(msg + off, sizeof(msg) - off, "  %s\n", names[i]);
+		wrote =
+		    snprintf(msg + off, sizeof(msg) - off, "  %s\n", names[i]);
 		off += (wrote > 0) ? (size_t)wrote : 0;
 		if (off > sizeof(msg))
 			off = sizeof(msg);
 	}
 	if (off < sizeof(msg)) {
-		(void)snprintf(msg + off, sizeof(msg) - off,
-		    "usage: %s <name>\n", cmd);
+		(void)snprintf(
+		    msg + off, sizeof(msg) - off, "usage: %s <name>\n", cmd);
 	}
 	ui_push(u, ST_META, msg);
 	clm_lua_cfg_free_str_list(names);
@@ -1967,8 +1989,8 @@ cmd_agent(struct ui *u, const char *arg)
 		char *adir = xdg_config_path("clm/agents");
 		if (clm_lua_cfg_load_agent(u->lcfg, adir, arg) < 0) {
 			char msg[128];
-			(void)snprintf(msg, sizeof(msg),
-			    "\nagent '%s' not found\n", arg);
+			(void)snprintf(
+			    msg, sizeof(msg), "\nagent '%s' not found\n", arg);
 			ui_push(u, ST_ERROR, msg);
 			free(adir);
 		} else {
@@ -1978,23 +2000,33 @@ cmd_agent(struct ui *u, const char *arg)
 			 * a "provider/model-id" spec, see src/model_spec.h --
 			 * down to a provider connection, same indirection
 			 * as the startup path in main.c. */
-			const char *model_name = clm_lua_cfg_get_str(u->lcfg, "model");
+			const char *model_name =
+			    clm_lua_cfg_get_str(u->lcfg, "model");
 			autofree char *spec_provider = NULL;
 			const char *spec_model = NULL;
-			split_provider_model(model_name, &spec_provider, &spec_model);
+			split_provider_model(
+			    model_name, &spec_provider, &spec_model);
 			const char *prov = spec_provider;
-			const char *purl = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "url") : NULL;
-			const char *pkind = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "kind") : NULL;
-			const char *pkey = prov ? clm_lua_cfg_provider_str(u->lcfg, prov, "api_key") : NULL;
+			const char *purl = prov
+			    ? clm_lua_cfg_provider_str(u->lcfg, prov, "url")
+			    : NULL;
+			const char *pkind = prov
+			    ? clm_lua_cfg_provider_str(u->lcfg, prov, "kind")
+			    : NULL;
+			const char *pkey = prov
+			    ? clm_lua_cfg_provider_str(u->lcfg, prov, "api_key")
+			    : NULL;
 			const char *pmodel = spec_model;
-			const char *sprompt = clm_lua_cfg_get_str(u->lcfg, "system_prompt");
+			const char *sprompt =
+			    clm_lua_cfg_get_str(u->lcfg, "system_prompt");
 
-			/* Tear down plugins + MCP clients (must happen while the
-			 * old agent is still alive: unregistering their tools
-			 * touches it) + agent. */
+			/* Tear down plugins + MCP clients (must happen while
+			 * the old agent is still alive: unregistering their
+			 * tools touches it) + agent. */
 			clm_lua_env_free(u->lua_env);
 			u->lua_env = NULL;
-			clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
+			clm_cli_free_mcp_servers(
+			    u->mcp_clients, u->mcp_client_count);
 			u->mcp_clients = NULL;
 			u->mcp_client_count = 0;
 			clm_agent_free(u->agent);
@@ -2005,73 +2037,94 @@ cmd_agent(struct ui *u, const char *arg)
 			char url_buf[512];
 			if (purl != NULL) {
 				size_t ulen = strlen(purl);
-				while (ulen > 0 && purl[ulen-1] == '/')
+				while (ulen > 0 && purl[ulen - 1] == '/')
 					ulen--;
 				(void)snprintf(url_buf, sizeof(url_buf),
 				    "%.*s/chat/completions", (int)ulen, purl);
 				newcfg.base_url = url_buf;
 			} else {
-				newcfg.base_url = "http://127.0.0.1:8081/v1/chat/completions";
+				newcfg.base_url =
+				    "http://127.0.0.1:8081/v1/chat/completions";
 			}
 			newcfg.model = pmodel ? pmodel : "local-model";
 			/* Empty string is a valid, explicit "no key needed"
 			 * (see http_async.c: Content-Type no longer depends
 			 * on a non-empty key, so there's no need for a
 			 * non-empty placeholder here either). */
-			newcfg.api_key = (pkey != NULL && pkey[0] != '\0') ? pkey
-			    : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY") : "");
+			newcfg.api_key = (pkey != NULL && pkey[0] != '\0')
+			    ? pkey
+			    : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY")
+			                             : "");
 			newcfg.system_prompt = sprompt;
 			newcfg.provider = clm_provider_from_str(pkind);
 			newcfg.stream = 1;
 			if (prov != NULL && spec_model != NULL) {
-				newcfg.context_size = clm_lua_cfg_provider_model_int(u->lcfg,
-				    prov, spec_model, "context_size", 0);
-				newcfg.autocompact_pct = (int)clm_lua_cfg_provider_model_int(u->lcfg,
-				    prov, spec_model, "autocompact_pct", 0);
+				newcfg.context_size =
+				    clm_lua_cfg_provider_model_int(u->lcfg,
+				        prov, spec_model, "context_size", 0);
+				newcfg.autocompact_pct =
+				    (int)clm_lua_cfg_provider_model_int(u->lcfg,
+				        prov, spec_model, "autocompact_pct", 0);
 			}
 			if (prov) {
-				newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_tokens_per_sec", 0);
-				newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, prov, "rate_burst", 0);
-				newcfg.disable_parallel_tool_calls = clm_lua_cfg_provider_int(u->lcfg,
-				    prov, "disable_parallel_tool_calls", 0) != 0;
+				newcfg.rate_tokens_per_sec =
+				    clm_lua_cfg_provider_int(u->lcfg, prov,
+				        "rate_tokens_per_sec", 0);
+				newcfg.rate_burst = clm_lua_cfg_provider_int(
+				    u->lcfg, prov, "rate_burst", 0);
+				newcfg.disable_parallel_tool_calls =
+				    clm_lua_cfg_provider_int(u->lcfg, prov,
+				        "disable_parallel_tool_calls", 0) != 0;
 			}
 			/* Volatile-tool policy from the new agent profile.
 			 * Not freed on the next switch (borrowed by the
 			 * agent for its lifetime) -- same intentional
 			 * process-lifetime leak as lcfg itself. */
-			newcfg.volatile_tools = (const char *const *)
-			    clm_lua_cfg_get_str_list(u->lcfg, "volatile_tools");
+			newcfg.volatile_tools =
+			    (const char *const *)clm_lua_cfg_get_str_list(
+			        u->lcfg, "volatile_tools");
 
-			r = clm_agent_new(&newcfg, u->host, &tui_callbacks, u, &u->agent);
+			r = clm_agent_new(
+			    &newcfg, u->host, &tui_callbacks, u, &u->agent);
 			if (r < 0) {
-				ui_push(u, ST_ERROR, "\nfailed to create agent\n");
+				ui_push(
+				    u, ST_ERROR, "\nfailed to create agent\n");
 			} else {
 				clm_tools_register_shell(u->agent);
 				clm_tools_register_bg(u->agent);
 				/* Reload plugins. */
-				if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
-					clm_lua_env_set_config_from(u->lua_env, u->lcfg);
+				if (clm_lua_env_new(u->agent, &u->lua_env) ==
+				    0) {
+					clm_lua_env_set_config_from(
+					    u->lua_env, u->lcfg);
 					if (u->plugin_dir != NULL) {
-						clm_lua_load_plugins(u->lua_env, u->plugin_dir);
+						clm_lua_load_plugins(
+						    u->lua_env, u->plugin_dir);
 					} else {
-						char *pp = xdg_config_path("clm/plugins");
+						char *pp = xdg_config_path(
+						    "clm/plugins");
 						if (pp != NULL) {
-							clm_lua_load_plugins(u->lua_env, pp);
+							clm_lua_load_plugins(
+							    u->lua_env, pp);
 							free(pp);
 						}
 					}
 					/* Load agent-specific plugins. */
-					char *apdir = xdg_config_path("clm/agents");
+					char *apdir =
+					    xdg_config_path("clm/agents");
 					if (apdir != NULL) {
 						char apbuf[512];
-						(void)snprintf(apbuf, sizeof(apbuf), "%s/%s", apdir, arg);
-						clm_lua_load_plugins(u->lua_env, apbuf);
+						(void)snprintf(apbuf,
+						    sizeof(apbuf), "%s/%s",
+						    apdir, arg);
+						clm_lua_load_plugins(
+						    u->lua_env, apbuf);
 						free(apdir);
 					}
 				}
-				u->mcp_clients = clm_cli_connect_mcp_servers(u->agent,
-				    u->loop, u->lcfg, cb_mcp_status, u,
-				    &u->mcp_client_count);
+				u->mcp_clients = clm_cli_connect_mcp_servers(
+				    u->agent, u->loop, u->lcfg, cb_mcp_status,
+				    u, &u->mcp_client_count);
 				free(u->agent_name);
 				u->agent_name = strdup(arg);
 				set_current_model(u, newcfg.model);
@@ -2105,8 +2158,8 @@ cmd_model(struct ui *u, const char *arg)
 	 * -m/--model on the CLI in main.c. */
 	if (arg[0] == '\0') {
 		list_config_names(u, "models", "model", "/model");
-		(void)clm_agent_list_models(u->agent,
-		    on_live_models_result, on_live_models_error, u);
+		(void)clm_agent_list_models(
+		    u->agent, on_live_models_result, on_live_models_error, u);
 	} else if (u->lcfg == NULL) {
 		ui_push(u, ST_ERROR, "\nno config loaded\n");
 	} else {
@@ -2140,16 +2193,20 @@ cmd_model(struct ui *u, const char *arg)
 				char msg[160];
 
 				litcfg.base_url = cur_url;
-				litcfg.api_key = clm_agent_get_api_key(u->agent);
-				litcfg.provider = clm_agent_get_provider(u->agent);
+				litcfg.api_key =
+				    clm_agent_get_api_key(u->agent);
+				litcfg.provider =
+				    clm_agent_get_provider(u->agent);
 				litcfg.model = arg;
 
-				int rc = clm_agent_set_provider(u->agent, &litcfg);
+				int rc =
+				    clm_agent_set_provider(u->agent, &litcfg);
 				if (rc == 0) {
 					set_current_model(u, litcfg.model);
 					(void)snprintf(msg, sizeof(msg),
 					    "\n[switched to model: %s "
-					    "(literal, not in config.lua)]\n", arg);
+					    "(literal, not in config.lua)]\n",
+					    arg);
 					ui_push(u, ST_META, msg);
 					clm_agent_check_connection(u->agent);
 				} else if (rc == -EBUSY) {
@@ -2163,8 +2220,9 @@ cmd_model(struct ui *u, const char *arg)
 		} else {
 			struct clm_cfg newcfg = {0};
 			char url_buf[512];
-			enum clm_provider provider = clm_provider_from_str(
-			    clm_lua_cfg_provider_str(u->lcfg, spec_provider, "kind"));
+			enum clm_provider provider =
+			    clm_provider_from_str(clm_lua_cfg_provider_str(
+			        u->lcfg, spec_provider, "kind"));
 
 			/* clm_provider_build_url() is the one place the
 			 * base-url + endpoint-path logic lives -- see
@@ -2172,17 +2230,24 @@ cmd_model(struct ui *u, const char *arg)
 			 * (this call site used to hardcode "/chat/completions"
 			 * independently of main.c's CLI-startup path, and
 			 * drifted out of sync with it). */
-			clm_provider_build_url(url_buf, sizeof(url_buf), purl, provider);
+			clm_provider_build_url(
+			    url_buf, sizeof(url_buf), purl, provider);
 			newcfg.base_url = url_buf;
-			newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, spec_provider, "api_key");
+			newcfg.api_key = clm_lua_cfg_provider_str(
+			    u->lcfg, spec_provider, "api_key");
 			newcfg.provider = provider;
 			newcfg.model = spec_model;
-			newcfg.context_size = clm_lua_cfg_provider_model_int(u->lcfg,
-			    spec_provider, spec_model, "context_size", 0);
-			newcfg.autocompact_pct = (int)clm_lua_cfg_provider_model_int(u->lcfg,
-			    spec_provider, spec_model, "autocompact_pct", 0);
-			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, spec_provider, "rate_tokens_per_sec", 0);
-			newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, spec_provider, "rate_burst", 0);
+			newcfg.context_size =
+			    clm_lua_cfg_provider_model_int(u->lcfg,
+			        spec_provider, spec_model, "context_size", 0);
+			newcfg.autocompact_pct =
+			    (int)clm_lua_cfg_provider_model_int(u->lcfg,
+			        spec_provider, spec_model, "autocompact_pct",
+			        0);
+			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(
+			    u->lcfg, spec_provider, "rate_tokens_per_sec", 0);
+			newcfg.rate_burst = clm_lua_cfg_provider_int(
+			    u->lcfg, spec_provider, "rate_burst", 0);
 
 			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {
@@ -2194,9 +2259,11 @@ cmd_model(struct ui *u, const char *arg)
 				ui_push(u, ST_META, msg);
 				clm_agent_check_connection(u->agent);
 			} else if (rc == -EBUSY) {
-				ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+				ui_push(u, ST_ERROR,
+				    "\nbusy; try again when idle\n");
 			} else {
-				ui_push(u, ST_ERROR, "\nfailed to switch model\n");
+				ui_push(
+				    u, ST_ERROR, "\nfailed to switch model\n");
 			}
 		}
 	}
@@ -2215,7 +2282,8 @@ cmd_provider(struct ui *u, const char *arg)
 	} else if (u->lcfg == NULL) {
 		ui_push(u, ST_ERROR, "\nno config loaded\n");
 	} else {
-		const char *purl = clm_lua_cfg_provider_str(u->lcfg, arg, "url");
+		const char *purl =
+		    clm_lua_cfg_provider_str(u->lcfg, arg, "url");
 		if (purl == NULL) {
 			char msg[128];
 			(void)snprintf(msg, sizeof(msg),
@@ -2225,17 +2293,21 @@ cmd_provider(struct ui *u, const char *arg)
 			struct clm_cfg newcfg = {0};
 			char url_buf[512];
 			size_t ulen = strlen(purl);
-			while (ulen > 0 && purl[ulen-1] == '/')
+			while (ulen > 0 && purl[ulen - 1] == '/')
 				ulen--;
 			(void)snprintf(url_buf, sizeof(url_buf),
 			    "%.*s/chat/completions", (int)ulen, purl);
 			newcfg.base_url = url_buf;
-			newcfg.api_key = clm_lua_cfg_provider_str(u->lcfg, arg, "api_key");
+			newcfg.api_key =
+			    clm_lua_cfg_provider_str(u->lcfg, arg, "api_key");
 			newcfg.provider = clm_provider_from_str(
 			    clm_lua_cfg_provider_str(u->lcfg, arg, "kind"));
-			newcfg.model = u->model; /* keep the currently active model */
-			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(u->lcfg, arg, "rate_tokens_per_sec", 0);
-			newcfg.rate_burst = clm_lua_cfg_provider_int(u->lcfg, arg, "rate_burst", 0);
+			newcfg.model =
+			    u->model; /* keep the currently active model */
+			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(
+			    u->lcfg, arg, "rate_tokens_per_sec", 0);
+			newcfg.rate_burst = clm_lua_cfg_provider_int(
+			    u->lcfg, arg, "rate_burst", 0);
 
 			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {
@@ -2246,9 +2318,11 @@ cmd_provider(struct ui *u, const char *arg)
 				ui_push(u, ST_META, msg);
 				clm_agent_check_connection(u->agent);
 			} else if (rc == -EBUSY) {
-				ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+				ui_push(u, ST_ERROR,
+				    "\nbusy; try again when idle\n");
 			} else {
-				ui_push(u, ST_ERROR, "\nfailed to switch provider\n");
+				ui_push(u, ST_ERROR,
+				    "\nfailed to switch provider\n");
 			}
 		}
 	}
@@ -2271,29 +2345,31 @@ run_command(struct ui *u, const char *line)
 
 #define CMD(s) (wlen == strlen(s) && strncmp(line, s, wlen) == 0)
 	if (CMD("help") || CMD("h") || CMD("?")) {
-		ui_push(
-		    u, ST_META,
+		ui_push(u, ST_META,
 		    "\ncommands:\n"
 		    "  /help              this help\n"
 		    "  /clear             clear the transcript (starts a new "
 		    "session log)\n"
-		    "  /agent <name>      switch agent profile (system prompt + "
+		    "  /agent <name>      switch agent profile (system prompt "
+		    "+ "
 		    "tools)\n"
 		    "  /model [name]      switch model (config.lua's `models` "
 		    "table); no arg lists what's available\n"
-		    "  /provider [name]   switch provider connection (config.lua's "
+		    "  /provider [name]   switch provider connection "
+		    "(config.lua's "
 		    "`providers` table); no arg lists what's available\n"
 		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
 		    "  /output [full|short] tool output detail (^O)\n"
-		    "  /compact           summarize old turns to reclaim context\n"
+		    "  /compact           summarize old turns to reclaim "
+		    "context\n"
 		    "  /quit              exit\n"
 		    "keys: ^R reasoning  ^O output  ^L redraw  "
 		    "PgUp/PgDn/wheel/End scroll\n");
 	} else if (CMD("clear") || CMD("cls")) {
 		/* Reset the actual conversation history first -- an agent busy
-		 * mid-turn refuses (-EBUSY) and the on-screen transcript is left
-		 * alone in that case too, rather than looking cleared while the
-		 * backend history it was displaying still isn't. */
+		 * mid-turn refuses (-EBUSY) and the on-screen transcript is
+		 * left alone in that case too, rather than looking cleared
+		 * while the backend history it was displaying still isn't. */
 		int rc = clm_agent_clear_history(u->agent);
 		if (rc == -EBUSY) {
 			ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
@@ -2314,8 +2390,8 @@ run_command(struct ui *u, const char *line)
 					clm_session_free(u->session);
 				u->session = NULL;
 				if (clm_session_create(NULL, u->model,
-				    u->provider_name, u->agent_name,
-				    &u->session) == 0) {
+				        u->provider_name, u->agent_name,
+				        &u->session) == 0) {
 					ui_push(u, ST_META, "[new session ");
 					ui_push(u, ST_META,
 					    clm_session_id(u->session));
@@ -2331,8 +2407,8 @@ run_command(struct ui *u, const char *line)
 		else
 			u->show_reasoning = !u->show_reasoning;
 		ui_push(u, ST_META,
-		        u->show_reasoning ? "\n[reasoning shown]\n"
-		                          : "\n[reasoning hidden]\n");
+		    u->show_reasoning ? "\n[reasoning shown]\n"
+		                      : "\n[reasoning hidden]\n");
 	} else if (CMD("output")) {
 		if (strcmp(arg, "full") == 0)
 			u->expand_output = true;
@@ -2341,13 +2417,14 @@ run_command(struct ui *u, const char *line)
 		else
 			u->expand_output = !u->expand_output;
 		ui_push(u, ST_META,
-		        u->expand_output ? "\n[output: full]\n"
-		                         : "\n[output: short]\n");
+		    u->expand_output ? "\n[output: full]\n"
+		                     : "\n[output: short]\n");
 	} else if (CMD("compact")) {
 		int rc = clm_agent_compact(u->agent);
 		if (rc == 0) {
 			u->busy = true;
-			ui_push(u, ST_META, "\n[compacting the conversation...]\n");
+			ui_push(
+			    u, ST_META, "\n[compacting the conversation...]\n");
 		} else if (rc == -EBUSY) {
 			ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
 		} else {
@@ -2524,7 +2601,8 @@ tui_expand_emoji_at_cursor(struct ui *u)
 		return;
 
 	char glyph[5];
-	size_t glyphlen = clm_emoji_lookup(u->input + namestart, namelen, glyph);
+	size_t glyphlen =
+	    clm_emoji_lookup(u->input + namestart, namelen, glyph);
 	if (glyphlen == 0)
 		return;
 
@@ -2552,7 +2630,7 @@ input_char(struct ui *u, wint_t wch)
 		return;
 	/* Insert at the cursor, shifting the tail right. */
 	memmove(u->input + u->input_pos + (size_t)n, u->input + u->input_pos,
-	        u->input_len - u->input_pos);
+	    u->input_len - u->input_pos);
 	memcpy(u->input + u->input_pos, mb, (size_t)n);
 	u->input_len += (size_t)n;
 	u->input_pos += (size_t)n;
@@ -2569,7 +2647,7 @@ input_backspace(struct ui *u)
 		return;
 	size_t start = prev_boundary(u->input, u->input_pos);
 	memmove(u->input + start, u->input + u->input_pos,
-	        u->input_len - u->input_pos);
+	    u->input_len - u->input_pos);
 	u->input_len -= u->input_pos - start;
 	u->input_pos = start;
 	u->dirty = true;
@@ -2603,7 +2681,7 @@ input_yank(struct ui *u)
 	if (u->input_len + u->kill_len >= sizeof(u->input) - 1)
 		return;
 	memmove(u->input + u->input_pos + u->kill_len, u->input + u->input_pos,
-	        u->input_len - u->input_pos);
+	    u->input_len - u->input_pos);
 	memcpy(u->input + u->input_pos, u->kill, u->kill_len);
 	u->input_len += u->kill_len;
 	u->input_pos += u->kill_len;
@@ -2627,11 +2705,30 @@ answer_permission(struct ui *u, int ch)
 	req = u->perm_queue[0];
 
 	switch (ch) {
-	case 'y': case 'Y': d = CLM_PERM_ALLOW_ONCE;   label = "allowed"; break;
-	case 'a': case 'A': d = CLM_PERM_ALLOW_ALWAYS; label = "always allowed"; break;
-	case 'n': case 'N': d = CLM_PERM_DENY_ONCE;    label = "denied"; break;
-	case 'd': case 'D': d = CLM_PERM_DENY_ALWAYS;  label = "always denied"; break;
-	case 27:            d = CLM_PERM_DENY_ONCE;    label = "denied (cancelled)"; break;
+	case 'y':
+	case 'Y':
+		d = CLM_PERM_ALLOW_ONCE;
+		label = "allowed";
+		break;
+	case 'a':
+	case 'A':
+		d = CLM_PERM_ALLOW_ALWAYS;
+		label = "always allowed";
+		break;
+	case 'n':
+	case 'N':
+		d = CLM_PERM_DENY_ONCE;
+		label = "denied";
+		break;
+	case 'd':
+	case 'D':
+		d = CLM_PERM_DENY_ALWAYS;
+		label = "always denied";
+		break;
+	case 27:
+		d = CLM_PERM_DENY_ONCE;
+		label = "denied (cancelled)";
+		break;
 	default:
 		return false; /* not an answer key */
 	}
@@ -2642,7 +2739,8 @@ answer_permission(struct ui *u, int ch)
 		u->perm_queue[i] = u->perm_queue[i + 1];
 	u->perm_showing = false;
 
-	/* For "always" decisions, we need the answered name before we potentially free the invocation. */
+	/* For "always" decisions, we need the answered name before we
+	 * potentially free the invocation. */
 	const char *answered_name = NULL;
 	if (d == CLM_PERM_ALLOW_ALWAYS || d == CLM_PERM_DENY_ALWAYS) {
 		answered_name = clm_permission_req_name(req);
@@ -2656,8 +2754,8 @@ answer_permission(struct ui *u, int ch)
 	/* Escape also cancels the rest of the turn (drain remaining). */
 	if (ch == 27) {
 		for (size_t i = 0; i < u->perm_count; i++)
-			clm_tool_permission_respond(u->agent, u->perm_queue[i],
-			    CLM_PERM_DENY_ONCE);
+			clm_tool_permission_respond(
+			    u->agent, u->perm_queue[i], CLM_PERM_DENY_ONCE);
 		u->perm_count = 0;
 		clm_agent_cancel(u->agent);
 	}
@@ -2667,11 +2765,12 @@ answer_permission(struct ui *u, int ch)
 	if (d == CLM_PERM_ALLOW_ALWAYS || d == CLM_PERM_DENY_ALWAYS) {
 		size_t i = 0;
 		while (i < u->perm_count) {
-			const char *qname = clm_permission_req_name(u->perm_queue[i]);
+			const char *qname =
+			    clm_permission_req_name(u->perm_queue[i]);
 			if (answered_name != NULL && qname != NULL &&
 			    strcmp(answered_name, qname) == 0) {
-				clm_tool_permission_respond(u->agent,
-				    u->perm_queue[i], d);
+				clm_tool_permission_respond(
+				    u->agent, u->perm_queue[i], d);
 				u->perm_count--;
 				for (size_t j = i; j < u->perm_count; j++)
 					u->perm_queue[j] = u->perm_queue[j + 1];
@@ -2709,7 +2808,8 @@ handle_keys(struct ui *u)
 		if (u->perm_showing && r != KEY_CODE_YES) {
 			if (answer_permission(u, (int)wch))
 				continue;
-			/* Not a recognised answer key: ignore it, stay pending. */
+			/* Not a recognised answer key: ignore it, stay pending.
+			 */
 			continue;
 		}
 
@@ -2723,44 +2823,55 @@ handle_keys(struct ui *u)
 				break;
 			case UI_KEY_PASTE_START: {
 				/*
-				 * Consume everything up to the matching END marker
-				 * ourselves, inserting it straight into the input
-				 * buffer (embedded newlines included) rather than
-				 * letting it flow back through the normal
-				 * key-at-a-time path, where a '\r'/'\n' means
-				 * "submit". A CR inside pasted text (xterm sends
-				 * line endings as '\r') is translated to '\n' so
-				 * it renders/wraps the same as a typed newline.
+				 * Consume everything up to the matching END
+				 * marker ourselves, inserting it straight into
+				 * the input buffer (embedded newlines included)
+				 * rather than letting it flow back through the
+				 * normal key-at-a-time path, where a '\r'/'\n'
+				 * means "submit". A CR inside pasted text
+				 * (xterm sends line endings as '\r') is
+				 * translated to '\n' so it renders/wraps the
+				 * same as a typed newline.
 				 *
-				 * u->in is nodelay(), so wget_wch never blocks --
-				 * ERR just means "nothing buffered right now", not
-				 * "the paste is over". A large paste can arrive
-				 * split across multiple pty reads, so on ERR we
-				 * retry briefly (bounded, so a real dropped/missing
-				 * END marker can't wedge the UI) before giving up
-				 * and taking whatever arrived so far.
+				 * u->in is nodelay(), so wget_wch never blocks
+				 * -- ERR just means "nothing buffered right
+				 * now", not "the paste is over". A large paste
+				 * can arrive split across multiple pty reads,
+				 * so on ERR we retry briefly (bounded, so a
+				 * real dropped/missing END marker can't wedge
+				 * the UI) before giving up and taking whatever
+				 * arrived so far.
 				 */
 				wint_t pwch;
 				int pr;
 				int idle_retries = 0;
-				const int max_idle_retries = 200; /* ~200 * 1ms = 200ms */
+				const int max_idle_retries =
+				    200; /* ~200 * 1ms = 200ms */
 				for (;;) {
 					pr = wget_wch(u->in, &pwch);
 					if (pr == ERR) {
-						if (++idle_retries > max_idle_retries)
-							break; /* END never showed up; stop waiting */
+						if (++idle_retries >
+						    max_idle_retries)
+							break; /* END never
+							          showed up;
+							          stop waiting
+							        */
 						napms(1);
 						continue;
 					}
 					idle_retries = 0;
 					if (pr == KEY_CODE_YES) {
-						if (pwch == (wint_t)UI_KEY_PASTE_END)
+						if (pwch ==
+						    (wint_t)UI_KEY_PASTE_END)
 							break;
-						continue; /* ignore other special keys mid-paste */
+						continue; /* ignore other
+						             special keys
+						             mid-paste */
 					}
 					if (pwch == L'\r')
 						pwch = L'\n';
-					if (pwch >= 32 || pwch == L'\n' || pwch == L'\t')
+					if (pwch >= 32 || pwch == L'\n' ||
+					    pwch == L'\t')
 						input_char(u, pwch);
 				}
 				u->dirty = true;
@@ -2807,9 +2918,8 @@ handle_keys(struct ui *u)
 			case KEY_DC: /* Delete */
 				if (u->input_pos < u->input_len)
 					input_kill(u, u->input_pos,
-					           next_boundary(u->input,
-					                         u->input_pos,
-					                         u->input_len));
+					    next_boundary(u->input,
+					        u->input_pos, u->input_len));
 				u->kill_len = 0; /* Delete doesn't feed yank */
 				break;
 			case KEY_PPAGE: { /* PageUp: scroll transcript back */
@@ -2906,7 +3016,8 @@ handle_keys(struct ui *u)
 			u->show_reasoning = !u->show_reasoning;
 			u->dirty = true;
 			break;
-		case 27: { /* Escape: cancel a running turn, else clear the input */
+		case 27: { /* Escape: cancel a running turn, else clear the
+			      input */
 			int cancel_rc = clm_agent_cancel(u->agent);
 			if (cancel_rc == 0) {
 				ui_push(u, ST_META, "\n[cancelled]\n");
@@ -2914,8 +3025,9 @@ handle_keys(struct ui *u)
 				/* Truly nothing in flight -- treat Escape as
 				 * clear-input instead. -EALREADY means a cancel
 				 * from an earlier Escape is still unwinding
-				 * (killed subprocesses take a moment to actually
-				 * exit); do nothing rather than spamming another
+				 * (killed subprocesses take a moment to
+				 * actually exit); do nothing rather than
+				 * spamming another
 				 * "[cancelled]" per repeat keypress or clearing
 				 * input the user hasn't finished typing yet. */
 				u->input_len = 0;
@@ -2924,7 +3036,8 @@ handle_keys(struct ui *u)
 			u->dirty = true;
 			break;
 		}
-		case 9: /* TAB: completion (commands, config/live names, paths) */
+		case 9: /* TAB: completion (commands, config/live names, paths)
+		         */
 			complete_input(u, u->complete_generation);
 			break;
 		case 8:
@@ -3012,10 +3125,11 @@ init_colors(struct ui *u)
 	use_default_colors();
 	u->color = true;
 	/*
-	 * Colours are chosen to read well on a stock Solarized 16-colour palette
-	 * where A_BOLD promotes 0-7 accents to the grey 8-15 base tones. So we
-	 * distinguish by colour, not bold, and reserve the grey base tones for
-	 * genuinely secondary text (the reasoning channel). TODO: themeable.
+	 * Colours are chosen to read well on a stock Solarized 16-colour
+	 * palette where A_BOLD promotes 0-7 accents to the grey 8-15 base
+	 * tones. So we distinguish by colour, not bold, and reserve the grey
+	 * base tones for genuinely secondary text (the reasoning channel).
+	 * TODO: themeable.
 	 */
 	init_pair(1, COLOR_BLUE, -1);          /* user prompt (blue) */
 	init_pair(2, COLOR_MAGENTA, -1);       /* tool call summary (magenta) */
@@ -3026,8 +3140,8 @@ init_colors(struct ui *u)
 	init_pair(7, COLOR_GREEN, -1);         /* code (inline and block) */
 	init_pair(8, COLOR_CYAN, -1);          /* assistant "clm>" label */
 	/*
-	 * Reserved for attention, not decoration: red = error; yellow = warning /
-	 * timeout / tool-call permission prompts (the "about to do something,
+	 * Reserved for attention, not decoration: red = error; yellow = warning
+	 * / timeout / tool-call permission prompts (the "about to do something,
 	 * confirm?" caution colour -- shares the base-8 yellow with ST_TIMEOUT
 	 * rather than reaching for ANSI 9/brred, which silently vanished on
 	 * anything without a 16-colour terminfo entry, e.g. plain "screen" over
@@ -3037,7 +3151,7 @@ init_colors(struct ui *u)
 	 * up as bold white instead of yellow. TODO: expose the whole
 	 * role->colour map via the theme layer.
 	 */
-	init_pair(9, COLOR_YELLOW, -1);        /* permission prompt (yellow) */
+	init_pair(9, COLOR_YELLOW, -1); /* permission prompt (yellow) */
 }
 
 /* Periodic (and startup) connectivity probe. */
@@ -3059,14 +3173,15 @@ replay_transcript(struct ui *u, const struct clm_history *h)
 {
 	const struct clm_message *m;
 
-	TAILQ_FOREACH(m, h, entries) {
+	TAILQ_FOREACH(m, h, entries)
+	{
 		switch (m->role) {
 		case CLM_ROLE_SYSTEM:
 			break;
 		case CLM_ROLE_USER:
-			if (m->content == NULL || strncmp(m->content,
-			    "[context update]",
-			    strlen("[context update]")) == 0)
+			if (m->content == NULL ||
+			    strncmp(m->content, "[context update]",
+			        strlen("[context update]")) == 0)
 				break;
 			ui_push(u, ST_USER, "\nyou> ");
 			ui_push(u, ST_USER, m->content);
@@ -3075,9 +3190,8 @@ replay_transcript(struct ui *u, const struct clm_history *h)
 		case CLM_ROLE_ASSISTANT: {
 			const struct clm_tool_call *tc;
 			TAILQ_FOREACH(tc, &m->tool_calls, entries)
-				push_tool_summary(u,
-				    tc->name != NULL ? tc->name : "?",
-				    tc->args);
+			push_tool_summary(
+			    u, tc->name != NULL ? tc->name : "?", tc->args);
 			if (m->content != NULL && m->content[0] != '\0') {
 				ui_push(u, ST_LABEL, "\nclm>\n");
 				ui_push(u, ST_ASSIST, m->content);
@@ -3128,8 +3242,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	u->plugin_dir = plugin_dir;
 	u->session = session;
 	u->state = CLM_STATE_IDLE;
-	/* Default to the clean view: reasoning hidden and tool output collapsed.
-	 * Opt in with ^R / ^O (see the status-bar hints). */
+	/* Default to the clean view: reasoning hidden and tool output
+	 * collapsed. Opt in with ^R / ^O (see the status-bar hints). */
 	u->show_reasoning = false;
 	u->expand_output = false;
 	if (lcfg != NULL) {
@@ -3155,7 +3269,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		free(u);
 		return 1;
 	}
-	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the portable core). */
+	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the
+	 * portable core). */
 	clm_tools_register_shell(u->agent);
 	clm_tools_register_bg(u->agent);
 
@@ -3172,8 +3287,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 			}
 		}
 	}
-	u->mcp_clients = clm_cli_connect_mcp_servers(u->agent, loop, lcfg,
-	    cb_mcp_status, u, &u->mcp_client_count);
+	u->mcp_clients = clm_cli_connect_mcp_servers(
+	    u->agent, loop, lcfg, cb_mcp_status, u, &u->mcp_client_count);
 
 	initscr();
 	cbreak();
@@ -3200,7 +3315,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	fflush(stdout);
 
 	ui_push(u, ST_META,
-	        "clm -- type a prompt, /help for commands, /quit to exit.\n");
+	    "clm -- type a prompt, /help for commands, /quit to exit.\n");
 
 	if (restore != NULL) {
 		r = clm_agent_restore_history(u->agent, restore);
@@ -3211,8 +3326,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		} else {
 			replay_transcript(u, restore);
 			ui_push(u, ST_META, "\n[resumed session ");
-			ui_push(u, ST_META, u->session != NULL ?
-			    clm_session_id(u->session) : "?");
+			ui_push(u, ST_META,
+			    u->session != NULL ? clm_session_id(u->session)
+			                       : "?");
 			ui_push(u, ST_META, "]\n");
 		}
 	}

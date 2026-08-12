@@ -82,7 +82,8 @@ cJSON_Delete_fn(cJSON **obj)
  *   RULE 2 (steal):  cJSON_AddItemToObject() and cJSON_AddItemToArray()
  *                    STEAL the value reference -- they take ownership. So you
  *                    must NEVER cJSON_Delete() something after you have
- *                    added it. The parent now owns it. Deleting it = double free.
+ *                    added it. The parent now owns it. Deleting it = double
+ * free.
  *
  *   RULE 3 (root):   Delete a JSON tree exactly ONCE, at its root, via
  *                    json_cleanup. On the success path you must hand the root
@@ -108,8 +109,8 @@ cJSON_Delete_fn(cJSON **obj)
  *           ASSERT_RETURN(p != NULL, NULL);
  *
  *           v = cJSON_CreateString("string");
- *           ASSERT_RETURN(v != NULL, NULL);   // p freed by cleanup, v is NULL: no leak
- *           cJSON_AddItemToObject(p, "type", v);   // steals v; do not delete v
+ *           ASSERT_RETURN(v != NULL, NULL);   // p freed by cleanup, v is NULL:
+ * no leak cJSON_AddItemToObject(p, "type", v);   // steals v; do not delete v
  *
  *           v = cJSON_CreateString(desc);
  *           ASSERT_RETURN(v != NULL, NULL);
@@ -131,7 +132,8 @@ cJSON_Delete_fn(cJSON **obj)
  *   // BUG: returning a json_cleanup root directly. cleanup deletes it as you
  *   // return, so the caller gets a freed pointer.
  *   json_cleanup cJSON *o = cJSON_CreateObject();
- *   return o;                               // <-- WRONG: do ret=o; o=NULL; return ret;
+ *   return o;                               // <-- WRONG: do ret=o; o=NULL;
+ * return ret;
  *
  *   // BUG: orphan on OOM. if the second Create* fails, the first (a, not yet
  *   // added and not under cleanup) leaks. Add each object before allocating

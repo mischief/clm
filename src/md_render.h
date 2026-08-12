@@ -48,8 +48,8 @@ enum md_table_style {
 };
 
 struct md_opts {
-	int width;                   /* wrap/layout width in columns; <=0 = 80 */
-	enum md_table_style tables;  /* table rule style */
+	int width;                  /* wrap/layout width in columns; <=0 = 80 */
+	enum md_table_style tables; /* table rule style */
 };
 
 /*

@@ -70,17 +70,15 @@ void clm_http_mux_free(struct clm_http_mux *mux);
  * the request is still in flight when this function returns.
  */
 int clm_http_async_post(struct clm_http_mux *mux, const char *url,
-                        const char *api_key, const char *json_body,
-                        struct curl_slist *extra_headers,
-                        clm_http_success_cb success_cb,
-                        clm_http_error_cb error_cb, clm_http_data_cb data_cb,
-                        const char *client_suffix, void *user,
-                        struct clm_http_request **out_req);
+    const char *api_key, const char *json_body,
+    struct curl_slist *extra_headers, clm_http_success_cb success_cb,
+    clm_http_error_cb error_cb, clm_http_data_cb data_cb,
+    const char *client_suffix, void *user, struct clm_http_request **out_req);
 
 /*
  * abort an in-flight request. tears down its handles and delivers the outcome
- * to error_cb with -ECANCELED. safe to call once on the non-null handle returned
- * by clm_http_async_post, before the request has completed.
+ * to error_cb with -ECANCELED. safe to call once on the non-null handle
+ * returned by clm_http_async_post, before the request has completed.
  */
 void clm_http_async_cancel(struct clm_http_request *req);
 

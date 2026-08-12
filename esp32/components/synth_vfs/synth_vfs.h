@@ -35,11 +35,11 @@
 struct synth_dirent {
 	const char *name;
 	bool is_dir;      /* true: a placeholder subdirectory (e.g. a real
-	                    * mount elsewhere, like "sd"). false: a file,
-	                    * optionally backed by data/len. */
+	                   * mount elsewhere, like "sd"). false: a file,
+	                   * optionally backed by data/len. */
 	const void *data; /* file content; NULL for an empty/zero-length
-	                    * file, or for a directory entry (unused there). */
-	size_t len;        /* content length; ignored for a directory entry. */
+	                   * file, or for a directory entry (unused there). */
+	size_t len;       /* content length; ignored for a directory entry. */
 };
 
 /*
@@ -48,8 +48,8 @@ struct synth_dirent {
  * "/prefix" -- see esp_vfs_register()'s own base_path rules). `entries`
  * must outlive the registration: it is captured by pointer, not copied.
  */
-esp_err_t synth_vfs_register(const char *base_path,
-    const struct synth_dirent *entries, size_t n);
+esp_err_t synth_vfs_register(
+    const char *base_path, const struct synth_dirent *entries, size_t n);
 
 /*
  * Same, but the listing is derived live at every opendir() from ESP-IDF's

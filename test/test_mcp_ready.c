@@ -14,12 +14,12 @@
 static int failures;
 
 #define CHECK(cond, msg)                                                       \
-	do {                                                                    \
-		if (!(cond)) {                                                  \
+	do {                                                                   \
+		if (!(cond)) {                                                 \
 			fprintf(stderr, "fail: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                          \
+			    __LINE__);                                         \
 			failures++;                                            \
-		}                                                               \
+		}                                                              \
 	} while (0)
 
 struct test_state {
@@ -38,8 +38,8 @@ struct ready_ctx {
 
 static int
 test_http_post(void *ctx, const struct clm_http_req *req,
-    clm_http_success_cb success, clm_http_error_cb error,
-    clm_http_data_cb data, void *user, struct clm_http_call **out)
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
 {
 	(void)ctx;
 	(void)req;
@@ -80,7 +80,8 @@ on_ready(int status, size_t tool_count, void *user)
 	struct test_state *state = ctx->state;
 
 	(void)tool_count;
-	if (state->status_count < sizeof(state->statuses) / sizeof(state->statuses[0]))
+	if (state->status_count <
+	    sizeof(state->statuses) / sizeof(state->statuses[0]))
 		state->statuses[state->status_count] = status;
 	state->status_count++;
 	if (status == 0 && ++state->ready_count == 2)
@@ -103,13 +104,15 @@ server_main(void)
 
 	if (fgets(line, sizeof(line), stdin) == NULL)
 		return 1;
-	if (fputs("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n", stdout) < 0 ||
+	if (fputs("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n", stdout) <
+	        0 ||
 	    fflush(stdout) != 0)
 		return 1;
 	if (fgets(line, sizeof(line), stdin) == NULL)
 		return 1;
 	if (fputs("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}\n",
-	    stdout) < 0 || fflush(stdout) != 0)
+	        stdout) < 0 ||
+	    fflush(stdout) != 0)
 		return 1;
 	return 0;
 }
@@ -117,21 +120,21 @@ server_main(void)
 static void
 test_restart_callback_lifetime(const char *self_path)
 {
-	struct clm_host host = { .http_post = test_http_post };
+	struct clm_host host = {.http_post = test_http_post};
 	struct clm_cfg cfg = {
-		.api_key = "test",
-		.base_url = "http://127.0.0.1:1/v1/chat/completions",
-		.model = "test",
+	    .api_key = "test",
+	    .base_url = "http://127.0.0.1:1/v1/chat/completions",
+	    .model = "test",
 	};
 	struct clm_mcp_server_cfg server_cfg = {
-		.name = "restart-test",
-		.transport = CLM_MCP_STDIO,
+	    .name = "restart-test",
+	    .transport = CLM_MCP_STDIO,
 	};
 	struct test_state state = {0};
 	struct ready_ctx *ctx;
 	struct clm_agent *agent = NULL;
 	uv_loop_t loop;
-	char *server_argv[] = { (char *)self_path, "--server", NULL };
+	char *server_argv[] = {(char *)self_path, "--server", NULL};
 	int r;
 
 	server_cfg.argv = server_argv;
@@ -142,7 +145,8 @@ test_restart_callback_lifetime(const char *self_path)
 		uv_loop_close(&loop);
 		return;
 	}
-	CHECK(uv_timer_init(&loop, &state.timeout) == 0, "timeout initialization");
+	CHECK(uv_timer_init(&loop, &state.timeout) == 0,
+	    "timeout initialization");
 	state.timeout.data = &state;
 
 	ctx = calloc(1, sizeof(*ctx));

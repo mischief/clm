@@ -42,8 +42,8 @@ struct host_uv_ctx {
 
 static int
 host_uv_http_post(void *ctx, const struct clm_http_req *req,
-                  clm_http_success_cb success, clm_http_error_cb error,
-                  clm_http_data_cb data, void *user, struct clm_http_call **out)
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
 {
 	struct host_uv_ctx *hctx = ctx;
 	struct curl_slist *hdrs = NULL;
@@ -67,8 +67,7 @@ host_uv_http_post(void *ctx, const struct clm_http_req *req,
 	}
 
 	rc = clm_http_async_post(hctx->mux, req->url, req->api_key, req->body,
-	                         hdrs, success, error, data, req->client_suffix,
-	                         user, &r);
+	    hdrs, success, error, data, req->client_suffix, user, &r);
 	if (rc < 0) {
 		/* The engine did not take the headers on a start failure. */
 		curl_slist_free_all(hdrs);
@@ -114,8 +113,8 @@ host_uv_timer_fire(uv_timer_t *t)
 }
 
 static int
-host_uv_timer_set(void *ctx, uint64_t ms, clm_timer_cb cb, void *arg,
-                  struct clm_timer **out)
+host_uv_timer_set(
+    void *ctx, uint64_t ms, clm_timer_cb cb, void *arg, struct clm_timer **out)
 {
 	struct host_uv_ctx *hctx = ctx;
 	struct clm_timer *tm = calloc(1, sizeof(*tm));

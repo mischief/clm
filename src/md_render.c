@@ -162,25 +162,39 @@ tbl_cell(struct table *t, size_t row, size_t col)
  * (a space of padding on each side of the content); rules fill those same
  * spans so junctions line up under the vertical separators. */
 struct box {
-	const char *v; /* vertical separator */
-	const char *h; /* horizontal fill */
+	const char *v;            /* vertical separator */
+	const char *h;            /* horizontal fill */
 	const char *tl, *tm, *tr; /* top: left, mid tee, right */
 	const char *ml, *mm, *mr; /* header sep: left tee, cross, right tee */
 	const char *bl, *bm, *br; /* bottom: left, mid tee, right */
 };
 
 static const struct box box_unicode = {
-	"\u2502", "\u2500",
-	"\u250c", "\u252c", "\u2510",
-	"\u251c", "\u253c", "\u2524",
-	"\u2514", "\u2534", "\u2518",
+    "\u2502",
+    "\u2500",
+    "\u250c",
+    "\u252c",
+    "\u2510",
+    "\u251c",
+    "\u253c",
+    "\u2524",
+    "\u2514",
+    "\u2534",
+    "\u2518",
 };
 
 static const struct box box_ascii = {
-	"|", "-",
-	"+", "+", "+",
-	"+", "+", "+",
-	"+", "+", "+",
+    "|",
+    "-",
+    "+",
+    "+",
+    "+",
+    "+",
+    "+",
+    "+",
+    "+",
+    "+",
+    "+",
 };
 
 static void
@@ -319,8 +333,8 @@ wrap_cell(struct wcell *wc, struct runbuf *cell, int width)
 					has_content = false;
 					continue;
 				}
-				if (cline_push(cur, style, text + start,
-					tlen) < 0)
+				if (cline_push(cur, style, text + start, tlen) <
+				    0)
 					return -1;
 				continue;
 			}
@@ -379,8 +393,8 @@ emit_wrapped_row(struct ctx *c, struct table *t, size_t i,
 					unsigned st = ln->f[f].style;
 					if (i < t->head_rows)
 						st |= MD_ST_BOLD;
-					emit_run(c, st, ln->f[f].text,
-					    ln->f[f].len);
+					emit_run(
+					    c, st, ln->f[f].text, ln->f[f].len);
 				}
 			}
 			c->bol = false;
@@ -428,8 +442,8 @@ layout_table(struct ctx *c, struct table *t)
 	 * plus one space of padding on each side of every column. */
 	termw = (c->width > 0) ? c->width : 80;
 	overhead = (int)t->cols * 2 +
-	    (ruled ? (int)t->cols + 1 : ((int)t->cols > 0 ? (int)t->cols - 1
-					 : 0));
+	    (ruled ? (int)t->cols + 1
+	           : ((int)t->cols > 0 ? (int)t->cols - 1 : 0));
 	avail = termw - overhead;
 	if (avail < (int)t->cols * WRAP_MIN_COL)
 		avail = (int)t->cols * WRAP_MIN_COL;
@@ -468,7 +482,7 @@ layout_table(struct ctx *c, struct table *t)
 	for (size_t i = 0; i < t->rows; i++) {
 		for (size_t j = 0; j < t->cols; j++) {
 			if (wrap_cell(&wcells[i * t->cols + j],
-				tbl_cell(t, i, j), w[j]) < 0)
+			        tbl_cell(t, i, j), w[j]) < 0)
 				goto done;
 		}
 	}
@@ -609,8 +623,8 @@ cb_enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 	case MD_BLOCK_TD:
 		if (c->tbl != NULL && detail != NULL) {
 			MD_BLOCK_TD_DETAIL *d = detail;
-			size_t idx = c->tbl->cur_row * c->tbl->cols +
-			    c->tbl->cur_col;
+			size_t idx =
+			    c->tbl->cur_row * c->tbl->cols + c->tbl->cur_col;
 			if (idx < c->tbl->cap_cells)
 				c->tbl->aligns[idx] = (unsigned)d->align;
 		}
@@ -709,8 +723,8 @@ cb_text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size, void *userdata)
 {
 	struct ctx *c = userdata;
 
-	/* Inside a table: buffer text into the current cell instead of emitting.
-	 * Cells are single-line, so breaks become spaces. */
+	/* Inside a table: buffer text into the current cell instead of
+	 * emitting. Cells are single-line, so breaks become spaces. */
 	if (c->tbl != NULL) {
 		struct table *t = c->tbl;
 		size_t idx = t->cur_row * t->cols + t->cur_col;
@@ -718,11 +732,12 @@ cb_text(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size, void *userdata)
 			return 0;
 		if (type == MD_TEXT_BR || type == MD_TEXT_SOFTBR)
 			return runbuf_push(&t->cells[idx], c->attr, " ", 1) < 0
-			    ? -1 : 0;
+			    ? -1
+			    : 0;
 		if (type == MD_TEXT_NULLCHAR || size == 0)
 			return 0;
-		return runbuf_push(&t->cells[idx], c->attr, text, size) < 0
-		    ? -1 : 0;
+		return runbuf_push(&t->cells[idx], c->attr, text, size) < 0 ? -1
+		                                                            : 0;
 	}
 
 	switch (type) {
@@ -758,16 +773,16 @@ md_render(const char *md, size_t len, const struct md_opts *opts,
 {
 	struct ctx c = {0};
 	MD_PARSER parser = {
-		.abi_version = 0,
-		.flags = MD_FLAG_STRIKETHROUGH | MD_FLAG_TABLES |
-		    MD_FLAG_TASKLISTS | MD_FLAG_NOHTML,
-		.enter_block = cb_enter_block,
-		.leave_block = cb_leave_block,
-		.enter_span = cb_enter_span,
-		.leave_span = cb_leave_span,
-		.text = cb_text,
-		.debug_log = NULL,
-		.syntax = NULL,
+	    .abi_version = 0,
+	    .flags = MD_FLAG_STRIKETHROUGH | MD_FLAG_TABLES |
+	        MD_FLAG_TASKLISTS | MD_FLAG_NOHTML,
+	    .enter_block = cb_enter_block,
+	    .leave_block = cb_leave_block,
+	    .enter_span = cb_enter_span,
+	    .leave_span = cb_leave_span,
+	    .text = cb_text,
+	    .debug_log = NULL,
+	    .syntax = NULL,
 	};
 
 	ASSERT_RETURN(md != NULL, -EINVAL);
@@ -778,8 +793,8 @@ md_render(const char *md, size_t len, const struct md_opts *opts,
 	c.user = userdata;
 	c.bol = true;
 	c.width = (opts != NULL && opts->width > 0) ? opts->width : 80;
-	c.tstyle = resolve_table_style(opts != NULL ? opts->tables
-	                                             : MD_TABLE_AUTO);
+	c.tstyle =
+	    resolve_table_style(opts != NULL ? opts->tables : MD_TABLE_AUTO);
 
 	if (md_parse(md, (MD_SIZE)len, &parser, &c) != 0) {
 		table_free(c.tbl);

@@ -23,7 +23,9 @@ clm_provider_from_str(const char *kind)
 }
 
 int
-clm_llm_new(struct clm_llm **ret, enum clm_provider provider, const char *api_key, const char *base_url, const char *model, bool disable_parallel_tool_calls)
+clm_llm_new(struct clm_llm **ret, enum clm_provider provider,
+    const char *api_key, const char *base_url, const char *model,
+    bool disable_parallel_tool_calls)
 {
 	struct clm_llm *llm;
 
@@ -42,7 +44,8 @@ clm_llm_new(struct clm_llm **ret, enum clm_provider provider, const char *api_ke
 	llm->model = strdup(model);
 	llm->disable_parallel_tool_calls = disable_parallel_tool_calls;
 
-	if (llm->api_key == NULL || llm->base_url == NULL || llm->model == NULL) {
+	if (llm->api_key == NULL || llm->base_url == NULL ||
+	    llm->model == NULL) {
 		clm_llm_free(llm);
 		return -ENOMEM;
 	}

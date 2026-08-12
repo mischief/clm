@@ -34,8 +34,8 @@
  * spec may be NULL, in which case both outputs come back NULL.
  */
 static inline void
-split_provider_model(const char *spec, char **provider_out,
-    const char **model_out)
+split_provider_model(
+    const char *spec, char **provider_out, const char **model_out)
 {
 	const char *slash = spec != NULL ? strchr(spec, '/') : NULL;
 

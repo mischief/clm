@@ -14,8 +14,9 @@
 /*
  * config.lua shape:
  *   mcp_servers = {
- *     { name = "fs", transport = "stdio", command = {"mcp-server-fs", "/tmp"} },
- *     { name = "search", transport = "http", url = "https://.../mcp", api_key = "..." },
+ *     { name = "fs", transport = "stdio", command = {"mcp-server-fs", "/tmp"}
+ * }, { name = "search", transport = "http", url = "https://.../mcp", api_key =
+ * "..." },
  *   }
  * "transport" defaults to "stdio" if omitted. "timeout_ms" is optional on
  * either kind (per tool-call deadline).
@@ -43,8 +44,9 @@ on_mcp_ready(int status, size_t tool_count, void *user)
 	char msg[256];
 
 	if (status == 0)
-		(void)snprintf(msg, sizeof(msg), "mcp: %s: %zu tool%s registered",
-		    ctx->name, tool_count, tool_count == 1 ? "" : "s");
+		(void)snprintf(msg, sizeof(msg),
+		    "mcp: %s: %zu tool%s registered", ctx->name, tool_count,
+		    tool_count == 1 ? "" : "s");
 	else
 		(void)snprintf(msg, sizeof(msg), "mcp: %s: connect failed (%d)",
 		    ctx->name, status);
@@ -92,7 +94,8 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 	server_cfg.name = name;
 	jtimeout = cJSON_GetObjectItemCaseSensitive(srv, "timeout_ms");
 	if (jtimeout != NULL && cJSON_IsNumber(jtimeout))
-		server_cfg.timeout_ms = (uint64_t)cJSON_GetNumberValue(jtimeout);
+		server_cfg.timeout_ms =
+		    (uint64_t)cJSON_GetNumberValue(jtimeout);
 
 	if (transport != NULL && strcmp(transport, "http") == 0) {
 		server_cfg.transport = CLM_MCP_HTTP;
@@ -114,7 +117,8 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 		    cJSON_GetArraySize(jcmd) == 0) {
 			char msg[256];
 			(void)snprintf(msg, sizeof(msg),
-			    "mcp: %s: stdio transport needs a non-empty 'command' array",
+			    "mcp: %s: stdio transport needs a non-empty "
+			    "'command' array",
 			    name);
 			emit_status(status_cb, status_user, msg);
 			return NULL;
@@ -138,9 +142,10 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 	ready_ctx->status_user = status_user;
 
 	if (clm_mcp_connect(agent, loop, &server_cfg, on_mcp_ready, ready_ctx,
-	    free_mcp_ready_ctx, &client) != 0) {
+	        free_mcp_ready_ctx, &client) != 0) {
 		char msg[256];
-		(void)snprintf(msg, sizeof(msg), "mcp: %s: failed to start", name);
+		(void)snprintf(
+		    msg, sizeof(msg), "mcp: %s: failed to start", name);
 		emit_status(status_cb, status_user, msg);
 		free(ready_ctx->name);
 		free(ready_ctx);
@@ -184,8 +189,8 @@ clm_cli_connect_mcp_servers(struct clm_agent *agent, uv_loop_t *loop,
 	}
 
 	for (i = 0; i < n; i++)
-		clients[i] = connect_one(agent, loop, cJSON_GetArrayItem(arr, i),
-		    status_cb, status_user);
+		clients[i] = connect_one(agent, loop,
+		    cJSON_GetArrayItem(arr, i), status_cb, status_user);
 
 	if (out_count != NULL)
 		*out_count = n;

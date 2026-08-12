@@ -50,17 +50,16 @@ CLM_API int clm_session_state_dir(char *buf, size_t bufsz);
  * NULL; they are recorded for listings only.
  */
 CLM_API int clm_session_create(const char *dir, const char *model,
-                               const char *provider_name,
-                               const char *agent_name,
-                               struct clm_session **out);
+    const char *provider_name, const char *agent_name,
+    struct clm_session **out);
 
 /*
  * Open an existing session for appending. -ENOENT if no such session,
  * -EINVAL if id is not a valid session id (ids are [0-9A-Za-z-] only;
  * anything else is rejected before touching the filesystem).
  */
-CLM_API int clm_session_open(const char *dir, const char *id,
-                             struct clm_session **out);
+CLM_API int clm_session_open(
+    const char *dir, const char *id, struct clm_session **out);
 
 /*
  * Append one message as a single JSONL line. cz must be the compressor
@@ -68,8 +67,7 @@ CLM_API int clm_session_open(const char *dir, const char *id,
  * written plain. Intended to be called from an on_message callback.
  */
 CLM_API int clm_session_append(struct clm_session *s,
-                               const struct clm_message *m,
-                               const struct clm_compressor *cz);
+    const struct clm_message *m, const struct clm_compressor *cz);
 
 /* The session's id (borrowed, valid until clm_session_free). */
 CLM_API const char *clm_session_id(const struct clm_session *s);
@@ -96,7 +94,7 @@ CLM_API void clm_session_free(struct clm_session *s);
  * this library understands.
  */
 CLM_API int clm_session_load(const char *dir, const char *id,
-                             struct clm_history *hist, cJSON **out_meta);
+    struct clm_history *hist, cJSON **out_meta);
 
 /* One row of a session listing. All strings owned; may be NULL. */
 struct clm_session_info {
@@ -112,8 +110,8 @@ struct clm_session_info {
  * *out_n entries (free via clm_session_list_free); 0 entries yields
  * *out == NULL. A missing dir is an empty listing, not an error.
  */
-CLM_API int clm_session_list(const char *dir, struct clm_session_info **out,
-                             size_t *out_n);
+CLM_API int clm_session_list(
+    const char *dir, struct clm_session_info **out, size_t *out_n);
 CLM_API void clm_session_list_free(struct clm_session_info *infos, size_t n);
 
 #endif /* CLM_SESSION_H */

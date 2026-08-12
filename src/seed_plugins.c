@@ -82,8 +82,8 @@ clm_seed_default_plugins(const char *dir)
 		autofree char *path = malloc(dirlen + 1 + strlen(p->name) + 1);
 		if (path == NULL)
 			continue;
-		(void)snprintf(path, dirlen + 1 + strlen(p->name) + 1,
-		    "%s/%s", dir, p->name);
+		(void)snprintf(path, dirlen + 1 + strlen(p->name) + 1, "%s/%s",
+		    dir, p->name);
 		(void)write_file(path, p->data, p->len);
 	}
 

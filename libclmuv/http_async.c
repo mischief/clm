@@ -66,7 +66,8 @@ struct clm_http_mux {
 	CURLM *multi_handle;
 	uv_timer_t timer_handle;
 	bool timer_initialized;
-	bool timer_closing; /* uv_close on timer_handle issued, awaiting callback */
+	bool timer_closing; /* uv_close on timer_handle issued, awaiting
+	                       callback */
 	size_t live_requests;
 };
 
@@ -113,8 +114,8 @@ http_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 		req->response_buf.data = NULL;
 		req->response_buf.len = 0;
 	}
-	result = http_response_buffer_write(&req->response_buf, contents, size,
-	    nmemb, !streaming, &realsize);
+	result = http_response_buffer_write(
+	    &req->response_buf, contents, size, nmemb, !streaming, &realsize);
 	if (result != HTTP_RESPONSE_BUFFER_OK) {
 		req->state = CLM_HTTP_ERROR;
 		switch (result) {
@@ -191,7 +192,8 @@ http_reap_done(struct clm_http_mux *mux, int poll_status)
 	int msgs_left;
 	CURLMsg *msg;
 
-	while ((msg = curl_multi_info_read(mux->multi_handle, &msgs_left)) != NULL) {
+	while ((msg = curl_multi_info_read(mux->multi_handle, &msgs_left)) !=
+	    NULL) {
 		struct clm_http_request *req;
 
 		if (msg->msg != CURLMSG_DONE)
@@ -199,7 +201,8 @@ http_reap_done(struct clm_http_mux *mux, int poll_status)
 
 		req = req_from_easy(msg->easy_handle);
 		if (req == NULL) {
-			clm_debug("CURLMSG_DONE for unknown easy handle, ignoring");
+			clm_debug(
+			    "CURLMSG_DONE for unknown easy handle, ignoring");
 			continue;
 		}
 
@@ -235,10 +238,10 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 	clm_debug("status=%d, events=%d, fd=%d", status, events, ctx->sockfd);
 
 	if (status < 0) {
-		/* tell curl this socket failed, then retain libuv's signed status for
-		 * every request completed by this action. */
-		curl_multi_socket_action(mux->multi_handle, ctx->sockfd,
-		    CURL_CSELECT_ERR, &running);
+		/* tell curl this socket failed, then retain libuv's signed
+		 * status for every request completed by this action. */
+		curl_multi_socket_action(
+		    mux->multi_handle, ctx->sockfd, CURL_CSELECT_ERR, &running);
 		http_reap_done(mux, status);
 		return;
 	}
@@ -250,7 +253,8 @@ http_poll_callback(uv_poll_t *handle, int status, int events)
 
 	clm_debug("curl_action=%d", curl_action);
 
-	curl_multi_socket_action(mux->multi_handle, ctx->sockfd, curl_action, &running);
+	curl_multi_socket_action(
+	    mux->multi_handle, ctx->sockfd, curl_action, &running);
 	clm_debug("curl_multi_socket_action completed");
 
 	http_reap_done(mux, 0);
@@ -264,7 +268,8 @@ on_socket_closed(uv_handle_t *handle)
 }
 
 static int
-http_socket_callback(CURL *easy, curl_socket_t s, int action, void *userp, void *socketp)
+http_socket_callback(
+    CURL *easy, curl_socket_t s, int action, void *userp, void *socketp)
 {
 	struct clm_http_mux *mux = userp;
 	struct clm_http_socket *ctx = socketp;
@@ -332,8 +337,10 @@ http_timer_callback(CURLM *multi, long timeout_ms, void *userp)
 		clm_debug("uv_timer_init success");
 	}
 
-	uv_timer_start(&mux->timer_handle, http_timer_expired, (uint64_t)timeout_ms, 0);
-	clm_debug("uv_timer_start completed with timeout=%lu", (unsigned long)timeout_ms);
+	uv_timer_start(
+	    &mux->timer_handle, http_timer_expired, (uint64_t)timeout_ms, 0);
+	clm_debug("uv_timer_start completed with timeout=%lu",
+	    (unsigned long)timeout_ms);
 	return 0;
 }
 
@@ -344,7 +351,8 @@ http_timer_expired(uv_timer_t *handle)
 	int running;
 
 	clm_debug("calling curl_multi_socket_action");
-	curl_multi_socket_action(mux->multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
+	curl_multi_socket_action(
+	    mux->multi_handle, CURL_SOCKET_TIMEOUT, 0, &running);
 	clm_debug("curl_multi_socket_action completed, running=%d", running);
 
 	/* A transfer can finish on the timer path; see http_reap_done's
@@ -372,9 +380,11 @@ clm_http_mux_new(uv_loop_t *loop)
 
 	mux->uv = loop;
 
-	curl_multi_setopt(mux->multi_handle, CURLMOPT_SOCKETFUNCTION, http_socket_callback);
+	curl_multi_setopt(
+	    mux->multi_handle, CURLMOPT_SOCKETFUNCTION, http_socket_callback);
 	curl_multi_setopt(mux->multi_handle, CURLMOPT_SOCKETDATA, mux);
-	curl_multi_setopt(mux->multi_handle, CURLMOPT_TIMERFUNCTION, http_timer_callback);
+	curl_multi_setopt(
+	    mux->multi_handle, CURLMOPT_TIMERFUNCTION, http_timer_callback);
 	curl_multi_setopt(mux->multi_handle, CURLMOPT_TIMERDATA, mux);
 
 	return mux;
@@ -426,8 +436,7 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
     const char *api_key, const char *json_body,
     struct curl_slist *extra_headers, clm_http_success_cb success_cb,
     clm_http_error_cb error_cb, clm_http_data_cb data_cb,
-    const char *client_suffix, void *user,
-    struct clm_http_request **out_req)
+    const char *client_suffix, void *user, struct clm_http_request **out_req)
 {
 	struct clm_http_request *req;
 	char *auth_header;
@@ -478,9 +487,11 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 	 * entry, not an unconfigured one) sent no Content-Type at all, and
 	 * more than one backend (llm7.io included) 400s a JSON POST with no
 	 * Content-Type rather than inferring it from the body. */
-	req->headers = curl_slist_append(NULL, "Content-Type: application/json");
+	req->headers =
+	    curl_slist_append(NULL, "Content-Type: application/json");
 	if (api_key != NULL && api_key[0] != '\0') {
-		auth_header_len = sizeof("Authorization: Bearer ") + strlen(api_key);
+		auth_header_len =
+		    sizeof("Authorization: Bearer ") + strlen(api_key);
 		auth_header = malloc(auth_header_len);
 		if (auth_header == NULL) {
 			clm_debug("auth_header alloc failed");
@@ -489,7 +500,8 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 			free(req);
 			return -ENOMEM;
 		}
-		(void)snprintf(auth_header, auth_header_len, "Authorization: Bearer %s", api_key);
+		(void)snprintf(auth_header, auth_header_len,
+		    "Authorization: Bearer %s", api_key);
 		req->headers = curl_slist_append(req->headers, auth_header);
 		free(auth_header);
 	}
@@ -511,23 +523,28 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 		 * after this call returns -- a use-after-free that sent
 		 * garbage bytes as the request body instead of the caller's
 		 * JSON. */
-		curl_easy_setopt(req->easy_handle, CURLOPT_COPYPOSTFIELDS, json_body);
+		curl_easy_setopt(
+		    req->easy_handle, CURLOPT_COPYPOSTFIELDS, json_body);
 	} else {
 		curl_easy_setopt(req->easy_handle, CURLOPT_HTTPGET, 1L);
 	}
-	curl_easy_setopt(req->easy_handle, CURLOPT_WRITEFUNCTION, http_write_callback);
+	curl_easy_setopt(
+	    req->easy_handle, CURLOPT_WRITEFUNCTION, http_write_callback);
 	curl_easy_setopt(req->easy_handle, CURLOPT_WRITEDATA, req);
 	if (req->headers != NULL)
-		curl_easy_setopt(req->easy_handle, CURLOPT_HTTPHEADER, req->headers);
+		curl_easy_setopt(
+		    req->easy_handle, CURLOPT_HTTPHEADER, req->headers);
 
-	/* Minimal, deliberate User-Agent; append a tool/plugin comment if given. */
+	/* Minimal, deliberate User-Agent; append a tool/plugin comment if
+	 * given. */
 	if (client_suffix != NULL && client_suffix[0] != '\0') {
 		char ua[256];
 		(void)snprintf(ua, sizeof(ua), "%s (tool: %s)", CLM_UA_BASE,
 		    client_suffix);
 		curl_easy_setopt(req->easy_handle, CURLOPT_USERAGENT, ua);
 	} else {
-		curl_easy_setopt(req->easy_handle, CURLOPT_USERAGENT, CLM_UA_BASE);
+		curl_easy_setopt(
+		    req->easy_handle, CURLOPT_USERAGENT, CLM_UA_BASE);
 	}
 	curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 0L);
 	/* No total timeout, but abort if the connection goes completely dead.
@@ -543,7 +560,8 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 	curl_easy_setopt(req->easy_handle, CURLOPT_LOW_SPEED_LIMIT, 1L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_LOW_SPEED_TIME, 300L);
 	curl_easy_setopt(req->easy_handle, CURLOPT_FOLLOWLOCATION, 1L);
-	curl_easy_setopt(req->easy_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
+	curl_easy_setopt(
+	    req->easy_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
 	/* CURLOPT_PRIVATE, not CURLMOPT_SOCKETDATA/TIMERDATA (those carry the
 	 * mux, set once in clm_http_mux_new): this is how the mux's shared
 	 * callbacks recover *this* request out of however many are
@@ -559,8 +577,8 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 	 * this function can either publish a live handle or return a completed
 	 * request with a null handle. */
 	req->starting = true;
-	curl_multi_socket_action(mux->multi_handle, CURL_SOCKET_TIMEOUT, 0,
-	    &req->events_pending);
+	curl_multi_socket_action(
+	    mux->multi_handle, CURL_SOCKET_TIMEOUT, 0, &req->events_pending);
 	clm_debug("curl_multi_socket_action completed");
 
 	http_reap_done(mux, 0);
@@ -595,7 +613,8 @@ http_request_complete(struct clm_http_request *req)
 	if (req->state == CLM_HTTP_DONE) {
 		struct clm_http_response resp = {0};
 		long status_code = 200;
-		curl_easy_getinfo(req->easy_handle, CURLINFO_RESPONSE_CODE, &status_code);
+		curl_easy_getinfo(
+		    req->easy_handle, CURLINFO_RESPONSE_CODE, &status_code);
 		resp.status_code = (int)status_code;
 		resp.body = req->response_buf.data;
 		req->response_buf.data = NULL;
@@ -625,9 +644,11 @@ http_request_teardown(struct clm_http_request *req)
 
 	if (req->easy_handle != NULL && req->mux != NULL &&
 	    req->mux->multi_handle != NULL)
-		curl_multi_remove_handle(req->mux->multi_handle, req->easy_handle);
+		curl_multi_remove_handle(
+		    req->mux->multi_handle, req->easy_handle);
 
-	/* detach before invoking user code. the callback may release the mux owner. */
+	/* detach before invoking user code. the callback may release the mux
+	 * owner. */
 	if (req->mux != NULL) {
 		assert(req->mux->live_requests > 0);
 		req->mux->live_requests--;
@@ -654,7 +675,8 @@ clm_http_request_free(struct clm_http_request *req)
 		 * teardown (e.g. a caller invoking this directly on a
 		 * request that was never started). */
 		if (req->mux != NULL && req->mux->multi_handle != NULL)
-			curl_multi_remove_handle(req->mux->multi_handle, req->easy_handle);
+			curl_multi_remove_handle(
+			    req->mux->multi_handle, req->easy_handle);
 		curl_easy_cleanup(req->easy_handle);
 		req->easy_handle = NULL;
 	}

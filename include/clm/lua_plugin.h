@@ -19,14 +19,14 @@ CLM_API int clm_lua_env_new(struct clm_agent *agent, struct clm_lua_env **out);
  * subtable and makes each plugin's section available as clm.config.
  * Must be called before clm_lua_load_plugins.
  */
-CLM_API int clm_lua_env_set_config_from(struct clm_lua_env *env,
-    struct clm_lua_cfg *cfg);
+CLM_API int clm_lua_env_set_config_from(
+    struct clm_lua_env *env, struct clm_lua_cfg *cfg);
 
 /*
  * Legacy: set per-tool config from a JSON string.
  */
-CLM_API int clm_lua_env_set_config(struct clm_lua_env *env,
-    const char *tool_config_json);
+CLM_API int clm_lua_env_set_config(
+    struct clm_lua_env *env, const char *tool_config_json);
 
 /*
  * Load all .lua files from the given directory. Each file gets its own
@@ -65,16 +65,16 @@ CLM_API struct clm_lua_cfg *clm_lua_cfg_load(const char *path);
  * "agent" key from the config to determine the name.
  * Returns 0 on success, -1 if the agent file is not found.
  */
-CLM_API int clm_lua_cfg_load_agent(struct clm_lua_cfg *cfg,
-    const char *agents_dir, const char *agent_name);
+CLM_API int clm_lua_cfg_load_agent(
+    struct clm_lua_cfg *cfg, const char *agents_dir, const char *agent_name);
 
 /*
  * Query a string field from the resolved agent config.
  * Returns NULL if the field is absent or not a string.
  * The returned pointer is valid for the lifetime of the cfg.
  */
-CLM_API const char *clm_lua_cfg_get_str(struct clm_lua_cfg *cfg,
-    const char *key);
+CLM_API const char *clm_lua_cfg_get_str(
+    struct clm_lua_cfg *cfg, const char *key);
 
 /*
  * Query an array-of-strings field, checking the resolved agent config
@@ -85,8 +85,8 @@ CLM_API const char *clm_lua_cfg_get_str(struct clm_lua_cfg *cfg,
  * Non-string entries are skipped. NULL if the field is absent, not a
  * table, or holds no strings.
  */
-CLM_API char **clm_lua_cfg_get_str_list(struct clm_lua_cfg *cfg,
-    const char *key);
+CLM_API char **clm_lua_cfg_get_str_list(
+    struct clm_lua_cfg *cfg, const char *key);
 
 /* Free a list from clm_lua_cfg_get_str_list. Safe to call with NULL. */
 CLM_API void clm_lua_cfg_free_str_list(char **list);
@@ -106,8 +106,8 @@ CLM_API const char *clm_lua_cfg_get_agent_name(struct clm_lua_cfg *cfg);
  * rate_burst. e.g. clm_lua_cfg_provider_str(cfg, "huggingface", "url")
  * Returns NULL if not found.
  */
-CLM_API const char *clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
-    const char *provider_name, const char *key);
+CLM_API const char *clm_lua_cfg_provider_str(
+    struct clm_lua_cfg *cfg, const char *provider_name, const char *key);
 
 /* Same as above but for integer values. Returns fallback if not set. */
 CLM_API int64_t clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
@@ -157,8 +157,8 @@ CLM_API int64_t clm_lua_cfg_provider_model_int(struct clm_lua_cfg *cfg,
  * Returns a malloc'd NULL-terminated array, free with
  * clm_lua_cfg_free_str_list(). Returns NULL if nothing matches.
  */
-CLM_API char **clm_lua_cfg_list_names(struct clm_lua_cfg *cfg,
-    const char *table);
+CLM_API char **clm_lua_cfg_list_names(
+    struct clm_lua_cfg *cfg, const char *table);
 
 /*
  * Get the tools config as a JSON string (for clm_lua_env_set_config).

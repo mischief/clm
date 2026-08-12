@@ -66,11 +66,11 @@ struct ui {
 	struct clm_host *host;
 	struct clm_agent *agent;
 	struct clm_lua_env *lua_env;
-	struct clm_lua_cfg *lcfg;      /* kept alive for /agent switching */
-	const char *plugin_dir;        /* NULL = use XDG default */
+	struct clm_lua_cfg *lcfg; /* kept alive for /agent switching */
+	const char *plugin_dir;   /* NULL = use XDG default */
 	struct clm_mcp_client **mcp_clients;
 	size_t mcp_client_count;
-	struct clm_session *session;   /* NULL = session logging disabled */
+	struct clm_session *session; /* NULL = session logging disabled */
 
 	uv_poll_t stdin_poll;
 	uv_timer_t repaint;
@@ -116,12 +116,12 @@ struct ui {
 	size_t
 	    scroll; /* wrapped rows scrolled up from the bottom; 0 = follow */
 	int last_total; /* wrapped row count as of the last draw_transcript
-	                  * call, so a growing transcript can adjust scroll
-	                  * to hold the viewport's absolute position steady
-	                  * (see draw_transcript) instead of scroll's
-	                  * bottom-relative distance silently letting new
-	                  * rows drag the view along with them. -1 = not
-	                  * yet painted. */
+	                 * call, so a growing transcript can adjust scroll
+	                 * to hold the viewport's absolute position steady
+	                 * (see draw_transcript) instead of scroll's
+	                 * bottom-relative distance silently letting new
+	                 * rows drag the view along with them. -1 = not
+	                 * yet painted. */
 
 	/* Input line editor (byte buffer, UTF-8; cursor is a byte offset). */
 	char input[1024];
@@ -140,21 +140,23 @@ struct ui {
 	uint64_t complete_generation;
 
 	/* Status model. */
-	char *model; /* displayed in status bar (owned) */
-	char *agent_name; /* displayed in status bar (owned) */
+	char *model;         /* displayed in status bar (owned) */
+	char *agent_name;    /* displayed in status bar (owned) */
 	char *provider_name; /* config.lua providers[] entry name, displayed in
 	                      * status bar (owned); NULL if unknown/literal */
 	enum clm_agent_state state;
 	enum clm_conn_status conn;
 	char conn_detail[64];
 	char usage[96];
-	int64_t ctx_used; /* tokens carried forward, for the context gauge */
-	bool autocompacting; /* true while cb_turn_done re-enters for a compact attempt */
+	int64_t ctx_used;    /* tokens carried forward, for the context gauge */
+	bool autocompacting; /* true while cb_turn_done re-enters for a compact
+	                        attempt */
 	char batch[64];
 	int spinner;
 	bool busy;           /* a turn is in flight */
 	bool started_assist; /* assistant text seen this turn */
-	enum clm_agent_state prev_state; /* track transitions for steering injection */
+	enum clm_agent_state
+	    prev_state; /* track transitions for steering injection */
 
 	/* Permission prompt queue: requests arrive in bursts (batched tool
 	 * calls) and we present them one at a time. */

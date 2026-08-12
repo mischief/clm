@@ -22,7 +22,7 @@ static int failures;
 
 #define CHECK(cond, msg)                                                       \
 	do {                                                                   \
-		if (!(cond)) {                                                  \
+		if (!(cond)) {                                                 \
 			fprintf(stderr, "FAIL: %s (%s:%d)\n", (msg), __FILE__, \
 			    __LINE__);                                         \
 			failures++;                                            \
@@ -110,8 +110,8 @@ line_at(const struct capture *c, size_t n, char *out, size_t outsz)
 static void
 test_emphasis(void)
 {
-	autofree struct capture *c = render("plain **bold** _em_ `code`",
-	    MD_TABLE_PLAIN);
+	autofree struct capture *c =
+	    render("plain **bold** _em_ `code`", MD_TABLE_PLAIN);
 
 	if (c == NULL)
 		return;
@@ -124,8 +124,8 @@ test_emphasis(void)
 static void
 test_nesting(void)
 {
-	autofree struct capture *c = render("**bold _and italic_**",
-	    MD_TABLE_PLAIN);
+	autofree struct capture *c =
+	    render("**bold _and italic_**", MD_TABLE_PLAIN);
 
 	if (c == NULL)
 		return;
@@ -141,15 +141,15 @@ test_code_block_literal(void)
 
 	if (c == NULL)
 		return;
-	CHECK(strstr(c->text, "a * b") != NULL, "code block keeps literal text");
+	CHECK(
+	    strstr(c->text, "a * b") != NULL, "code block keeps literal text");
 	CHECK(styled(c, "a * b", MD_ST_CODE), "code block text carries CODE");
 }
 
-static const char *table_md =
-    "| Fruit | Colour |\n"
-    "|-------|--------|\n"
-    "| Apple | **Red** |\n"
-    "| Fig | Purple |\n";
+static const char *table_md = "| Fruit | Colour |\n"
+                              "|-------|--------|\n"
+                              "| Apple | **Red** |\n"
+                              "| Fig | Purple |\n";
 
 static void
 test_table_alignment(void)
@@ -160,12 +160,13 @@ test_table_alignment(void)
 	if (c == NULL)
 		return;
 	/* Row 0 is the header, row 1 the separator rule, row 2 a body row.
-	 * Columns are padded to a common width, so rows share a display width. */
+	 * Columns are padded to a common width, so rows share a display width.
+	 */
 	line_at(c, 0, l0, sizeof(l0));
 	line_at(c, 2, l2, sizeof(l2));
 	CHECK(l0[0] != '\0' && l2[0] != '\0', "table produced header and body");
 	CHECK(md_display_width(l0, strlen(l0)) ==
-	    md_display_width(l2, strlen(l2)),
+	        md_display_width(l2, strlen(l2)),
 	    "table columns aligned to equal width");
 }
 
@@ -176,7 +177,8 @@ test_table_bold_cell(void)
 
 	if (c == NULL)
 		return;
-	CHECK(styled(c, "Red", MD_ST_BOLD), "bold inside a table cell stays bold");
+	CHECK(styled(c, "Red", MD_ST_BOLD),
+	    "bold inside a table cell stays bold");
 }
 
 static void
@@ -193,14 +195,15 @@ test_table_glyphs(void)
 	CHECK(strstr(uni->text, "\u2502") != NULL,
 	    "unicode table uses box-drawing rule");
 	CHECK(strstr(uni->text, "\u250c") != NULL &&
-	    strstr(uni->text, "\u2518") != NULL,
+	        strstr(uni->text, "\u2518") != NULL,
 	    "unicode table has corner glyphs");
 }
 
 int
 main(void)
 {
-	/* Table alignment measures display width via wcwidth; needs a locale. */
+	/* Table alignment measures display width via wcwidth; needs a locale.
+	 */
 	setlocale(LC_ALL, "");
 
 	test_emphasis();

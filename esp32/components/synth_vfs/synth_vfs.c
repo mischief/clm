@@ -148,9 +148,10 @@ build_live_entries(struct synth_dirent *out, size_t max, const char *under)
 
 	line = buf;
 	while (line < buf + buflen && n < max) {
-		const char *nl = memchr(line, '\n', (size_t)(buf + buflen - line));
-		size_t linelen = nl ? (size_t)(nl - line)
-		                    : (size_t)(buf + buflen - line);
+		const char *nl =
+		    memchr(line, '\n', (size_t)(buf + buflen - line));
+		size_t linelen =
+		    nl ? (size_t)(nl - line) : (size_t)(buf + buflen - line);
 		const char *colon = memchr(line, ':', linelen);
 		const char *arrow = colon
 		    ? find_arrow(colon, (size_t)(line + linelen - colon))
@@ -163,10 +164,12 @@ build_live_entries(struct synth_dirent *out, size_t max, const char *under)
 			/* Our own registration's path_prefix is "" (empty
 			 * base_path), which never satisfies this -- no separate
 			 * self-exclusion check needed. */
-			if (pfxlen > matchlen && memcmp(pfx, match, matchlen) == 0) {
+			if (pfxlen > matchlen &&
+			    memcmp(pfx, match, matchlen) == 0) {
 				const char *rest = pfx + matchlen;
 				size_t restlen = pfxlen - matchlen;
-				const char *seg_end = memchr(rest, '/', restlen);
+				const char *seg_end =
+				    memchr(rest, '/', restlen);
 				size_t seglen = seg_end
 				    ? (size_t)(seg_end - rest)
 				    : restlen;
@@ -174,7 +177,8 @@ build_live_entries(struct synth_dirent *out, size_t max, const char *under)
 
 				for (size_t i = 0; i < n && !dup; i++) {
 					if (strlen(out[i].name) == seglen &&
-					    memcmp(out[i].name, rest, seglen) == 0)
+					    memcmp(out[i].name, rest, seglen) ==
+					        0)
 						dup = true;
 				}
 				if (!dup && seglen > 0) {
@@ -182,29 +186,38 @@ build_live_entries(struct synth_dirent *out, size_t max, const char *under)
 					if (name != NULL) {
 						char fullpath[96];
 						struct stat st;
-						/* Fallback if stat() itself fails (e.g.
-						 * ENOSYS, no .stat op at all -- common for
-						 * a simple character-device-style VFS
-						 * driver like usb_serial_jtag_vfs.c, unlike
-						 * a real mounted filesystem, which always
-						 * implements stat properly): assume NOT a
-						 * directory. A registration nobody bothered
-						 * making statable is far more likely a
-						 * single device node than something
-						 * meant to be listed into. */
+						/* Fallback if stat() itself
+						 * fails (e.g. ENOSYS, no .stat
+						 * op at all -- common for a
+						 * simple character-device-style
+						 * VFS driver like
+						 * usb_serial_jtag_vfs.c, unlike
+						 * a real mounted filesystem,
+						 * which always implements stat
+						 * properly): assume NOT a
+						 * directory. A registration
+						 * nobody bothered making
+						 * statable is far more likely a
+						 * single device node than
+						 * something meant to be listed
+						 * into. */
 						bool is_dir = false;
 
 						memcpy(name, rest, seglen);
 						name[seglen] = '\0';
 
 						if (under[0] == '\0')
-							snprintf(fullpath, sizeof(fullpath),
+							snprintf(fullpath,
+							    sizeof(fullpath),
 							    "/%s", name);
 						else
-							snprintf(fullpath, sizeof(fullpath),
-							    "/%s/%s", under, name);
+							snprintf(fullpath,
+							    sizeof(fullpath),
+							    "/%s/%s", under,
+							    name);
 						if (stat(fullpath, &st) == 0)
-							is_dir = S_ISDIR(st.st_mode);
+							is_dir =
+							    S_ISDIR(st.st_mode);
 
 						out[n].name = name;
 						out[n].is_dir = is_dir;
@@ -294,7 +307,8 @@ synth_opendir_p(void *ctx, const char *name)
 		/* is_root_path also catches "." -- normalize_under alone
 		 * would treat it as a literal one-char path segment, not
 		 * the root, since it only strips a leading '/'. */
-		const char *under = is_root_path(name) ? ""
+		const char *under = is_root_path(name)
+		    ? ""
 		    : normalize_under(name, storage, sizeof(storage));
 		d->live_n = build_live_entries(d->live, SYNTH_LIVE_MAX, under);
 	}
@@ -312,7 +326,8 @@ static struct dirent *
 synth_readdir_p(void *ctx, DIR *pdir)
 {
 	struct synth_dir *d = (struct synth_dir *)pdir;
-	const struct synth_dirent *table = d->mount->live ? d->live : d->mount->entries;
+	const struct synth_dirent *table =
+	    d->mount->live ? d->live : d->mount->entries;
 	size_t n = d->mount->live ? d->live_n : d->mount->n;
 	const struct synth_dirent *e;
 
@@ -458,19 +473,19 @@ synth_close_p(void *ctx, int fd)
 }
 
 static const esp_vfs_t synth_vfs_ops = {
-	.flags = ESP_VFS_FLAG_CONTEXT_PTR | ESP_VFS_FLAG_READONLY_FS,
-	.open_p = synth_open_p,
-	.read_p = synth_read_p,
-	.close_p = synth_close_p,
-	.stat_p = synth_stat_p,
-	.opendir_p = synth_opendir_p,
-	.readdir_p = synth_readdir_p,
-	.closedir_p = synth_closedir_p,
+    .flags = ESP_VFS_FLAG_CONTEXT_PTR | ESP_VFS_FLAG_READONLY_FS,
+    .open_p = synth_open_p,
+    .read_p = synth_read_p,
+    .close_p = synth_close_p,
+    .stat_p = synth_stat_p,
+    .opendir_p = synth_opendir_p,
+    .readdir_p = synth_readdir_p,
+    .closedir_p = synth_closedir_p,
 };
 
 esp_err_t
-synth_vfs_register(const char *base_path, const struct synth_dirent *entries,
-    size_t n)
+synth_vfs_register(
+    const char *base_path, const struct synth_dirent *entries, size_t n)
 {
 	/* Leaked deliberately: this is meant for a handful of board-lifetime
 	 * registrations at init, never unregistered, so there's no

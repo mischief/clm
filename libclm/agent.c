@@ -21,9 +21,12 @@
 #include "banned.h"
 
 static const char *default_system_prompt =
-    "You are a helpful assistant. Answer from your own knowledge whenever you can. "
-    "Use the provided tools only when the task requires reading or modifying the "
-    "user's files or running a command on their system. When you already have the "
+    "You are a helpful assistant. Answer from your own knowledge whenever you "
+    "can. "
+    "Use the provided tools only when the task requires reading or modifying "
+    "the "
+    "user's files or running a command on their system. When you already have "
+    "the "
     "answer, reply directly without using tools.";
 
 /* Minimum spacing between injected "current time" context updates. */
@@ -38,9 +41,12 @@ static const char *default_system_prompt =
  * clm_agent_submit); this convention line is what keeps that transparent.
  */
 static const char *time_context_note =
-    "\n\nYou may periodically receive a line beginning with \"[context update]\" "
-    "carrying the current date and time. Treat it as silent ambient context, not "
-    "as a message from the user. Never announce, repeat, or comment on the time "
+    "\n\nYou may periodically receive a line beginning with \"[context "
+    "update]\" "
+    "carrying the current date and time. Treat it as silent ambient context, "
+    "not "
+    "as a message from the user. Never announce, repeat, or comment on the "
+    "time "
     "unless the user explicitly asks about the date or time.";
 
 /* Format the current local time as an RFC 2822 date string. */
@@ -160,17 +166,18 @@ clm_derive_props_url(const char *base_url)
  */
 static int
 agent_http_post(struct clm_agent *agent, const char *url, const char *body,
-    clm_http_success_cb success, clm_http_error_cb error,
-    clm_http_data_cb data, void *user, struct clm_http_call **out)
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
 {
-	const struct clm_provider_ops *ops = clm_provider_ops_get(agent->llm->provider);
+	const struct clm_provider_ops *ops =
+	    clm_provider_ops_get(agent->llm->provider);
 	autofreev char **auth_headers = NULL;
 	struct clm_http_req req = {
-		.url = url,
-		.api_key = agent->llm->api_key,
-		.body = body,
-		.headers = NULL,
-		.client_suffix = NULL,
+	    .url = url,
+	    .api_key = agent->llm->api_key,
+	    .body = body,
+	    .headers = NULL,
+	    .client_suffix = NULL,
 	};
 
 	/* A provider with its own auth scheme (e.g. Anthropic's
@@ -185,12 +192,13 @@ agent_http_post(struct clm_agent *agent, const char *url, const char *body,
 		}
 	}
 
-	return agent->host->http_post(agent->host->ctx, &req, success, error,
-	    data, user, out);
+	return agent->host->http_post(
+	    agent->host->ctx, &req, success, error, data, user, out);
 }
 
 int
-clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm_callbacks *cb, void *user, struct clm_agent **out)
+clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
+    const struct clm_callbacks *cb, void *user, struct clm_agent **out)
 {
 	struct clm_agent *agent;
 	int r;
@@ -250,14 +258,15 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 		}
 	}
 	{
-		const char *base = agent->system_prompt_base ? agent->system_prompt_base
-		                                              : default_system_prompt;
+		const char *base = agent->system_prompt_base
+		    ? agent->system_prompt_base
+		    : default_system_prompt;
 		autofree char *sys = build_system_prompt(base);
 		struct clm_message *m;
 
 		if (sys == NULL ||
-		    (m = clm_history_add_system(&agent->history, sys,
-		    agent->compressor)) == NULL) {
+		    (m = clm_history_add_system(
+		         &agent->history, sys, agent->compressor)) == NULL) {
 			clm_agent_free(agent);
 			return -ENOMEM;
 		}
@@ -281,11 +290,13 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host, const struct clm
 	 * the fallback rate is deliberately very high rather than
 	 * "conservative". Overridable per provider via cfg. */
 	{
-		int64_t rps = cfg->rate_tokens_per_sec > 0 ? cfg->rate_tokens_per_sec
+		int64_t rps = cfg->rate_tokens_per_sec > 0
+		    ? cfg->rate_tokens_per_sec
 		    : CLM_DEFAULT_LLM_RL_TOKENS_PER_SEC;
 		int64_t burst = cfg->rate_burst > 0 ? cfg->rate_burst
-		    : CLM_DEFAULT_LLM_RL_BURST;
-		if (clm_ratelimit_new(&agent->llm_rl, (size_t)rps, (size_t)burst) < 0) {
+		                                    : CLM_DEFAULT_LLM_RL_BURST;
+		if (clm_ratelimit_new(
+		        &agent->llm_rl, (size_t)rps, (size_t)burst) < 0) {
 			clm_agent_free(agent);
 			return -ENOMEM;
 		}
@@ -337,7 +348,8 @@ clm_agent_free_ptr(struct clm_agent **agent)
 }
 
 void
-clm_agent_set_compressor(struct clm_agent *agent, const struct clm_compressor *cz)
+clm_agent_set_compressor(
+    struct clm_agent *agent, const struct clm_compressor *cz)
 {
 	if (agent == NULL)
 		return;
@@ -390,7 +402,8 @@ clm_agent_over_autocompact_threshold(const struct clm_agent *agent)
 		return false;
 	if (agent->ctx_max <= 0)
 		return agent->ctx_used >= CLM_AUTOCOMPACT_FALLBACK_TOKENS;
-	int pct = agent->autocompact_pct > 0 ? agent->autocompact_pct : CLM_AUTOCOMPACT_PCT;
+	int pct = agent->autocompact_pct > 0 ? agent->autocompact_pct
+	                                     : CLM_AUTOCOMPACT_PCT;
 	return (agent->ctx_used * 100) / agent->ctx_max >= pct;
 }
 
@@ -461,12 +474,13 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 	}
 
 	/*
-	 * Refresh the model's sense of time on a new turn once enough has passed.
-	 * The Qwen3 template forbids a non-leading system message, so this rides
-	 * in a user-role message framed as ambient context; the system prompt's
-	 * note tells the model to treat "[context update]" lines silently. It is
-	 * appended near the newest turn (outside the cached prefix) so it does not
-	 * invalidate the server's prompt cache for the earlier conversation.
+	 * Refresh the model's sense of time on a new turn once enough has
+	 * passed. The Qwen3 template forbids a non-leading system message, so
+	 * this rides in a user-role message framed as ambient context; the
+	 * system prompt's note tells the model to treat "[context update]"
+	 * lines silently. It is appended near the newest turn (outside the
+	 * cached prefix) so it does not invalidate the server's prompt cache
+	 * for the earlier conversation.
 	 */
 	{
 		time_t now = time(NULL);
@@ -480,19 +494,20 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 			if (msg != NULL) {
 				snprintf(msg, strlen(stamp) + 100,
 				    "[context update] current time: %s\n"
-				    "(automatic context, not user input; do not acknowledge)",
+				    "(automatic context, not user input; do "
+				    "not acknowledge)",
 				    stamp);
 				clm_agent_emit_message(agent,
 				    clm_history_add_user(&agent->history, msg,
-				    agent->compressor));
+				        agent->compressor));
 			}
 			agent->last_time_stamp = now;
 		}
 	}
 
 	{
-		struct clm_message *m = clm_history_add_user(&agent->history,
-		    prompt, agent->compressor);
+		struct clm_message *m = clm_history_add_user(
+		    &agent->history, prompt, agent->compressor);
 		if (m == NULL) {
 			clm_agent_set_error(agent, "out of memory");
 			agent->state = CLM_STATE_ERROR;
@@ -552,11 +567,13 @@ clm_agent_notify(struct clm_agent *agent, const char *text)
 		if (agent->pending_notify == NULL) {
 			joined = strdup(text);
 		} else {
-			size_t jlen = strlen(agent->pending_notify) + strlen(text) + 10;
+			size_t jlen =
+			    strlen(agent->pending_notify) + strlen(text) + 10;
 			joined = malloc(jlen);
 			if (joined == NULL)
 				return -ENOMEM;
-			snprintf(joined, jlen, "%s\n\n%s", agent->pending_notify, text);
+			snprintf(joined, jlen, "%s\n\n%s",
+			    agent->pending_notify, text);
 		}
 		if (joined == NULL)
 			return -ENOMEM;
@@ -578,18 +595,18 @@ struct stream_call {
 
 struct clm_async_turn {
 	struct clm_agent *agent;
-	cJSON *parsed;   /* non-streaming: the whole response */
+	cJSON *parsed; /* non-streaming: the whole response */
 	char *body;
 	bool streaming;
 
 	/* SSE assembly state */
-	char *line;                   /* partial line across chunks */
+	char *line; /* partial line across chunks */
 	size_t line_len, line_cap;
-	char *content;                /* assembled assistant text */
+	char *content; /* assembled assistant text */
 	size_t content_len, content_cap;
-	struct stream_call *calls;    /* assembled tool calls, by index */
+	struct stream_call *calls; /* assembled tool calls, by index */
 	size_t ncalls;
-	char *finish_reason;          /* captured from the stream */
+	char *finish_reason; /* captured from the stream */
 	struct clm_usage usage;
 	bool have_usage;
 
@@ -686,9 +703,11 @@ extract_message_content(cJSON *parsed)
 	    cJSON_GetStringValue(content)[0] != '\0')
 		return strdup(cJSON_GetStringValue(content));
 
-	content = cJSON_GetObjectItemCaseSensitive(message, "reasoning_content");
+	content =
+	    cJSON_GetObjectItemCaseSensitive(message, "reasoning_content");
 	if (content == NULL)
-		content = cJSON_GetObjectItemCaseSensitive(message, "reasoning");
+		content =
+		    cJSON_GetObjectItemCaseSensitive(message, "reasoning");
 	if (content == NULL || !cJSON_IsString(content) ||
 	    cJSON_GetStringValue(content)[0] == '\0')
 		return NULL;
@@ -732,7 +751,8 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 	summary = parsed ? extract_message_content(parsed) : NULL;
 	if (summary == NULL || summary[0] == '\0') {
 		if (resume) {
-			clm_agent_set_error(agent, "compaction produced no summary");
+			clm_agent_set_error(
+			    agent, "compaction produced no summary");
 			agent->mid_chain_compact_failed = true;
 			clm_agent_start_turn(agent);
 			return;
@@ -751,7 +771,8 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 		 * context stayed over threshold and every subsequent tool
 		 * round-trip re-triggered another futile summarize call. */
 		if (folded <= 0) {
-			const char *why = folded < 0 ? "compaction failed"
+			const char *why = folded < 0
+			    ? "compaction failed"
 			    : "compaction made no progress";
 			if (resume) {
 				clm_agent_set_error(agent, why);
@@ -759,8 +780,7 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 				clm_agent_start_turn(agent);
 				return;
 			}
-			agent_fail(agent, why,
-			    folded < 0 ? folded : -EAGAIN);
+			agent_fail(agent, why, folded < 0 ? folded : -EAGAIN);
 			return;
 		}
 	}
@@ -810,8 +830,8 @@ compact_error_cb(int error_code, const char *error_msg, void *user)
 		/* Mid-chain, non-cancel failure: same "not fatal, keep going"
 		 * handling as the success path above -- don't land the whole
 		 * turn in CLM_STATE_ERROR over a compaction hiccup. */
-		clm_agent_set_error(agent,
-		    error_msg ? error_msg : "compaction request failed");
+		clm_agent_set_error(
+		    agent, error_msg ? error_msg : "compaction request failed");
 		agent->mid_chain_compact_failed = true;
 		clm_agent_start_turn(agent);
 		return;
@@ -820,8 +840,8 @@ compact_error_cb(int error_code, const char *error_msg, void *user)
 	if (error_code == -ECANCELED)
 		agent->state = CLM_STATE_COMPLETE;
 	else {
-		clm_agent_set_error(agent,
-		    error_msg ? error_msg : "compaction request failed");
+		clm_agent_set_error(
+		    agent, error_msg ? error_msg : "compaction request failed");
 		agent->state = CLM_STATE_ERROR;
 	}
 	if (agent->cb_on_state)
@@ -873,7 +893,8 @@ clm_agent_compact(struct clm_agent *agent)
 		return -ENOMEM;
 	}
 	cJSON_AddItemToObject(msg, "role", cJSON_CreateString("user"));
-	cJSON_AddItemToObject(msg, "content", cJSON_CreateString(compact_prompt));
+	cJSON_AddItemToObject(
+	    msg, "content", cJSON_CreateString(compact_prompt));
 	cJSON_AddItemToArray(messages, msg);
 
 	jmodel = cJSON_CreateString(agent->llm->model);
@@ -899,13 +920,14 @@ clm_agent_compact(struct clm_agent *agent)
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
 
-	/* curl borrows the POST body (CURLOPT_POSTFIELDS), so it must outlive the
-	 * request; stash it and free it when the request completes. */
+	/* curl borrows the POST body (CURLOPT_POSTFIELDS), so it must outlive
+	 * the request; stash it and free it when the request completes. */
 	free(agent->compact_body);
 	agent->compact_body = body;
 
 	r = agent_http_post(agent, agent->llm->base_url, body,
-	    compact_success_cb, compact_error_cb, NULL, agent, &agent->inflight);
+	    compact_success_cb, compact_error_cb, NULL, agent,
+	    &agent->inflight);
 	if (r < 0) {
 		free(agent->compact_body);
 		agent->compact_body = NULL;
@@ -945,7 +967,8 @@ static void
 emit_finish(struct clm_agent *agent, const char *reason)
 {
 	if (reason != NULL && agent->cb_on_finish_reason)
-		agent->cb_on_finish_reason(finish_from_str(reason), agent->cb_user);
+		agent->cb_on_finish_reason(
+		    finish_from_str(reason), agent->cb_user);
 }
 
 /* Read usage/timings from a response object. Returns true if usage present. */
@@ -960,13 +983,15 @@ extract_usage(cJSON *root, struct clm_usage *out)
 	memset(out, 0, sizeof(*out));
 	if ((v = cJSON_GetObjectItemCaseSensitive(u, "prompt_tokens")) != NULL)
 		out->prompt_tokens = (int)cJSON_GetNumberValue(v);
-	if ((v = cJSON_GetObjectItemCaseSensitive(u, "completion_tokens")) != NULL)
+	if ((v = cJSON_GetObjectItemCaseSensitive(u, "completion_tokens")) !=
+	    NULL)
 		out->completion_tokens = (int)cJSON_GetNumberValue(v);
 	if ((v = cJSON_GetObjectItemCaseSensitive(u, "total_tokens")) != NULL)
 		out->total_tokens = (int)cJSON_GetNumberValue(v);
 	t = cJSON_GetObjectItemCaseSensitive(root, "timings");
 	if (t != NULL && cJSON_IsObject(t) &&
-	    (v = cJSON_GetObjectItemCaseSensitive(t, "predicted_per_second")) != NULL)
+	    (v = cJSON_GetObjectItemCaseSensitive(t, "predicted_per_second")) !=
+	        NULL)
 		out->tokens_per_sec = cJSON_GetNumberValue(v);
 	return true;
 }
@@ -978,7 +1003,8 @@ emit_usage(struct clm_agent *agent, const struct clm_usage *usage)
 	 * cb_usage does for its status-bar gauge, kept here too now so
 	 * clm_agent_tools_done() can check the autocompact threshold itself
 	 * mid-chain without depending on a UI layer to track it. */
-	agent->ctx_used = (int64_t)usage->prompt_tokens + usage->completion_tokens;
+	agent->ctx_used =
+	    (int64_t)usage->prompt_tokens + usage->completion_tokens;
 	if (agent->cb_on_usage)
 		agent->cb_on_usage(usage, agent->cb_user);
 }
@@ -991,14 +1017,17 @@ emit_usage(struct clm_agent *agent, const struct clm_usage *usage)
  * text is recorded without re-firing.
  */
 static void
-agent_finish(struct clm_agent *agent, cJSON *tool_calls,
-    const char *content, bool streamed)
+agent_finish(struct clm_agent *agent, cJSON *tool_calls, const char *content,
+    bool streamed)
 {
-	if (tool_calls != NULL && cJSON_IsArray(tool_calls)
-	    && cJSON_GetArraySize(tool_calls) > 0) {
+	if (tool_calls != NULL && cJSON_IsArray(tool_calls) &&
+	    cJSON_GetArraySize(tool_calls) > 0) {
 		int r;
 		if (content != NULL && content[0] != '\0')
-			clm_debug("[think] %.*s", (int)(strlen(content) > 200 ? 200 : strlen(content)), content);
+			clm_debug("[think] %.*s",
+			    (int)(strlen(content) > 200 ? 200
+			                                : strlen(content)),
+			    content);
 		agent->state = CLM_STATE_CALLING_TOOL;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
@@ -1010,9 +1039,11 @@ agent_finish(struct clm_agent *agent, cJSON *tool_calls,
 
 	if (content != NULL) {
 		struct clm_message *m;
-		clm_debug("[think] %.*s", (int)(strlen(content) > 200 ? 200 : strlen(content)), content);
-		m = clm_history_add_assistant_text(&agent->history, content,
-		    agent->compressor);
+		clm_debug("[think] %.*s",
+		    (int)(strlen(content) > 200 ? 200 : strlen(content)),
+		    content);
+		m = clm_history_add_assistant_text(
+		    &agent->history, content, agent->compressor);
 		if (m == NULL) {
 			agent_fail(agent, "out of memory", -ENOMEM);
 			return;
@@ -1051,15 +1082,19 @@ stream_build_tool_calls(struct clm_async_turn *turn)
 			return NULL;
 		cJSON_AddItemToArray(arr, call);
 		cJSON_AddItemToObject(call, "id",
-		    cJSON_CreateString(turn->calls[i].id ? turn->calls[i].id : ""));
-		cJSON_AddItemToObject(call, "type", cJSON_CreateString("function"));
+		    cJSON_CreateString(
+		        turn->calls[i].id ? turn->calls[i].id : ""));
+		cJSON_AddItemToObject(
+		    call, "type", cJSON_CreateString("function"));
 		func = cJSON_CreateObject();
 		if (func == NULL)
 			return NULL;
 		cJSON_AddItemToObject(call, "function", func);
-		cJSON_AddItemToObject(func, "name", cJSON_CreateString(turn->calls[i].name));
+		cJSON_AddItemToObject(
+		    func, "name", cJSON_CreateString(turn->calls[i].name));
 		cJSON_AddItemToObject(func, "arguments",
-		    cJSON_CreateString(turn->calls[i].args ? turn->calls[i].args : "{}"));
+		    cJSON_CreateString(
+		        turn->calls[i].args ? turn->calls[i].args : "{}"));
 	}
 
 	if (cJSON_GetArraySize(arr) == 0)
@@ -1108,11 +1143,14 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 		if (resp != NULL && resp->body != NULL) {
 			errjson = cJSON_Parse(resp->body);
 			if (errjson != NULL) {
-				cJSON *err = cJSON_GetObjectItemCaseSensitive(errjson, "error");
+				cJSON *err = cJSON_GetObjectItemCaseSensitive(
+				    errjson, "error");
 				cJSON *msg = cJSON_IsObject(err)
-				    ? cJSON_GetObjectItemCaseSensitive(err, "message")
+				    ? cJSON_GetObjectItemCaseSensitive(
+				          err, "message")
 				    : NULL;
-				if (cJSON_IsString(msg) && msg->valuestring != NULL)
+				if (cJSON_IsString(msg) &&
+				    msg->valuestring != NULL)
 					detail = msg->valuestring;
 			}
 		}
@@ -1137,15 +1175,19 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 			if (agent->cb_on_notice)
 				agent->cb_on_notice(
 				    "model does not support tool calls; "
-				    "continuing without tools", agent->cb_user);
+				    "continuing without tools",
+				    agent->cb_user);
 			clm_agent_start_turn(agent);
 			return;
 		}
 
 		if (detail != NULL)
-			(void)snprintf(buf, sizeof(buf), "HTTP %d: %s", status, detail);
-		else if (resp != NULL && resp->body != NULL && resp->body[0] != '\0')
-			(void)snprintf(buf, sizeof(buf), "HTTP %d: %s", status, resp->body);
+			(void)snprintf(
+			    buf, sizeof(buf), "HTTP %d: %s", status, detail);
+		else if (resp != NULL && resp->body != NULL &&
+		    resp->body[0] != '\0')
+			(void)snprintf(buf, sizeof(buf), "HTTP %d: %s", status,
+			    resp->body);
 		else
 			(void)snprintf(buf, sizeof(buf), "HTTP %d", status);
 
@@ -1174,13 +1216,16 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 	}
 
 	{
-		const struct clm_provider_ops *ops = clm_provider_ops_get(agent->llm->provider);
+		const struct clm_provider_ops *ops =
+		    clm_provider_ops_get(agent->llm->provider);
 		if (ops->normalize_response != NULL) {
 			cJSON *norm = ops->normalize_response(turn->parsed);
-			turn->parsed = norm; /* normalize_response always consumes its input */
+			turn->parsed = norm; /* normalize_response always
+			                        consumes its input */
 			if (turn->parsed == NULL) {
 				clm_async_turn_free(turn);
-				agent_fail(agent, "could not parse llm response", -EIO);
+				agent_fail(agent,
+				    "could not parse llm response", -EIO);
 				return;
 			}
 		}
@@ -1189,31 +1234,39 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 	message = response_message(turn->parsed);
 	if (message == NULL) {
 		clm_async_turn_free(turn);
-		agent_fail(agent, "could not extract message from llm response", -EIO);
+		agent_fail(
+		    agent, "could not extract message from llm response", -EIO);
 		return;
 	}
 
 	{
 		cJSON *choices, *choice0, *jfinish = NULL, *jreason = NULL;
 		struct clm_usage usage;
-		choices = cJSON_GetObjectItemCaseSensitive(turn->parsed, "choices");
+		choices =
+		    cJSON_GetObjectItemCaseSensitive(turn->parsed, "choices");
 		if (choices != NULL &&
 		    (choice0 = cJSON_GetArrayItem(choices, 0)) != NULL &&
-		    (jfinish = cJSON_GetObjectItemCaseSensitive(choice0, "finish_reason")) != NULL &&
+		    (jfinish = cJSON_GetObjectItemCaseSensitive(
+		         choice0, "finish_reason")) != NULL &&
 		    cJSON_IsString(jfinish))
 			jreason = jfinish;
-		emit_finish(agent, jreason ? cJSON_GetStringValue(jreason) : NULL);
+		emit_finish(
+		    agent, jreason ? cJSON_GetStringValue(jreason) : NULL);
 		if (extract_usage(turn->parsed, &usage))
 			emit_usage(agent, &usage);
 	}
 
 	/* Non-streaming reasoning, if the model exposes a think channel. */
 	{
-		cJSON *jreason = cJSON_GetObjectItemCaseSensitive(message, "reasoning_content");
+		cJSON *jreason = cJSON_GetObjectItemCaseSensitive(
+		    message, "reasoning_content");
 		if (jreason == NULL)
-			jreason = cJSON_GetObjectItemCaseSensitive(message, "reasoning");
-		if (jreason != NULL && cJSON_IsString(jreason) && agent->cb_on_reasoning)
-			agent->cb_on_reasoning(cJSON_GetStringValue(jreason), agent->cb_user);
+			jreason = cJSON_GetObjectItemCaseSensitive(
+			    message, "reasoning");
+		if (jreason != NULL && cJSON_IsString(jreason) &&
+		    agent->cb_on_reasoning)
+			agent->cb_on_reasoning(
+			    cJSON_GetStringValue(jreason), agent->cb_user);
 	}
 
 	content = cJSON_GetObjectItemCaseSensitive(message, "content");
@@ -1231,13 +1284,14 @@ static struct stream_call *
 stream_get_call(struct clm_async_turn *turn, size_t index)
 {
 	if (index >= turn->ncalls) {
-		struct stream_call *p = realloc(turn->calls,
-		    (index + 1) * sizeof(*turn->calls));
+		struct stream_call *p =
+		    realloc(turn->calls, (index + 1) * sizeof(*turn->calls));
 		if (p == NULL)
 			return NULL;
 		turn->calls = p;
 		while (turn->ncalls <= index)
-			memset(&turn->calls[turn->ncalls++], 0, sizeof(*turn->calls));
+			memset(&turn->calls[turn->ncalls++], 0,
+			    sizeof(*turn->calls));
 	}
 	return &turn->calls[index];
 }
@@ -1255,7 +1309,8 @@ stream_merge_tool_calls(struct clm_async_turn *turn, cJSON *deltas)
 
 		if (d == NULL)
 			continue;
-		if ((jidx = cJSON_GetObjectItemCaseSensitive(d, "index")) != NULL)
+		if ((jidx = cJSON_GetObjectItemCaseSensitive(d, "index")) !=
+		    NULL)
 			index = (int)cJSON_GetNumberValue(jidx);
 		if (index < 0)
 			continue;
@@ -1270,13 +1325,16 @@ stream_merge_tool_calls(struct clm_async_turn *turn, cJSON *deltas)
 		if (func != NULL) {
 			jname = cJSON_GetObjectItemCaseSensitive(func, "name");
 			if (jname != NULL && call->name == NULL)
-				call->name = strdup(cJSON_GetStringValue(jname));
-			jargs = cJSON_GetObjectItemCaseSensitive(func, "arguments");
+				call->name =
+				    strdup(cJSON_GetStringValue(jname));
+			jargs =
+			    cJSON_GetObjectItemCaseSensitive(func, "arguments");
 			if (jargs != NULL) {
 				const char *frag = cJSON_GetStringValue(jargs);
 				if (frag != NULL)
-					(void)sb_append(&call->args, &call->args_len,
-					    &call->args_cap, frag, strlen(frag));
+					(void)sb_append(&call->args,
+					    &call->args_len, &call->args_cap,
+					    frag, strlen(frag));
 			}
 		}
 	}
@@ -1294,10 +1352,10 @@ stream_handle_line(struct clm_async_turn *turn)
 
 	/*
 	 * Drop buffered/in-transit stream data only if the turn was cancelled,
-	 * so a cancelled reply stops rendering at once. Do NOT gate on inflight:
-	 * a normal completion also nulls inflight, and gating on it would drop
-	 * the final content of a fast response whose body and completion land
-	 * close together.
+	 * so a cancelled reply stops rendering at once. Do NOT gate on
+	 * inflight: a normal completion also nulls inflight, and gating on it
+	 * would drop the final content of a fast response whose body and
+	 * completion land close together.
 	 */
 	if (agent->cancelling)
 		return;
@@ -1317,11 +1375,14 @@ stream_handle_line(struct clm_async_turn *turn)
 		return;
 
 	{
-		const struct clm_provider_ops *ops = clm_provider_ops_get(agent->llm->provider);
+		const struct clm_provider_ops *ops =
+		    clm_provider_ops_get(agent->llm->provider);
 		if (ops->normalize_stream_event != NULL) {
-			cJSON *norm = ops->normalize_stream_event(obj, &turn->provider_stream_state);
+			cJSON *norm = ops->normalize_stream_event(
+			    obj, &turn->provider_stream_state);
 			cJSON_Delete(obj);
-			obj = norm; /* NULL means "nothing to merge from this event" */
+			obj = norm; /* NULL means "nothing to merge from this
+			               event" */
 			if (obj == NULL)
 				return;
 		}
@@ -1340,10 +1401,12 @@ stream_handle_line(struct clm_async_turn *turn)
 		return;
 
 	{
-		cJSON *jfinish = cJSON_GetObjectItemCaseSensitive(choice, "finish_reason");
+		cJSON *jfinish =
+		    cJSON_GetObjectItemCaseSensitive(choice, "finish_reason");
 		if (jfinish != NULL && cJSON_IsString(jfinish)) {
 			free(turn->finish_reason);
-			turn->finish_reason = strdup(cJSON_GetStringValue(jfinish));
+			turn->finish_reason =
+			    strdup(cJSON_GetStringValue(jfinish));
 		}
 	}
 
@@ -1359,18 +1422,22 @@ stream_handle_line(struct clm_async_turn *turn)
 			(void)sb_append(&turn->content, &turn->content_len,
 			    &turn->content_cap, text, tlen);
 			if (agent->cb_on_assistant_text)
-				agent->cb_on_assistant_text(text, agent->cb_user);
+				agent->cb_on_assistant_text(
+				    text, agent->cb_user);
 		}
 	}
 
 	/* Reasoning / think channel, for models that emit one. */
 	{
-		cJSON *jr = cJSON_GetObjectItemCaseSensitive(delta, "reasoning_content");
+		cJSON *jr = cJSON_GetObjectItemCaseSensitive(
+		    delta, "reasoning_content");
 		if (jr == NULL)
-			jr = cJSON_GetObjectItemCaseSensitive(delta, "reasoning");
+			jr = cJSON_GetObjectItemCaseSensitive(
+			    delta, "reasoning");
 		if (jr != NULL && cJSON_IsString(jr)) {
 			const char *rt = cJSON_GetStringValue(jr);
-			if (rt != NULL && rt[0] != '\0' && agent->cb_on_reasoning)
+			if (rt != NULL && rt[0] != '\0' &&
+			    agent->cb_on_reasoning)
 				agent->cb_on_reasoning(rt, agent->cb_user);
 		}
 	}
@@ -1409,14 +1476,14 @@ clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 
 	/*
 	 * A user cancel is not an error: land in a clean, submittable state and
-	 * leave no error string, so the status bar does not show "error" and the
-	 * next prompt just works.
+	 * leave no error string, so the status bar does not show "error" and
+	 * the next prompt just works.
 	 */
 	if (error_code == -ECANCELED) {
 		agent->state = CLM_STATE_COMPLETE;
 	} else {
-		clm_agent_set_error(agent,
-		    error_msg ? error_msg : "http request failed");
+		clm_agent_set_error(
+		    agent, error_msg ? error_msg : "http request failed");
 		agent->state = CLM_STATE_ERROR;
 	}
 	if (agent->cb_on_state)
@@ -1433,8 +1500,9 @@ props_success_cb(struct clm_http_response *resp, void *user)
 	struct clm_agent *agent = user;
 	int64_t ctx = 0;
 
-	if (resp != NULL && resp->status_code >= 200 && resp->status_code < 300 &&
-	    resp->body != NULL && clm_parse_props(resp->body, &ctx) == 0) {
+	if (resp != NULL && resp->status_code >= 200 &&
+	    resp->status_code < 300 && resp->body != NULL &&
+	    clm_parse_props(resp->body, &ctx) == 0) {
 		agent->backend = CLM_BACKEND_LLAMACPP; /* /props => llama.cpp */
 		agent->ctx_max = ctx;
 	}
@@ -1447,7 +1515,8 @@ props_error_cb(int error_code, const char *error_msg, void *user)
 {
 	(void)error_code;
 	(void)error_msg;
-	(void)user; /* no /props (not llama.cpp, or old build): leave ctx unknown */
+	(void)user; /* no /props (not llama.cpp, or old build): leave ctx
+	               unknown */
 }
 
 /*
@@ -1480,16 +1549,17 @@ health_success_cb(struct clm_http_response *resp, void *user)
 			/* 2xx = healthy; 4xx = server is reachable but the
 			 * models endpoint is missing or auth-gated. Either
 			 * way, the server is up. */
-			agent->cb_on_connection(CLM_CONN_ONLINE, NULL,
-			    agent->cb_user);
-			if (agent->ctx_max == 0 && status >= 200 && status < 300)
+			agent->cb_on_connection(
+			    CLM_CONN_ONLINE, NULL, agent->cb_user);
+			if (agent->ctx_max == 0 && status >= 200 &&
+			    status < 300)
 				clm_agent_fetch_props(agent);
 		} else {
 			char detail[64];
-			(void)snprintf(detail, sizeof(detail), "HTTP %d",
-			    status);
-			agent->cb_on_connection(CLM_CONN_OFFLINE, detail,
-			    agent->cb_user);
+			(void)snprintf(
+			    detail, sizeof(detail), "HTTP %d", status);
+			agent->cb_on_connection(
+			    CLM_CONN_OFFLINE, detail, agent->cb_user);
 		}
 	}
 	if (resp)
@@ -1514,12 +1584,13 @@ clm_agent_check_connection(struct clm_agent *agent)
 	ASSERT_RETURN(agent->models_url != NULL, -EINVAL);
 
 	if (agent->cb_on_connection)
-		agent->cb_on_connection(CLM_CONN_CHECKING, NULL, agent->cb_user);
+		agent->cb_on_connection(
+		    CLM_CONN_CHECKING, NULL, agent->cb_user);
 
 	/* NULL body => GET. user is the agent, distinct from turn requests;
 	 * out_req is NULL so this probe is not tracked for cancellation. */
-	return agent_http_post(agent, agent->models_url, NULL, health_success_cb,
-	    health_error_cb, NULL, agent, NULL);
+	return agent_http_post(agent, agent->models_url, NULL,
+	    health_success_cb, health_error_cb, NULL, agent, NULL);
 }
 
 struct models_list_ctx {
@@ -1534,8 +1605,8 @@ models_list_success_cb(struct clm_http_response *resp, void *user)
 	struct models_list_ctx *ctx = user;
 	char **ids = NULL;
 
-	if (resp != NULL && resp->status_code >= 200 && resp->status_code < 300 &&
-	    resp->body != NULL)
+	if (resp != NULL && resp->status_code >= 200 &&
+	    resp->status_code < 300 && resp->body != NULL)
 		ids = clm_parse_models_list(resp->body);
 
 	if (ids != NULL) {
@@ -1546,13 +1617,15 @@ models_list_success_cb(struct clm_http_response *resp, void *user)
 		char detail[80];
 		if (resp == NULL) {
 			ctx->on_error("request failed", ctx->user);
-		} else if (resp->status_code < 200 || resp->status_code >= 300) {
-			(void)snprintf(detail, sizeof(detail),
-			    "HTTP %d", resp->status_code);
+		} else if (resp->status_code < 200 ||
+		    resp->status_code >= 300) {
+			(void)snprintf(detail, sizeof(detail), "HTTP %d",
+			    resp->status_code);
 			ctx->on_error(detail, ctx->user);
 		} else {
 			ctx->on_error("unexpected response shape "
-			    "(not {\"data\":[{\"id\":...}]})", ctx->user);
+			              "(not {\"data\":[{\"id\":...}]})",
+			    ctx->user);
 		}
 	}
 	if (resp)
@@ -1566,15 +1639,15 @@ models_list_error_cb(int error_code, const char *error_msg, void *user)
 	struct models_list_ctx *ctx = user;
 	(void)error_code;
 	if (ctx->on_error)
-		ctx->on_error(error_msg ? error_msg : "request failed", ctx->user);
+		ctx->on_error(
+		    error_msg ? error_msg : "request failed", ctx->user);
 	free(ctx);
 }
 
 int
 clm_agent_list_models(struct clm_agent *agent,
     void (*on_models)(char **ids, void *user),
-    void (*on_error)(const char *msg, void *user),
-    void *user)
+    void (*on_error)(const char *msg, void *user), void *user)
 {
 	struct models_list_ctx *ctx;
 
@@ -1594,7 +1667,8 @@ clm_agent_list_models(struct clm_agent *agent,
 	 * out_req is NULL so this probe is not tracked for cancellation,
 	 * same as clm_agent_check_connection. */
 	if (agent_http_post(agent, agent->models_url, NULL,
-	    models_list_success_cb, models_list_error_cb, NULL, ctx, NULL) != 0) {
+	        models_list_success_cb, models_list_error_cb, NULL, ctx,
+	        NULL) != 0) {
 		free(ctx);
 		return -EIO;
 	}
@@ -1612,11 +1686,11 @@ clm_agent_probe_models(struct clm_agent *agent, const char *base_url,
 	autofreev char **auth_headers = NULL;
 	struct clm_llm *tmp_llm = NULL;
 	struct clm_http_req req = {
-		.url = NULL,
-		.api_key = api_key,
-		.body = NULL,
-		.headers = NULL,
-		.client_suffix = NULL,
+	    .url = NULL,
+	    .api_key = api_key,
+	    .body = NULL,
+	    .headers = NULL,
+	    .client_suffix = NULL,
 	};
 	struct models_list_ctx *ctx;
 
@@ -1634,7 +1708,8 @@ clm_agent_probe_models(struct clm_agent *agent, const char *base_url,
 	 * (e.g. anthropic_build_auth_headers() copies api_key into the
 	 * header string), so it doesn't need to outlive this call. */
 	if (ops->build_auth_headers != NULL &&
-	    clm_llm_new(&tmp_llm, provider, api_key, base_url, "", false) == 0) {
+	    clm_llm_new(&tmp_llm, provider, api_key, base_url, "", false) ==
+	        0) {
 		auth_headers = ops->build_auth_headers(tmp_llm);
 		clm_llm_free(tmp_llm);
 		if (auth_headers != NULL) {
@@ -1651,7 +1726,8 @@ clm_agent_probe_models(struct clm_agent *agent, const char *base_url,
 	ctx->user = user;
 
 	if (agent->host->http_post(agent->host->ctx, &req,
-	    models_list_success_cb, models_list_error_cb, NULL, ctx, NULL) != 0) {
+	        models_list_success_cb, models_list_error_cb, NULL, ctx,
+	        NULL) != 0) {
 		free(ctx);
 		return -EIO;
 	}
@@ -1661,7 +1737,8 @@ clm_agent_probe_models(struct clm_agent *agent, const char *base_url,
 const char *
 clm_agent_get_base_url(struct clm_agent *agent)
 {
-	return agent != NULL && agent->llm != NULL ? agent->llm->base_url : NULL;
+	return agent != NULL && agent->llm != NULL ? agent->llm->base_url
+	                                           : NULL;
 }
 
 const char *
@@ -1674,7 +1751,7 @@ enum clm_provider
 clm_agent_get_provider(struct clm_agent *agent)
 {
 	return agent != NULL && agent->llm != NULL ? agent->llm->provider
-	                                            : CLM_PROVIDER_OPENAI;
+	                                           : CLM_PROVIDER_OPENAI;
 }
 
 int
@@ -1698,8 +1775,8 @@ clm_agent_cancel(struct clm_agent *agent)
 		/* Waiting on the model: abort the request. Its error callback
 		 * fires on_turn_done(-ECANCELED) and clears inflight. Mark the
 		 * cancel so any buffered stream data is dropped rather than
-		 * rendered (a normal completion also nulls inflight, so the flag
-		 * is what distinguishes the two). */
+		 * rendered (a normal completion also nulls inflight, so the
+		 * flag is what distinguishes the two). */
 		struct clm_http_call *req = agent->inflight;
 		agent->inflight = NULL;
 		agent->cancelling = true;
@@ -1708,7 +1785,8 @@ clm_agent_cancel(struct clm_agent *agent)
 	}
 	if (agent->active_batch != NULL) {
 		/* Running tools: signal them to abort; when the batch finishes
-		 * unwinding, clm_agent_tools_done ends the turn as cancelled. */
+		 * unwinding, clm_agent_tools_done ends the turn as cancelled.
+		 */
 		agent->cancelling = true;
 		clm_tools_cancel(agent);
 		return 0;
@@ -1734,14 +1812,15 @@ clm_agent_clear_history(struct clm_agent *agent)
 
 	/* Same busy gate as clm_agent_set_provider() -- see its comment for
 	 * why IDLE/COMPLETE/ERROR are all fine to act on but a turn actually
-	 * in flight is not (history may be referenced mid-build/mid-dispatch). */
+	 * in flight is not (history may be referenced mid-build/mid-dispatch).
+	 */
 	if (agent->state == CLM_STATE_THINKING ||
 	    agent->state == CLM_STATE_CALLING_TOOL ||
 	    agent->state == CLM_STATE_RATE_LIMITED)
 		return -EBUSY;
 
 	base = agent->system_prompt_base ? agent->system_prompt_base
-	                                  : default_system_prompt;
+	                                 : default_system_prompt;
 	sys = build_system_prompt(base);
 	if (sys == NULL)
 		return -ENOMEM;
@@ -1749,8 +1828,8 @@ clm_agent_clear_history(struct clm_agent *agent)
 	clm_history_free(&agent->history);
 	clm_history_init(&agent->history);
 	{
-		struct clm_message *m = clm_history_add_system(&agent->history,
-		    sys, agent->compressor);
+		struct clm_message *m = clm_history_add_system(
+		    &agent->history, sys, agent->compressor);
 		if (m == NULL)
 			return -ENOMEM;
 		clm_agent_emit_message(agent, m);
@@ -1781,7 +1860,8 @@ clm_agent_restore_history(struct clm_agent *agent, const struct clm_history *h)
 	    agent->state == CLM_STATE_RATE_LIMITED)
 		return -EBUSY;
 
-	TAILQ_FOREACH(m, h, entries) {
+	TAILQ_FOREACH(m, h, entries)
+	{
 		if (m->role == CLM_ROLE_SYSTEM)
 			continue;
 
@@ -1791,8 +1871,8 @@ clm_agent_restore_history(struct clm_agent *agent, const struct clm_history *h)
 		json_cleanup cJSON *obj = clm_message_to_json_full(m, NULL);
 		if (obj == NULL)
 			return -ENOMEM;
-		int r = clm_message_from_json(&agent->history, obj,
-		    agent->compressor);
+		int r = clm_message_from_json(
+		    &agent->history, obj, agent->compressor);
 		if (r < 0)
 			return r;
 	}
@@ -1844,7 +1924,8 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 	agent->llm->api_key = new_key;
 	agent->llm->model = new_model;
 	agent->llm->provider = cfg->provider;
-	agent->llm->disable_parallel_tool_calls = cfg->disable_parallel_tool_calls;
+	agent->llm->disable_parallel_tool_calls =
+	    cfg->disable_parallel_tool_calls;
 
 	free(agent->models_url);
 	free(agent->props_url);
@@ -1859,19 +1940,22 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 	/* Reset context info: a new server/model may have different limits,
 	 * unless the new model/provider supplies an explicit override. */
 	agent->ctx_max = cfg->context_size > 0 ? cfg->context_size : 0;
-	agent->autocompact_pct = cfg->autocompact_pct > 0 ? cfg->autocompact_pct : 0;
+	agent->autocompact_pct =
+	    cfg->autocompact_pct > 0 ? cfg->autocompact_pct : 0;
 
 	/* Only rebuild the LLM rate limiter if the new provider actually
 	 * overrides it; otherwise keep the bucket (and its accumulated
 	 * state) as-is rather than resetting it to the defaults. */
 	if (cfg->rate_tokens_per_sec > 0 || cfg->rate_burst > 0) {
-		int64_t rps = cfg->rate_tokens_per_sec > 0 ? cfg->rate_tokens_per_sec
+		int64_t rps = cfg->rate_tokens_per_sec > 0
+		    ? cfg->rate_tokens_per_sec
 		    : CLM_DEFAULT_LLM_RL_TOKENS_PER_SEC;
 		int64_t burst = cfg->rate_burst > 0 ? cfg->rate_burst
-		    : CLM_DEFAULT_LLM_RL_BURST;
+		                                    : CLM_DEFAULT_LLM_RL_BURST;
 		struct clm_ratelimit *new_rl;
 
-		if (clm_ratelimit_new(&new_rl, (size_t)rps, (size_t)burst) == 0) {
+		if (clm_ratelimit_new(&new_rl, (size_t)rps, (size_t)burst) ==
+		    0) {
 			clm_ratelimit_free(agent->llm_rl);
 			agent->llm_rl = new_rl;
 		}
@@ -1902,9 +1986,9 @@ on_llm_rl_timer(void *arg)
 		est_tokens = 1;
 	clm_ratelimit_consume(agent->llm_rl, est_tokens);
 	agent_http_post(agent, agent->llm->base_url, turn->body,
-			    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
-			    turn->streaming ? clm_http_data_cb_wrapper : NULL,
-			    turn, &agent->inflight);
+	    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
+	    turn->streaming ? clm_http_data_cb_wrapper : NULL, turn,
+	    &agent->inflight);
 }
 
 /*
@@ -1931,14 +2015,15 @@ llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
 		 * dispatch now (clm_ratelimit_allow already consumed the
 		 * token in the allowed case). */
 		agent_http_post(agent, agent->llm->base_url, turn->body,
-				    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
-				    turn->streaming ? clm_http_data_cb_wrapper : NULL,
-				    turn, &agent->inflight);
+		    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
+		    turn->streaming ? clm_http_data_cb_wrapper : NULL, turn,
+		    &agent->inflight);
 		return;
 	}
 
 	{
-		uint64_t delay_us = clm_ratelimit_delay(agent->llm_rl, est_tokens);
+		uint64_t delay_us =
+		    clm_ratelimit_delay(agent->llm_rl, est_tokens);
 		uint64_t delay_ms = delay_us / 1000;
 		if (delay_ms == 0)
 			delay_ms = 1;
@@ -1953,7 +2038,8 @@ llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
 static void
 clm_agent_start_turn(struct clm_agent *agent)
 {
-	const struct clm_provider_ops *ops = clm_provider_ops_get(agent->llm->provider);
+	const struct clm_provider_ops *ops =
+	    clm_provider_ops_get(agent->llm->provider);
 	json_cleanup cJSON *req = NULL;
 	cJSON *messages = NULL;
 	cJSON *tools = NULL;
@@ -2117,7 +2203,8 @@ clm_agent_tools_done(struct clm_agent *agent, int status)
 			                      * see emit_usage() for when a
 			                      * real one replaces it */
 			if (agent->cb_on_state)
-				agent->cb_on_state(agent->state, agent->cb_user);
+				agent->cb_on_state(
+				    agent->state, agent->cb_user);
 			return;
 		}
 		/* Compact declined to start (shouldn't happen: state was

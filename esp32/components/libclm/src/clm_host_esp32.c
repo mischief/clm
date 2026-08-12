@@ -12,7 +12,8 @@
  * is no data_cb, so the whole body is accumulated and handed to success_cb.
  *
  * Timers are not implemented (timer_set/timer_cancel are NULL): the core then
- * disables per-tool timeouts, and the 60s socket timeout bounds a stuck request.
+ * disables per-tool timeouts, and the 60s socket timeout bounds a stuck
+ * request.
  */
 #include <errno.h>
 #include <stdlib.h>
@@ -79,24 +80,25 @@ apply_header(esp_http_client_handle_t c, const char *hdr)
 
 static int
 esp32_http_post(void *ctx, const struct clm_http_req *req,
-    clm_http_success_cb success, clm_http_error_cb error,
-    clm_http_data_cb data, void *user, struct clm_http_call **out)
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
 {
 	(void)ctx;
 	char ua[128];
 
 	if (out != NULL)
-		*out = NULL; /* synchronous: nothing is ever in flight to cancel */
+		*out =
+		    NULL; /* synchronous: nothing is ever in flight to cancel */
 	if (req == NULL || req->url == NULL || success == NULL || error == NULL)
 		return -EINVAL;
 
 	esp_http_client_config_t cfg = {
-		.url = req->url,
-		.method = req->body != NULL ? HTTP_METHOD_POST : HTTP_METHOD_GET,
-		.timeout_ms = 60000,
-		.crt_bundle_attach = esp_crt_bundle_attach,
-		.buffer_size = 1024,
-		.buffer_size_tx = 2048,
+	    .url = req->url,
+	    .method = req->body != NULL ? HTTP_METHOD_POST : HTTP_METHOD_GET,
+	    .timeout_ms = 60000,
+	    .crt_bundle_attach = esp_crt_bundle_attach,
+	    .buffer_size = 1024,
+	    .buffer_size_tx = 2048,
 	};
 
 	esp_http_client_handle_t c = esp_http_client_init(&cfg);
@@ -106,7 +108,8 @@ esp32_http_post(void *ctx, const struct clm_http_req *req,
 	}
 
 	if (req->body != NULL)
-		esp_http_client_set_header(c, "Content-Type", "application/json");
+		esp_http_client_set_header(
+		    c, "Content-Type", "application/json");
 	if (req->api_key != NULL && req->api_key[0] != '\0') {
 		char auth[512];
 		(void)snprintf(auth, sizeof(auth), "Bearer %s", req->api_key);
@@ -117,8 +120,8 @@ esp32_http_post(void *ctx, const struct clm_http_req *req,
 			apply_header(c, *h);
 	}
 	if (req->client_suffix != NULL && req->client_suffix[0] != '\0')
-		(void)snprintf(ua, sizeof(ua), "clm-esp32 (tool: %s)",
-		    req->client_suffix);
+		(void)snprintf(
+		    ua, sizeof(ua), "clm-esp32 (tool: %s)", req->client_suffix);
 	else
 		(void)snprintf(ua, sizeof(ua), "clm-esp32");
 	esp_http_client_set_header(c, "User-Agent", ua);
@@ -150,8 +153,8 @@ esp32_http_post(void *ctx, const struct clm_http_req *req,
 
 	int status = esp_http_client_get_status_code(c);
 
-	/* Read the body. Streamed turns feed data_cb; everything else accumulates
-	 * a whole body for success_cb. */
+	/* Read the body. Streamed turns feed data_cb; everything else
+	 * accumulates a whole body for success_cb. */
 	struct body_accum body = {0};
 	char buf[1024];
 	int n;

@@ -40,12 +40,14 @@ int clm_lua_is_invocation_thread(lua_State *L);
 void clm_lua_clear_invocation_registry(lua_State *L);
 
 #define CLM_LUA_MEM_LIMIT (8 * 1024 * 1024) /* 8 MiB per plugin */
-#define CLM_LUA_EXEC_TIMEOUT_MS 30000u     /* default: 30s CPU timeout */
-#define CLM_LUA_LOAD_TIMEOUT_MS 500u       /* plugin load must be quick */
-#define CLM_LUA_HOOK_INTERVAL 10000        /* check deadline every N instructions */
-#define CLM_LUA_HTTP_MAX_INFLIGHT 8        /* max concurrent HTTP requests */
-#define CLM_LUA_HTTP_MAX_PER_CALL 128      /* max total HTTP requests per tool call */
-#define CLM_LUA_JSON_DECODE_MAX (2 * 1024 * 1024) /* 2 MiB max input to json.decode */
+#define CLM_LUA_EXEC_TIMEOUT_MS 30000u      /* default: 30s CPU timeout */
+#define CLM_LUA_LOAD_TIMEOUT_MS 500u        /* plugin load must be quick */
+#define CLM_LUA_HOOK_INTERVAL 10000 /* check deadline every N instructions */
+#define CLM_LUA_HTTP_MAX_INFLIGHT 8 /* max concurrent HTTP requests */
+#define CLM_LUA_HTTP_MAX_PER_CALL                                              \
+	128 /* max total HTTP requests per tool call */
+#define CLM_LUA_JSON_DECODE_MAX                                                \
+	(2 * 1024 * 1024) /* 2 MiB max input to json.decode */
 
 /* Forward declaration. */
 struct lua_tool_user;
@@ -60,13 +62,13 @@ struct clm_lua_budget {
 	/* Current counters (reset per tool call). */
 	size_t http_inflight;
 	size_t http_total;
-	uint64_t call_start_ns;   /* wall-clock start of current call */
+	uint64_t call_start_ns; /* wall-clock start of current call */
 
 	/* Peak counters (lifetime of plugin, never reset). */
 	size_t peak_mem;
 	size_t peak_http_inflight;
-	size_t peak_http_total;    /* peak per single tool call */
-	uint64_t peak_call_ns;     /* longest tool call duration */
+	size_t peak_http_total; /* peak per single tool call */
+	uint64_t peak_call_ns;  /* longest tool call duration */
 };
 
 TAILQ_HEAD(clm_lua_pending_list, clm_lua_pending);
@@ -146,9 +148,8 @@ clm_lua_pending_teardown_all(struct clm_lua_plugin *plugin)
 void clm_lua_http_done(struct clm_lua_plugin *plugin);
 int clm_lua_http_start(struct clm_lua_plugin *plugin);
 void clm_lua_budget_report(struct clm_lua_plugin *plugin, const char *name);
-int clm_lua_resume_with_deadline(struct clm_lua_plugin *plugin,
-    lua_State *co, lua_State *from, int nargs, int *nresults,
-    uint64_t timeout_ms);
+int clm_lua_resume_with_deadline(struct clm_lua_plugin *plugin, lua_State *co,
+    lua_State *from, int nargs, int *nresults, uint64_t timeout_ms);
 
 /* ------------------------------------------------------------------ */
 /* Capped allocator                                                    */
@@ -198,8 +199,8 @@ lua_capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 
 struct lua_tool_ctx {
 	struct clm_tool_invocation *inv;
-	lua_State *main_L;  /* plugin's main state */
-	int co_ref;         /* registry ref keeping coroutine alive */
+	lua_State *main_L; /* plugin's main state */
+	int co_ref;        /* registry ref keeping coroutine alive */
 	bool completed;
 };
 
@@ -262,11 +263,11 @@ lua_ctx_log(lua_State *L)
 }
 
 static const luaL_Reg ctx_methods[] = {
-	{"complete", lua_ctx_complete},
-	{"fail", lua_ctx_fail},
-	{"args_raw", lua_ctx_args_raw},
-	{"log", lua_ctx_log},
-	{NULL, NULL},
+    {"complete", lua_ctx_complete},
+    {"fail", lua_ctx_fail},
+    {"args_raw", lua_ctx_args_raw},
+    {"log", lua_ctx_log},
+    {NULL, NULL},
 };
 
 static void
@@ -350,8 +351,8 @@ clm_lua_resume_with_deadline(struct clm_lua_plugin *plugin, lua_State *co,
  * keyed by its thread pointer in the registry. clm's async HTTP model requires
  * that http.get/post run directly on this coroutine, so their lua_yield unwinds
  * to clm's C-level lua_resume; the http bindings consult this marker to reject
- * calls from a nested coroutine or from load time (the main thread), which would
- * otherwise drive completion tracking out of band. Keyed per-thread, so
+ * calls from a nested coroutine or from load time (the main thread), which
+ * would otherwise drive completion tracking out of band. Keyed per-thread, so
  * concurrent invocations of one plugin do not alias one another.
  */
 void
@@ -423,13 +424,9 @@ clm_lua_budget_report(struct clm_lua_plugin *plugin, const char *tool_name)
 	size_t peak_ms = (size_t)(b->peak_call_ns / 1000000ULL);
 
 	clm_debug("lua budget [%s]: call=%zums mem_peak=%zu/%zu "
-	    "http=%zu http_peak_inflight=%zu peak_call=%zums",
-	    tool_name,
-	    elapsed_ms,
-	    b->peak_mem, plugin->mem_limit,
-	    b->http_total,
-	    b->peak_http_inflight,
-	    peak_ms);
+	          "http=%zu http_peak_inflight=%zu peak_call=%zums",
+	    tool_name, elapsed_ms, b->peak_mem, plugin->mem_limit,
+	    b->http_total, b->peak_http_inflight, peak_ms);
 }
 
 /*
@@ -499,7 +496,8 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	 * response bodies), so we fail this one tool call cleanly via
 	 * clm_tool_fail() instead of crashing every in-flight turn. */
 	if (plugin->mem_used + 262144 > plugin->mem_limit) {
-		clm_tool_fail(inv, "plugin is low on memory, refusing to start "
+		clm_tool_fail(inv,
+		    "plugin is low on memory, refusing to start "
 		    "a new invocation to avoid crashing");
 		return;
 	}
@@ -514,10 +512,10 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	 * it once the tool completes (synchronously or after resume). */
 	int co_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
-	/* Mark this coroutine as the live invocation thread so http.get/post can
-	 * verify they run directly on it (not a nested coroutine). Cleared on
-	 * every terminal path below, but left set across a yield so the resumed
-	 * coroutine may issue further http calls. */
+	/* Mark this coroutine as the live invocation thread so http.get/post
+	 * can verify they run directly on it (not a nested coroutine). Cleared
+	 * on every terminal path below, but left set across a yield so the
+	 * resumed coroutine may issue further http calls. */
 	clm_lua_mark_invocation_thread(L, co, 1);
 
 	/* Push the invoke function onto the coroutine stack. */
@@ -565,13 +563,16 @@ lua_tool_invoke(struct clm_tool_invocation *inv, void *user)
 	if (rc == LUA_OK) {
 		/* Coroutine returned normally (synchronous tool). */
 		if (!ctx->completed)
-			clm_tool_fail(inv, "plugin returned without calling ctx:complete/ctx:fail");
+			clm_tool_fail(inv,
+			    "plugin returned without calling "
+			    "ctx:complete/ctx:fail");
 		clm_lua_budget_report(plugin, clm_tool_invocation_name(inv));
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 		clm_lua_clear_invocation_registry(L);
 	} else if (rc == LUA_YIELD) {
-		/* the helper leaves no deadline armed while async work is pending. */
+		/* the helper leaves no deadline armed while async work is
+		 * pending. */
 	} else {
 		/* Runtime error (includes timeout from the exec hook). */
 		const char *err = lua_tostring(co, -1);
@@ -660,7 +661,8 @@ lua_clm_tool_register(lua_State *L)
 	lua_getfield(L, 2, "invoke");
 	if (!lua_isfunction(L, -1)) {
 		free(schema_json);
-		return luaL_error(L, "clm.tool_register: 'invoke' must be a function");
+		return luaL_error(
+		    L, "clm.tool_register: 'invoke' must be a function");
 	}
 	invoke_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
@@ -709,16 +711,18 @@ lua_clm_tool_register(lua_State *L)
 	if (r < 0) {
 		free(tu);
 		luaL_unref(L, LUA_REGISTRYINDEX, invoke_ref);
-		return luaL_error(L, "clm.tool_register failed: %s", strerror(-r));
+		return luaL_error(
+		    L, "clm.tool_register failed: %s", strerror(-r));
 	}
 
 	clm_debug("lua: registered tool '%s' from %s", name, plugin->path);
 
 	/* Track tu for teardown. */
 	if (plugin->tool_user_count >= plugin->tool_user_cap) {
-		size_t ncap = plugin->tool_user_cap ? plugin->tool_user_cap * 2 : 4;
-		struct lua_tool_user **np = realloc(plugin->tool_users,
-		    ncap * sizeof(*np));
+		size_t ncap =
+		    plugin->tool_user_cap ? plugin->tool_user_cap * 2 : 4;
+		struct lua_tool_user **np =
+		    realloc(plugin->tool_users, ncap * sizeof(*np));
 		if (np != NULL) {
 			plugin->tool_users = np;
 			plugin->tool_user_cap = ncap;
@@ -865,8 +869,8 @@ lua_sleep_timer_cb(void *arg)
 	}
 
 	nres = 0;
-	rc = clm_lua_resume_with_deadline(sr->plugin, co, L, 0, &nres,
-	    sr->timeout_ms);
+	rc = clm_lua_resume_with_deadline(
+	    sr->plugin, co, L, 0, &nres, sr->timeout_ms);
 	if (rc == LUA_OK) {
 		clm_lua_mark_invocation_thread(L, co, 0);
 		luaL_unref(L, LUA_REGISTRYINDEX, sr->co_ref);
@@ -893,18 +897,22 @@ static int
 lua_clm_sleep(lua_State *L)
 {
 	lua_Integer ms = luaL_checkinteger(L, 1);
-	if (ms < 0) ms = 0;
-	if (ms > 30000) ms = 30000; /* cap at 30s */
+	if (ms < 0)
+		ms = 0;
+	if (ms > 30000)
+		ms = 30000; /* cap at 30s */
 
 	if (!clm_lua_is_invocation_thread(L)) {
-		return luaL_error(L, "clm.sleep may only be called from a "
+		return luaL_error(L,
+		    "clm.sleep may only be called from a "
 		    "tool invocation coroutine");
 	}
 
 	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_agent");
 	struct clm_agent *agent = lua_touserdata(L, -1);
 	lua_pop(L, 1);
-	if (agent == NULL || agent->host == NULL || agent->host->timer_set == NULL) {
+	if (agent == NULL || agent->host == NULL ||
+	    agent->host->timer_set == NULL) {
 		return luaL_error(L, "clm.sleep: no timer available");
 	}
 
@@ -941,8 +949,8 @@ lua_clm_sleep(lua_State *L)
 		return luaL_error(L, "clm.sleep: plugin is shutting down");
 	}
 
-	r = agent->host->timer_set(agent->host->ctx, (uint64_t)ms,
-	    lua_sleep_timer_cb, sr, &sr->timer);
+	r = agent->host->timer_set(
+	    agent->host->ctx, (uint64_t)ms, lua_sleep_timer_cb, sr, &sr->timer);
 	if (r < 0) {
 		(void)clm_lua_pending_remove(&sr->pending);
 		free(sr);
@@ -971,8 +979,12 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 
 	/* Remove unsafe globals from _G. */
 	static const char *const remove[] = {
-		"dofile", "loadfile", "load", "require",
-		"collectgarbage", NULL,
+	    "dofile",
+	    "loadfile",
+	    "load",
+	    "require",
+	    "collectgarbage",
+	    NULL,
 	};
 	for (const char *const *p = remove; *p != NULL; p++) {
 		lua_pushnil(L);
@@ -1061,7 +1073,8 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 			(void)snprintf(name, sizeof(name), "%s", base);
 		}
 
-		cJSON *pcfg = cJSON_GetObjectItemCaseSensitive(env->tool_config, name);
+		cJSON *pcfg =
+		    cJSON_GetObjectItemCaseSensitive(env->tool_config, name);
 		if (pcfg != NULL) {
 			lua_getglobal(L, "clm");
 			clm_lua_push_json_value(L, pcfg);
@@ -1093,11 +1106,11 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	/*
 	 * Bound the load phase the same way tool calls are bounded: install the
 	 * count hook and a wall-clock deadline around the top-level script so a
-	 * plugin that spins (e.g. `while true do end` at file scope) cannot wedge
-	 * the loop at startup. Memory and the global sandbox are already in force
-	 * (capped allocator at lua_newstate; sandbox_state before loadfile). Load
-	 * is meant to be quick (register tools, build schemas), so it gets a much
-	 * tighter deadline than a tool call.
+	 * plugin that spins (e.g. `while true do end` at file scope) cannot
+	 * wedge the loop at startup. Memory and the global sandbox are already
+	 * in force (capped allocator at lua_newstate; sandbox_state before
+	 * loadfile). Load is meant to be quick (register tools, build schemas),
+	 * so it gets a much tighter deadline than a tool call.
 	 */
 	plugin->deadline_ns = clock_ns() + CLM_LUA_LOAD_TIMEOUT_MS * 1000000ULL;
 	lua_sethook(L, lua_exec_hook, LUA_MASKCOUNT, CLM_LUA_HOOK_INTERVAL);
@@ -1165,7 +1178,8 @@ clm_lua_load_plugins(struct clm_lua_env *env, const char *dir)
 	d = opendir(dir);
 	if (d == NULL) {
 		if (errno == ENOENT) {
-			clm_debug("lua: plugin dir '%s' not found, skipping", dir);
+			clm_debug(
+			    "lua: plugin dir '%s' not found, skipping", dir);
 			return 0;
 		}
 		return -errno;
@@ -1173,9 +1187,9 @@ clm_lua_load_plugins(struct clm_lua_env *env, const char *dir)
 
 	/*
 	 * Collect the *.lua entries, then sort by name so load order is
-	 * deterministic (readdir order is filesystem-defined). This matters when
-	 * two plugins register the same tool name — the outcome shouldn't depend
-	 * on directory layout.
+	 * deterministic (readdir order is filesystem-defined). This matters
+	 * when two plugins register the same tool name — the outcome shouldn't
+	 * depend on directory layout.
 	 */
 	char **names = NULL;
 	size_t nnames = 0, ncap = 0;
@@ -1215,12 +1229,15 @@ clm_lua_load_plugins(struct clm_lua_env *env, const char *dir)
 			free(names[i]);
 			continue;
 		}
-		(void)snprintf(path, dirlen + 1 + nlen + 1, "%s/%s", dir, names[i]);
+		(void)snprintf(
+		    path, dirlen + 1 + nlen + 1, "%s/%s", dir, names[i]);
 
-		/* Only load regular files (stat follows symlinks, so a symlink to a
-		 * regular file is fine; a directory named foo.lua is skipped). */
+		/* Only load regular files (stat follows symlinks, so a symlink
+		 * to a regular file is fine; a directory named foo.lua is
+		 * skipped). */
 		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
-			clm_debug("lua: skipping %s (not a regular file)", path);
+			clm_debug(
+			    "lua: skipping %s (not a regular file)", path);
 			free(path);
 			free(names[i]);
 			continue;
@@ -1312,9 +1329,11 @@ clm_lua_env_set_config_from(struct clm_lua_env *env, struct clm_lua_cfg *cfg)
 
 struct clm_lua_cfg {
 	lua_State *L;
-	int cfg_ref; /* registry ref to the config table */
-	int agent_ref; /* registry ref to the resolved agent table, or LUA_NOREF */
-	char *resolved_agent_name; /* name actually resolved by load_agent (owned) */
+	int cfg_ref;   /* registry ref to the config table */
+	int agent_ref; /* registry ref to the resolved agent table, or LUA_NOREF
+	                */
+	char *resolved_agent_name; /* name actually resolved by load_agent
+	                              (owned) */
 };
 
 /* Path with the last component replaced, e.g. ".../clm/config.lua" +
@@ -1356,7 +1375,8 @@ push_secrets(lua_State *L, const char *config_path)
 	struct stat st;
 	if (stat(spath, &st) == 0 && (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
 		clm_debug("secrets: %s is readable by group/other; "
-		    "consider chmod 600", spath);
+		          "consider chmod 600",
+		    spath);
 	}
 
 	if (luaL_loadfile(L, spath) != LUA_OK) {
@@ -1366,8 +1386,8 @@ push_secrets(lua_State *L, const char *config_path)
 		return;
 	}
 	if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-		clm_debug("secrets: error in %s: %s", spath,
-		    lua_tostring(L, -1));
+		clm_debug(
+		    "secrets: error in %s: %s", spath, lua_tostring(L, -1));
 		lua_pop(L, 1);
 		lua_newtable(L);
 		return;
@@ -1404,20 +1424,19 @@ clm_lua_cfg_load(const char *path)
 
 	/* clm.secrets: visible to config.lua and, since agent profile files
 	 * share this same lua_State, to them too. */
-	lua_newtable(L); /* clm */
-	push_secrets(L, path); /* clm, secrets */
+	lua_newtable(L);                /* clm */
+	push_secrets(L, path);          /* clm, secrets */
 	lua_setfield(L, -2, "secrets"); /* clm.secrets = secrets */
-	lua_setglobal(L, "clm"); /* clm = {secrets = ...} */
+	lua_setglobal(L, "clm");        /* clm = {secrets = ...} */
 
 	if (luaL_loadfile(L, path) != LUA_OK) {
-		clm_debug("config: failed to load %s: %s", path,
-		    lua_tostring(L, -1));
+		clm_debug(
+		    "config: failed to load %s: %s", path, lua_tostring(L, -1));
 		lua_close(L);
 		return NULL;
 	}
 	if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-		clm_debug("config: error in %s: %s", path,
-		    lua_tostring(L, -1));
+		clm_debug("config: error in %s: %s", path, lua_tostring(L, -1));
 		lua_close(L);
 		return NULL;
 	}
@@ -1439,8 +1458,8 @@ clm_lua_cfg_load(const char *path)
 }
 
 CLM_API int
-clm_lua_cfg_load_agent(struct clm_lua_cfg *cfg, const char *agents_dir,
-    const char *agent_name)
+clm_lua_cfg_load_agent(
+    struct clm_lua_cfg *cfg, const char *agents_dir, const char *agent_name)
 {
 	lua_State *L = cfg->L;
 	char *aname = NULL;
@@ -1463,7 +1482,8 @@ clm_lua_cfg_load_agent(struct clm_lua_cfg *cfg, const char *agents_dir,
 		lua_getfield(L, -1, agent_name);
 		if (lua_istable(L, -1)) {
 			if (cfg->agent_ref != LUA_NOREF)
-				luaL_unref(L, LUA_REGISTRYINDEX, cfg->agent_ref);
+				luaL_unref(
+				    L, LUA_REGISTRYINDEX, cfg->agent_ref);
 			cfg->agent_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 			lua_pop(L, 2); /* agents table, config table */
 			free(cfg->resolved_agent_name);
@@ -1483,12 +1503,12 @@ clm_lua_cfg_load_agent(struct clm_lua_cfg *cfg, const char *agents_dir,
 	aname = malloc(dlen + 1 + nlen + 4 + 1);
 	if (aname == NULL)
 		return -1;
-	(void)snprintf(aname, dlen + 1 + nlen + 5, "%s/%s.lua",
-	    agents_dir, agent_name);
+	(void)snprintf(
+	    aname, dlen + 1 + nlen + 5, "%s/%s.lua", agents_dir, agent_name);
 
 	if (luaL_loadfile(L, aname) != LUA_OK) {
-		clm_debug("config: agent file %s: %s", aname,
-		    lua_tostring(L, -1));
+		clm_debug(
+		    "config: agent file %s: %s", aname, lua_tostring(L, -1));
 		lua_pop(L, 1);
 		free(aname);
 		return -1;
@@ -1671,22 +1691,22 @@ cfg_table_entry_int(lua_State *L, int cfg_ref, const char *table,
 }
 
 CLM_API const char *
-clm_lua_cfg_provider_str(struct clm_lua_cfg *cfg,
-    const char *provider_name, const char *key)
+clm_lua_cfg_provider_str(
+    struct clm_lua_cfg *cfg, const char *provider_name, const char *key)
 {
 	const char *val = NULL;
-	cfg_table_entry_str(cfg->L, cfg->cfg_ref, "providers", provider_name,
-	    key, &val);
+	cfg_table_entry_str(
+	    cfg->L, cfg->cfg_ref, "providers", provider_name, key, &val);
 	return val;
 }
 
 CLM_API int64_t
-clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
-    const char *provider_name, const char *key, int64_t fallback)
+clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg, const char *provider_name,
+    const char *key, int64_t fallback)
 {
 	int64_t val = fallback;
-	cfg_table_entry_int(cfg->L, cfg->cfg_ref, "providers", provider_name,
-	    key, &val);
+	cfg_table_entry_int(
+	    cfg->L, cfg->cfg_ref, "providers", provider_name, key, &val);
 	return val;
 }
 
@@ -1750,7 +1770,8 @@ cfg_provider_model_int(lua_State *L, int cfg_ref, const char *provider_name,
 				if (lua_istable(L, -1)) {
 					lua_getfield(L, -1, key);
 					if (lua_isnumber(L, -1))
-						*out = (int64_t)lua_tonumber(L, -1);
+						*out = (int64_t)lua_tonumber(
+						    L, -1);
 					found = true;
 				}
 			}
@@ -1765,8 +1786,8 @@ clm_lua_cfg_provider_model_str(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *model_id, const char *key)
 {
 	const char *val = NULL;
-	cfg_provider_model_str(cfg->L, cfg->cfg_ref, provider_name, model_id,
-	    key, &val);
+	cfg_provider_model_str(
+	    cfg->L, cfg->cfg_ref, provider_name, model_id, key, &val);
 	return val;
 }
 
@@ -1776,8 +1797,8 @@ clm_lua_cfg_provider_model_int(struct clm_lua_cfg *cfg,
     int64_t fallback)
 {
 	int64_t val = fallback;
-	cfg_provider_model_int(cfg->L, cfg->cfg_ref, provider_name, model_id,
-	    key, &val);
+	cfg_provider_model_int(
+	    cfg->L, cfg->cfg_ref, provider_name, model_id, key, &val);
 	return val;
 }
 
@@ -1817,34 +1838,41 @@ list_all_model_names(lua_State *L, int cfg_ref)
 				while (lua_next(L, -2) != 0) {
 					/* model id at -2, model table at -1 */
 					if (lua_type(L, -2) == LUA_TSTRING) {
-						const char *mid = lua_tostring(L, -2);
+						const char *mid =
+						    lua_tostring(L, -2);
 						size_t need;
 						char *spec;
 
 						if (n + 1 >= cap) {
-							size_t newcap = cap ? cap * 2 : 8;
-							char **grown = realloc(list,
-							    (newcap + 1) * sizeof(*grown));
+							size_t newcap =
+							    cap ? cap * 2 : 8;
+							char **grown = realloc(
+							    list,
+							    (newcap + 1) *
+							        sizeof(*grown));
 							if (grown == NULL) {
-								lua_settop(L, base);
+								lua_settop(
+								    L, base);
 								return NULL;
 							}
 							list = grown;
 							cap = newcap;
 						}
-						need = strlen(pname) + 1 /* '/' */
+						need = strlen(pname) +
+						    1 /* '/' */
 						    + strlen(mid) + 1 /* NUL */;
 						spec = malloc(need);
 						if (spec == NULL) {
 							lua_settop(L, base);
 							return NULL;
 						}
-						(void)snprintf(spec, need, "%s/%s",
-						    pname, mid);
+						(void)snprintf(spec, need,
+						    "%s/%s", pname, mid);
 						list[n++] = spec;
 						list[n] = NULL;
 					}
-					lua_pop(L, 1); /* model table; keep key */
+					lua_pop(
+					    L, 1); /* model table; keep key */
 				}
 			}
 			lua_pop(L, 1); /* models table or nil */
@@ -1895,8 +1923,8 @@ clm_lua_cfg_list_names(struct clm_lua_cfg *cfg, const char *table)
 
 			if (n + 1 >= cap) {
 				size_t newcap = cap ? cap * 2 : 8;
-				char **grown = realloc(list,
-				    (newcap + 1) * sizeof(*grown));
+				char **grown = realloc(
+				    list, (newcap + 1) * sizeof(*grown));
 				if (grown == NULL) {
 					lua_pop(L, 2); /* value, key */
 					lua_pop(L, 2); /* table, config */
@@ -1946,8 +1974,9 @@ clm_lua_cfg_tools_json(struct clm_lua_cfg *cfg)
 /*
  * Get the mcp_servers config as a JSON string, e.g.:
  *   mcp_servers = {
- *     { name = "fs", transport = "stdio", command = {"mcp-server-fs", "/tmp"} },
- *     { name = "search", transport = "http", url = "https://.../mcp", api_key = "..." },
+ *     { name = "fs", transport = "stdio", command = {"mcp-server-fs", "/tmp"}
+ * }, { name = "search", transport = "http", url = "https://.../mcp", api_key =
+ * "..." },
  *   }
  * Caller owns the returned string (free with free()). NULL if unset.
  */
