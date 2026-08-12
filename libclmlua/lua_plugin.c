@@ -44,6 +44,11 @@ void clm_lua_clear_invocation_registry(lua_State *L);
 #define CLM_LUA_EXEC_TIMEOUT_MS 30000u      /* default: 30s CPU timeout */
 #define CLM_LUA_LOAD_TIMEOUT_MS 500u        /* plugin load must be quick */
 #define CLM_LUA_HOOK_INTERVAL 10000 /* check deadline every N instructions */
+
+/* How far the heap may grow past what is live before the next cycle. Lua's
+ * default of 200 means it doubles, which against an 8 MiB cap reaches the cap
+ * on garbage alone once a plugin holds a few MiB. */
+#define CLM_LUA_GC_PAUSE 130
 #define CLM_LUA_HTTP_MAX_INFLIGHT 8 /* max concurrent HTTP requests */
 #define CLM_LUA_HTTP_MAX_PER_CALL                                              \
 	128 /* max total HTTP requests per tool call */
@@ -1101,6 +1106,10 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	}
 	plugin->L = L;
 	lua_atpanic(L, lua_plugin_panic);
+	/* Incremental, because only it honours a step size: the generational
+	 * collector does one minor collection per lua_gc(LUA_GCSTEP) call and
+	 * ignores the size it is given. */
+	lua_gc(L, LUA_GCINC, CLM_LUA_GC_PAUSE, 0, 0);
 	lua_setwarnf(L, lua_plugin_warn, plugin);
 
 	/* Set up the sandbox. */
