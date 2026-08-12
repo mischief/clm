@@ -1,0 +1,4 @@
+# Vendored BSD sys/queue.h, kept byte-close to the original.
+compat/sys/queue.h
+# Generated from a BDF font by fonts/bdf2font.py.
+esp32/firmware/font8x16.h
