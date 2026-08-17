@@ -330,9 +330,10 @@ only when the system doesn't provide one.
 `zig cc` as the cross compiler. zig ships musl's sources and headers, so
 this needs no aarch64 sysroot and no crossdev target — only `zig` on
 `PATH`. Every third-party dependency comes from the wraps in
-`subprojects/`:
+`subprojects/` — except ncursesw, which needs one build of its own:
 
 ```sh
+cross/build-ncurses.sh ncurses-6.5.tar.gz   # once, into the sysroot
 meson setup build-a64 --cross-file cross/aarch64-linux-musl-zig \
   -Dstatic=true -Dtests=false --default-library=static --prefer-static \
   --force-fallback-for=curl,libuv,cjson,md4c,openssl
@@ -341,18 +342,17 @@ meson compile -C build-a64 src/clm
 
 Two things the cross file works around:
 
-- ncursesw has no WrapDB wrap, so the TUI's one hard dependency must be
-  built for the target by hand. Configure ncurses with `CC="zig cc
-  -target aarch64-linux-musl"`, `--without-shared --with-pic
-  --enable-widec`, and `--with-build-cc=cc`, then `make install.libs`
-  into the `sys_root` the cross file names. `--with-pic` is required:
-  the static PIE link rejects ncurses' non-PIC relocations. Skip the
-  plain `install` target — it wants to write the terminfo database.
-  Add `--with-fallbacks=ansi,dumb,linux,screen,screen-256color,vt100,
-  vt220,xterm,xterm-color,xterm-256color` to compile those terminal
-  descriptions into the binary. Embedded targets often ship no terminfo
-  database at all, and without a fallback entry the TUI dies at startup
-  with `Error opening terminal` whatever `TERM` says.
+- ncursesw has no WrapDB wrap, so the TUI's one hard dependency comes
+  from a sysroot instead. `cross/build-ncurses.sh` builds it with the
+  same `zig cc` target and installs the static library and its `.pc`
+  file under `$HOME/aarch64-musl-sysroot`, which is what the cross
+  file's `sys_root` and `pkg_config_libdir` point at. Two of its
+  configure flags matter: `--with-pic`, because the static PIE link
+  rejects ncurses' non-PIC relocations, and `--with-fallbacks`, which
+  compiles a handful of terminal descriptions into the binary. Embedded
+  targets often ship no terminfo database at all, and without a
+  fallback entry the TUI dies at startup with `Error opening terminal`
+  whatever `TERM` says.
 - zig's linker cannot read thin archives, which meson builds for every
   uninstalled static library. `cross/zig-ar` wraps `zig ar` and drops
   the `T` flag.
