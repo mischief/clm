@@ -324,6 +324,43 @@ musl has no `<sys/queue.h>`; `compat/sys/queue.h` (vendored from glibc,
 BSD-3-Clause) is picked up automatically as a fallback via `-idirafter`
 only when the system doesn't provide one.
 
+### aarch64, without a cross-toolchain
+
+`cross/aarch64-linux-musl-zig` builds a static-PIE aarch64 binary using
+`zig cc` as the cross compiler. zig ships musl's sources and headers, so
+this needs no aarch64 sysroot and no crossdev target — only `zig` on
+`PATH`. Every third-party dependency comes from the wraps in
+`subprojects/`:
+
+```sh
+meson setup build-a64 --cross-file cross/aarch64-linux-musl-zig \
+  -Dstatic=true -Dtests=false --default-library=static --prefer-static \
+  --force-fallback-for=curl,libuv,cjson,md4c,openssl
+meson compile -C build-a64 src/clm
+```
+
+Two things the cross file works around:
+
+- ncursesw has no WrapDB wrap, so the TUI's one hard dependency must be
+  built for the target by hand. Configure ncurses with `CC="zig cc
+  -target aarch64-linux-musl"`, `--without-shared --with-pic
+  --enable-widec`, and `--with-build-cc=cc`, then `make install.libs`
+  into the `sys_root` the cross file names. `--with-pic` is required:
+  the static PIE link rejects ncurses' non-PIC relocations. Skip the
+  plain `install` target — it wants to write the terminfo database.
+  Add `--with-fallbacks=ansi,dumb,linux,screen,screen-256color,vt100,
+  vt220,xterm,xterm-color,xterm-256color` to compile those terminal
+  descriptions into the binary. Embedded targets often ship no terminfo
+  database at all, and without a fallback entry the TUI dies at startup
+  with `Error opening terminal` whatever `TERM` says.
+- zig's linker cannot read thin archives, which meson builds for every
+  uninstalled static library. `cross/zig-ar` wraps `zig ar` and drops
+  the `T` flag.
+
+Test the result under `qemu-aarch64`. Build only the `src/clm` target:
+cJSON's own test executables fail the same thin-archive link, and
+nothing needs them.
+
 ## Sanitizers
 
 **Linux** — ASan + UBSan:

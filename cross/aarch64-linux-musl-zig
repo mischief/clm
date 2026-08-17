@@ -1,0 +1,38 @@
+# Cross file: fully static aarch64 binary via zig cc.
+#
+# zig ships musl's sources and headers, so this needs no aarch64 sysroot
+# and no cross-toolchain -- only `zig` on PATH. Every third-party
+# dependency comes from the wraps in subprojects/, so pair this with
+# --force-fallback-for and -Dstatic=true:
+#
+#   meson setup build-a64 --cross-file cross/aarch64-linux-musl-zig \
+#     -Dstatic=true -Dtests=false --default-library=static --prefer-static \
+#     --force-fallback-for=curl,libuv,cjson,md4c,openssl
+#
+[binaries]
+c = ['zig', 'cc', '-target', 'aarch64-linux-musl']
+cpp = ['zig', 'c++', '-target', 'aarch64-linux-musl']
+ar = '@DIRNAME@/zig-ar'
+ranlib = ['zig', 'ranlib']
+# Any llvm-strip or aarch64 binutils strip; adjust for the local layout.
+strip = '/usr/lib/llvm/21/bin/llvm-strip'
+# The build machine's own pkg-config, pointed at the target sysroot's .pc
+# files by pkg_config_libdir below.
+pkg-config = 'pkg-config'
+
+[properties]
+# ncursesw has no WrapDB wrap, so the TUI's one hard dependency must be
+# built for this target by hand into a sysroot. Adjust both paths below
+# for a different sysroot location. See "Static builds" in
+# README.md.
+sys_root = '/home/mischief/aarch64-musl-sysroot'
+pkg_config_libdir = '/home/mischief/aarch64-musl-sysroot/lib/pkgconfig'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[built-in options]
+c_link_args = ['-static']

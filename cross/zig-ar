@@ -1,0 +1,8 @@
+#!/bin/sh
+# "zig ar" with thin-archive support removed. zig's linker cannot read a
+# thin archive ("unexpected token in LD script: literal: '!<thin>'"), but
+# llvm-ar advertises [T] in its help text, so meson builds every
+# uninstalled static library as one. Drop the T from the operation flags.
+op=$1
+shift
+exec zig ar "$(printf %s "$op" | tr -d T)" "$@"
