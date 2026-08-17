@@ -115,6 +115,7 @@ struct cli_state {
 	char prompt_line[1024];
 	size_t prompt_len;
 	int oneshot;
+	int batch;
 	int turn_done;
 	int turn_status;
 };
@@ -226,11 +227,12 @@ cb_turn_done(int status, void *user)
 		fprintf(stderr, "error: %s\n",
 		    clm_agent_get_last_error(state->agent));
 	}
-	if (state->oneshot) {
+	if (state->oneshot || state->batch) {
 		state->turn_done = 1;
 		state->turn_status = status;
-		return;
 	}
+	if (state->oneshot)
+		return;
 	printf("\nuser> ");
 	fflush(stdout);
 }
@@ -270,6 +272,50 @@ on_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 		return;
 	}
 	buf->len = suggested_size;
+}
+
+/*
+ * Line-at-a-time REPL over a stdin that epoll cannot watch: a regular file,
+ * /dev/null, anything uv_guess_handle() reports as UV_FILE. uv_pipe_open()
+ * takes such a descriptor, then libuv aborts the process when the kernel
+ * refuses to poll it. Read with stdio, run the loop only during a turn.
+ */
+static void
+run_stdin_batch(struct cli_state *state, uv_loop_t *loop)
+{
+	state->batch = 1;
+
+	while (fgets(state->prompt_line, sizeof(state->prompt_line), stdin) !=
+	    NULL) {
+		size_t n = strcspn(state->prompt_line, "\r\n");
+
+		/* Longer than the buffer: submit what fits and drop the
+		 * rest of the line, as the streaming path does. */
+		if (state->prompt_line[n] == '\0') {
+			int c;
+			while ((c = fgetc(stdin)) != EOF && c != '\n')
+				;
+		}
+		state->prompt_line[n] = '\0';
+
+		if (state->prompt_line[0] == '\0')
+			continue;
+		if (strcmp(state->prompt_line, "quit") == 0 ||
+		    strcmp(state->prompt_line, "exit") == 0)
+			break;
+
+		state->turn_done = 0;
+		if (clm_agent_submit(state->agent, state->prompt_line) < 0) {
+			fprintf(stderr, "error: %s\n",
+			    clm_agent_get_last_error(state->agent));
+			continue;
+		}
+		while (!state->turn_done)
+			uv_run(loop, UV_RUN_ONCE);
+	}
+
+	printf("\n");
+	fflush(stdout);
 }
 
 static void
@@ -832,13 +878,17 @@ main(int argc, char *argv[])
 	printf("user> ");
 	fflush(stdout);
 
-	uv_pipe_init(loop, &state->stdin_pipe, 0);
-	uv_pipe_open(&state->stdin_pipe, fileno(stdin));
-	state->stdin_pipe.data = (uv_handle_t *)state;
-	uv_read_start(
-	    (uv_stream_t *)&state->stdin_pipe, on_alloc_buffer, on_stdin_read);
+	if (uv_guess_handle(fileno(stdin)) == UV_FILE) {
+		run_stdin_batch(state, loop);
+	} else {
+		uv_pipe_init(loop, &state->stdin_pipe, 0);
+		uv_pipe_open(&state->stdin_pipe, fileno(stdin));
+		state->stdin_pipe.data = (uv_handle_t *)state;
+		uv_read_start((uv_stream_t *)&state->stdin_pipe,
+		    on_alloc_buffer, on_stdin_read);
 
-	uv_run(loop, UV_RUN_DEFAULT);
+		uv_run(loop, UV_RUN_DEFAULT);
+	}
 
 	clm_lua_env_free(state->lua_env);
 	clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
