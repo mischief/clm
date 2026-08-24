@@ -26,6 +26,7 @@ struct tstate {
 	const char *system_prompt;
 	const char *system_prompt_suffix;
 	const char *effort;
+	const char *const *volatile_tools;
 	int turn_done;
 	int turn_status;
 	size_t asst_len;
@@ -212,6 +213,7 @@ make_agent(struct tstate *st, int port)
 	cfg.stream = st->stream;
 	cfg.system_prompt = st->system_prompt;
 	cfg.system_prompt_suffix = st->system_prompt_suffix;
+	cfg.volatile_tools = st->volatile_tools;
 
 	r = clm_host_uv_new(st->loop, &st->host);
 	CHECK(r == 0, "clm_host_uv_new");
@@ -1555,6 +1557,71 @@ test_responses_chain(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* One Responses API tool call, the shape provider_responses.c expects. */
+static void
+canned_responses_tool_call(struct canned_server *srv, const char *name)
+{
+	char body[512];
+
+	(void)snprintf(body, sizeof(body),
+	    "{\"id\":\"resp_call\",\"status\":\"completed\",\"output\":"
+	    "[{\"type\":\"function_call\",\"call_id\":\"c1\","
+	    "\"name\":\"%s\",\"arguments\":\"{}\"}]}",
+	    name);
+	canned_reply(srv, body);
+}
+
+/*
+ * A superseded tool result rewrites history the server cannot be told
+ * about, so the chain has to be abandoned -- volatile tools and a
+ * continued conversation cannot both apply to the same turn.
+ */
+static void
+test_responses_chain_dropped_by_supersede(uv_loop_t *loop)
+{
+	static const char *const volatile_tools[] = {"echo_hello", NULL};
+	static const char *reply =
+	    "{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":"
+	    "[{\"type\":\"message\",\"content\":[{\"type\":"
+	    "\"output_text\",\"text\":\"ok\"}]}]}";
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+	const char *req;
+	int i;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	st.volatile_tools = volatile_tools;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	def.name = "echo_hello";
+	def.description = "echo hello";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_hello;
+	def.flags = CLM_TOOL_NO_PROMPT;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "clm_tool_add");
+
+	/* Two turns that each call the volatile tool: the second supersedes
+	 * the first result, so it cannot continue the chain. */
+	for (i = 0; i < 2; i++) {
+		canned_responses_tool_call(srv, "echo_hello");
+		canned_reply(srv, reply);
+		CHECK(
+		    clm_agent_submit(st.agent, "use the tool") == 0, "submit");
+		run_until_done(&st);
+		st.turn_done = 0;
+	}
+
+	req = canned_last_request(srv);
+	CHECK(req != NULL && strstr(req, "previous_response_id") == NULL,
+	    "chain: a superseded result forces the history to be resent");
+
+	teardown(&st, srv);
+}
+
 /*
  * (g2) Anthropic Messages API: request shape (auth headers, system pulled
  * out of messages[], max_tokens) and a non-streaming text reply translated
@@ -2397,6 +2464,7 @@ test_agent_suite(void *arg)
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
 	test_responses_chain(&loop);
+	test_responses_chain_dropped_by_supersede(&loop);
 	test_responses_failure_is_not_a_filter(&loop);
 	test_responses_real_content_filter(&loop);
 	test_compact_within_budget();
