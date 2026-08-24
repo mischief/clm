@@ -761,13 +761,16 @@ test_deadline_rearmed_after_yield(void)
 	    "execution deadline rearmed after sleep yield");
 }
 
-/* Dispatch a tool call whose arguments are a megabyte of payload, which the
- * prologue must copy into the plugin's heap. */
+/* Dispatch a tool call whose arguments are large enough that the invocation
+ * prologue cannot fit their Lua representation alongside a heap deliberately
+ * filled to its cap.  One MiB was not sufficient on all Lua allocator builds:
+ * table/hash slack left by the ballast can exceed that amount, turning this
+ * OOM regression into a flaky success. */
 static int
 start_big_args_tool(
     struct clm_agent *agent, struct fake_host *fake, const char *name)
 {
-	const size_t payload = 1024 * 1024;
+	const size_t payload = 2 * 1024 * 1024;
 	char *response;
 	size_t off;
 	int r;
