@@ -54,6 +54,22 @@ clm_llm_new(struct clm_llm **ret, enum clm_provider provider,
 	return 0;
 }
 
+int
+clm_llm_set_effort(struct clm_llm *llm, const char *effort)
+{
+	char *dup = NULL;
+
+	ASSERT_RETURN(llm != NULL, -EINVAL);
+	if (effort != NULL && effort[0] != '\0') {
+		dup = strdup(effort);
+		if (dup == NULL)
+			return -ENOMEM;
+	}
+	free(llm->effort);
+	llm->effort = dup;
+	return 0;
+}
+
 void
 clm_llm_free(struct clm_llm *llm)
 {
@@ -62,5 +78,6 @@ clm_llm_free(struct clm_llm *llm)
 	free(llm->api_key);
 	free(llm->base_url);
 	free(llm->model);
+	free(llm->effort);
 	free(llm);
 }

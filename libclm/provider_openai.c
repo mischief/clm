@@ -36,6 +36,16 @@ openai_build_request(
 		goto fail;
 	cJSON_AddItemToObject(req, "stream", jstream);
 
+	/* Chat-completions spells reasoning effort as a top-level string.
+	 * Backends without the notion (llama.cpp, most local servers) accept
+	 * and ignore it. */
+	if (llm->effort != NULL) {
+		cJSON *je = cJSON_CreateString(llm->effort);
+
+		if (je != NULL)
+			cJSON_AddItemToObject(req, "reasoning_effort", je);
+	}
+
 	/* Ask the server to include token usage in the final stream chunk. */
 	if (stream) {
 		cJSON *so = cJSON_CreateObject();

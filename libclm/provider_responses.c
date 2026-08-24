@@ -255,6 +255,17 @@ responses_build_request(
 	cJSON_AddItemToObject(req, "input", input);
 	cJSON_AddItemToObject(req, "stream", cJSON_CreateBool(stream));
 
+	/* The Responses API nests effort under "reasoning". */
+	if (llm->effort != NULL) {
+		cJSON *rz = cJSON_CreateObject();
+
+		if (rz != NULL) {
+			cJSON_AddItemToObject(
+			    rz, "effort", cJSON_CreateString(llm->effort));
+			cJSON_AddItemToObject(req, "reasoning", rz);
+		}
+	}
+
 	/* Some current-generation models (e.g. gpt-5.6-luna/sol) reject
 	 * function tools on chat/completions when a reasoning_effort default
 	 * gets attached server-side; the same models accept tools cleanly on

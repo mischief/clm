@@ -1906,6 +1906,21 @@ clm_agent_cancel(struct clm_agent *agent)
  * ever touches agent->history.
  */
 int
+clm_agent_set_effort(struct clm_agent *agent, const char *effort)
+{
+	ASSERT_RETURN(agent != NULL && agent->llm != NULL, -EINVAL);
+	return clm_llm_set_effort(agent->llm, effort);
+}
+
+const char *
+clm_agent_get_effort(const struct clm_agent *agent)
+{
+	if (agent == NULL || agent->llm == NULL)
+		return NULL;
+	return agent->llm->effort;
+}
+
+int
 clm_agent_clear_history(struct clm_agent *agent)
 {
 	const char *base;

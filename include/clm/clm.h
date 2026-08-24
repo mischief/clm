@@ -571,6 +571,17 @@ CLM_API int clm_agent_set_provider(
 CLM_API int clm_agent_clear_history(struct clm_agent *agent);
 
 /*
+ * Set the reasoning effort sent with every later request, NULL to take the
+ * backend's default. Passed through to the provider ("low" ... "max" on
+ * current Anthropic and OpenAI models); the server decides what its model
+ * accepts. Returns 0, -EINVAL, or -ENOMEM.
+ */
+CLM_API int clm_agent_set_effort(struct clm_agent *agent, const char *effort);
+
+/* The effort last set, or NULL if none is in force. Borrowed. */
+CLM_API const char *clm_agent_get_effort(const struct clm_agent *agent);
+
+/*
  * Append a copy of every non-system message in h to the agent's history,
  * re-applying the agent's compressor on store. Intended for resuming a
  * persisted session: the agent keeps its own freshly built system

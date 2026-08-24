@@ -10,6 +10,8 @@ CLM\_AGENT(3) - Library Functions Manual
 **clm\_agent\_compact**,
 **clm\_agent\_check\_connection**,
 **clm\_agent\_set\_provider**,
+**clm\_agent\_set\_effort**,
+**clm\_agent\_get\_effort**,
 **clm\_provider\_from\_str**,
 **clm\_agent\_get\_state**,
 **clm\_agent\_get\_ctx\_max**,
@@ -50,6 +52,12 @@ CLM\_AGENT(3) - Library Functions Manual
 
 *int*  
 **clm\_agent\_set\_provider**(*struct clm\_agent \*agent*, *const struct clm\_cfg \*cfg*);
+
+*int*  
+**clm\_agent\_set\_effort**(*struct clm\_agent \*agent*, *const char \*effort*);
+
+*const char \*&zwnj;*  
+**clm\_agent\_get\_effort**(*const struct clm\_agent \*agent*);
 
 *int*  
 **clm\_agent\_restore\_history**(*struct clm\_agent \*agent*,
@@ -113,10 +121,16 @@ every string field inside it
 *base\_url*,
 *model*,
 *system\_prompt*,
+*system\_prompt\_suffix*,
 *volatile\_tools*)
 is
 *borrowed*,
 not copied, and must stay valid for the life of the agent.
+*system\_prompt\_suffix*,
+if set, is appended to the end of every system message the agent builds,
+including the rebuild after
+**clm\_agent\_clear\_history**():
+it carries facts about the host that the model cannot otherwise see.
 *cb*
 may be
 `NULL`
@@ -336,6 +350,20 @@ parses such an object and appends the message it describes to
 Together they are the round-trip used by
 [clm(1)](clm.md)'s
 session persistence.
+
+**clm\_agent\_set\_effort**()
+sets the reasoning effort sent with every later request
+("low, "medium, "high, "xhigh, or "max on current models"""""),
+or clears it with
+`NULL`
+so the backend applies its own default.
+Each provider spells the field its own way
+(*output\_config.effort*, *reasoning.effort*, or *reasoning\_effort*),
+and the server, not clm, rejects a level its model does not accept.
+**clm\_agent\_get\_effort**()
+returns the effort in force, or
+`NULL`,
+borrowed from the agent.
 
 # RETURN VALUES
 

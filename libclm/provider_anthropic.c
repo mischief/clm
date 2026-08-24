@@ -508,6 +508,19 @@ anthropic_build_request(
 	    req, "max_tokens", cJSON_CreateNumber(CLM_ANTHROPIC_MAX_TOKENS));
 	cJSON_AddItemToObject(req, "stream", cJSON_CreateBool(stream));
 
+	/* Reasoning effort rides in output_config here, and only when the
+	 * caller asked for one: omitting it leaves the model's own default
+	 * (currently "high"). */
+	if (llm->effort != NULL) {
+		cJSON *oc = cJSON_CreateObject();
+
+		if (oc != NULL) {
+			cJSON_AddItemToObject(
+			    oc, "effort", cJSON_CreateString(llm->effort));
+			cJSON_AddItemToObject(req, "output_config", oc);
+		}
+	}
+
 	if (cJSON_GetArraySize(anth_tools) > 0) {
 		cJSON_AddItemToObject(req, "tools", anth_tools);
 		/* Mirror the OpenAI ops' parallel_tool_calls handling --

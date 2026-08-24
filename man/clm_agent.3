@@ -11,6 +11,8 @@
 .Nm clm_agent_compact ,
 .Nm clm_agent_check_connection ,
 .Nm clm_agent_set_provider ,
+.Nm clm_agent_set_effort ,
+.Nm clm_agent_get_effort ,
 .Nm clm_provider_from_str ,
 .Nm clm_agent_get_state ,
 .Nm clm_agent_get_ctx_max ,
@@ -44,6 +46,10 @@
 .Fn clm_agent_check_connection "struct clm_agent *agent"
 .Ft int
 .Fn clm_agent_set_provider "struct clm_agent *agent" "const struct clm_cfg *cfg"
+.Ft int
+.Fn clm_agent_set_effort "struct clm_agent *agent" "const char *effort"
+.Ft "const char *"
+.Fn clm_agent_get_effort "const struct clm_agent *agent"
 .Ft int
 .Fo clm_agent_restore_history
 .Fa "struct clm_agent *agent"
@@ -333,6 +339,20 @@ parses such an object and appends the message it describes to
 Together they are the round-trip used by
 .Xr clm 1 Ns 's
 session persistence.
+.Pp
+.Fn clm_agent_set_effort
+sets the reasoning effort sent with every later request
+.Pq Qq low , Qq medium , Qq high , Qq xhigh , No or Qq max No on current models ,
+or clears it with
+.Dv NULL
+so the backend applies its own default.
+Each provider spells the field its own way
+.Pq Va output_config.effort , Va reasoning.effort , No or Va reasoning_effort ,
+and the server, not clm, rejects a level its model does not accept.
+.Fn clm_agent_get_effort
+returns the effort in force, or
+.Dv NULL ,
+borrowed from the agent.
 .Sh RETURN VALUES
 .Fn clm_agent_new ,
 .Fn clm_agent_submit ,

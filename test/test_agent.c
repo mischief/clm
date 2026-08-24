@@ -24,6 +24,7 @@ struct tstate {
 	enum clm_provider provider;
 	const char *system_prompt;
 	const char *system_prompt_suffix;
+	const char *effort;
 	int turn_done;
 	int turn_status;
 	size_t asst_len;
@@ -215,6 +216,9 @@ make_agent(struct tstate *st, int port)
 	CHECK(r == 0, "clm_host_uv_new");
 	r = clm_agent_new(&cfg, st->host, &callbacks, st, &agent);
 	CHECK(r == 0, "clm_agent_new");
+	if (st->effort != NULL)
+		CHECK(clm_agent_set_effort(agent, st->effort) == 0,
+		    "clm_agent_set_effort");
 	CHECK(clm_tools_register_shell(agent) == 0, "register shell");
 	CHECK(clm_tools_register_bg(agent) == 0, "register bg");
 	return agent;
@@ -245,6 +249,7 @@ test_text_reply(uv_loop_t *loop)
 
 	st.loop = loop;
 	st.system_prompt = "SENTINEL_SYS_PROMPT";
+	st.effort = "low";
 	srv = canned_start(loop);
 	CHECK(srv != NULL, "canned_start");
 
@@ -263,6 +268,10 @@ test_text_reply(uv_loop_t *loop)
 	CHECK(canned_last_request(srv) != NULL &&
 	        strstr(canned_last_request(srv), "SENTINEL_SYS_PROMPT") != NULL,
 	    "custom system prompt sent");
+	CHECK(canned_last_request(srv) != NULL &&
+	        strstr(canned_last_request(srv),
+	            "\"reasoning_effort\":\"low\"") != NULL,
+	    "chat-completions effort sent");
 
 	teardown(&st, srv);
 }
@@ -687,6 +696,7 @@ test_responses_compact(uv_loop_t *loop)
 
 	st.loop = loop;
 	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	st.effort = "low";
 	srv = canned_start(loop);
 	CHECK(srv != NULL, "responses compact: canned_start");
 
@@ -709,6 +719,9 @@ test_responses_compact(uv_loop_t *loop)
 	    "responses compact: request uses input");
 	CHECK(req != NULL && strstr(req, "\"messages\"") == NULL,
 	    "responses compact: request omits messages");
+	CHECK(req != NULL &&
+	        strstr(req, "\"reasoning\":{\"effort\":\"low\"}") != NULL,
+	    "responses effort sent");
 
 	teardown(&st, srv);
 }
@@ -1213,6 +1226,7 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	st.provider = CLM_PROVIDER_ANTHROPIC;
 	st.system_prompt = "SENTINEL_SYS_PROMPT";
 	st.system_prompt_suffix = "SENTINEL_HOST_BLOCK";
+	st.effort = "low";
 	srv = canned_start(loop);
 	CHECK(srv != NULL, "canned_start");
 
@@ -1261,6 +1275,11 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	    "system prompt suffix sent");
 	CHECK(req != NULL && strstr(req, "\"max_tokens\":") != NULL,
 	    "max_tokens sent");
+	/* Effort is spelled differently per dialect; Anthropic nests it in
+	 * output_config. */
+	CHECK(req != NULL &&
+	        strstr(req, "\"output_config\":{\"effort\":\"low\"}") != NULL,
+	    "anthropic effort sent");
 	/* Explicit cache breakpoints: one on the system block (covering the
 	 * tools + system prefix) and one at the end of the history. */
 	CHECK(req != NULL &&
