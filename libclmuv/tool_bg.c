@@ -266,6 +266,16 @@ tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 	opt.file = shell;
 	opt.args = argv;
 	opt.exit_cb = bg_on_exit;
+	/* New session (via setsid()) so the job has no controlling terminal at
+	 * all, matching tool_shell.c's shell_exec. Without this, a child that
+	 * opens /dev/tty directly -- e.g. ssh printing a host-key prompt or
+	 * "Permanently added ..." notice, which bypasses redirected
+	 * stdout/stderr on purpose -- resolves /dev/tty to clm's own
+	 * controlling pty and scribbles over the live TUI. It also puts the
+	 * job in its own new process group, so a future group-kill (as
+	 * shell_cancel does) would reach anything the command backgrounds
+	 * with "&" too, not just the immediate $SHELL -c process. */
+	opt.flags = UV_PROCESS_DETACHED;
 	stdio[0].flags = UV_IGNORE; /* no stdin for a detached background job */
 	stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
 	stdio[1].data.stream = (uv_stream_t *)&j->out;
