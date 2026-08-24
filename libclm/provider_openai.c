@@ -90,7 +90,20 @@ fail:
 	return NULL;
 }
 
+/* Both OpenAI dialects take the bare string. */
+static void
+openai_forbid_tool_calls(cJSON *req)
+{
+	cJSON *tc = cJSON_CreateString("none");
+
+	if (tc == NULL)
+		return;
+	cJSON_DeleteItemFromObjectCaseSensitive(req, "tool_choice");
+	cJSON_AddItemToObject(req, "tool_choice", tc);
+}
+
 const struct clm_provider_ops clm_provider_ops_openai = {
+    .forbid_tool_calls = openai_forbid_tool_calls,
     .build_request = openai_build_request,
     .build_auth_headers = NULL,
     .normalize_response = NULL,

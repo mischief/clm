@@ -1017,8 +1017,22 @@ anthropic_normalize_stream_event(cJSON *raw, void **state)
 	return NULL;
 }
 
+/* Anthropic spells it as an object. */
+static void
+anthropic_forbid_tool_calls(cJSON *req)
+{
+	cJSON *tc = cJSON_CreateObject();
+
+	if (tc == NULL)
+		return;
+	cJSON_AddItemToObject(tc, "type", cJSON_CreateString("none"));
+	cJSON_DeleteItemFromObjectCaseSensitive(req, "tool_choice");
+	cJSON_AddItemToObject(req, "tool_choice", tc);
+}
+
 const struct clm_provider_ops clm_provider_ops_anthropic = {
     .build_request = anthropic_build_request,
+    .forbid_tool_calls = anthropic_forbid_tool_calls,
     .build_auth_headers = anthropic_build_auth_headers,
     .normalize_response = anthropic_normalize_response,
     .normalize_stream_event = anthropic_normalize_stream_event,

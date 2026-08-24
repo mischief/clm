@@ -948,7 +948,7 @@ clm_agent_compact(struct clm_agent *agent)
 {
 	const struct clm_provider_ops *ops;
 	json_cleanup cJSON *req = NULL;
-	cJSON *messages, *msg;
+	cJSON *messages, *msg, *tools;
 	autofree char *body_str = NULL;
 	char *body;
 	int r;
@@ -977,14 +977,22 @@ clm_agent_compact(struct clm_agent *agent)
 	cJSON_AddItemToArray(messages, msg);
 
 	/* Build through the provider seam rather than hand-serializing the
-	 * canonical chat-completions shape.  In particular, Responses API
-	 * providers require `input`, not `messages`; build_request() also owns
-	 * messages, so do not delete it below.  Compaction never exposes tools.
-	 */
+	 * canonical chat-completions shape. Responses API providers require
+	 * `input`, not `messages`; build_request() also owns messages, so do
+	 * not delete it below.
+	 *
+	 * The tool schemas go out even though this call must not call a tool:
+	 * they head the prefix the provider caches, so dropping them here
+	 * makes every compaction a full-price prefill of the whole history.
+	 * forbid_tool_calls() blocks the calls instead, from outside the
+	 * cached prefix. */
 	ops = clm_provider_ops_get(agent->llm->provider);
-	req = ops->build_request(agent->llm, messages, NULL, false);
+	tools = agent->tools_unsupported ? NULL : clm_tools_build_schema(agent);
+	req = ops->build_request(agent->llm, messages, tools, false);
 	if (req == NULL)
 		return -ENOMEM;
+	if (tools != NULL && ops->forbid_tool_calls != NULL)
+		ops->forbid_tool_calls(req);
 
 	body_str = cJSON_PrintUnformatted(req);
 	if (body_str == NULL)

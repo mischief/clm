@@ -107,6 +107,14 @@ struct clm_provider_ops {
 	 * commit that added this field for the bug that caused.
 	 */
 	const char *endpoint_path;
+
+	/*
+	 * Add this dialect's "do not call tools" instruction to a built
+	 * request. Compaction sends tool schemas so its prefix matches an
+	 * ordinary turn's and stays cacheable, but wants prose back. NULL
+	 * when the dialect has no such field.
+	 */
+	void (*forbid_tool_calls)(cJSON *req);
 };
 
 /* Look up the ops for a provider. Never returns NULL: any provider without

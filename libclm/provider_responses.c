@@ -741,7 +741,20 @@ responses_normalize_stream_event(cJSON *raw, void **state)
 	return NULL;
 }
 
+/* Both OpenAI dialects take the bare string. */
+static void
+responses_forbid_tool_calls(cJSON *req)
+{
+	cJSON *tc = cJSON_CreateString("none");
+
+	if (tc == NULL)
+		return;
+	cJSON_DeleteItemFromObjectCaseSensitive(req, "tool_choice");
+	cJSON_AddItemToObject(req, "tool_choice", tc);
+}
+
 const struct clm_provider_ops clm_provider_ops_responses = {
+    .forbid_tool_calls = responses_forbid_tool_calls,
     .build_request = responses_build_request,
     .build_auth_headers = NULL,
     .normalize_response = responses_normalize_response,

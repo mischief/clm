@@ -1250,6 +1250,57 @@ test_anthropic_ctx_max(uv_loop_t *loop)
 }
 
 /*
+ * Compaction sends the tool schemas even though it must not call a tool:
+ * they head the prefix the provider caches, so omitting them turns every
+ * compaction into a full-price prefill of the whole history. The call is
+ * held to prose by the dialect's own tool_choice instead.
+ */
+static void
+test_compact_keeps_tools(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *req;
+	int i;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	for (i = 0; i < 3; i++) {
+		canned_reply(srv,
+		    "{\"id\":\"m1\",\"type\":\"message\","
+		    "\"role\":\"assistant\",\"content\":[{\"type\":\"text\","
+		    "\"text\":\"ok\"}],\"stop_reason\":\"end_turn\","
+		    "\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}");
+		if (i == 0)
+			st.agent = make_agent(&st, canned_port(srv));
+		CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+		run_until_done(&st);
+		st.turn_done = 0;
+	}
+	canned_reply(srv,
+	    "{\"id\":\"m2\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"text\",\"text\":\"SUMMARY\"}],"
+	    "\"stop_reason\":\"end_turn\","
+	    "\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}");
+
+	CHECK(clm_agent_compact(st.agent) == 0, "compact accepted");
+	run_until_done(&st);
+	req = canned_last_request(srv);
+
+	CHECK(st.turn_status == 0, "compact succeeds");
+	CHECK(req != NULL && strstr(req, "\"tools\":[") != NULL,
+	    "compaction carries the tool schemas");
+	CHECK(req != NULL &&
+	        strstr(req, "\"tool_choice\":{\"type\":\"none\"}") != NULL,
+	    "compaction forbids tool calls");
+
+	teardown(&st, srv);
+}
+
+/*
  * (g2) Anthropic Messages API: request shape (auth headers, system pulled
  * out of messages[], max_tokens) and a non-streaming text reply translated
  * back from Anthropic's content-block response shape.
@@ -2089,6 +2140,7 @@ test_agent_suite(void *arg)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_compact_keeps_tools(&loop);
 	test_anthropic_ctx_max(&loop);
 	test_anthropic_text_reply(&loop);
 	test_anthropic_tool_call(&loop);
