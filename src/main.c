@@ -537,6 +537,7 @@ main(int argc, char *argv[])
 	const char *api_base = NULL;
 	const char *model_name = NULL; /* -m/--model: a "provider/model-id"
 	                                  spec, or a literal wire id */
+	const char *effort = NULL;
 	const char *provider_name =
 	    NULL; /* --provider: a config providers[] name override */
 	/* Owned copy of a "provider/model-id" spec's provider half (see
@@ -705,6 +706,16 @@ main(int argc, char *argv[])
 		}
 		if (spec_model != NULL)
 			model_name = spec_model;
+		/* Model entry wins over the provider-wide default. */
+		if (prov_name != NULL)
+			effort =
+			    clm_lua_cfg_provider_str(lcfg, prov_name, "effort");
+		if (spec_provider != NULL && spec_model != NULL) {
+			const char *me = clm_lua_cfg_provider_model_str(
+			    lcfg, spec_provider, spec_model, "effort");
+			if (me != NULL)
+				effort = me;
+		}
 	}
 
 	/* Defaults for anything not set by config or CLI. */
@@ -839,6 +850,9 @@ main(int argc, char *argv[])
 		free(state);
 		return 1;
 	}
+	if (effort != NULL && clm_agent_set_effort(state->agent, effort) < 0)
+		fprintf(
+		    stderr, "warning: could not set effort \"%s\"\n", effort);
 	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the
 	 * portable core). */
 	clm_tools_register_shell(state->agent);

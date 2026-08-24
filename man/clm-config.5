@@ -158,6 +158,25 @@ action at a time (e.g. a game bridge advancing one action per game
 turn); set to
 .Va 1
 only for hosts that need serialized dispatch.
+.It Va effort
+Reasoning effort asked of the model:
+.Qq low ,
+.Qq medium ,
+.Qq high ,
+.Qq xhigh ,
+or
+.Qq max
+on current Anthropic and OpenAI models.
+Unset sends nothing and takes the backend's own default, which is
+.Qq high
+on Anthropic models today.
+The string is passed through as the provider spells it
+.Pq Va output_config.effort , Va reasoning.effort , No or Va reasoning_effort ,
+so the server, not clm, rejects a level its model does not accept.
+Backends with no such control ignore it.
+A per-model entry overrides this provider-wide value, and the TUI's
+.Sy /effort
+command overrides both for one session.
 .It Va models
 A table of per-model overrides nested under this provider, keyed by
 the literal wire model id (the same string sent on the wire and used
@@ -175,6 +194,9 @@ of learning it from the backend.
 .It Va autocompact_pct
 Override the percentage of the context window that triggers automatic
 conversation summarization.
+.It Va effort
+Reasoning effort for this model, overriding the provider-wide
+.Va effort .
 .El
 .El
 .It Va system_prompt
@@ -313,6 +335,7 @@ return {
                 ["qwen3-32b"] = {
                     context_size = 131072,
                     autocompact_pct = 80,
+                    effort = "low",
                 },
             },
         },

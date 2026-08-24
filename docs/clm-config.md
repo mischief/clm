@@ -83,8 +83,9 @@ Each entry may set:
 Wire dialect to speak:
 "openai",
 "anthropic",
+"ollama",
 or
-"ollama".
+"openai-responses".
 Defaults to
 "openai"
 if unset.
@@ -102,6 +103,11 @@ internally -- and gets Anthropic's
 auth headers instead of a bearer token, and prompt caching enabled on
 every request automatically (a no-op below the model's minimum
 cacheable prefix, so this is free to leave on).
+"openai-responses"
+speaks OpenAI's Responses API instead of chat/completions -- also
+translated internally -- needed for models that reject function tools
+on chat/completions
+(e.g. gpt-5.6-luna, gpt-5.6-sol).
 
 *url*
 
@@ -118,6 +124,9 @@ appended automatically and depends on
 */messages*
 for
 "anthropic",
+*/responses*
+for
+"openai-responses",
 */chat/completions*
 otherwise.
 
@@ -152,6 +161,39 @@ falls back to a rate high enough to never bind in normal use -- lower
 these only for a backend with a real, tight quota (a free-tier proxy,
 typically).
 
+*disable\_parallel\_tool\_calls*
+
+Ask the model to make at most one tool call per turn instead of
+however many it likes at once
+(*0* or unset means false, the default).
+clm dispatches a multi-call batch concurrently, which is fine for
+independent tools but deadlocks a tool host that can only advance one
+action at a time (e.g. a game bridge advancing one action per game
+turn); set to
+*1*
+only for hosts that need serialized dispatch.
+
+*effort*
+
+Reasoning effort asked of the model:
+"low",
+"medium",
+"high",
+"xhigh",
+or
+"max"
+on current Anthropic and OpenAI models.
+Unset sends nothing and takes the backend's own default, which is
+"high"
+on Anthropic models today.
+The string is passed through as the provider spells it
+(*output\_config.effort*, *reasoning.effort*, or *reasoning\_effort*),
+so the server, not clm, rejects a level its model does not accept.
+Backends with no such control ignore it.
+A per-model entry overrides this provider-wide value, and the TUI's
+**/effort**
+command overrides both for one session.
+
 *models*
 
 A table of per-model overrides nested under this provider, keyed by
@@ -173,6 +215,11 @@ of learning it from the backend.
 
 Override the percentage of the context window that triggers automatic
 conversation summarization.
+
+*effort*
+
+Reasoning effort for this model, overriding the provider-wide
+*effort*.
 
 *system\_prompt*
 
@@ -329,6 +376,7 @@ overrides, plus a backup provider for failover
 	                ["qwen3-32b"] = {
 	                    context_size = 131072,
 	                    autocompact_pct = 80,
+	                    effort = "low",
 	                },
 	            },
 	        },

@@ -133,6 +133,11 @@ return {
         --     -- literal wire model id -- which provider a model
         --     -- uses is which provider's `models` table it's
         --     -- listed in, not a field you set on the model itself.
+        --     -- Reasoning effort: "low", "medium", "high", "xhigh",
+        --     -- or "max". Unset takes the backend's own default
+        --     -- (Anthropic models reason at "high"). A model entry
+        --     -- overrides this; the TUI's /effort overrides both.
+        --     effort = "low",
         --     models = {
         --         ["qwen3-32b"] = {
         --             context_size = 32768,

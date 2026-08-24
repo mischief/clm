@@ -2012,6 +2012,72 @@ on_live_models_error(const char *emsg, void *user)
 	ui_push(u, ST_META, msg);
 }
 
+/*
+ * Effort for this connection: a /effort override if one is in force, else
+ * the model entry, else the provider entry. NULL means "send nothing and
+ * take the backend's default".
+ */
+static const char *
+resolve_effort(struct ui *u, const char *prov, const char *model)
+{
+	const char *e = NULL;
+
+	if (u->effort_override[0] != '\0')
+		return u->effort_override;
+	if (u->lcfg == NULL)
+		return NULL;
+	if (prov != NULL)
+		e = clm_lua_cfg_provider_str(u->lcfg, prov, "effort");
+	if (prov != NULL && model != NULL) {
+		const char *me = clm_lua_cfg_provider_model_str(
+		    u->lcfg, prov, model, "effort");
+		if (me != NULL)
+			e = me;
+	}
+	return e;
+}
+
+/* Hand the freshly built agent whatever effort applies to it. */
+static void
+apply_effort(struct ui *u, const char *prov, const char *model)
+{
+	const char *e = resolve_effort(u, prov, model);
+
+	if (e != NULL)
+		(void)clm_agent_set_effort(u->agent, e);
+}
+
+static void
+cmd_effort(struct ui *u, const char *arg)
+{
+	char msg[160];
+
+	if (arg == NULL || arg[0] == '\0') {
+		const char *cur = clm_agent_get_effort(u->agent);
+
+		(void)snprintf(msg, sizeof(msg), "\neffort: %s\n",
+		    cur != NULL ? cur : "(backend default)");
+		ui_push(u, ST_META, msg);
+		return;
+	}
+	if (strcmp(arg, "default") == 0) {
+		u->effort_override[0] = '\0';
+		(void)clm_agent_set_effort(u->agent, NULL);
+		ui_push(u, ST_META, "\neffort: backend default\n");
+		return;
+	}
+	if (clm_agent_set_effort(u->agent, arg) < 0) {
+		ui_push(u, ST_ERROR, "\ncould not set effort\n");
+		return;
+	}
+	(void)snprintf(
+	    u->effort_override, sizeof(u->effort_override), "%s", arg);
+	(void)snprintf(msg, sizeof(msg),
+	    "\neffort: %s (server rejects a level its model does not take)\n",
+	    arg);
+	ui_push(u, ST_META, msg);
+}
+
 static void
 cmd_agent(struct ui *u, const char *arg)
 {
@@ -2137,6 +2203,7 @@ cmd_agent(struct ui *u, const char *arg)
 				ui_push(
 				    u, ST_ERROR, "\nfailed to create agent\n");
 			} else {
+				apply_effort(u, prov, spec_model);
 				clm_tools_register_shell(u->agent);
 				clm_tools_register_bg(u->agent);
 				/* Reload plugins. */
@@ -2479,6 +2546,9 @@ run_command(struct ui *u, const char *line)
 		    "  /provider [name]   switch provider connection "
 		    "(config.lua's "
 		    "`providers` table); no arg lists what's available\n"
+		    "  /effort [level]    reasoning effort for this session: "
+		    "low, medium, high, xhigh, max, or default; no arg "
+		    "shows the current one\n"
 		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
 		    "  /output [full|short] tool output detail (^O)\n"
 		    "  /compact           summarize old turns to reclaim "
@@ -2557,6 +2627,8 @@ run_command(struct ui *u, const char *line)
 		cmd_agent(u, arg);
 	} else if (CMD("model")) {
 		cmd_model(u, arg);
+	} else if (CMD("effort")) {
+		cmd_effort(u, arg);
 	} else if (CMD("provider")) {
 		cmd_provider(u, arg);
 	} else if (CMD("quit") || CMD("exit") || CMD("q")) {
@@ -3393,6 +3465,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		free(u);
 		return 1;
 	}
+	apply_effort(u, cfg->provider_name, cfg->model);
 	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the
 	 * portable core). */
 	clm_tools_register_shell(u->agent);
