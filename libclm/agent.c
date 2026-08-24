@@ -64,25 +64,23 @@ fmt_rfc2822(char *buf, size_t len)
 }
 
 /*
- * Build the session-start system prompt: the base prompt, a current-time stamp,
- * and the note explaining future time updates. Returns a malloc'd string the
- * caller must free, or NULL on OOM.
+ * Build the session-start system prompt: the base prompt plus the note
+ * explaining the time updates that ride in later messages. Carries no
+ * timestamp of its own -- the system prompt heads the prefix a provider
+ * caches, so anything per-session in here costs every session a full
+ * prefill. Returns a malloc'd string the caller must free, or NULL on OOM.
  */
 static char *
 build_system_prompt(const char *base)
 {
-	char stamp[64];
 	autofree char *out = NULL;
 	size_t len;
 
-	fmt_rfc2822(stamp, sizeof(stamp));
-
-	len = strlen(base) + strlen(stamp) + strlen(time_context_note) + 20;
+	len = strlen(base) + strlen(time_context_note) + 1;
 	out = malloc(len);
 	if (out == NULL)
 		return NULL;
-	snprintf(out, len, "%s\n\ncurrent time: %s%s", base, stamp,
-	    time_context_note);
+	snprintf(out, len, "%s%s", base, time_context_note);
 
 	char *ret = out;
 	out = NULL;
