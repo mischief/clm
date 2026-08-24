@@ -168,6 +168,16 @@ CLM_API int clm_history_compact(struct clm_history *h, const char *summary,
     size_t keep_recent, const struct clm_compressor *cz);
 
 /*
+ * Same fold, but the kept tail is sized, not counted: whole user turns are
+ * kept newest-first while their stored bytes fit keep_bytes, never fewer
+ * than keep_min_turns. Bounds the result, so a few huge tool results cannot
+ * leave the history above the threshold that triggered compaction.
+ */
+CLM_API int clm_history_compact_within(struct clm_history *h,
+    const char *summary, size_t keep_bytes, size_t keep_min_turns,
+    const struct clm_compressor *cz);
+
+/*
  * Serialize the entire history into a cJSON array suitable for the
  * "messages" field of a chat/completions request. Caller owns the returned
  * object (cJSON_Delete). Returns NULL on failure.

@@ -183,6 +183,68 @@ message_set_content(
  * or a negative errno. Callers should treat 0 as "no progress", not success:
  * re-triggering compaction on an unchanged history will no-op forever.
  */
+/* Rough wire size of one stored message: content plus its JSON scaffolding
+ * and any tool calls hanging off it. */
+static size_t
+message_bytes(const struct clm_message *m)
+{
+	const struct clm_tool_call *tc;
+	size_t n = (size_t)m->content_len + 32;
+
+	TAILQ_FOREACH(tc, &m->tool_calls, entries)
+	n += (tc->name != NULL ? strlen(tc->name) : 0) +
+	    (tc->args != NULL ? strlen(tc->args) : 0) + 48;
+	return n;
+}
+
+/*
+ * How many trailing user turns to keep: those fitting keep_bytes, at least
+ * keep_min_turns, and always at least one turn short of the whole history so
+ * a caller that asked for compaction gets some.
+ */
+static size_t
+turns_within(
+    const struct clm_history *h, size_t keep_bytes, size_t keep_min_turns)
+{
+	const struct clm_message *m;
+	size_t turns = 0, kept = 0, bytes = 0, cap;
+	bool over = false;
+
+	if (keep_min_turns == 0)
+		keep_min_turns = 1;
+	for (m = TAILQ_LAST(h, clm_history); m != NULL;
+	    m = TAILQ_PREV(m, clm_history, entries)) {
+		if (m->role == CLM_ROLE_SYSTEM)
+			break;
+		if (!over)
+			bytes += message_bytes(m);
+		if (m->role != CLM_ROLE_USER)
+			continue;
+		turns++;
+		if (over)
+			continue;
+		if (turns <= keep_min_turns || bytes <= keep_bytes)
+			kept = turns;
+		else
+			over = true;
+	}
+
+	if (kept == 0)
+		kept = keep_min_turns;
+	cap = turns > keep_min_turns ? turns - 1 : keep_min_turns;
+	return kept < cap ? kept : cap;
+}
+
+int
+clm_history_compact_within(struct clm_history *h, const char *summary,
+    size_t keep_bytes, size_t keep_min_turns, const struct clm_compressor *cz)
+{
+	if (h == NULL || summary == NULL)
+		return -EINVAL;
+	return clm_history_compact(
+	    h, summary, turns_within(h, keep_bytes, keep_min_turns), cz);
+}
+
 int
 clm_history_compact(struct clm_history *h, const char *summary,
     size_t keep_recent, const struct clm_compressor *cz)

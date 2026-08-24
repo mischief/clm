@@ -692,8 +692,15 @@ response_finish_reason(cJSON *parsed)
 	return cJSON_IsString(reason) ? cJSON_GetStringValue(reason) : NULL;
 }
 
-/* Turns to keep verbatim when compacting; older ones fold into the summary. */
-#define CLM_COMPACT_KEEP_RECENT 2
+/*
+ * What compaction keeps verbatim: the newest turns fitting this share of the
+ * window, never fewer than CLM_COMPACT_KEEP_MIN. Sizing the tail means one
+ * enormous tool result cannot leave the history above the threshold that
+ * triggered compaction, and a short history still folds.
+ */
+#define CLM_COMPACT_KEEP_PCT 25
+#define CLM_COMPACT_KEEP_MIN 2
+#define CLM_BYTES_PER_TOKEN 4
 
 /* Instruction appended to drive the summarization call. */
 static const char *compact_prompt =
@@ -843,8 +850,16 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 	}
 
 	{
-		int folded = clm_history_compact(&agent->history, summary,
-		    CLM_COMPACT_KEEP_RECENT, agent->compressor);
+		/* No window discovered means no percentage to take, so the
+		 * cost-cap fallback stands in for one. */
+		int64_t window = agent->ctx_max > 0
+		    ? agent->ctx_max
+		    : CLM_AUTOCOMPACT_FALLBACK_TOKENS;
+		size_t keep_bytes = (size_t)window * CLM_COMPACT_KEEP_PCT /
+		    100 * CLM_BYTES_PER_TOKEN;
+		int folded =
+		    clm_history_compact_within(&agent->history, summary,
+		        keep_bytes, CLM_COMPACT_KEEP_MIN, agent->compressor);
 		/* folded == 0 is failure here, not success: the history had no
 		 * valid cut point, so nothing shrank and the summary we just
 		 * paid a full-history LLM call for was discarded. Reporting it

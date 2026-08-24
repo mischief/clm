@@ -1301,6 +1301,57 @@ test_compact_keeps_tools(uv_loop_t *loop)
 }
 
 /*
+ * The kept tail is sized, not counted: a turn holding a huge tool result
+ * costs the turns that would otherwise be kept beside it, so what survives
+ * compaction stays inside the budget either way.
+ */
+static void
+test_compact_within_budget(void)
+{
+	struct clm_history h;
+	struct clm_message *m;
+	char big[4096];
+	int i, kept;
+
+	memset(big, 'x', sizeof(big) - 1);
+	big[sizeof(big) - 1] = '\0';
+
+	clm_history_init(&h);
+	clm_history_add_system(&h, "sys", NULL);
+	for (i = 0; i < 6; i++) {
+		clm_history_add_user(&h, "small question", NULL);
+		clm_history_add_assistant_text(&h, "small answer", NULL);
+	}
+
+	/* Budget large enough for every small turn: all but one survive. */
+	CHECK(clm_history_compact_within(&h, "SUMMARY", 100000, 2, NULL) > 0,
+	    "budget compact: folds something");
+	kept = 0;
+	TAILQ_FOREACH(m, &h, entries)
+	if (m->role == CLM_ROLE_USER)
+		kept++;
+	CHECK(kept == 6, "budget compact: summary plus the five kept turns");
+	clm_history_free(&h);
+
+	/* Same shape, but each answer is 4 KiB and the budget is 6 KiB, so
+	 * only the floor of two turns fits. */
+	clm_history_init(&h);
+	clm_history_add_system(&h, "sys", NULL);
+	for (i = 0; i < 6; i++) {
+		clm_history_add_user(&h, "small question", NULL);
+		clm_history_add_assistant_text(&h, big, NULL);
+	}
+	CHECK(clm_history_compact_within(&h, "SUMMARY", 6144, 2, NULL) > 0,
+	    "budget compact: folds under a tight budget");
+	kept = 0;
+	TAILQ_FOREACH(m, &h, entries)
+	if (m->role == CLM_ROLE_USER)
+		kept++;
+	CHECK(kept == 3, "budget compact: summary plus the two-turn floor");
+	clm_history_free(&h);
+}
+
+/*
  * (g2) Anthropic Messages API: request shape (auth headers, system pulled
  * out of messages[], max_tokens) and a non-streaming text reply translated
  * back from Anthropic's content-block response shape.
@@ -2140,6 +2191,7 @@ test_agent_suite(void *arg)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_compact_within_budget();
 	test_compact_keeps_tools(&loop);
 	test_anthropic_ctx_max(&loop);
 	test_anthropic_text_reply(&loop);
