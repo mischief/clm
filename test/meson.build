@@ -134,13 +134,39 @@ have_pyte = py.found() and run_command(
   py, '-c', 'import pyte', check: false).returncode() == 0
 
 if have_lua and have_pyte
-  test('tui',
+  test('tui_basic',
     py,
-    args: [files('tui/test_tui.py')],
+    args: [files('tui/test_tui.py'), 'connection', 'offline', 'agent',
+           'markdown', 'resize', 'editing', 'history', 'paste'],
     env: {'CLM_BIN': clm_exe.full_path()},
     depends: clm_exe,
     suite: 'tui',
-    timeout: 120,
+    timeout: 60,
+  )
+  test('tui_scrollback',
+    py,
+    args: [files('tui/test_tui.py'), 'scrollback', 'scroll_stable', 'end_key'],
+    env: {'CLM_BIN': clm_exe.full_path()},
+    depends: clm_exe,
+    suite: 'tui',
+    timeout: 60,
+  )
+  test('tui_interaction',
+    py,
+    args: [files('tui/test_tui.py'), 'commands', 'queueing', 'permission',
+           'cancel'],
+    env: {'CLM_BIN': clm_exe.full_path()},
+    depends: clm_exe,
+    suite: 'tui',
+    timeout: 60,
+  )
+  test('tui_session',
+    py,
+    args: [files('tui/test_tui.py'), 'session'],
+    env: {'CLM_BIN': clm_exe.full_path()},
+    depends: clm_exe,
+    suite: 'tui',
+    timeout: 60,
   )
 elif not have_lua
   message('lua disabled; skipping TUI test (needs the clm desktop binary)')

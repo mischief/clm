@@ -33,7 +33,7 @@ def test_connection_online(url):
               "connection: status bar shows [online] against a live server")
 
 
-def test_connection_offline():
+def test_connection_offline(_url=None):
     # Point at a port nothing is listening on; expect an offline indicator.
     with Tui(BIN, "http://127.0.0.1:1/v1/chat/completions",
              rows=12, cols=60) as t:
@@ -99,9 +99,9 @@ def test_scroll_stable_while_streaming(url):
         check("Fruit" in scrolled, "scroll-stable: scrolled up into history")
 
         # Submit a second prompt while scrolled up; its reply streams in
-        # over several chunks (see mock_server.py's CHUNK_DELAY) -- sample
+        # over several chunks (see mock_server.py's slow-stream delay) -- sample
         # the viewport partway through, before the reply finishes.
-        t.send(b"show me fruit again\r")
+        t.send(b"slowtest show me fruit again\r")
         t.pump(0.3)
         mid_stream = transcript(t)
         check(mid_stream == scrolled,
@@ -211,7 +211,7 @@ def test_queueing(url):
     with Tui(BIN, url, rows=20, cols=70) as t:
         t.wait_for("online", timeout=8)
         # the first prompt starts a slow turn; the second queues mid-turn.
-        t.send(b"first\r")
+        t.send(b"slowtest first\r")
         t.pump(0.15)
         t.send(b"second\r")
         check(t.wait_for("(queued)", timeout=3),
@@ -221,7 +221,7 @@ def test_queueing(url):
 def test_cancel(url):
     with Tui(BIN, url, rows=20, cols=70) as t:
         t.wait_for("online", timeout=8)
-        t.send(b"show me fruit\r")
+        t.send(b"slowtest show me fruit\r")
         t.pump(0.15)          # turn is now streaming (slow mock)
         t.send(b"\x1b")       # Escape -> cancel
         assert t.wait_for("[cancelled]", timeout=5), "cancel not reflected"
@@ -372,24 +372,35 @@ def test_session_resume(url):
               "resume: a follow-up turn works after resuming")
 
 
+TESTS = {
+    "connection": test_connection_online,
+    "offline": test_connection_offline,
+    "agent": test_agent_name,
+    "markdown": test_markdown,
+    "scrollback": test_scrollback,
+    "scroll_stable": test_scroll_stable_while_streaming,
+    "end_key": test_end_key,
+    "resize": test_resize,
+    "editing": test_editing,
+    "history": test_history,
+    "commands": test_commands,
+    "queueing": test_queueing,
+    "permission": test_permission,
+    "cancel": test_cancel,
+    "paste": test_bracketed_paste,
+    "session": test_session_resume,
+}
+
+
 def main():
+    selected = sys.argv[1:] or list(TESTS)
+    unknown = [name for name in selected if name not in TESTS]
+    if unknown:
+        print("unknown TUI test(s): " + ", ".join(unknown), file=sys.stderr)
+        return 2
     with MockServer() as srv:
-        test_connection_online(srv.url)
-        test_connection_offline()
-        test_agent_name(srv.url)
-        test_markdown(srv.url)
-        test_scrollback(srv.url)
-        test_scroll_stable_while_streaming(srv.url)
-        test_end_key(srv.url)
-        test_resize(srv.url)
-        test_editing(srv.url)
-        test_history(srv.url)
-        test_commands(srv.url)
-        test_queueing(srv.url)
-        test_permission(srv.url)
-        test_cancel(srv.url)
-        test_bracketed_paste(srv.url)
-        test_session_resume(srv.url)
+        for name in selected:
+            TESTS[name](srv.url)
     if _failures:
         print(f"\n{len(_failures)} check(s) failed")
         return 1

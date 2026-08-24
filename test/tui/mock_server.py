@@ -17,12 +17,10 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-# Per-chunk delay so a streamed turn lasts long enough for tests to observe
-# the "busy" window (prompt queueing, cancellation). At the old 0.05s the whole
-# reply (8 chunks) landed inside the tests' timing windows, so a prompt sent
-# "while busy" often arrived after the turn had already finished. Overridable
-# via CLM_MOCK_DELAY.
-CHUNK_DELAY = float(os.environ.get("CLM_MOCK_DELAY", "0.12"))
+# Ordinary replies should complete quickly.  Tests that need a real busy window
+# include "slowtest" in their prompt and use SLOW_CHUNK_DELAY below.
+CHUNK_DELAY = float(os.environ.get("CLM_MOCK_DELAY", "0.02"))
+SLOW_CHUNK_DELAY = float(os.environ.get("CLM_MOCK_SLOW_DELAY", "0.12"))
 
 # Canned assistant reply. Kept small but covering the interesting markdown.
 REPLY_MD = (
@@ -137,10 +135,14 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         try:
+            delay = (SLOW_CHUNK_DELAY if req is not None and
+                     "slowtest" in " ".join(str(m.get("content", "")) for m in
+                                           req.get("messages", [])).lower()
+                     else CHUNK_DELAY)
             for piece in _chunks(REPLY_MD):
                 send({"choices": [{"index": 0,
                                    "delta": {"content": piece}}]})
-                time.sleep(CHUNK_DELAY)
+                time.sleep(delay)
             send({"choices": [{"index": 0, "delta": {},
                                "finish_reason": "stop"}]})
             # Final usage frame (include_usage), llama.cpp-style timings.

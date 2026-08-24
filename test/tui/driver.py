@@ -71,12 +71,39 @@ class Tui:
             finally:
                 os._exit(127)
         self._set_winsize(rows, cols)
-        self.pump(0.5)  # let it start and paint the first frame
+        # The initial curses frame is written immediately.  Drain it until the
+        # pty goes quiet rather than sleeping for a fixed half second per TUI.
+        self.drain(0.5, wait=True)
 
     # ---- terminal plumbing ----
     def _set_winsize(self, rows, cols):
         fcntl.ioctl(self._fd, termios.TIOCSWINSZ,
                     struct.pack("HHHH", rows, cols, 0, 0))
+
+    def drain(self, timeout=0.5, quiet=0.03, wait=False):
+        """Feed output until the pty has been quiet for ``quiet`` seconds.
+
+        ``wait`` permits process startup to take up to timeout; ordinary local
+        UI operations return after one quiet polling interval if no redraw was
+        necessary.  Unlike pump(), this does not deliberately spend a fixed
+        delay after every operation.
+        """
+        end = time.monotonic() + timeout
+        received = False
+        while time.monotonic() < end:
+            interval = min(quiet if received or not wait else end - time.monotonic(),
+                           end - time.monotonic())
+            r, _, _ = select.select([self._fd], [], [], interval)
+            if not r:
+                return
+            try:
+                data = os.read(self._fd, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            received = True
+            self._stream.feed(data)
 
     def pump(self, seconds):
         """Feed output into the emulator for a fixed window of time."""
@@ -100,7 +127,7 @@ class Tui:
         self._screen.resize(rows, cols)
         self._set_winsize(rows, cols)
         os.kill(self.pid, signal.SIGWINCH)
-        self.pump(0.4)
+        self.drain()
 
     # ---- inspection ----
     def lines(self):
@@ -135,21 +162,32 @@ class Tui:
     def close(self):
         try:
             self.send(b"quit\r")
-            self.pump(0.3)
+            # A normal quit exits promptly.  Only wait briefly, then retain
+            # the SIGTERM fallback for a wedged client.
+            deadline = time.monotonic() + 0.3
+            while time.monotonic() < deadline:
+                pid, _ = os.waitpid(self.pid, os.WNOHANG)
+                if pid == self.pid:
+                    self.pid = None
+                    break
+                self.drain(0.05, quiet=0.01)
         except OSError:
             pass
-        try:
-            os.kill(self.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        if self.pid is not None:
+            try:
+                os.kill(self.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         try:
             os.close(self._fd)
         except OSError:
             pass
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
+        if self.pid is not None:
+            try:
+                os.waitpid(self.pid, 0)
+            except ChildProcessError:
+                pass
+            self.pid = None
 
     def __enter__(self):
         return self
