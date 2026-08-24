@@ -3627,10 +3627,21 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 			 * read it back, this is purely so the user can paste
 			 * it onto -m themselves. */
 			if (u->model != NULL) {
-				printf("session: %s, resume it with:\n"
-				       "  clm --resume %s -m %s\n",
-				    clm_session_id(u->session),
-				    clm_session_id(u->session), u->model);
+				/* -m takes "provider/model-id" (see
+				 * src/model_spec.h); the bare model id alone
+				 * doesn't identify a connection, so prefix it
+				 * with provider_name when known. */
+				if (u->provider_name != NULL)
+					printf("session: %s, resume it with:\n"
+					       "  clm --resume %s -m %s/%s\n",
+					    clm_session_id(u->session),
+					    clm_session_id(u->session),
+					    u->provider_name, u->model);
+				else
+					printf("session: %s, resume it with:\n"
+					       "  clm --resume %s -m %s\n",
+					    clm_session_id(u->session),
+					    clm_session_id(u->session), u->model);
 			} else {
 				printf("session: %s, resume it with:\n"
 				       "  clm --resume %s\n",
