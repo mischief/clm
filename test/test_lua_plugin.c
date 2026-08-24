@@ -865,6 +865,6 @@ test_lua_plugin_suite(void *arg)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("lua plugin", test_lua_plugin_suite, NULL) == 0, "register lua suite");
+	TAP_ADD("lua plugin", test_lua_plugin_suite, NULL);
 	return tap_run();
 }

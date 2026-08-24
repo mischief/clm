@@ -10,8 +10,17 @@
 typedef int (*tap_fn)(void *arg);
 
 /* Register a named test and its context. The harness copies name. Returns 0
- * or -errno. */
+ * or -errno. This remains fallible so callers can test bad registrations. */
 int tap_add(const char *name, tap_fn fn, void *arg);
+
+/* Register a test or terminate the process with a setup diagnostic. Normal
+ * test programs should use TAP_ADD: registration failure is unrecoverable and
+ * must not be recorded as a check outside a running TAP subtest. */
+void tap_add_or_die(const char *name, tap_fn fn, void *arg, const char *file,
+    int line);
+
+#define TAP_ADD(name, fn, arg)                                                \
+	tap_add_or_die((name), (fn), (arg), __FILE__, __LINE__)
 
 /* Run registered tests, writing TAP 13 to stdout. Returns 0 only if every
  * test passes. */

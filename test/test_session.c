@@ -343,6 +343,6 @@ test_session_suite(void *arg)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("session", test_session_suite, NULL) == 0, "register session suite");
+	TAP_ADD("session", test_session_suite, NULL);
 	return tap_run();
 }

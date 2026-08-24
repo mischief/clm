@@ -42,12 +42,8 @@ main(void)
 {
 	int seen = 0;
 
-	TAP_CHECK(tap_add("pass", pass, &seen) == 0, "register pass test");
-	TAP_CHECK(tap_add("reject bad registration", rejects_bad_registration,
-	              NULL) == 0,
-	    "register validation test");
-	TAP_CHECK(tap_add("verify context", verify_context, &seen) == 0,
-	    "register context test");
-	TAP_CHECK(tap_run() == 0, "tap self-tests pass");
-	return 0;
+	TAP_ADD("pass", pass, &seen);
+	TAP_ADD("reject bad registration", rejects_bad_registration, NULL);
+	TAP_ADD("verify context", verify_context, &seen);
+	return tap_run();
 }

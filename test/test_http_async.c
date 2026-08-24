@@ -56,7 +56,6 @@ test_inline_completion(void *arg)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("inline completion", test_inline_completion, NULL) == 0,
-	    "register inline completion test");
+	TAP_ADD("inline completion", test_inline_completion, NULL);
 	return tap_run();
 }

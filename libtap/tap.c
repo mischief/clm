@@ -53,6 +53,19 @@ tap_add(const char *name, tap_fn fn, void *arg)
 }
 
 void
+tap_add_or_die(const char *name, tap_fn fn, void *arg, const char *file,
+    int line)
+{
+	int r = tap_add(name, fn, arg);
+
+	if (r == 0)
+		return;
+	fprintf(stderr, "%s:%d: TAP_ADD(%s) failed: %s\n", file, line,
+	    name != NULL ? name : "(null)", strerror(-r));
+	exit(EXIT_FAILURE);
+}
+
+void
 tap_diag(const char *fmt, ...)
 {
 	va_list ap;

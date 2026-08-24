@@ -128,17 +128,11 @@ test_allocation_size_overflow(void *arg)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("exact limit", test_exact_limit, NULL) == 0,
-	    "register exact-limit test");
-	TAP_CHECK(tap_add("over limit", test_over_limit, NULL) == 0,
-	    "register over-limit test");
-	TAP_CHECK(tap_add("streaming does not buffer", test_streaming_does_not_buffer, NULL) == 0,
-	    "register streaming test");
-	TAP_CHECK(tap_add("multiplication overflow", test_multiplication_overflow, NULL) == 0,
-	    "register multiplication-overflow test");
-	TAP_CHECK(tap_add("received overflow", test_received_overflow, NULL) == 0,
-	    "register received-overflow test");
-	TAP_CHECK(tap_add("allocation size overflow", test_allocation_size_overflow, NULL) == 0,
-	    "register allocation-overflow test");
+	TAP_ADD("exact limit", test_exact_limit, NULL);
+	TAP_ADD("over limit", test_over_limit, NULL);
+	TAP_ADD("streaming does not buffer", test_streaming_does_not_buffer, NULL);
+	TAP_ADD("multiplication overflow", test_multiplication_overflow, NULL);
+	TAP_ADD("received overflow", test_received_overflow, NULL);
+	TAP_ADD("allocation size overflow", test_allocation_size_overflow, NULL);
 	return tap_run();
 }

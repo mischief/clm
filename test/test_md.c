@@ -210,6 +210,6 @@ test_md_suite(void *arg)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("md render", test_md_suite, NULL) == 0, "register md suite");
+	TAP_ADD("md render", test_md_suite, NULL);
 	return tap_run();
 }

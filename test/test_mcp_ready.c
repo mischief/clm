@@ -204,9 +204,8 @@ main(int argc, char **argv)
 	if (argc == 2 && strcmp(argv[1], "--server") == 0)
 		return server_main();
 	program_path = argv[0];
-	TAP_CHECK(tap_add("restart callback lifetime",
-	              test_restart_callback_lifetime_from_argv0, NULL) == 0,
-	    "register restart callback test");
+	TAP_ADD("restart callback lifetime",
+	              test_restart_callback_lifetime_from_argv0, NULL);
 	/* argv[0] remains valid for this process while the registered test runs. */
 	return tap_run();
 }

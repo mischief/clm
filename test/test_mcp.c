@@ -317,6 +317,6 @@ test_mcp_suite(void *arg)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("mcp", test_mcp_suite, NULL) == 0, "register mcp suite");
+	TAP_ADD("mcp", test_mcp_suite, NULL);
 	return tap_run();
 }

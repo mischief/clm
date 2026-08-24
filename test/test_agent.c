@@ -1968,6 +1968,6 @@ test_agent_suite(void *arg)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("agent", test_agent_suite, NULL) == 0, "register agent suite");
+	TAP_ADD("agent", test_agent_suite, NULL);
 	return tap_run();
 }
