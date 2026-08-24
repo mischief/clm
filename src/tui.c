@@ -3321,7 +3321,12 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	    u->agent, loop, lcfg, cb_mcp_status, u, &u->mcp_client_count);
 
 	initscr();
-	cbreak();
+	/* cbreak still leaves terminal flow control enabled: on many terminals
+	 * Ctrl-S/Ctrl-Q are intercepted and, more importantly for editing, the
+	 * configured delayed-suspend character can swallow Ctrl-Y before curses
+	 * sees it.  raw mode gives the input editor every control key it handles
+	 * itself (including Ctrl-Y yank). */
+	raw();
 	noecho();
 	nonl();
 	set_escdelay(25); /* make a lone Escape (cancel) responsive */
