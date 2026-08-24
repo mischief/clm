@@ -72,8 +72,8 @@ CLM_API int clm_session_append(struct clm_session *s,
 /*
  * Replace the log with `h`, keeping the original meta line. Written to a
  * temp file and renamed, so a crash leaves the old log or the new one.
- * For use after a compaction, which an append-only log cannot represent:
- * what the compaction dropped leaves the log with it.
+ * For use after a compaction, which an append-only log cannot represent.
+ * The previous contents survive one cycle as <path>.bak.
  */
 CLM_API int clm_session_rewrite(struct clm_session *s,
     const struct clm_history *h, const struct clm_compressor *cz);

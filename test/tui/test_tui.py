@@ -435,6 +435,15 @@ def test_session_compact(url):
           "compact: fewer prompts remain than were typed")
     check(not os.path.exists(path + ".tmp"),
           "compact: no temporary file left behind")
+    # One cycle of the pre-compaction log survives beside it.
+    bak = path + ".bak"
+    check(os.path.exists(bak), "compact: the previous log is kept as .bak")
+    if os.path.exists(bak):
+        bak_users = [json.loads(ln).get("content") or ""
+                     for ln in open(bak).read().splitlines()
+                     if ln.strip() and json.loads(ln).get("role") == "user"]
+        check(len(bak_users) >= 3,
+              "compact: the backup still holds the folded turns")
 
 
 def test_session_resume(url):

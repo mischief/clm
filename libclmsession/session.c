@@ -407,6 +407,23 @@ clm_session_rewrite(struct clm_session *s, const struct clm_history *h,
 		r = -errno;
 		goto fail;
 	}
+
+	/* One cycle of backup, by hard link rather than rename: the log keeps
+	 * its name throughout, so a crash here can never leave the session
+	 * without its file. Best effort -- a filesystem that refuses the link
+	 * should not cost the compaction. */
+	{
+		autofree char *bak = NULL;
+
+		if (asprintf(&bak, "%s.bak", s->path) >= 0) {
+			(void)unlink(bak);
+			if (link(s->path, bak) != 0) {
+				/* No backup this cycle. Not worth failing
+				 * the compaction over. */
+			}
+		}
+	}
+
 	if (rename(tmp, s->path) != 0) {
 		r = -errno;
 		goto fail;
@@ -445,6 +462,12 @@ clm_session_discard(struct clm_session *s)
 	ASSERT_RETURN(s != NULL, -EINVAL);
 	if (unlink(s->path) < 0)
 		r = -errno;
+	{
+		autofree char *bak = NULL;
+
+		if (asprintf(&bak, "%s.bak", s->path) >= 0)
+			(void)unlink(bak);
+	}
 	clm_session_free(s);
 	return r;
 }
