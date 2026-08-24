@@ -23,6 +23,12 @@ assert(type(math) == "table", "math must be available")
 assert(type(json) == "table", "json module must be available")
 assert(type(clm) == "table", "clm module must be available")
 
+-- Object keys serialize in sorted order: a tool schema built from a Lua table
+-- rides in the prompt prefix a provider caches, and Lua's own table order
+-- varies per process.
+assert(json.encode({ b = 1, a = 2, c = 3 }) == '{"a":2,"b":1,"c":3}',
+    "json.encode must sort object keys")
+
 -- Register a marker tool so the C test can confirm this plugin loaded fully.
 clm.tool_register("sandbox_ok_marker", {
     description = "marker: the sandbox self-test plugin loaded cleanly",

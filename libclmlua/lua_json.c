@@ -183,6 +183,68 @@ is_lua_array(lua_State *L, int idx)
 	return count == (lua_Integer)len;
 }
 
+static cJSON *lua_to_json(lua_State *L, int idx, int depth);
+
+static int
+cmp_key(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/*
+ * Convert a Lua table to a JSON object, keys sorted. Lua hashes strings with
+ * a per-process seed, so lua_next order varies between runs, and a tool
+ * schema built here has to stay byte-identical for a provider to reuse its
+ * cached prompt prefix. Falls back to lua_next order on allocation failure.
+ */
+static cJSON *
+lua_table_to_object(lua_State *L, int idx, int depth)
+{
+	cJSON *obj = cJSON_CreateObject();
+	char **keys = NULL;
+	size_t n = 0, cap = 0, i;
+
+	lua_pushnil(L);
+	while (lua_next(L, idx) != 0) {
+		if (lua_type(L, -2) == LUA_TSTRING) {
+			const char *key = lua_tostring(L, -2);
+
+			if (n == cap) {
+				size_t ncap = cap ? cap * 2 : 8;
+				char **p = realloc(keys, ncap * sizeof(*keys));
+
+				if (p == NULL) {
+					/* Out of memory: finish unsorted. */
+					cJSON_AddItemToObject(obj, key,
+					    lua_to_json(L, -1, depth + 1));
+					lua_pop(L, 1);
+					continue;
+				}
+				keys = p;
+				cap = ncap;
+			}
+			keys[n] = strdup(key);
+			if (keys[n] == NULL)
+				cJSON_AddItemToObject(
+				    obj, key, lua_to_json(L, -1, depth + 1));
+			else
+				n++;
+		}
+		lua_pop(L, 1);
+	}
+
+	qsort(keys, n, sizeof(*keys), cmp_key);
+	for (i = 0; i < n; i++) {
+		lua_getfield(L, idx, keys[i]);
+		cJSON_AddItemToObject(
+		    obj, keys[i], lua_to_json(L, -1, depth + 1));
+		lua_pop(L, 1);
+		free(keys[i]);
+	}
+	free(keys);
+	return obj;
+}
+
 static cJSON *
 lua_to_json(lua_State *L, int idx, int depth)
 {
@@ -223,17 +285,7 @@ lua_to_json(lua_State *L, int idx, int depth)
 			}
 			return arr;
 		}
-		cJSON *obj = cJSON_CreateObject();
-		lua_pushnil(L);
-		while (lua_next(L, idx) != 0) {
-			if (lua_type(L, -2) == LUA_TSTRING) {
-				const char *key = lua_tostring(L, -2);
-				cJSON_AddItemToObject(
-				    obj, key, lua_to_json(L, -1, depth + 1));
-			}
-			lua_pop(L, 1);
-		}
-		return obj;
+		return lua_table_to_object(L, idx, depth);
 	}
 	default:
 		return cJSON_CreateString("(unsupported type)");
