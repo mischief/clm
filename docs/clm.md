@@ -178,6 +178,21 @@ Logs untouched for longer than
 (default 90)
 are deleted when a new session starts, see
 [clm-config(5)](clm-config.md).
+
+Each session also gets a private scratch directory under
+`XDG_CACHE_HOME`*/clm/scratch*
+(default
+*~/.cache/clm/scratch*)
+,
+named after the session and exported to tools as
+`CLM_SCRATCH`.
+The system prompt points the model at it, so working files land there
+instead of in the user's tree.
+The cache dir rather than
+*/tmp*
+because /tmp is a memory filesystem on many machines.
+Directories whose session log is gone are removed when a new session
+starts, subject to the same retention window.
 The
 **/clear**
 command starts a fresh session file, leaving the old one resumable.

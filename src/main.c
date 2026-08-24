@@ -432,6 +432,60 @@ write_new_file(const char *path, const char *content, mode_t mode)
  * is enough. Returns NULL (after reporting) when nothing or more than one
  * session matches.
  */
+/* Drop scratch directories whose session log no longer exists, and any
+ * left behind past the retention window. */
+static void
+sweep_scratch(int64_t keep_days)
+{
+	struct clm_session_info *infos = NULL;
+	const char **live = NULL;
+	size_t n = 0, i;
+
+	if (clm_session_list(NULL, &infos, &n) != 0)
+		return;
+	if (n > 0) {
+		live = calloc(n, sizeof(*live));
+		if (live == NULL) {
+			clm_session_list_free(infos, n);
+			return;
+		}
+		for (i = 0; i < n; i++)
+			live[i] = infos[i].id;
+	}
+	(void)clm_cli_scratch_gc(
+	    live, n, (unsigned)(keep_days > 0 ? keep_days : 0));
+	free(live);
+	clm_session_list_free(infos, n);
+}
+
+/*
+ * Give the agent a private directory for throwaway files: exported to tools
+ * as CLM_SCRATCH and named in the system prompt, since a model that is not
+ * told where to put scratch files puts them in the user's tree.
+ */
+static char *
+attach_scratch(const char *key, const char *sysinfo, char **dir_out)
+{
+	char *dir = clm_cli_scratch_dir(key);
+	char *block = NULL;
+
+	*dir_out = NULL;
+	if (dir == NULL)
+		return NULL;
+	(void)setenv("CLM_SCRATCH", dir, 1);
+	if (asprintf(&block,
+	        "%s\n\nscratch directory for this session: %s\n"
+	        "Put working files, downloads, and intermediate output there "
+	        "rather than in the user's tree or /tmp. It is also "
+	        "$CLM_SCRATCH in any command you run.",
+	        sysinfo != NULL ? sysinfo : "", dir) < 0) {
+		free(dir);
+		return NULL;
+	}
+	*dir_out = dir;
+	return block;
+}
+
 static char *
 resolve_session_prefix(const char *frag)
 {
@@ -785,6 +839,10 @@ main(int argc, char *argv[])
 	cfg.max_iterations = 0;
 	cfg.stream = stream;
 	autofree char *sysinfo = clm_cli_sysinfo();
+	/* Grown below with the scratch directory, once the session that
+	 * names it exists. */
+	autofree char *scratch = NULL;
+	autofree char *host_block = NULL;
 
 	cfg.system_prompt_suffix = sysinfo;
 	if (lcfg != NULL) {
@@ -872,6 +930,7 @@ main(int argc, char *argv[])
 			if (keep_days > 0)
 				(void)clm_session_gc(
 				    NULL, (unsigned)keep_days, NULL);
+			sweep_scratch(keep_days);
 
 			/* Session logging is best-effort: a read-only HOME
 			 * shouldn't keep the TUI from running at all. */
@@ -882,6 +941,15 @@ main(int argc, char *argv[])
 				    "warning: session logging "
 				    "disabled: %s\n",
 				    strerror(-r));
+		}
+
+		/* Named after the session so the sweep below can tell a
+		 * directory whose session is gone from one still in use. */
+		if (sess != NULL) {
+			host_block = attach_scratch(
+			    clm_session_id(sess), sysinfo, &scratch);
+			if (host_block != NULL)
+				cfg.system_prompt_suffix = host_block;
 		}
 
 		rc = tui_run(&cfg, plugin_dir, lcfg, config_load_err,
@@ -902,6 +970,17 @@ main(int argc, char *argv[])
 	state->loop = loop;
 
 	state->oneshot = (oneshot != NULL);
+
+	/* No session here to name the directory, so key it by pid; the empty
+	 * ones are removed on the way out and the sweep takes the rest. */
+	{
+		char key[32];
+
+		(void)snprintf(key, sizeof(key), "run-%ld", (long)getpid());
+		host_block = attach_scratch(key, sysinfo, &scratch);
+		if (host_block != NULL)
+			cfg.system_prompt_suffix = host_block;
+	}
 
 	r = clm_host_uv_new(loop, &state->host);
 	if (r < 0) {
@@ -968,6 +1047,8 @@ main(int argc, char *argv[])
 		clm_host_uv_free(state->host);
 		r = state->turn_status;
 		free(state);
+		if (scratch != NULL)
+			(void)rmdir(scratch); /* only if nothing was left */
 		return r == 0 ? 0 : 1;
 	}
 
@@ -993,6 +1074,8 @@ main(int argc, char *argv[])
 	clm_agent_free(state->agent);
 	clm_host_uv_free(state->host);
 	free(state);
+	if (scratch != NULL)
+		(void)rmdir(scratch); /* only if nothing was left */
 
 	return 0;
 }

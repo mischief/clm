@@ -470,6 +470,32 @@ def test_session_compact(url):
               "compact: the backup still holds the folded turns")
 
 
+def test_scratch(url):
+    """Each session gets a private scratch dir, named in the prompt and the
+    environment so the agent puts working files there."""
+    cache = os.path.join(STATE_HOME, "cache")
+    with Tui(BIN, url, rows=20, cols=100,
+             extra_args=()) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"/session\r")
+        t.pump(0.6)
+        sid = None
+        for ln in t.text().splitlines():
+            if ln.strip().startswith("session:"):
+                sid = ln.split()[-1]
+        check(sid is not None, "scratch: session id available")
+        t.send(b"/quit\r")
+        t.pump(0.8)
+
+    root = os.path.join(cache, "clm", "scratch")
+    check(os.path.isdir(root), "scratch: the scratch root is created")
+    if os.path.isdir(root) and sid is not None:
+        check(sid in os.listdir(root),
+              "scratch: the directory is named after the session")
+        mode = os.stat(os.path.join(root, sid)).st_mode & 0o777
+        check(mode == 0o700, "scratch: private to the user")
+
+
 def test_session_resume(url):
     """A conversation is logged to a session file, and --resume replays it."""
     sessions = os.path.join(STATE_HOME, "clm")
@@ -545,6 +571,7 @@ TESTS = {
     "paste": test_bracketed_paste,
     "session": test_session_resume,
     "session_compact": test_session_compact,
+    "scratch": test_scratch,
 }
 
 

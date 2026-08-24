@@ -71,6 +71,9 @@ class Tui:
             # Session logs go to a per-run temp dir, never the developer's
             # real ~/.local/state/clm (every TUI run now writes a session).
             os.environ["XDG_STATE_HOME"] = STATE_HOME
+            # Same for the scratch directories, which live under the cache
+            # dir: a test run must not write into the developer's ~/.cache.
+            os.environ["XDG_CACHE_HOME"] = os.path.join(STATE_HOME, "cache")
             try:
                 os.execv(argv[0], argv)
             finally:

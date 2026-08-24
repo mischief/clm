@@ -162,6 +162,21 @@ Logs untouched for longer than
 .Pq default 90
 are deleted when a new session starts, see
 .Xr clm-config 5 .
+.Pp
+Each session also gets a private scratch directory under
+.Ev XDG_CACHE_HOME Ns Pa /clm/scratch
+.Po default
+.Pa ~/.cache/clm/scratch
+.Pc ,
+named after the session and exported to tools as
+.Ev CLM_SCRATCH .
+The system prompt points the model at it, so working files land there
+instead of in the user's tree.
+The cache dir rather than
+.Pa /tmp
+because /tmp is a memory filesystem on many machines.
+Directories whose session log is gone are removed when a new session
+starts, subject to the same retention window.
 The
 .Ic /clear
 command starts a fresh session file, leaving the old one resumable.
