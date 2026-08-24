@@ -10,7 +10,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
+#include <utime.h>
 
 #include <cjson/cJSON.h>
 
@@ -453,6 +455,58 @@ remove_dir(const char *dir)
 	(void)rmdir(dir);
 }
 
+/* Age sweep: old logs and their backups go, recent ones stay, and a .tmp
+ * from a rewrite that died is garbage after a day -- but a fresh one may
+ * belong to a rewrite in flight, so it stays. */
+static void
+test_gc(const char *dir)
+{
+	static const struct {
+		const char *name;
+		int age_days;
+		bool survives;
+	} files[] = {
+	    {"20260101-000000-aaaaaaaa.jsonl", 200, false},
+	    {"20260101-000000-aaaaaaaa.jsonl.bak", 200, false},
+	    {"20260820-000000-bbbbbbbb.jsonl", 4, true},
+	    {"20260820-000000-cccccccc.jsonl.tmp", 3, false},
+	    {"20260824-000000-dddddddd.jsonl.tmp", 0, true},
+	    {"notes.txt", 400, true},
+	};
+	size_t i, removed = 0;
+	time_t now = time(NULL);
+
+	for (i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+		char path[512];
+		struct utimbuf tb;
+		FILE *f;
+
+		(void)snprintf(path, sizeof(path), "%s/%s", dir, files[i].name);
+		f = fopen(path, "w");
+		if (f == NULL)
+			continue;
+		(void)fputs("{\"type\":\"meta\",\"v\":1}\n", f);
+		(void)fclose(f);
+		tb.actime = tb.modtime = now - files[i].age_days * 86400;
+		(void)utime(path, &tb);
+	}
+
+	CHECK(clm_session_gc(dir, 90, &removed) == 0, "gc: runs");
+	CHECK(removed == 2 + 1, "gc: removed the old log, its .bak, stale tmp");
+
+	for (i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+		char path[512];
+		bool there;
+
+		(void)snprintf(path, sizeof(path), "%s/%s", dir, files[i].name);
+		there = access(path, F_OK) == 0;
+		CHECK(there == files[i].survives, files[i].name);
+	}
+
+	CHECK(clm_session_gc(dir, 0, &removed) == 0 && removed == 0,
+	    "gc: zero days keeps everything");
+}
+
 static int
 test_session_suite(void *arg)
 {
@@ -471,6 +525,7 @@ test_session_suite(void *arg)
 	test_dangling_tool_call_repair(dir);
 	test_id_validation(dir);
 	test_listing(dir);
+	test_gc(dir);
 	remove_dir(dir);
 
 	return 0;

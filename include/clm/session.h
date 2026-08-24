@@ -121,6 +121,15 @@ struct clm_session_info {
  */
 CLM_API int clm_session_list(
     const char *dir, struct clm_session_info **out, size_t *out_n);
+
+/*
+ * Delete session logs (and their .bak) last written more than max_age_days
+ * ago, plus any .tmp left by a rewrite that died mid-flight. Age comes from
+ * the file's mtime, so resuming an old session keeps it alive. 0 days means
+ * "keep everything". *removed, if non-NULL, receives the count.
+ */
+CLM_API int clm_session_gc(
+    const char *dir, unsigned max_age_days, size_t *removed);
 CLM_API void clm_session_list_free(struct clm_session_info *infos, size_t n);
 
 #endif /* CLM_SESSION_H */

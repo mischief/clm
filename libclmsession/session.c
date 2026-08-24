@@ -727,6 +727,64 @@ clm_session_list(const char *dir, struct clm_session_info **out, size_t *out_n)
 	return 0;
 }
 
+/* True if `name` ends with `suffix`. */
+static bool
+has_suffix(const char *name, const char *suffix)
+{
+	size_t n = strlen(name), sn = strlen(suffix);
+
+	return n > sn && strcmp(name + n - sn, suffix) == 0;
+}
+
+int
+clm_session_gc(const char *dir, unsigned max_age_days, size_t *removed)
+{
+	autofree char *d = NULL;
+	autoclosedir DIR *dp = NULL;
+	struct dirent *de;
+	time_t now = time(NULL);
+	size_t n = 0;
+	int r;
+
+	if (removed != NULL)
+		*removed = 0;
+	if (max_age_days == 0)
+		return 0;
+
+	r = resolve_dir(dir, &d);
+	if (r < 0)
+		return r;
+	dp = opendir(d);
+	if (dp == NULL)
+		return errno == ENOENT ? 0 : -errno;
+
+	while ((de = readdir(dp)) != NULL) {
+		autofree char *path = NULL;
+		struct stat st;
+		double age_days;
+		bool tmp = has_suffix(de->d_name, ".tmp");
+
+		if (!tmp && !has_suffix(de->d_name, ".jsonl") &&
+		    !has_suffix(de->d_name, ".bak"))
+			continue;
+		if (asprintf(&path, "%s/%s", d, de->d_name) < 0)
+			return -ENOMEM;
+		if (stat(path, &st) != 0)
+			continue;
+		age_days = difftime(now, st.st_mtime) / (60 * 60 * 24);
+		/* A .tmp belongs to a rewrite that died: it is garbage as
+		 * soon as it is a day old, whatever the retention is. */
+		if (age_days < (tmp ? 1.0 : (double)max_age_days))
+			continue;
+		if (unlink(path) == 0)
+			n++;
+	}
+
+	if (removed != NULL)
+		*removed = n;
+	return 0;
+}
+
 void
 clm_session_list_free(struct clm_session_info *infos, size_t n)
 {

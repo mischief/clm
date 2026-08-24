@@ -1624,7 +1624,38 @@ clm_lua_cfg_load_agent(
 	return 0;
 }
 
-CLM_API const char *
+CLM_API int64_t
+clm_lua_cfg_get_int(struct clm_lua_cfg *cfg, const char *key, int64_t fallback)
+{
+	lua_State *L;
+	int64_t val = fallback;
+
+	if (cfg == NULL || key == NULL)
+		return fallback;
+	L = cfg->L;
+
+	/* Agent table first, then top-level config -- same precedence as
+	 * clm_lua_cfg_get_str. */
+	if (cfg->agent_ref != LUA_NOREF) {
+		lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->agent_ref);
+		lua_getfield(L, -1, key);
+		if (lua_isnumber(L, -1)) {
+			val = (int64_t)lua_tointeger(L, -1);
+			lua_pop(L, 2);
+			return val;
+		}
+		lua_pop(L, 2);
+	}
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
+	lua_getfield(L, -1, key);
+	if (lua_isnumber(L, -1))
+		val = (int64_t)lua_tointeger(L, -1);
+	lua_pop(L, 2);
+	return val;
+}
+
+const char *
 clm_lua_cfg_get_str(struct clm_lua_cfg *cfg, const char *key)
 {
 	lua_State *L = cfg->L;

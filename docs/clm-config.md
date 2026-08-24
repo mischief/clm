@@ -221,6 +221,20 @@ conversation summarization.
 Reasoning effort for this model, overriding the provider-wide
 *effort*.
 
+*session\_keep\_days*
+
+How many days a session log outlives its last write.
+Logs older than this, their
+*.bak*
+companions, and any
+*.tmp*
+left by an interrupted rewrite are deleted when a new session starts.
+Defaults to 90;
+*0*
+keeps everything.
+Age comes from the file's modification time, so resuming an old session
+renews it.
+
 *system\_prompt*
 
 The system message sent to the model.

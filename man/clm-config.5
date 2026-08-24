@@ -199,6 +199,18 @@ Reasoning effort for this model, overriding the provider-wide
 .Va effort .
 .El
 .El
+.It Va session_keep_days
+How many days a session log outlives its last write.
+Logs older than this, their
+.Pa .bak
+companions, and any
+.Pa .tmp
+left by an interrupted rewrite are deleted when a new session starts.
+Defaults to 90;
+.Va 0
+keeps everything.
+Age comes from the file's modification time, so resuming an old session
+renews it.
 .It Va system_prompt
 The system message sent to the model.
 A built-in default is used if unset.

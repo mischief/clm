@@ -21,6 +21,10 @@
 #include "clm/session.h"
 #include "mcp_setup.h"
 #include "sysinfo.h"
+
+/* How long a session log outlives its last write, unless config says
+ * otherwise (session_keep_days = 0 keeps everything). */
+#define CLM_SESSION_KEEP_DAYS 90
 #include "model_spec.h"
 #include "templates.h"
 #include "xdg.h"
@@ -805,6 +809,18 @@ main(int argc, char *argv[])
 			}
 			restorep = &restore;
 		} else {
+			/* Sweep stale logs before starting a new one, so the
+			 * directory does not grow forever. Config decides how
+			 * long to keep them; 0 keeps everything. */
+			int64_t keep_days = lcfg != NULL
+			    ? clm_lua_cfg_get_int(lcfg, "session_keep_days",
+			          CLM_SESSION_KEEP_DAYS)
+			    : CLM_SESSION_KEEP_DAYS;
+
+			if (keep_days > 0)
+				(void)clm_session_gc(
+				    NULL, (unsigned)keep_days, NULL);
+
 			/* Session logging is best-effort: a read-only HOME
 			 * shouldn't keep the TUI from running at all. */
 			r = clm_session_create(NULL, model_name,

@@ -165,7 +165,14 @@ session id is printed for later resumption, and a session in which
 nothing was said is deleted.
 A compaction rewrites the file to match the shortened history, so a
 resumed session starts compacted rather than replaying what was folded
-away.
+away; the pre-compaction contents stay beside it as
+*.bak*
+until the next compaction.
+Logs untouched for longer than
+*session\_keep\_days*
+(default 90)
+are deleted when a new session starts, see
+[clm-config(5)](clm-config.md).
 The
 **/clear**
 command starts a fresh session file, leaving the old one resumable.

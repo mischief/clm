@@ -147,6 +147,10 @@ return {
         -- },
     },
 
+    -- Days a session log survives after its last write; 0 keeps them
+    -- forever. Old logs are swept when a new session starts.
+    -- session_keep_days = 90,
+
     -- system_prompt = "You are a helpful assistant.",
 
     -- Per-plugin config: each plugin sees only its own section as

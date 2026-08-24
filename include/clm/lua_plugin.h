@@ -85,6 +85,10 @@ CLM_API int clm_lua_cfg_load_agent(
  * Returns NULL if the field is absent or not a string.
  * The returned pointer is valid for the lifetime of the cfg.
  */
+/* A top-level (or agent-table) integer setting, or `fallback` if unset. */
+CLM_API int64_t clm_lua_cfg_get_int(
+    struct clm_lua_cfg *cfg, const char *key, int64_t fallback);
+
 CLM_API const char *clm_lua_cfg_get_str(
     struct clm_lua_cfg *cfg, const char *key);
 
