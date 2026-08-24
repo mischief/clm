@@ -3532,13 +3532,13 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 			 * read it back, this is purely so the user can paste
 			 * it onto -m themselves. */
 			if (u->model != NULL) {
-				printf("session: %s (resume with clm --resume "
-				       "%s -m %s)\n",
+				printf("session: %s, resume it with:\n"
+				       "  clm --resume %s -m %s\n",
 				    clm_session_id(u->session),
 				    clm_session_id(u->session), u->model);
 			} else {
-				printf("session: %s (resume with clm --resume "
-				       "%s)\n",
+				printf("session: %s, resume it with:\n"
+				       "  clm --resume %s\n",
 				    clm_session_id(u->session),
 				    clm_session_id(u->session));
 			}
