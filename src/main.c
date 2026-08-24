@@ -426,6 +426,43 @@ write_new_file(const char *path, const char *content, mode_t mode)
  * a choice from stdin. Returns a malloc'd session id, or NULL (no sessions,
  * bad choice, or EOF).
  */
+/*
+ * Expand a fragment of a session id into the full one. Matches any session
+ * whose id contains the fragment, so the 8-hex tail shown in the status bar
+ * is enough. Returns NULL (after reporting) when nothing or more than one
+ * session matches.
+ */
+static char *
+resolve_session_prefix(const char *frag)
+{
+	struct clm_session_info *infos = NULL;
+	size_t n = 0, i, hits = 0;
+	char *match = NULL;
+
+	if (frag == NULL || clm_session_list(NULL, &infos, &n) != 0)
+		return NULL;
+	for (i = 0; i < n; i++) {
+		if (strstr(infos[i].id, frag) == NULL)
+			continue;
+		hits++;
+		if (hits == 1)
+			match = strdup(infos[i].id);
+	}
+	if (hits > 1) {
+		fprintf(
+		    stderr, "error: %s matches %zu sessions:\n", frag, hits);
+		for (i = 0; i < n; i++)
+			if (strstr(infos[i].id, frag) != NULL)
+				fprintf(stderr, "  %s\n", infos[i].id);
+		free(match);
+		match = NULL;
+	} else if (hits == 0) {
+		fprintf(stderr, "error: no session matching %s\n", frag);
+	}
+	clm_session_list_free(infos, n);
+	return match;
+}
+
 static char *
 pick_session(void)
 {
@@ -788,6 +825,21 @@ main(int argc, char *argv[])
 				picked = pick_session();
 				if (picked == NULL)
 					return 1;
+				resume_id = picked;
+			}
+			/* Accept a tail of the id ("8ed1d645", or any
+			 * unambiguous piece of one) so nobody has to type
+			 * the whole timestamp. */
+			if (clm_session_load(NULL, resume_id, &restore, NULL) !=
+			    0) {
+				autofree char *full =
+				    resolve_session_prefix(resume_id);
+
+				if (full == NULL)
+					return 1;
+				free(picked);
+				picked = full;
+				full = NULL;
 				resume_id = picked;
 			}
 			r = clm_session_load(NULL, resume_id, &restore, NULL);

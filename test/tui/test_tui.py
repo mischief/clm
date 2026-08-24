@@ -474,11 +474,27 @@ def test_session_resume(url):
     """A conversation is logged to a session file, and --resume replays it."""
     sessions = os.path.join(STATE_HOME, "clm")
 
-    with Tui(BIN, url, rows=24, cols=70) as t:
+    with Tui(BIN, url, rows=24, cols=110) as t:
         t.wait_for("online", timeout=8)
         t.send(b"show me fruit\r")
         assert t.wait_for("Yellow", timeout=15), "no reply to log"
         t.pump(0.5)
+        # /session names the log this run is writing, and the status bar
+        # carries the same short id so it can be read out at any moment.
+        t.send(b"/session\r")
+        t.pump(0.5)
+        txt = t.text()
+        check("session: " in txt and "resume: clm --resume" in txt,
+              "session: /session prints the id and how to resume it")
+        short = None
+        for ln in txt.splitlines():
+            if ln.strip().startswith("short:"):
+                short = ln.split()[-1]
+        check(short is not None and len(short) == 8,
+              "session: /session reports an 8-character short id")
+        status = [ln for ln in t.lines() if " clm " in ln]
+        check(bool(status) and short is not None and short in status[0],
+              "session: the status bar carries the short id")
         t.send(b"/quit\r")
         t.pump(0.8)
 
@@ -488,6 +504,8 @@ def test_session_resume(url):
     if not files:
         return
     sid = files[-1][:-len(".jsonl")]
+    check(short is None or sid.endswith(short),
+          "session: the short id is the tail of the full one")
     with open(os.path.join(sessions, files[-1])) as f:
         log = f.read()
     check('"type": "meta"' in log or '"type":"meta"' in log,
@@ -495,7 +513,7 @@ def test_session_resume(url):
     check("show me fruit" in log, "session: the user prompt was logged")
 
     with Tui(BIN, url, rows=24, cols=70,
-             extra_args=("--resume", sid)) as t:
+             extra_args=("--resume", sid[-8:])) as t:
         assert t.wait_for("resumed session", timeout=10), "no resume banner"
         txt = t.text()
         check("show me fruit" in txt,

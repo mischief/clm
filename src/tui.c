@@ -923,6 +923,21 @@ cb_message(const struct clm_message *msg, void *user)
  * this the log would still hold everything compaction just folded away and
  * a resume would replay it all.
  */
+/* Cache the tail of the session id for the status bar. */
+static void
+set_session_short(struct ui *u)
+{
+	const char *id = u->session != NULL ? clm_session_id(u->session) : NULL;
+	size_t len;
+
+	u->session_short[0] = '\0';
+	if (id == NULL)
+		return;
+	len = strlen(id);
+	(void)snprintf(u->session_short, sizeof(u->session_short), "%s",
+	    len > 8 ? id + len - 8 : id);
+}
+
 static void
 session_after_compact(struct ui *u)
 {
@@ -1103,6 +1118,8 @@ draw_status(struct ui *u)
 		info = state_label(u->state);
 
 	mvwprintw(u->stat, 0, 0, " clm");
+	if (u->session_short[0] != '\0')
+		wprintw(u->stat, " %s", u->session_short);
 	/* One combined "[provider/model:agent]" tag rather than three separate
 	 * bracketed fields -- picking a provider/model without changing agent
 	 * profile is the common case (see /model, /provider), so keeping them
@@ -2164,6 +2181,35 @@ apply_effort(struct ui *u, const char *prov, const char *model)
 		(void)clm_agent_set_effort(u->agent, e);
 }
 
+/* Where this session lives: id for addressing it, path for reading it. */
+static void
+cmd_session(struct ui *u)
+{
+	/* PATH_MAX twice over would blow the frame budget; the session dir
+	 * and id are both short in practice. */
+	char dir[256];
+	char line[512];
+	const char *id;
+
+	if (u->session == NULL) {
+		ui_push(u, ST_META, "\nsession: not being logged\n");
+		return;
+	}
+	id = clm_session_id(u->session);
+	(void)snprintf(line, sizeof(line), "\nsession: %s\n", id);
+	ui_push(u, ST_META, line);
+	(void)snprintf(line, sizeof(line), "  short:  %s\n", u->session_short);
+	ui_push(u, ST_META, line);
+	if (clm_session_state_dir(dir, sizeof(dir)) == 0) {
+		(void)snprintf(
+		    line, sizeof(line), "  log:    %s/%s.jsonl\n", dir, id);
+		ui_push(u, ST_META, line);
+	}
+	(void)snprintf(line, sizeof(line), "  resume: clm --resume %s\n",
+	    u->session_short);
+	ui_push(u, ST_META, line);
+}
+
 static void
 cmd_effort(struct ui *u, const char *arg)
 {
@@ -2663,6 +2709,8 @@ run_command(struct ui *u, const char *line)
 		    "  /provider [name]   switch provider connection "
 		    "(config.lua's "
 		    "`providers` table); no arg lists what's available\n"
+		    "  /session           this session's id, log path, and "
+		    "resume command\n"
 		    "  /effort [level]    reasoning effort for this session: "
 		    "low, medium, high, xhigh, max, or default; no arg "
 		    "shows the current one\n"
@@ -2700,6 +2748,7 @@ run_command(struct ui *u, const char *line)
 				if (clm_session_create(NULL, u->model,
 				        u->provider_name, u->agent_name,
 				        &u->session) == 0) {
+					set_session_short(u);
 					ui_push(u, ST_META, "[new session ");
 					ui_push(u, ST_META,
 					    clm_session_id(u->session));
@@ -2747,6 +2796,8 @@ run_command(struct ui *u, const char *line)
 		cmd_model(u, arg);
 	} else if (CMD("effort")) {
 		cmd_effort(u, arg);
+	} else if (CMD("session")) {
+		cmd_session(u);
 	} else if (CMD("provider")) {
 		cmd_provider(u, arg);
 	} else if (CMD("quit") || CMD("exit") || CMD("q")) {
@@ -3568,6 +3619,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	u->lcfg = lcfg;
 	u->plugin_dir = plugin_dir;
 	u->session = session;
+	set_session_short(u);
 	u->state = CLM_STATE_IDLE;
 	/* Default to the clean view: reasoning hidden and tool output
 	 * collapsed. Opt in with ^R / ^O (see the status-bar hints). */

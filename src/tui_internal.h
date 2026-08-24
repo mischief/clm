@@ -158,6 +158,10 @@ struct ui {
 	/* /effort override for this session, "" when config decides. Survives
 	 * the agent rebuild a /model or /agent switch does. */
 	char effort_override[16];
+	/* Tail of the session id, shown in the status bar so it can be read
+	 * out without digging through the transcript. Empty when logging is
+	 * off. */
+	char session_short[16];
 	/* A compaction is in flight (auto or /compact): its completion has to
 	 * rewrite the session log, which on_message cannot see. */
 	bool compacting;

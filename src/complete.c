@@ -213,6 +213,7 @@ static const char *const command_names[] = {
     "model",
     "provider",
     "effort",
+    "session",
     "reasoning",
     "output",
     "compact",

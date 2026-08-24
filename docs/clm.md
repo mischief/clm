@@ -150,6 +150,11 @@ Resume the saved session
 *id*
 in the interactive UI, replaying its transcript and continuing the
 conversation in the same session log.
+*id*
+may be any unambiguous part of a session id, such as the eight-character
+short id shown in the status bar and by the
+**/session**
+command.
 With no
 *id*,
 present a numbered list of saved sessions to pick from.
