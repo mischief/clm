@@ -10,8 +10,9 @@
 #include "tap.h"
 
 static int
-test_exact_limit(void)
+test_exact_limit(void *arg)
 {
+	(void)arg;
 	struct http_response_buffer buf = {.limit = 8};
 	size_t written;
 
@@ -32,8 +33,9 @@ test_exact_limit(void)
 }
 
 static int
-test_over_limit(void)
+test_over_limit(void *arg)
 {
+	(void)arg;
 	struct http_response_buffer buf = {.limit = 4};
 	size_t written;
 
@@ -53,8 +55,9 @@ test_over_limit(void)
 }
 
 static int
-test_streaming_does_not_buffer(void)
+test_streaming_does_not_buffer(void *arg)
 {
+	(void)arg;
 	struct http_response_buffer buf = {.limit = 4};
 	size_t written;
 
@@ -72,8 +75,9 @@ test_streaming_does_not_buffer(void)
 }
 
 static int
-test_multiplication_overflow(void)
+test_multiplication_overflow(void *arg)
 {
+	(void)arg;
 	struct http_response_buffer buf = {.limit = SIZE_MAX};
 	size_t written;
 
@@ -86,8 +90,9 @@ test_multiplication_overflow(void)
 }
 
 static int
-test_received_overflow(void)
+test_received_overflow(void *arg)
 {
+	(void)arg;
 	struct http_response_buffer buf = {
 	    .received = SIZE_MAX,
 	    .limit = SIZE_MAX,
@@ -103,8 +108,9 @@ test_received_overflow(void)
 }
 
 static int
-test_allocation_size_overflow(void)
+test_allocation_size_overflow(void *arg)
 {
+	(void)arg;
 	struct http_response_buffer buf = {
 	    .len = SIZE_MAX - 1,
 	    .limit = SIZE_MAX,
@@ -122,17 +128,17 @@ test_allocation_size_overflow(void)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("exact limit", test_exact_limit) == 0,
+	TAP_CHECK(tap_add("exact limit", test_exact_limit, NULL) == 0,
 	    "register exact-limit test");
-	TAP_CHECK(tap_add("over limit", test_over_limit) == 0,
+	TAP_CHECK(tap_add("over limit", test_over_limit, NULL) == 0,
 	    "register over-limit test");
-	TAP_CHECK(tap_add("streaming does not buffer", test_streaming_does_not_buffer) == 0,
+	TAP_CHECK(tap_add("streaming does not buffer", test_streaming_does_not_buffer, NULL) == 0,
 	    "register streaming test");
-	TAP_CHECK(tap_add("multiplication overflow", test_multiplication_overflow) == 0,
+	TAP_CHECK(tap_add("multiplication overflow", test_multiplication_overflow, NULL) == 0,
 	    "register multiplication-overflow test");
-	TAP_CHECK(tap_add("received overflow", test_received_overflow) == 0,
+	TAP_CHECK(tap_add("received overflow", test_received_overflow, NULL) == 0,
 	    "register received-overflow test");
-	TAP_CHECK(tap_add("allocation size overflow", test_allocation_size_overflow) == 0,
+	TAP_CHECK(tap_add("allocation size overflow", test_allocation_size_overflow, NULL) == 0,
 	    "register allocation-overflow test");
 	return tap_run();
 }

@@ -182,8 +182,9 @@ test_restart_callback_lifetime(const char *self_path)
 static const char *program_path;
 
 static int
-test_restart_callback_lifetime_from_argv0(void)
+test_restart_callback_lifetime_from_argv0(void *arg)
 {
+	(void)arg;
 	char *self_path;
 
 	self_path = realpath(program_path, NULL);
@@ -204,7 +205,7 @@ main(int argc, char **argv)
 		return server_main();
 	program_path = argv[0];
 	TAP_CHECK(tap_add("restart callback lifetime",
-	              test_restart_callback_lifetime_from_argv0) == 0,
+	              test_restart_callback_lifetime_from_argv0, NULL) == 0,
 	    "register restart callback test");
 	/* argv[0] remains valid for this process while the registered test runs. */
 	return tap_run();

@@ -5,11 +5,13 @@
 #include <stdbool.h>
 
 /* A deliberately small, process-local TAP 13 runner for C tests. Each
- * registered test returns 0 on success and non-zero on failure. */
-typedef int (*tap_fn)(void);
+ * registered test receives its caller-supplied context and returns 0 on
+ * success and non-zero on failure. */
+typedef int (*tap_fn)(void *arg);
 
-/* Register a named test. The harness copies name. Returns 0 or -errno. */
-int tap_add(const char *name, tap_fn fn);
+/* Register a named test and its context. The harness copies name. Returns 0
+ * or -errno. */
+int tap_add(const char *name, tap_fn fn, void *arg);
 
 /* Run registered tests, writing TAP 13 to stdout. Returns 0 only if every
  * test passes. */

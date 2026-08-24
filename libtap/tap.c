@@ -12,6 +12,7 @@
 struct tap_test {
 	char *name;
 	tap_fn fn;
+	void *arg;
 };
 
 static struct tap_test *tests;
@@ -21,7 +22,7 @@ static bool running;
 static bool current_failed;
 
 int
-tap_add(const char *name, tap_fn fn)
+tap_add(const char *name, tap_fn fn, void *arg)
 {
 	struct tap_test *p;
 	char *copy;
@@ -46,6 +47,7 @@ tap_add(const char *name, tap_fn fn)
 		return -ENOMEM;
 	tests[ntests].name = copy;
 	tests[ntests].fn = fn;
+	tests[ntests].arg = arg;
 	ntests++;
 	return 0;
 }
@@ -85,7 +87,7 @@ tap_run(void)
 		int r;
 
 		current_failed = false;
-		r = tests[i].fn();
+		r = tests[i].fn(tests[i].arg);
 		if (r == 0 && !current_failed)
 			printf("ok %zu - %s\n", i + 1, tests[i].name);
 		else {

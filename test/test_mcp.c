@@ -301,8 +301,9 @@ test_stdio_timeout(uv_loop_t *loop)
 }
 
 static int
-test_mcp_suite(void)
+test_mcp_suite(void *arg)
 {
+	(void)arg;
 	uv_loop_t loop;
 
 	uv_loop_init(&loop);
@@ -316,6 +317,6 @@ test_mcp_suite(void)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("mcp", test_mcp_suite) == 0, "register mcp suite");
+	TAP_CHECK(tap_add("mcp", test_mcp_suite, NULL) == 0, "register mcp suite");
 	return tap_run();
 }

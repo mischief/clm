@@ -28,8 +28,9 @@ on_error(int error_code, const char *error_msg, void *user)
 }
 
 static int
-test_inline_completion(void)
+test_inline_completion(void *arg)
 {
+	(void)arg;
 	struct clm_http_request *req = (struct clm_http_request *)1;
 	struct clm_http_mux *mux;
 	uv_loop_t loop;
@@ -55,7 +56,7 @@ test_inline_completion(void)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("inline completion", test_inline_completion) == 0,
+	TAP_CHECK(tap_add("inline completion", test_inline_completion, NULL) == 0,
 	    "register inline completion test");
 	return tap_run();
 }

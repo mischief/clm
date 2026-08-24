@@ -1920,8 +1920,9 @@ test_hidden_tool(uv_loop_t *loop)
 }
 
 static int
-test_agent_suite(void)
+test_agent_suite(void *arg)
 {
+	(void)arg;
 	uv_loop_t loop;
 
 	uv_loop_init(&loop);
@@ -1967,6 +1968,6 @@ test_agent_suite(void)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("agent", test_agent_suite) == 0, "register agent suite");
+	TAP_CHECK(tap_add("agent", test_agent_suite, NULL) == 0, "register agent suite");
 	return tap_run();
 }

@@ -190,8 +190,9 @@ test_table_glyphs(void)
 }
 
 static int
-test_md_suite(void)
+test_md_suite(void *arg)
 {
+	(void)arg;
 	/* Table alignment measures display width via wcwidth; needs a locale.
 	 */
 	setlocale(LC_ALL, "");
@@ -209,6 +210,6 @@ test_md_suite(void)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("md render", test_md_suite) == 0, "register md suite");
+	TAP_CHECK(tap_add("md render", test_md_suite, NULL) == 0, "register md suite");
 	return tap_run();
 }

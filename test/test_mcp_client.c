@@ -334,8 +334,9 @@ test_free_pending_tool_call(void)
 }
 
 static int
-test_mcp_client_suite(void)
+test_mcp_client_suite(void *arg)
 {
+	(void)arg;
 	test_free_pending_initialize();
 	test_free_pending_tools_list();
 	test_free_pending_tool_call();
@@ -346,6 +347,6 @@ test_mcp_client_suite(void)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("mcp client", test_mcp_client_suite) == 0, "register mcp client suite");
+	TAP_CHECK(tap_add("mcp client", test_mcp_client_suite, NULL) == 0, "register mcp client suite");
 	return tap_run();
 }

@@ -845,9 +845,11 @@ test_oom_does_not_abort(void)
 }
 
 static int
-test_lua_plugin_suite(void)
+test_lua_plugin_suite(void *arg)
 {
-	printf("test_lua_plugin: running...\n");
+	(void)arg;
+	/* TAP output is parsed by Meson; diagnostics must be comments. */
+	printf("# test_lua_plugin: running...\n");
 	test_plugin_loads();
 	test_nonexistent_dir();
 	test_sandbox_and_load_failures();
@@ -863,6 +865,6 @@ test_lua_plugin_suite(void)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("lua plugin", test_lua_plugin_suite) == 0, "register lua suite");
+	TAP_CHECK(tap_add("lua plugin", test_lua_plugin_suite, NULL) == 0, "register lua suite");
 	return tap_run();
 }

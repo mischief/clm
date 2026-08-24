@@ -22,7 +22,7 @@ test_tap = executable('test_tap',
   include_directories: [tap_inc],
   c_args: test_cflags,
 )
-test('tap', test_tap)
+test('tap', test_tap, protocol: 'tap')
 
 # Uses the uv host (clm_host_uv) + shell_exec, so it links the uv layer.
 test_agent = executable('test_agent',
@@ -31,7 +31,7 @@ test_agent = executable('test_agent',
   include_directories: [tap_inc, include_directories('.'), clm_inc, include_directories('../include')],
   c_args: test_cflags,
 )
-test('agent', test_agent)
+test('agent', test_agent, protocol: 'tap')
 
 # mcp transport regressions use the uv host plus the local canned http server.
 test_mcp = executable('test_mcp',
@@ -40,7 +40,7 @@ test_mcp = executable('test_mcp',
   include_directories: [tap_inc, include_directories('.'), clm_inc, include_directories('../include')],
   c_args: test_cflags,
 )
-test('mcp', test_mcp)
+test('mcp', test_mcp, protocol: 'tap')
 
 # compile the mcp client against a delayed http stub so teardown can settle
 # each cancelled request after clm_mcp_client_free returns.
@@ -50,7 +50,7 @@ test_mcp_client = executable('test_mcp_client',
   include_directories: [tap_inc, clm_lib_inc, clm_inc, include_directories('../include')],
   c_args: ['-DCLM_BUILDING'] + clm_hardening_args + test_cflags,
 )
-test('mcp_client', test_mcp_client)
+test('mcp_client', test_mcp_client, protocol: 'tap')
 
 # the callback lifetime test runs itself as a stdio server, lets that server
 # exit after one handshake, and verifies status callbacks across the restart.
@@ -60,7 +60,7 @@ test_mcp_ready = executable('test_mcp_ready',
   include_directories: [tap_inc, clm_inc, include_directories('../include')],
   c_args: test_cflags,
 )
-test('mcp_ready', test_mcp_ready, timeout: 15)
+test('mcp_ready', test_mcp_ready, protocol: 'tap', timeout: 15)
 
 # malformed urls complete in curl's initial socket action. this checks that
 # completion does not publish a dead cancellation handle.
@@ -70,7 +70,7 @@ test_http_async = executable('test_http_async',
   include_directories: [tap_inc, clm_inc, include_directories('../include')],
   c_args: test_cflags,
 )
-test('http_async', test_http_async)
+test('http_async', test_http_async, protocol: 'tap')
 
 # response accounting is pure and uses tiny limits so overflow and cap tests
 # do not need a server or large allocations.
@@ -81,7 +81,7 @@ test_http_response_buffer = executable('test_http_response_buffer',
     include_directories('..')],
   c_args: test_cflags,
 )
-test('http_response_buffer', test_http_response_buffer)
+test('http_response_buffer', test_http_response_buffer, protocol: 'tap')
 
 # Session persistence test: pure (no network, no loop). Compiles history.c
 # and session.c directly, same pattern as test_agent, so internals are
@@ -93,7 +93,7 @@ test_session = executable('test_session',
     include_directories('../include'), include_directories('../libclmsession')],
   c_args: test_cflags,
 )
-test('session', test_session)
+test('session', test_session, protocol: 'tap')
 
 # Lua plugin test: loads plugins from ../plugins/ and verifies tool dispatch.
 # Builds a clm_host_uv, so it links the uv layer too. Only built when
@@ -108,7 +108,7 @@ if have_lua
     include_directories: [tap_inc, clm_inc, include_directories('../include')],
     c_args: test_cflags,
   )
-  test('lua_plugin', test_lua, workdir: meson.project_source_root())
+  test('lua_plugin', test_lua, protocol: 'tap', workdir: meson.project_source_root())
 endif
 
 # md_render unit test: pure, links only the internal md_render static library
@@ -119,7 +119,7 @@ test_md = executable('test_md',
   include_directories: [tap_inc, md_render_inc],
   c_args: ['-D_XOPEN_SOURCE=700'], # wcwidth(3) is XSI
 )
-test('md', test_md, suite: 'md')
+test('md', test_md, protocol: 'tap', suite: 'md')
 
 # End-to-end TUI test: drives the real clm binary on a pty against a canned
 # mock server via pyte. Uses only an already-installed python3 + pyte (global

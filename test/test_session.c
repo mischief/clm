@@ -297,8 +297,9 @@ test_listing(const char *dir)
 }
 
 static int
-test_session_suite(void)
+test_session_suite(void *arg)
 {
+	(void)arg;
 	char dir[] = "/tmp/clm-session-test-XXXXXX";
 
 	if (mkdtemp(dir) == NULL) {
@@ -319,6 +320,6 @@ test_session_suite(void)
 int
 main(void)
 {
-	TAP_CHECK(tap_add("session", test_session_suite) == 0, "register session suite");
+	TAP_CHECK(tap_add("session", test_session_suite, NULL) == 0, "register session suite");
 	return tap_run();
 }
