@@ -653,9 +653,13 @@ clm_peer_register_tools(struct clm_agent *agent)
 	};
 	const struct clm_tool_def send_def = {
 	    .name = "agent_send",
-	    .description = "send a text message to another clm agent; it "
-	                   "arrives as a message between that agent's turns, "
-	                   "and cannot make it run anything",
+	    .description =
+	        "send a text message to another clm agent; it arrives between "
+	        "that agent's turns and cannot make it run anything. The "
+	        "recipient is told your session id and can reply to it, but "
+	        "say in the text that you want a reply, and include your own "
+	        "session id when asking it to tell someone else where to "
+	        "reach you",
 	    .params_schema = "{\"type\":\"object\","
 	                     "\"properties\":{"
 	                     "\"to\":{\"type\":\"string\",\"description\":"

@@ -474,8 +474,9 @@ def test_scratch(url):
     """Each session gets a private scratch dir, named in the prompt and the
     environment so the agent puts working files there."""
     cache = os.path.join(STATE_HOME, "cache")
-    with Tui(BIN, url, rows=20, cols=100,
-             extra_args=()) as t:
+    reqlog = os.path.join(STATE_HOME, "scratch-requests.jsonl")
+    os.environ["CLM_MOCK_REQUEST_LOG"] = reqlog
+    with Tui(BIN, url, rows=20, cols=100) as t:
         t.wait_for("online", timeout=8)
         t.send(b"/session\r")
         t.pump(0.6)
@@ -484,8 +485,21 @@ def test_scratch(url):
             if ln.strip().startswith("session:"):
                 sid = ln.split()[-1]
         check(sid is not None, "scratch: session id available")
+        t.send(b"say something\r")  # one request, so the prompt goes out
+        t.pump(1.5)
         t.send(b"/quit\r")
         t.pump(0.8)
+
+    # The system prompt names the session, so an agent can tell another one
+    # where to reach it. Read it off the wire: the session log leaves the
+    # prologue out on purpose.
+    prologue = ""
+    for ln in open(reqlog):
+        for m in json.loads(ln).get("messages", []):
+            if m.get("role") == "system":
+                prologue = m.get("content") or ""
+    check(sid is not None and ("this session's id: " + sid) in prologue,
+          "scratch: the prompt names this session's id")
 
     root = os.path.join(cache, "clm", "scratch")
     check(os.path.isdir(root), "scratch: the scratch root is created")

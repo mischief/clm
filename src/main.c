@@ -464,7 +464,8 @@ sweep_scratch(int64_t keep_days)
  * told where to put scratch files puts them in the user's tree.
  */
 static char *
-attach_scratch(const char *key, const char *sysinfo, char **dir_out)
+attach_scratch(
+    const char *key, const char *sysinfo, bool is_session, char **dir_out)
 {
 	char *dir = clm_cli_scratch_dir(key);
 	char *block = NULL;
@@ -477,8 +478,10 @@ attach_scratch(const char *key, const char *sysinfo, char **dir_out)
 	        "%s\n\nscratch directory for this session: %s\n"
 	        "Put working files, downloads, and intermediate output there "
 	        "rather than in the user's tree or /tmp. It is also "
-	        "$CLM_SCRATCH in any command you run.",
-	        sysinfo != NULL ? sysinfo : "", dir) < 0) {
+	        "$CLM_SCRATCH in any command you run.%s%s",
+	        sysinfo != NULL ? sysinfo : "", dir,
+	        is_session ? "\n\nthis session's id: " : "",
+	        is_session ? key : "") < 0) {
 		free(dir);
 		return NULL;
 	}
@@ -947,7 +950,7 @@ main(int argc, char *argv[])
 		 * directory whose session is gone from one still in use. */
 		if (sess != NULL) {
 			host_block = attach_scratch(
-			    clm_session_id(sess), sysinfo, &scratch);
+			    clm_session_id(sess), sysinfo, true, &scratch);
 			if (host_block != NULL)
 				cfg.system_prompt_suffix = host_block;
 		}
@@ -977,7 +980,7 @@ main(int argc, char *argv[])
 		char key[32];
 
 		(void)snprintf(key, sizeof(key), "run-%ld", (long)getpid());
-		host_block = attach_scratch(key, sysinfo, &scratch);
+		host_block = attach_scratch(key, sysinfo, false, &scratch);
 		if (host_block != NULL)
 			cfg.system_prompt_suffix = host_block;
 	}

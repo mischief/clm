@@ -77,6 +77,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         req = self._body()
+        # Record the request so a test can assert on what actually went out
+        # -- the system prologue in particular, which the session log
+        # deliberately leaves out.
+        log = os.environ.get("CLM_MOCK_REQUEST_LOG")
+        if log:
+            with open(log, "a") as f:
+                f.write(json.dumps(req) + "\n")
         if req.get("stream"):
             self._stream(req)
         else:
