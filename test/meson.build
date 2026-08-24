@@ -12,6 +12,18 @@ if cc.has_argument('-Wno-frame-larger-than')
   test_cflags += ['-Wno-frame-larger-than']
 endif
 
+# Tiny TAP 13 harness shared by C test binaries. It intentionally has no
+# production dependency or install target.
+tap_inc = include_directories('../libtap')
+tap_src = files('../libtap/tap.c')
+
+test_tap = executable('test_tap',
+  files('test_tap.c') + tap_src,
+  include_directories: [tap_inc],
+  c_args: test_cflags,
+)
+test('tap', test_tap)
+
 # Uses the uv host (clm_host_uv) + shell_exec, so it links the uv layer.
 test_agent = executable('test_agent',
   files('test_agent.c', 'canned.c', '../libclm/props.c', '../libclm/history.c', '../libclm/models_list.c'),
