@@ -440,6 +440,93 @@ clm_history_supersede_tool(
 	return stubbed;
 }
 
+/* True if the run of CLM_ROLE_TOOL messages starting at `first` contains one
+ * with tool_call_id == id. Stops at the first non-tool message. */
+static bool
+tool_result_present(struct clm_message *first, const char *id)
+{
+	struct clm_message *scan;
+
+	if (id == NULL)
+		return false;
+	for (scan = first; scan != NULL && scan->role == CLM_ROLE_TOOL;
+	    scan = TAILQ_NEXT(scan, entries)) {
+		if (scan->tool_call_id != NULL &&
+		    strcmp(scan->tool_call_id, id) == 0)
+			return true;
+	}
+	return false;
+}
+
+int
+clm_history_repair_dangling_tool_calls(struct clm_history *h)
+{
+	struct clm_message *m, *next;
+	int repaired = 0;
+
+	if (h == NULL)
+		return -EINVAL;
+
+	for (m = TAILQ_FIRST(h); m != NULL; m = next) {
+		struct clm_message *batch_first, *insert_after, *scan;
+		struct clm_tool_call *tc;
+
+		next = TAILQ_NEXT(m, entries);
+
+		if (m->role != CLM_ROLE_ASSISTANT || TAILQ_EMPTY(&m->tool_calls))
+			continue;
+
+		/* Insert after any results already there, to preserve order
+		 * and not mistake a repair for a real later result. */
+		batch_first = next;
+		insert_after = m;
+		for (scan = batch_first; scan != NULL &&
+		    scan->role == CLM_ROLE_TOOL;
+		    scan = TAILQ_NEXT(scan, entries))
+			insert_after = scan;
+
+		TAILQ_FOREACH(tc, &m->tool_calls, entries)
+		{
+			struct clm_message *synth;
+
+			if (tool_result_present(batch_first, tc->id))
+				continue;
+
+			synth = clm_message_create(CLM_ROLE_TOOL);
+			if (synth == NULL)
+				return -ENOMEM;
+
+			if (tc->id != NULL) {
+				synth->tool_call_id = strdup(tc->id);
+				if (synth->tool_call_id == NULL) {
+					clm_message_free(synth);
+					return -ENOMEM;
+				}
+			}
+			if (tc->name != NULL) {
+				synth->tool_name = strdup(tc->name);
+				if (synth->tool_name == NULL) {
+					clm_message_free(synth);
+					return -ENOMEM;
+				}
+			}
+			if (message_set_content(synth,
+			        "[tool result missing: session ended before "
+			        "this tool call finished]",
+			        NULL) < 0) {
+				clm_message_free(synth);
+				return -ENOMEM;
+			}
+
+			TAILQ_INSERT_AFTER(h, insert_after, synth, entries);
+			insert_after = synth;
+			repaired++;
+		}
+	}
+
+	return repaired;
+}
+
 struct clm_tool_call *
 clm_message_add_tool_call(
     struct clm_message *m, const char *id, const char *name, const char *args)

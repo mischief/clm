@@ -135,6 +135,20 @@ CLM_API struct clm_message *clm_history_add_tool_result(struct clm_history *h,
 CLM_API int clm_history_supersede_tool(
     struct clm_history *h, const char *tool_name, const char *stub);
 
+/*
+ * Fix a history left mid tool-call batch (e.g. the process died between
+ * dispatching a call and recording its result): any tool_calls id with no
+ * matching result in the run of tool messages right after it gets a
+ * synthetic "[tool result missing: ...]" one inserted, since every
+ * provider rejects a call with no following result. Call once on a
+ * freshly loaded/restored history, before it reaches a provider.
+ *
+ * In-memory only, like clm_history_compact() -- the session log on disk is
+ * untouched. Returns the number of results inserted (0 = already fine), or
+ * -EINVAL/-ENOMEM.
+ */
+CLM_API int clm_history_repair_dangling_tool_calls(struct clm_history *h);
+
 /* Attach a tool call to an assistant message. Returns the call or NULL. */
 CLM_API struct clm_tool_call *clm_message_add_tool_call(
     struct clm_message *m, const char *id, const char *name, const char *args);

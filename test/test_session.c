@@ -246,6 +246,143 @@ test_crash_tolerance(const char *dir)
 	clm_history_free(&h);
 }
 
+/* clm_history_repair_dangling_tool_calls: the crash-recovery repair applied
+ * to a resumed session's in-memory history before it ever reaches a
+ * provider (see clm/history.h's doc comment). */
+static void
+test_dangling_tool_call_repair(const char *dir)
+{
+	struct clm_session *s = NULL;
+	struct clm_history h;
+	struct clm_message *m;
+	const struct clm_message *r;
+	char id[128];
+
+	/* Single dangling call at the very end -- the crash-mid-tool-call
+	 * case that motivated this. */
+	clm_history_init(&h);
+	clm_history_add_user(&h, "run something", NULL);
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(
+	    m, "call_1", "shell_exec", "{\"cmd\":\"ls\"}");
+
+	CHECK(clm_history_repair_dangling_tool_calls(&h) == 1,
+	    "one dangling call repaired");
+	CHECK(history_len(&h) == 3, "synthetic result appended");
+	r = TAILQ_LAST(&h, clm_history);
+	CHECK(r->role == CLM_ROLE_TOOL, "synthetic message is a tool result");
+	CHECK(r->tool_call_id != NULL &&
+	        strcmp(r->tool_call_id, "call_1") == 0,
+	    "synthetic result targets the dangling call id");
+	CHECK(r->tool_name != NULL && strcmp(r->tool_name, "shell_exec") == 0,
+	    "synthetic result keeps the tool name");
+	CHECK(r->content != NULL && strstr(r->content, "missing") != NULL,
+	    "synthetic content says the result is missing");
+
+	/* Re-running on an already-repaired history is a no-op: the repair
+	 * must not stack placeholders on a session resumed twice. */
+	CHECK(clm_history_repair_dangling_tool_calls(&h) == 0,
+	    "repair is idempotent");
+	CHECK(history_len(&h) == 3, "no extra messages added on re-run");
+	clm_history_free(&h);
+
+	/* Partial batch: two calls, only one has a result. Order of the
+	 * existing result relative to insertion must be preserved and the
+	 * missing one filled in right after. */
+	clm_history_init(&h);
+	clm_history_add_user(&h, "run two things", NULL);
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "call_a", "shell_exec", "{}");
+	clm_message_add_tool_call(m, "call_b", "shell_exec", "{}");
+	clm_history_add_tool_result(
+	    &h, "call_a", "shell_exec", "ok", strlen("ok"), NULL);
+
+	CHECK(clm_history_repair_dangling_tool_calls(&h) == 1,
+	    "one of two dangling calls repaired");
+	CHECK(history_len(&h) == 4, "one synthetic result added");
+	r = TAILQ_FIRST(&h);
+	r = TAILQ_NEXT(r, entries); /* assistant tool_calls */
+	r = TAILQ_NEXT(r, entries); /* first tool result: call_a, real */
+	CHECK(r->role == CLM_ROLE_TOOL &&
+	        strcmp(r->tool_call_id, "call_a") == 0 &&
+	        strcmp(r->content, "ok") == 0,
+	    "real result for call_a untouched and stays first");
+	r = TAILQ_NEXT(r, entries); /* second tool result: call_b, synthetic */
+	CHECK(r->role == CLM_ROLE_TOOL &&
+	        strcmp(r->tool_call_id, "call_b") == 0,
+	    "synthetic result for call_b follows it");
+	clm_history_free(&h);
+
+	/* Two back-to-back tool_calls batches with nothing in between:
+	 * both calls in the first batch are dangling (the second batch
+	 * starting immediately after ends the "immediately following tool
+	 * messages" run for the first). */
+	clm_history_init(&h);
+	clm_history_add_user(&h, "go", NULL);
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "call_x", "shell_exec", "{}");
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "call_y", "shell_exec", "{}");
+
+	CHECK(clm_history_repair_dangling_tool_calls(&h) == 2,
+	    "both batches' calls repaired");
+	CHECK(history_len(&h) == 5,
+	    "two synthetic results added, one per batch");
+	clm_history_free(&h);
+
+	/* Well-formed history: nothing to do. Note fill_history()'s canonical
+	 * fixture is not usable here -- it deliberately only resolves
+	 * call_1 of its two tool calls (see its comment), so it is itself a
+	 * dangling-call fixture, not a clean one. */
+	clm_history_init(&h);
+	clm_history_add_user(&h, "run one thing", NULL);
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "call_1", "shell_exec", "{}");
+	clm_history_add_tool_result(
+	    &h, "call_1", "shell_exec", "ok", strlen("ok"), NULL);
+	clm_history_add_assistant_text(&h, "done", NULL);
+	CHECK(clm_history_repair_dangling_tool_calls(&h) == 0,
+	    "clean history needs no repair");
+	CHECK(history_len(&h) == 4, "clean history unchanged");
+	clm_history_free(&h);
+
+	/* End to end: a session file left mid tool-call by a crash loads
+	 * and, once repaired, is a well-formed history again. */
+	CHECK(clm_session_create(dir, NULL, NULL, NULL, &s) == 0,
+	    "create session for crash-mid-tool-call fixture");
+	(void)snprintf(id, sizeof(id), "%s", clm_session_id(s));
+	{
+		struct clm_history tmp;
+		struct clm_message *tm;
+
+		clm_history_init(&tmp);
+		clm_history_add_user(&tmp, "do a thing", NULL);
+		CHECK(clm_session_append(s,
+		          TAILQ_FIRST(&tmp), NULL) == 0,
+		    "append user message");
+		tm = clm_history_add_assistant_tool_calls(&tmp);
+		clm_message_add_tool_call(
+		    tm, "call_crash", "shell_exec", "{\"cmd\":\"doas ...\"}");
+		CHECK(clm_session_append(s, tm, NULL) == 0,
+		    "append dangling tool_calls message (session then dies)");
+		clm_history_free(&tmp);
+	}
+	clm_session_free(s);
+
+	clm_history_init(&h);
+	CHECK(clm_session_load(dir, id, &h, NULL) == 0,
+	    "load crash-mid-tool-call session");
+	CHECK(history_len(&h) == 2, "loaded exactly the two logged messages");
+	CHECK(clm_history_repair_dangling_tool_calls(&h) == 1,
+	    "loaded session repaired on resume");
+	CHECK(history_len(&h) == 3, "session now well-formed");
+	r = TAILQ_LAST(&h, clm_history);
+	CHECK(r->role == CLM_ROLE_TOOL &&
+	        strcmp(r->tool_call_id, "call_crash") == 0,
+	    "repaired result targets the crashed call");
+	clm_history_free(&h);
+}
+
 static void
 test_id_validation(const char *dir)
 {
@@ -333,6 +470,7 @@ test_session_suite(void *arg)
 	test_from_json_rejects_garbage();
 	test_session_file_roundtrip(dir);
 	test_crash_tolerance(dir);
+	test_dangling_tool_call_repair(dir);
 	test_id_validation(dir);
 	test_listing(dir);
 	remove_dir(dir);

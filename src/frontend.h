@@ -36,10 +36,15 @@ struct clm_lua_cfg; /* opaque; NULL if no config.lua was found or loading it
  * restore may be NULL (fresh session); when set, its messages are replayed
  * into the agent and rendered before the first prompt. The caller keeps
  * ownership and frees it after tui_run returns.
+ * repaired_tool_calls is the count returned by
+ * clm_history_repair_dangling_tool_calls() when the caller ran it on
+ * restore before this call (0 if restore is NULL or nothing needed
+ * repair); the TUI mentions it in the "[resumed session ...]" banner so a
+ * crash-recovered resume is visible, not silent.
  */
 int tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     struct clm_lua_cfg *lcfg, const char *config_load_err,
     const char *forever_prompt, struct clm_session *session,
-    const struct clm_history *restore);
+    const struct clm_history *restore, int repaired_tool_calls);
 
 #endif /* CLM_FRONTEND_H */

@@ -763,6 +763,7 @@ main(int argc, char *argv[])
 		struct clm_history *restorep = NULL;
 		autofree char *picked = NULL;
 		int rc;
+		int repaired_tool_calls = 0;
 
 		clm_history_init(&restore);
 		if (resume) {
@@ -773,6 +774,14 @@ main(int argc, char *argv[])
 				resume_id = picked;
 			}
 			r = clm_session_load(NULL, resume_id, &restore, NULL);
+			/* Patch any dangling tool call left by a crash before
+			 * it reaches a provider (see clm_history_repair_
+			 * dangling_tool_calls's doc comment); tui_run() reports
+			 * the count once curses is up. */
+			if (r == 0)
+				repaired_tool_calls =
+				    clm_history_repair_dangling_tool_calls(
+				        &restore);
 			if (r == 0)
 				r = clm_session_open(NULL, resume_id, &sess);
 			if (r < 0) {
@@ -795,7 +804,7 @@ main(int argc, char *argv[])
 		}
 
 		rc = tui_run(&cfg, plugin_dir, lcfg, config_load_err,
-		    forever_prompt, sess, restorep);
+		    forever_prompt, sess, restorep, repaired_tool_calls);
 		clm_history_free(&restore);
 		return rc;
 	}

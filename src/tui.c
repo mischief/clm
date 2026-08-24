@@ -3334,7 +3334,7 @@ int
 tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     struct clm_lua_cfg *lcfg, const char *config_load_err,
     const char *forever_prompt, struct clm_session *session,
-    const struct clm_history *restore)
+    const struct clm_history *restore, int repaired_tool_calls)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -3487,6 +3487,21 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 			    u->session != NULL ? clm_session_id(u->session)
 			                       : "?");
 			ui_push(u, ST_META, "]\n");
+			/* Say so if a crash-dangling tool call got patched --
+			 * never rewrite history under the user silently. */
+			if (repaired_tool_calls > 0) {
+				autofree char *note = NULL;
+				if (asprintf(&note,
+				        "[note: %d tool call%s had no "
+				        "recorded result (the session ended "
+				        "before it finished) -- filled in "
+				        "with a placeholder so the "
+				        "conversation could resume]\n",
+				        repaired_tool_calls,
+				        repaired_tool_calls == 1 ? "" : "s") >=
+				    0)
+					ui_push(u, ST_META, note);
+			}
 		}
 	}
 
