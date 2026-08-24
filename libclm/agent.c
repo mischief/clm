@@ -714,6 +714,42 @@ extract_message_content(cJSON *parsed)
 	return strdup(cJSON_GetStringValue(content));
 }
 
+/*
+ * Turn an HTTP error response into the useful diagnostic exposed by normal
+ * completion requests.  Compaction is a separate one-shot request, but it
+ * can fail for precisely the same provider-side reasons (especially context
+ * limits), so do not hide the status/error envelope behind a generic error.
+ */
+static void
+format_http_error(const struct clm_http_response *resp, int status, char *buf,
+    size_t bufsz)
+{
+	const char *detail = NULL;
+	json_cleanup cJSON *errjson = NULL;
+
+	if (resp != NULL && resp->body != NULL && resp->body[0] != '\0') {
+		errjson = cJSON_Parse(resp->body);
+		if (errjson != NULL) {
+			cJSON *err = cJSON_GetObjectItemCaseSensitive(errjson,
+			    "error");
+			cJSON *msg = cJSON_IsObject(err)
+			    ? cJSON_GetObjectItemCaseSensitive(err, "message")
+			    : NULL;
+			if (cJSON_IsString(msg) && msg->valuestring != NULL)
+				detail = msg->valuestring;
+		}
+	}
+
+	if (detail != NULL)
+		(void)snprintf(buf, bufsz, "HTTP %d: %s", status, detail);
+	else if (resp != NULL && resp->body != NULL && resp->body[0] != '\0')
+		(void)snprintf(buf, bufsz, "HTTP %d: %s", status, resp->body);
+	else if (resp != NULL)
+		(void)snprintf(buf, bufsz, "HTTP %d: empty response body", status);
+	else
+		(void)snprintf(buf, bufsz, "HTTP %d", status);
+}
+
 static void
 compact_success_cb(struct clm_http_response *resp, void *user)
 {
@@ -728,7 +764,10 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 	free(agent->compact_body);
 	agent->compact_body = NULL;
 
-	if (status != 200 || resp->body == NULL) {
+	if (status != 200 || resp == NULL || resp->body == NULL) {
+		char detail[256];
+
+		format_http_error(resp, status, detail, sizeof(detail));
 		if (resp)
 			clm_http_response_free(resp);
 		if (resume) {
@@ -736,12 +775,12 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 			 * continue the interrupted chain as-is rather than
 			 * landing the whole turn in an error state over a
 			 * compaction hiccup. */
-			clm_agent_set_error(agent, "compaction request failed");
+			clm_agent_set_error(agent, detail);
 			agent->mid_chain_compact_failed = true;
 			clm_agent_start_turn(agent);
 			return;
 		}
-		agent_fail(agent, "compaction request failed", -EIO);
+		agent_fail(agent, detail, -EIO);
 		return;
 	}
 	parsed = cJSON_Parse(resp->body);

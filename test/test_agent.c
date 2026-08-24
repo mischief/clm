@@ -608,6 +608,42 @@ test_compact_reasoning_fallback(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* A failed compaction must retain the provider's actionable HTTP diagnostic,
+ * just like an ordinary completion does, rather than collapsing it to the
+ * unhelpful "compaction request failed". */
+static void
+test_compact_http_error_detail(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	for (i = 0; i < 3; i++) {
+		canned_reply(srv, final_reply);
+		if (i == 0)
+			st.agent = make_agent(&st, canned_port(srv));
+		CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+		run_until_done(&st);
+		st.turn_done = 0;
+	}
+
+	canned_reply_status(srv, 400,
+	    "{\"error\":{\"message\":\"maximum context length exceeded\"}}");
+	CHECK(clm_agent_compact(st.agent) == 0, "compact: accepted");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == -EIO, "compact: HTTP error fails turn");
+	CHECK(strcmp(clm_agent_get_last_error(st.agent),
+	          "HTTP 400: maximum context length exceeded") == 0,
+	    "compact: retains provider error detail");
+
+	teardown(&st, srv);
+}
+
 /*
  * (b4) A model with no tool-calling support: the first turn (tools attached,
  * since clm always registers at least the shell/bg builtins) gets ollama's
@@ -1793,6 +1829,7 @@ main(void)
 	test_agent_free_during_bg_exec(&loop);
 	test_autocompact_mid_chain(&loop);
 	test_compact_reasoning_fallback(&loop);
+	test_compact_http_error_detail(&loop);
 	test_tools_unsupported_retry(&loop);
 	test_file_tools(&loop);
 	test_shell_exec(&loop);
