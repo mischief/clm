@@ -1163,6 +1163,15 @@ clm_mcp_connect(struct clm_agent *agent, struct uv_loop_s *loop,
 	if (server_cfg->transport == CLM_MCP_STDIO && server_cfg->argv == NULL)
 		return -EINVAL;
 
+	/* libuv ultimately writes to a pipe with write(2). A stdio MCP server
+	 * may exit between queuing a JSON-RPC message and that write reaching
+	 * its stdin; on OpenBSD this otherwise delivers SIGPIPE and kills the
+	 * embedding process before uv can report UV_EPIPE. There is no
+	 * per-pipe portable suppression, so use the conventional process-wide
+	 * ignore disposition (also used by clm_host_uv_new). */
+	if (server_cfg->transport == CLM_MCP_STDIO)
+		signal(SIGPIPE, SIG_IGN);
+
 	client = calloc(1, sizeof(*client));
 	if (client == NULL)
 		return -ENOMEM;
