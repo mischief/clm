@@ -106,7 +106,21 @@ if have_lua
   #
   # emoji_dep: :shortcode: -> glyph completion/expansion for the input
   # line, see ../libemoji.
-  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c', 'xdg.c') + seed_src + [version_h, templates_data],
+  # Host facts for the system prompt: the portable half plus one per-OS
+  # file. Selecting the file here keeps the OS knowledge out of the C source
+  # as a link-time choice; a host with no file of its own gets the generic
+  # one, which reports uname and core count and nothing it would have to
+  # guess at.
+  host_os = host_machine.system()
+  if host_os == 'linux'
+    sysinfo_src = files('sysinfo.c', 'sysinfo_linux.c')
+  elif host_os == 'openbsd'
+    sysinfo_src = files('sysinfo.c', 'sysinfo_openbsd.c')
+  else
+    sysinfo_src = files('sysinfo.c', 'sysinfo_generic.c')
+  endif
+
+  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c', 'xdg.c') + sysinfo_src + seed_src + [version_h, templates_data],
     link_with: [md_render_lib],
     dependencies: [clmuv_dep, clmlua_dep, clmsession_dep, curses_dep, cjson_dep, emoji_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],

@@ -39,6 +39,7 @@
 #include "mcp_setup.h"
 #include "model_spec.h"
 #include "tui_internal.h"
+#include "sysinfo.h"
 #include "xdg.h"
 
 /*
@@ -2096,6 +2097,9 @@ cmd_agent(struct ui *u, const char *arg)
 			    : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY")
 			                             : "");
 			newcfg.system_prompt = sprompt;
+			/* A profile switch builds a whole new agent, so the
+			 * host block has to be handed over again. */
+			newcfg.system_prompt_suffix = clm_cli_sysinfo();
 			newcfg.provider = clm_provider_from_str(pkind);
 			newcfg.stream = 1;
 			if (prov != NULL && spec_model != NULL) {
