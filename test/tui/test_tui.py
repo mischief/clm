@@ -511,6 +511,23 @@ def test_scratch(url):
         check(mode == 0o700, "scratch: private to the user")
 
 
+def test_allow_all(url):
+    """--allow-all-tools runs tool calls without the permission prompt, and
+    says so where it cannot be missed."""
+    with Tui(BIN, url, rows=20, cols=100,
+             extra_args=("--allow-all-tools",)) as t:
+        t.wait_for("online", timeout=8)
+        status = [ln for ln in t.lines() if " clm " in ln]
+        check(bool(status) and "[allow-all]" in status[0],
+              "allow-all: the status bar says the session is ungated")
+        t.send(b"shelltest please\r")
+        # The gated path would stop here waiting for y/n.
+        check(t.wait_for("hi", timeout=15),
+              "allow-all: the tool runs without asking")
+        check("allow tool" not in t.text(),
+              "allow-all: no permission prompt appeared")
+
+
 def test_peers(url):
     """Two clm instances discover each other over their sockets, and a
     message from one lands in the other's transcript between turns."""
@@ -663,6 +680,7 @@ TESTS = {
     "session_compact": test_session_compact,
     "scratch": test_scratch,
     "peers": test_peers,
+    "allow_all": test_allow_all,
 }
 
 

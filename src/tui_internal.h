@@ -163,6 +163,9 @@ struct ui {
 	 * off. */
 	char session_short[16];
 	struct clm_peer *peer; /* this agent's socket, or NULL */
+	/* Run every tool call without asking (--allow-all-tools). For an
+	 * agent nobody is watching; the status bar says so. */
+	bool allow_all;
 	/* A compaction is in flight (auto or /compact): its completion has to
 	 * rewrite the session log, which on_message cannot see. */
 	bool compacting;

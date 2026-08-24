@@ -201,6 +201,20 @@ Incompatible with
 and
 **--headless**.
 
+**--allow-all-tools**
+
+Run every tool call without asking.
+The permission gate exists because a model can be talked into running
+something you would not have approved, so this is for an agent nobody is
+watching, in a directory whose contents you can afford to lose.
+The status bar carries
+**\[allow-all]**
+for as long as the session runs this way.
+**--oneshot**
+and
+**--headless**
+runs already allow every call, with or without this flag.
+
 **-S**, **--no-stream**
 
 Request non-streamed responses instead of the default

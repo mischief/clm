@@ -866,6 +866,14 @@ cb_permission(const struct clm_permission_req *req, void *user)
 {
 	struct ui *u = user;
 
+	/* Nobody is watching this one: answer for them. The status bar says
+	 * the session is running this way, so it cannot pass for a normal
+	 * one. */
+	if (u->allow_all) {
+		clm_tool_permission_respond(u->agent, req, CLM_PERM_ALLOW_ONCE);
+		return;
+	}
+
 	/* Enqueue the request. */
 	if (u->perm_count >= u->perm_cap) {
 		size_t ncap = u->perm_cap ? u->perm_cap * 2 : 16;
@@ -1139,6 +1147,8 @@ draw_status(struct ui *u)
 	mvwprintw(u->stat, 0, 0, " clm");
 	if (u->session_short[0] != '\0')
 		wprintw(u->stat, " %s", u->session_short);
+	if (u->allow_all)
+		wprintw(u->stat, " [allow-all]");
 	/* One combined "[provider/model:agent]" tag rather than three separate
 	 * bracketed fields -- picking a provider/model without changing agent
 	 * profile is the common case (see /model, /provider), so keeping them
@@ -3604,7 +3614,7 @@ int
 tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     struct clm_lua_cfg *lcfg, const char *config_load_err,
     const char *forever_prompt, struct clm_session *session,
-    const struct clm_history *restore, int repaired_tool_calls)
+    const struct clm_history *restore, int repaired_tool_calls, bool allow_all)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -3618,6 +3628,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		return 1;
 	}
 	u->last_total = -1; /* draw_transcript hasn't painted yet */
+	u->allow_all = allow_all;
 	if (!ui_input_reserve(u, 1024)) {
 		fprintf(stderr, "error: out of memory\n");
 		free(u);

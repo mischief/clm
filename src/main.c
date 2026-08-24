@@ -38,7 +38,7 @@ usage(const char *prog)
 	    "       %s [-o|--oneshot PROMPT] [-f|--forever PROMPT] "
 	    "[-H|--headless] [-u|--url BASE] "
 	    "[-m|--model PROVIDER/MODEL-ID] [--provider NAME] "
-	    "[-p|--plugins DIR] [-S|--no-stream] "
+	    "[-p|--plugins DIR] [-S|--no-stream] [--allow-all-tools] "
 	    "[-r|--resume [ID]] "
 	    "[-V|--version] [-h|--help]\n",
 	    prog, prog);
@@ -73,6 +73,9 @@ usage(const char *prog)
 	    "  -p, --plugins DIR     plugin directory "
 	    "(default $XDG_CONFIG_HOME/clm/plugins)\n"
 	    "  -S, --no-stream       disable streamed (SSE) responses\n"
+	    "      --allow-all-tools run every tool call without asking; for\n"
+	    "                        an agent nobody is watching, in a\n"
+	    "                        directory you can afford to lose\n"
 	    "  -r, --resume [ID]     resume a saved session in the TUI; with "
 	    "no ID,\n"
 	    "                        pick from a list of saved sessions\n"
@@ -638,6 +641,7 @@ main(int argc, char *argv[])
 	const char *model_name = NULL; /* -m/--model: a "provider/model-id"
 	                                  spec, or a literal wire id */
 	const char *effort = NULL;
+	bool allow_all = false;
 	const char *provider_name =
 	    NULL; /* --provider: a config providers[] name override */
 	/* Owned copy of a "provider/model-id" spec's provider half (see
@@ -668,7 +672,7 @@ main(int argc, char *argv[])
 	int resume = 0;
 	const char *resume_id = NULL;
 
-	enum { OPT_PROVIDER = 256 };
+	enum { OPT_PROVIDER = 256, OPT_ALLOW_ALL };
 	const struct option opts[] = {
 	    {"oneshot", required_argument, NULL, 'o'},
 	    {"forever", required_argument, NULL, 'f'},
@@ -680,6 +684,7 @@ main(int argc, char *argv[])
 	    {"resume", optional_argument, NULL, 'r'},
 	    {"headless", no_argument, NULL, 'H'},
 	    {"no-stream", no_argument, NULL, 'S'},
+	    {"allow-all-tools", no_argument, NULL, OPT_ALLOW_ALL},
 	    {"version", no_argument, NULL, 'V'},
 	    {"help", no_argument, NULL, 'h'},
 	    {NULL, 0, NULL, 0},
@@ -688,6 +693,9 @@ main(int argc, char *argv[])
 	while ((opt = getopt_long(
 	            argc, argv, "a:o:f:u:m:p:r::HSVh", opts, NULL)) != -1) {
 		switch (opt) {
+		case OPT_ALLOW_ALL:
+			allow_all = true;
+			break;
 		case 'a':
 			agent_name = optarg;
 			break;
@@ -958,7 +966,8 @@ main(int argc, char *argv[])
 		}
 
 		rc = tui_run(&cfg, plugin_dir, lcfg, config_load_err,
-		    forever_prompt, sess, restorep, repaired_tool_calls);
+		    forever_prompt, sess, restorep, repaired_tool_calls,
+		    allow_all);
 		clm_history_free(&restore);
 		return rc;
 	}

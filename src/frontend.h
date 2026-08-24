@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: ISC
 /* Frontend entry points shared within the clm binary (not installed). */
+#include <stdbool.h>
+
 #ifndef CLM_FRONTEND_H
 #define CLM_FRONTEND_H
 
@@ -45,6 +47,6 @@ struct clm_lua_cfg; /* opaque; NULL if no config.lua was found or loading it
 int tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     struct clm_lua_cfg *lcfg, const char *config_load_err,
     const char *forever_prompt, struct clm_session *session,
-    const struct clm_history *restore, int repaired_tool_calls);
+    const struct clm_history *restore, int repaired_tool_calls, bool allow_all);
 
 #endif /* CLM_FRONTEND_H */
