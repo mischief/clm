@@ -89,14 +89,15 @@ class Handler(BaseHTTPRequestHandler):
         result is present yet (so we emit the call exactly once)."""
         msgs = req.get("messages", [])
         text = " ".join(str(m.get("content", "")) for m in msgs)
-        asked = any("shelltest" in str(m.get("content", "")).lower()
+        asked = any(("shelltest" in str(m.get("content", "")).lower() or
+                     "multilinetest" in str(m.get("content", "")).lower())
                     for m in msgs if m.get("role") == "user")
         has_result = "<tool_response>" in text or any(
             m.get("role") == "tool" for m in msgs)
         return asked and not has_result
 
-    def _stream_tool_call(self):
-        """Stream a single shell_exec tool call."""
+    def _stream_tool_call(self, multiline=False):
+        """Stream a shell_exec call, optionally with multi-line arguments."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")
@@ -106,10 +107,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
             self.wfile.flush()
         try:
+            args = ("{\"command\":\"printf 'one\\\\ntwo'\","
+                    "\"stdin\":\"first line\\\\nsecond line\","
+                    "\"timeout_ms\":10000}"
+                    if multiline else "{\"command\":\"echo hi\"}")
             send({"choices": [{"index": 0, "delta": {"tool_calls": [{
                 "index": 0, "id": "call_1", "type": "function",
-                "function": {"name": "shell_exec",
-                             "arguments": "{\"command\":\"echo hi\"}"}}]}}]})
+                "function": {"name": "shell_exec", "arguments": args}}]}}]})
             send({"choices": [{"index": 0, "delta": {},
                                "finish_reason": "tool_calls"}]})
             self.wfile.write(b"data: [DONE]\n\n")
@@ -119,7 +123,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _stream(self, req=None):
         if req is not None and self._wants_tool(req):
-            self._stream_tool_call()
+            text = " ".join(str(m.get("content", "")) for m in
+                            req.get("messages", []))
+            self._stream_tool_call("multilinetest" in text.lower())
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")

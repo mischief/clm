@@ -263,11 +263,29 @@ def test_permission(url):
         assert t.wait_for("allow tool", timeout=15), "no permission prompt"
         txt = t.text()
         check("shell_exec" in txt, "permission: prompt names the tool")
+        check("command: echo hi" in txt,
+              "permission: single-line parameter stays beside its name")
         check("(y) once" in txt, "permission: prompt shows the key choices")
         # Approve once; the tool then runs and the turn finishes.
         t.send(b"y")
         t.pump(1.0)
         check("allowed" in t.text(), "permission: 'y' approves the call")
+
+    # A multi-line argument gets its own indented block, separated from the
+    # following parameter so replacement text and commands are reviewable.
+    with Tui(BIN, url, rows=24, cols=80) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"multilinetest please\r")
+        assert t.wait_for("allow tool", timeout=15), "no multiline permission prompt"
+        txt = t.text()
+        check("command:" in txt and "printf 'one" in txt and "two'" in txt,
+              "permission: multiline value is shown below its name")
+        check("stdin:" in txt and "first line" in txt and "second line" in txt,
+              "permission: multiline argument contents are retained")
+        check("timeout_ms: 10000" in txt,
+              "permission: later single-line parameter remains readable")
+        t.send(b"n")
+        t.pump(1.0)
 
     # A fresh session, deny this time.
     with Tui(BIN, url, rows=24, cols=80) as t:

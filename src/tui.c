@@ -644,11 +644,39 @@ cb_turn_done(int status, void *user)
 		do_submit(u, u->forever_prompt, true);
 }
 
+/* Push value on one or more indented lines.  The caller has already emitted
+ * the parameter name and its separating newline.  Prefix every physical line
+ * so embedded source/code indentation remains visibly inside this argument's
+ * block rather than being mistaken for a new prompt field. */
+static void
+push_perm_multiline_value(struct ui *u, const char *value)
+{
+	const char *line = value;
+	const char *nl;
+
+	do {
+		nl = strchr(line, '\n');
+		ui_push(u, ST_PERM, "    ");
+		if (nl != NULL) {
+			char *copy = strndup(line, (size_t)(nl - line));
+			if (copy != NULL) {
+				ui_push(u, ST_PERM, copy);
+				free(copy);
+			}
+			ui_push(u, ST_PERM, "\n");
+			line = nl + 1;
+		} else {
+			ui_push(u, ST_PERM, line);
+		}
+	} while (nl != NULL);
+}
+
 /*
- * Render tool-call args for the permission prompt without the JSON envelope:
- * a single string arg shows as just its value (e.g. shell_exec's command);
- * multiple args show as "key: value" pairs. Falls back to the raw string if
- * it is not a JSON object.
+ * Render permission arguments one per line.  A one-line value stays beside
+ * its name.  Multi-line values get a named, indented block and a blank line
+ * before the following parameter, making commands and replacement text safe
+ * to inspect without confusing their contents with adjacent arguments.
+ * Falls back to the raw string if it is not a JSON object.
  */
 static void
 push_perm_args(struct ui *u, const char *args)
@@ -661,36 +689,38 @@ push_perm_args(struct ui *u, const char *args)
 
 	obj = cJSON_Parse(args);
 	if (obj == NULL || !cJSON_IsObject(obj)) {
-		ui_push(u, ST_PERM, ": ");
-		ui_push(u, ST_PERM, args); /* not an object: show as-is */
+		ui_push(u, ST_PERM, ":\n");
+		push_perm_multiline_value(u, args);
 		if (obj != NULL)
 			cJSON_Delete(obj);
 		return;
 	}
 
-	ui_push(u, ST_PERM, ": ");
-	{
-		int n = cJSON_GetArraySize(
-		    obj); /* member count works for objects too */
-		for (cJSON *v = obj->child; v != NULL; v = v->next) {
-			autofree char *printed = NULL;
+	ui_push(u, ST_PERM, ":");
+	for (cJSON *v = obj->child; v != NULL; v = v->next) {
+		autofree char *printed = NULL;
+		const char *value;
+		bool multiline;
 
-			if (!first)
-				ui_push(u, ST_PERM, "  ");
-			first = false;
-			/* For a lone arg, the key is noise; show only the
-			 * value. */
-			if (n > 1 && v->string != NULL) {
-				ui_push(u, ST_PERM, v->string);
-				ui_push(u, ST_PERM, ": ");
-			}
-			if (cJSON_IsString(v)) {
-				ui_push(u, ST_PERM, cJSON_GetStringValue(v));
-			} else {
-				printed = cJSON_PrintUnformatted(v);
-				ui_push(
-				    u, ST_PERM, printed != NULL ? printed : "");
-			}
+		if (!first)
+			ui_push(u, ST_PERM, "\n");
+		first = false;
+		if (cJSON_IsString(v))
+			value = cJSON_GetStringValue(v);
+		else {
+			printed = cJSON_PrintUnformatted(v);
+			value = printed != NULL ? printed : "";
+		}
+		multiline = strchr(value, '\n') != NULL;
+
+		ui_push(u, ST_PERM, "\n  ");
+		ui_push(u, ST_PERM, v->string != NULL ? v->string : "?");
+		if (multiline) {
+			ui_push(u, ST_PERM, ":\n");
+			push_perm_multiline_value(u, value);
+		} else {
+			ui_push(u, ST_PERM, ": ");
+			ui_push(u, ST_PERM, value);
 		}
 	}
 	cJSON_Delete(obj);
