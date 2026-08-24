@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: ISC
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +27,14 @@ struct mcp_ready_ctx {
 	char *name;
 	clm_cli_mcp_status_cb status_cb;
 	void *status_user;
+	bool settled; /* on_ready fired (or the client died) at least once */
 };
+
+/* Connects started that have not reported a first result yet. Tool schemas
+ * are the head of the cached prompt prefix, so a tool registered after the
+ * first request invalidates the whole prefix for the rest of the session --
+ * clm_cli_wait_mcp_ready() lets a frontend settle this before it submits. */
+static int mcp_pending;
 
 static void
 emit_status(clm_cli_mcp_status_cb status_cb, void *user, const char *msg)
@@ -43,6 +51,10 @@ on_mcp_ready(int status, size_t tool_count, void *user)
 	struct mcp_ready_ctx *ctx = user;
 	char msg[256];
 
+	if (!ctx->settled) {
+		ctx->settled = true;
+		mcp_pending--;
+	}
 	if (status == 0)
 		(void)snprintf(msg, sizeof(msg),
 		    "mcp: %s: %zu tool%s registered", ctx->name, tool_count,
@@ -58,6 +70,8 @@ free_mcp_ready_ctx(void *user)
 {
 	struct mcp_ready_ctx *ctx = user;
 
+	if (!ctx->settled)
+		mcp_pending--;
 	free(ctx->name);
 	free(ctx);
 }
@@ -140,6 +154,8 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 	ready_ctx->name = strdup(name);
 	ready_ctx->status_cb = status_cb;
 	ready_ctx->status_user = status_user;
+	ready_ctx->settled = false;
+	mcp_pending++;
 
 	if (clm_mcp_connect(agent, loop, &server_cfg, on_mcp_ready, ready_ctx,
 	        free_mcp_ready_ctx, &client) != 0) {
@@ -147,6 +163,7 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 		(void)snprintf(
 		    msg, sizeof(msg), "mcp: %s: failed to start", name);
 		emit_status(status_cb, status_user, msg);
+		mcp_pending--;
 		free(ready_ctx->name);
 		free(ready_ctx);
 		return NULL;
@@ -206,4 +223,37 @@ clm_cli_free_mcp_servers(struct clm_mcp_client **clients, size_t count)
 	for (i = 0; i < count; i++)
 		clm_mcp_client_free(clients[i]); /* NULL entries: no-op */
 	free(clients);
+}
+
+static void
+on_wait_deadline(uv_timer_t *t)
+{
+	*(bool *)t->data = true;
+}
+
+static void
+on_wait_closed(uv_handle_t *h)
+{
+	*(bool *)h->data = true;
+}
+
+void
+clm_cli_wait_mcp_ready(uv_loop_t *loop, int timeout_ms)
+{
+	uv_timer_t timer;
+	bool expired = false, closed = false;
+
+	if (mcp_pending <= 0)
+		return;
+
+	uv_timer_init(loop, &timer);
+	timer.data = &expired;
+	uv_timer_start(&timer, on_wait_deadline, (uint64_t)timeout_ms, 0);
+	while (mcp_pending > 0 && !expired)
+		uv_run(loop, UV_RUN_ONCE);
+	uv_timer_stop(&timer);
+	timer.data = &closed;
+	uv_close((uv_handle_t *)&timer, on_wait_closed);
+	while (!closed)
+		uv_run(loop, UV_RUN_ONCE);
 }

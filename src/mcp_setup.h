@@ -11,6 +11,10 @@ struct clm_lua_cfg;
 
 typedef void (*clm_cli_mcp_status_cb)(const char *msg, void *user);
 
+/* How long a frontend waits for MCP servers to register their tools before
+ * it sends the first request. */
+#define CLM_MCP_READY_WAIT_MS 5000
+
 /*
  * Read config.mcp_servers from lcfg (may be NULL, e.g. no config file found)
  * and start a clm_mcp_connect() for each entry, on loop. connections are
@@ -38,5 +42,13 @@ struct clm_mcp_client **clm_cli_connect_mcp_servers(struct clm_agent *agent,
  * NULL or count == 0.
  */
 void clm_cli_free_mcp_servers(struct clm_mcp_client **clients, size_t count);
+
+/*
+ * Run loop until every connect started by clm_cli_connect_mcp_servers has
+ * reported ready or failed, or timeout_ms elapses. Call it before the first
+ * prompt: tools render ahead of everything else, so a server that registers
+ * tools after the first request voids the prompt cache for the session.
+ */
+void clm_cli_wait_mcp_ready(uv_loop_t *loop, int timeout_ms);
 
 #endif /* CLM_CLI_MCP_SETUP_H */
