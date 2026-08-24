@@ -986,6 +986,56 @@ test_shell_exec_cancel_backgrounded_job(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/*
+ * (d4) Regression for the wedged-batch hang diagnosed on a live session
+ * (fd inspection + ktrace showed the agent's own read end of a shell_exec
+ * pipe still open with no writer anywhere on the system): a backgrounded
+ * grandchild that additionally ignores SIGTERM (`trap '' TERM`) survives
+ * shell_cancel()'s process-group kill entirely, so without the grace-period
+ * escalation in shell_kill_timer_cb() the pipe never gets EOF and the turn
+ * hangs forever. CLM_SHELL_KILL_GRACE_MS is set tiny so this test doesn't
+ * have to wait out the production default; reaching turn_done at all (via
+ * SIGKILL escalation + forced uv_close of the pipes) is the regression
+ * check.
+ */
+static void
+test_shell_exec_sigterm_ignored(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i;
+
+	CHECK(setenv("CLM_SHELL_KILL_GRACE_MS", "50", 1) == 0,
+	    "set grace period override");
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_tool_call(srv, "shell_exec",
+	    "{\"command\":\"(trap '' TERM; sleep 30) & echo started\"}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "background an unkillable job") == 0,
+	    "submit");
+
+	for (i = 0; i < 50; i++)
+		uv_run(loop, UV_RUN_NOWAIT);
+	CHECK(!st.turn_done, "turn must still be waiting on the shell command");
+
+	CHECK(clm_agent_cancel(st.agent) == 0, "cancel accepted");
+
+	/* Without the grace-period escalation, the SIGTERM-immune grandchild
+	 * keeps the pipes open and this spins forever. */
+	run_until_done(&st);
+	CHECK(st.turn_done,
+	    "turn finished after cancelling a SIGTERM-immune backgrounded "
+	    "job");
+
+	teardown(&st, srv);
+	unsetenv("CLM_SHELL_KILL_GRACE_MS");
+}
+
 /* Queue an SSE text reply split across two content deltas. */
 static void
 canned_stream_text(struct canned_server *srv, const char *a, const char *b)
@@ -1977,6 +2027,7 @@ test_agent_suite(void *arg)
 	test_shell_exec(&loop);
 	test_agent_free_during_shell_exec(&loop);
 	test_shell_exec_cancel_backgrounded_job(&loop);
+	test_shell_exec_sigterm_ignored(&loop);
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
