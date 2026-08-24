@@ -664,6 +664,22 @@ sb_append(char **buf, size_t *len, size_t *cap, const char *data, size_t n)
 static cJSON *response_message(cJSON *parsed);
 static void agent_fail(struct clm_agent *agent, const char *msg, int err);
 
+/* Return choices[0].finish_reason from a canonical completion response. */
+static const char *
+response_finish_reason(cJSON *parsed)
+{
+	cJSON *choices, *choice, *reason;
+
+	if (parsed == NULL)
+		return NULL;
+	choices = cJSON_GetObjectItemCaseSensitive(parsed, "choices");
+	choice = choices != NULL ? cJSON_GetArrayItem(choices, 0) : NULL;
+	reason = choice != NULL
+	    ? cJSON_GetObjectItemCaseSensitive(choice, "finish_reason")
+	    : NULL;
+	return cJSON_IsString(reason) ? cJSON_GetStringValue(reason) : NULL;
+}
+
 /* Turns to keep verbatim when compacting; older ones fold into the summary. */
 #define CLM_COMPACT_KEEP_RECENT 2
 
@@ -789,14 +805,19 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 
 	summary = parsed ? extract_message_content(parsed) : NULL;
 	if (summary == NULL || summary[0] == '\0') {
+		const char *reason = response_finish_reason(parsed);
+		const char *why = reason != NULL &&
+		    strcmp(reason, "content_filter") == 0
+		    ? "compaction stopped by content filter"
+		    : "compaction produced no summary";
+
 		if (resume) {
-			clm_agent_set_error(
-			    agent, "compaction produced no summary");
+			clm_agent_set_error(agent, why);
 			agent->mid_chain_compact_failed = true;
 			clm_agent_start_turn(agent);
 			return;
 		}
-		agent_fail(agent, "compaction produced no summary", -EIO);
+		agent_fail(agent, why, -EIO);
 		return;
 	}
 
