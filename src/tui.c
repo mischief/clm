@@ -189,8 +189,19 @@ push_tool_summary(struct ui *u, const char *verb, const char *detail)
 		const char *p = detail;
 		line[n++] = ':';
 		line[n++] = ' ';
+		/* One line per summary, so a newline or tab inside the value
+		 * is escaped rather than flattened to a space: a multi-line
+		 * shell command otherwise reads as one command with extra
+		 * arguments. */
 		while (*p != '\0' && n < cap) {
-			line[n++] = (*p == '\n' || *p == '\t') ? ' ' : *p;
+			if (*p == '\n' || *p == '\t') {
+				if (n + 1 >= cap)
+					break;
+				line[n++] = '\\';
+				line[n++] = *p == '\n' ? 'n' : 't';
+			} else {
+				line[n++] = *p;
+			}
 			p++;
 		}
 		if (*p != '\0') { /* truncated */
@@ -3641,7 +3652,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 					printf("session: %s, resume it with:\n"
 					       "  clm --resume %s -m %s\n",
 					    clm_session_id(u->session),
-					    clm_session_id(u->session), u->model);
+					    clm_session_id(u->session),
+					    u->model);
 			} else {
 				printf("session: %s, resume it with:\n"
 				       "  clm --resume %s\n",

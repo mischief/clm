@@ -309,8 +309,14 @@ def test_permission(url):
               "permission: multiline argument contents are retained")
         check("timeout_ms: 10000" in txt,
               "permission: later single-line parameter remains readable")
-        t.send(b"n")
+        # Approve, then check the one-line tool summary: a newline inside
+        # the command is escaped, not flattened into a space, so a
+        # multi-command line stays distinguishable from one command with
+        # extra arguments.
+        t.send(b"y")
         t.pump(1.0)
+        check("executing shell command: printf 'one\\ntwo'" in t.text(),
+              "tool summary: embedded newline shown escaped")
 
     # A fresh session, deny this time.
     with Tui(BIN, url, rows=24, cols=80) as t:
