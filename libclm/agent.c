@@ -382,13 +382,13 @@ clm_agent_get_ctx_max(const struct clm_agent *agent)
 	return agent ? agent->ctx_max : 0;
 }
 
-/* Auto-compact threshold. Only meaningful as a percentage when ctx_max is
- * known -- from probing GET /props against a llama.cpp backend, or from an
- * explicit context_size provider override -- which hosted backends
- * (Anthropic, OpenAI, etc.) don't expose. Against those, ctx_max stays 0,
- * so CLM_AUTOCOMPACT_FALLBACK_TOKENS below is used instead of a percentage
- * -- see clm_agent_over_autocompact_threshold(). */
-#define CLM_AUTOCOMPACT_PCT 70
+/* Auto-compact threshold, as a percentage of the window once one is known
+ * (from GET /props on llama.cpp, the model document on Anthropic, or a
+ * context_size override). Without a window, CLM_AUTOCOMPACT_FALLBACK_TOKENS
+ * below stands in. Half the window rather than most of it: the whole
+ * history is re-read on every turn, so carrying less of it is what makes a
+ * turn cheap. */
+#define CLM_AUTOCOMPACT_PCT 50
 
 /*
  * Absolute token fallback for backends with no known ctx_max (see above).
@@ -694,11 +694,11 @@ response_finish_reason(cJSON *parsed)
 
 /*
  * What compaction keeps verbatim: the newest turns fitting this share of the
- * window, never fewer than CLM_COMPACT_KEEP_MIN. Sizing the tail means one
- * enormous tool result cannot leave the history above the threshold that
- * triggered compaction, and a short history still folds.
+ * window, never fewer than CLM_COMPACT_KEEP_MIN. Every turn pays to re-read
+ * whatever the history carries, so the share is deliberately small: a
+ * smaller tail costs more frequent compaction and buys a cheaper turn.
  */
-#define CLM_COMPACT_KEEP_PCT 25
+#define CLM_COMPACT_KEEP_PCT 10
 #define CLM_COMPACT_KEEP_MIN 2
 #define CLM_BYTES_PER_TOKEN 4
 

@@ -193,7 +193,11 @@ Override the context window size (tokens) the agent assumes, instead
 of learning it from the backend.
 .It Va autocompact_pct
 Override the percentage of the context window that triggers automatic
-conversation summarization.
+conversation summarization
+.Pq default 50 .
+Every turn re-reads the whole history, so a lower value trades more
+frequent summarization for a cheaper turn.
+Compaction then keeps the newest turns that fit a tenth of the window.
 .It Va effort
 Reasoning effort for this model, overriding the provider-wide
 .Va effort .

@@ -214,7 +214,11 @@ of learning it from the backend.
 *autocompact\_pct*
 
 Override the percentage of the context window that triggers automatic
-conversation summarization.
+conversation summarization
+(default 50).
+Every turn re-reads the whole history, so a lower value trades more
+frequent summarization for a cheaper turn.
+Compaction then keeps the newest turns that fit a tenth of the window.
 
 *effort*
 
