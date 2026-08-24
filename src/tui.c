@@ -174,8 +174,12 @@ json_field(cJSON *obj, const char *key)
 /* Push a one-line, human-readable summary of a tool call -- never raw JSON.
  * The detail is flattened (no newlines/tabs) and clamped so one call is one
  * row; an over-long detail gets an ellipsis. */
+/* Lines of a multi-line tool argument shown before the rest is elided. */
+#define TOOL_SUMMARY_MAX_LINES 8
+
+/* One "  verb: detail" line, tabs escaped so they cannot smear the column. */
 static void
-push_tool_summary(struct ui *u, const char *verb, const char *detail)
+push_tool_summary_line(struct ui *u, const char *verb, const char *detail)
 {
 	char line[200];
 	size_t n = 0;
@@ -189,16 +193,12 @@ push_tool_summary(struct ui *u, const char *verb, const char *detail)
 		const char *p = detail;
 		line[n++] = ':';
 		line[n++] = ' ';
-		/* One line per summary, so a newline or tab inside the value
-		 * is escaped rather than flattened to a space: a multi-line
-		 * shell command otherwise reads as one command with extra
-		 * arguments. */
 		while (*p != '\0' && n < cap) {
-			if (*p == '\n' || *p == '\t') {
+			if (*p == '\t') {
 				if (n + 1 >= cap)
 					break;
 				line[n++] = '\\';
-				line[n++] = *p == '\n' ? 'n' : 't';
+				line[n++] = 't';
 			} else {
 				line[n++] = *p;
 			}
@@ -213,6 +213,44 @@ push_tool_summary(struct ui *u, const char *verb, const char *detail)
 	line[n++] = '\n';
 	line[n] = '\0';
 	ui_push(u, ST_TOOL, line);
+}
+
+/*
+ * Summarize a tool call. A value spanning several lines (a shell command
+ * running three things, a heredoc) is drawn as an indented block rather than
+ * squeezed onto one line, matching how the permission prompt shows the same
+ * argument. Long blocks are elided after TOOL_SUMMARY_MAX_LINES.
+ */
+static void
+push_tool_summary(struct ui *u, const char *verb, const char *detail)
+{
+	const char *p, *nl;
+	size_t shown = 0;
+
+	if (detail == NULL || strchr(detail, '\n') == NULL) {
+		push_tool_summary_line(u, verb, detail);
+		return;
+	}
+
+	push_tool_summary_line(u, verb, NULL);
+	for (p = detail; *p != '\0'; p = nl + 1) {
+		char buf[200];
+		size_t len;
+
+		nl = strchr(p, '\n');
+		len = nl != NULL ? (size_t)(nl - p) : strlen(p);
+		if (shown == TOOL_SUMMARY_MAX_LINES) {
+			ui_push(u, ST_TOOL, "      ...\n");
+			return;
+		}
+		if (len >= sizeof(buf) - 8)
+			len = sizeof(buf) - 8;
+		(void)snprintf(buf, sizeof(buf), "    %.*s\n", (int)len, p);
+		ui_push(u, ST_TOOL, buf);
+		shown++;
+		if (nl == NULL)
+			return;
+	}
 }
 
 /* Render every field of a tool-call args object (except skip_key, if

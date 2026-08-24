@@ -105,8 +105,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
             self.wfile.flush()
         try:
-            args = ("{\"command\":\"printf 'one\\\\ntwo'\","
-                    "\"stdin\":\"first line\\\\nsecond line\","
+            # Real newlines (JSON \n), so this exercises multi-line
+            # rendering rather than a literal backslash-n in the value.
+            args = ("{\"command\":\"printf one\\ncat /tmp/x\\ndoas true\","
+                    "\"stdin\":\"first line\\nsecond line\","
                     "\"timeout_ms\":10000}"
                     if multiline else "{\"command\":\"echo hi\"}")
             send({"choices": [{"index": 0, "delta": {"tool_calls": [{

@@ -303,7 +303,8 @@ def test_permission(url):
         t.send(b"multilinetest please\r")
         assert t.wait_for("allow tool", timeout=15), "no multiline permission prompt"
         txt = t.text()
-        check("command:" in txt and "printf 'one" in txt and "two'" in txt,
+        check("command:" in txt and "printf one" in txt and
+              "doas true" in txt,
               "permission: multiline value is shown below its name")
         check("stdin:" in txt and "first line" in txt and "second line" in txt,
               "permission: multiline argument contents are retained")
@@ -315,8 +316,12 @@ def test_permission(url):
         # extra arguments.
         t.send(b"y")
         t.pump(1.0)
-        check("executing shell command: printf 'one\\ntwo'" in t.text(),
-              "tool summary: embedded newline shown escaped")
+        lines = [ln.rstrip() for ln in t.lines()]
+        check("  executing shell command" in lines,
+              "tool summary: verb on its own line")
+        check("    printf one" in lines and "    cat /tmp/x" in lines and
+              "    doas true" in lines,
+              "tool summary: each command line drawn on its own line")
 
     # A fresh session, deny this time.
     with Tui(BIN, url, rows=24, cols=80) as t:
