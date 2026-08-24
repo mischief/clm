@@ -50,9 +50,12 @@ else
     clm_lib_link_args += ['-Wl,--version-script=' + meson.current_source_dir() / 'libclm.map']
   endif
   clm_lib = library('clm', clm_core_src + [version_h],
-    # ABI version: bump only on ABI breaks, independent of the release version.
+    # ABI version: bump only on ABI breaks, independent of the release
+    # version. At 1 because struct clm_cfg grew system_prompt_suffix: the
+    # caller allocates that struct, so a binary built against the older
+    # header is a short read away from garbage.
     version: meson.project_version(),
-    soversion: '0',
+    soversion: '1',
     link_args: clm_lib_link_args,
     kwargs: clm_lib_common_args)
 endif
