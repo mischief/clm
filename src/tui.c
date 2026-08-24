@@ -971,14 +971,16 @@ draw_status(struct ui *u)
 	 * have to travel across the width of the terminal to read it. */
 	/* Rate-limit wait wins over the leftover batch/usage strings: while
 	 * the turn is parked nothing else is in flight, and a stale "N tok/s"
-	 * would hide the only signal that explains the silence. */
+	 * would hide the only signal that explains the silence. The usage
+	 * string only shows between turns for the same reason: it reports the
+	 * turn that just ended, so it must not sit where "thinking" belongs. */
 	if (u->state == CLM_STATE_RATE_LIMITED) {
 		static const char *dots[] = {
 		    "waiting.", "waiting..", "waiting..."};
 		info = dots[((unsigned)u->spinner / 4) % 3];
 	} else if (u->batch[0] != '\0')
 		info = u->batch;
-	else if (u->usage[0] != '\0')
+	else if (!u->busy && u->usage[0] != '\0')
 		info = u->usage;
 	else
 		info = state_label(u->state);
