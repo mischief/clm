@@ -2358,6 +2358,79 @@ cmd_provider(struct ui *u, const char *arg)
 	}
 }
 
+/*
+ * /cd [path]: change the process's working directory. No argument goes to
+ * $HOME (same default as a bare shell "cd"). A leading "~" or "~/..." is
+ * expanded against $HOME by hand -- this doesn't go through a shell, so
+ * there's no other tilde expansion happening for it.
+ *
+ * This exists for the human at the keyboard, not the model (it isn't a
+ * tool call): shell_exec/bg_exec children don't inherit a chdir from here
+ * or from each other (each is a fresh $SHELL -c with the process's cwd at
+ * spawn time), but a human watching the transcript can still lose track of
+ * where clm itself is running -- e.g. after a background job's spawned
+ * child writes something odd to the tty and the terminal state looks
+ * confusing -- and "just chdir the whole terminal" isn't a thing a model
+ * mid-turn can safely reach for. This is the human's own manual override.
+ */
+static void
+cmd_cd(struct ui *u, const char *arg)
+{
+	autofree char *expanded = NULL;
+	autofree char *cwd = NULL;
+	const char *target;
+
+	if (arg[0] == '\0') {
+		target = getenv("HOME");
+		if (target == NULL) {
+			ui_push(u, ST_ERROR, "\ncd: $HOME not set\n");
+			return;
+		}
+	} else if (arg[0] == '~' && (arg[1] == '\0' || arg[1] == '/')) {
+		const char *home = getenv("HOME");
+		if (home == NULL) {
+			ui_push(u, ST_ERROR, "\ncd: $HOME not set\n");
+			return;
+		}
+		size_t n = strlen(home) + strlen(arg + 1) + 1;
+		expanded = malloc(n);
+		if (expanded == NULL) {
+			ui_push(u, ST_ERROR, "\nout of memory\n");
+			return;
+		}
+		(void)snprintf(expanded, n, "%s%s", home, arg + 1);
+		target = expanded;
+	} else {
+		target = arg;
+	}
+
+	if (chdir(target) != 0) {
+		autofree char *msg = NULL;
+		if (asprintf(&msg, "\ncd: %s: %s\n", target, strerror(errno)) <
+		    0)
+			msg = NULL;
+		ui_push(u, ST_ERROR,
+		    msg != NULL ? msg : "\ncd: failed\n");
+		return;
+	}
+
+	/* getcwd(NULL, 0) heap-allocates exactly as large a buffer as the
+	 * path needs (a glibc/BSD extension, not POSIX, but both host
+	 * platforms this runs on support it) -- avoids a fixed-size
+	 * PATH_MAX stack buffer blowing submit_line's frame-size budget
+	 * (-Wframe-larger-than=2048) merely by being reachable from its
+	 * call chain. */
+	cwd = getcwd(NULL, 0);
+	if (cwd != NULL) {
+		autofree char *msg = NULL;
+		if (asprintf(&msg, "\n[cwd: %s]\n", cwd) < 0)
+			msg = NULL;
+		ui_push(u, ST_META, msg != NULL ? msg : "\n[cwd changed]\n");
+	} else {
+		ui_push(u, ST_META, "\n[cwd changed]\n");
+	}
+}
+
 /* A '/word ...' line: run a UI command instead of prompting the model. */
 static void
 run_command(struct ui *u, const char *line)
@@ -2380,6 +2453,8 @@ run_command(struct ui *u, const char *line)
 		    "  /help              this help\n"
 		    "  /clear             clear the transcript (starts a new "
 		    "session log)\n"
+		    "  /cd [path]         change clm's working directory "
+		    "(no arg: $HOME)\n"
 		    "  /agent <name>      switch agent profile (system prompt "
 		    "+ "
 		    "tools)\n"
@@ -2460,6 +2535,8 @@ run_command(struct ui *u, const char *line)
 		} else {
 			ui_push(u, ST_ERROR, "\ncompaction failed to start\n");
 		}
+	} else if (CMD("cd")) {
+		cmd_cd(u, arg);
 	} else if (CMD("agent") || CMD("a")) {
 		cmd_agent(u, arg);
 	} else if (CMD("model")) {
@@ -3242,8 +3319,9 @@ replay_transcript(struct ui *u, const struct clm_history *h)
 
 int
 tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
-    struct clm_lua_cfg *lcfg, const char *forever_prompt,
-    struct clm_session *session, const struct clm_history *restore)
+    struct clm_lua_cfg *lcfg, const char *config_load_err,
+    const char *forever_prompt, struct clm_session *session,
+    const struct clm_history *restore)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -3351,6 +3429,36 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 
 	ui_push(u, ST_META,
 	    "clm -- type a prompt, /help for commands, /quit to exit.\n");
+
+	/*
+	 * config.lua exists but failed to load: a real problem, not the
+	 * ordinary "nothing configured yet" case (see frontend.h's
+	 * config_load_err doc comment) -- the agent is now running on
+	 * hardcoded defaults with none of the user's providers/model/
+	 * system_prompt/tools settings applied, and that needs to be
+	 * impossible to miss, not a line buried in $CLM_DEBUG_LOG. Pushed as
+	 * its own ST_ERROR block (bold+reverse red / reverse video, see
+	 * seg_attr) with blank-line padding so it stands out from the ST_META
+	 * banner line right above it, rather than blending into ordinary
+	 * startup chatter.
+	 */
+	if (config_load_err != NULL) {
+		autofree char *banner = NULL;
+		if (asprintf(&banner,
+		        "\n"
+		        "*** config.lua failed to load; running with "
+		        "defaults only ***\n"
+		        "%s\n"
+		        "fix config.lua and restart, or /quit and re-run "
+		        "after fixing it.\n",
+		        config_load_err) >= 0) {
+			ui_push(u, ST_ERROR, banner);
+		} else {
+			ui_push(u, ST_ERROR,
+			    "\n*** config.lua failed to load; running with "
+			    "defaults only ***\n");
+		}
+	}
 
 	if (restore != NULL) {
 		r = clm_agent_restore_history(u->agent, restore);

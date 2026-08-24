@@ -208,6 +208,7 @@ list_columns(struct ui *u, const char *const *items, size_t n,
 static const char *const command_names[] = {
     "help",
     "clear",
+    "cd",
     "agent",
     "model",
     "provider",
@@ -653,10 +654,16 @@ struct arg_source {
 	arg_complete_fn fn;
 };
 
+/* /cd's argument source is just complete_path (below) with the generation
+ * parameter arg_complete_fn requires but complete_path doesn't need. */
+static void
+source_cd_path(struct ui *u, uint64_t generation, size_t wstart, size_t wlen);
+
 /*
  * Which commands have a completable argument, and what completes it.
  */
 static const struct arg_source arg_sources[] = {
+    {"cd", source_cd_path},
     {"agent", source_agent_names},
     {"provider", source_provider_names},
     {"model", source_model_names},
@@ -807,6 +814,20 @@ complete_path(struct ui *u, size_t wstart, size_t wlen)
 	for (size_t i = 0; i < ncandidates; i++)
 		free(candidates[i]);
 	free(expanded);
+}
+
+/*
+ * /cd's argument source: directories are the only sensible completion, but
+ * complete_path() doesn't know the command it's serving is /cd, so this
+ * exists purely to lend it the arg_complete_fn signature (generation, which
+ * complete_path has no use for -- it's fully synchronous like every other
+ * arg source except /model's live catalog).
+ */
+static void
+source_cd_path(struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
+{
+	(void)generation;
+	complete_path(u, wstart, wlen);
 }
 
 /* ---- entry point ---- */
