@@ -64,23 +64,25 @@ fmt_rfc2822(char *buf, size_t len)
 }
 
 /*
- * Build the session-start system prompt: the base prompt plus the note
- * explaining the time updates that ride in later messages. Carries no
- * timestamp of its own -- the system prompt heads the prefix a provider
- * caches, so anything per-session in here costs every session a full
- * prefill. Returns a malloc'd string the caller must free, or NULL on OOM.
+ * Build the session-start system prompt: the base prompt, a current-time stamp,
+ * and the note explaining future time updates. Returns a malloc'd string the
+ * caller must free, or NULL on OOM.
  */
 static char *
 build_system_prompt(const char *base)
 {
+	char stamp[64];
 	autofree char *out = NULL;
 	size_t len;
 
-	len = strlen(base) + strlen(time_context_note) + 1;
+	fmt_rfc2822(stamp, sizeof(stamp));
+
+	len = strlen(base) + strlen(stamp) + strlen(time_context_note) + 20;
 	out = malloc(len);
 	if (out == NULL)
 		return NULL;
-	snprintf(out, len, "%s%s", base, time_context_note);
+	snprintf(out, len, "%s\n\ncurrent time: %s%s", base, stamp,
+	    time_context_note);
 
 	char *ret = out;
 	out = NULL;
@@ -270,9 +272,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 		}
 		clm_agent_emit_message(agent, m);
 	}
-	/* Zero, not now: the system prompt carries no timestamp, so the first
-	 * turn has to inject one. */
-	agent->last_time_stamp = 0;
+	agent->last_time_stamp = time(NULL);
 
 	if (clm_tools_register_builtins(agent) < 0) {
 		clm_agent_free(agent);
