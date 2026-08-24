@@ -3523,9 +3523,26 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		if (clm_session_is_empty(u->session)) {
 			(void)clm_session_discard(u->session);
 		} else {
-			printf("session: %s (resume with clm --resume %s)\n",
-			    clm_session_id(u->session),
-			    clm_session_id(u->session));
+			/* Include the model that was live at exit: a
+			 * resumed session replays history into a fresh
+			 * agent built from whatever -m/config.lua says right
+			 * now, so if the user switched models mid-session
+			 * (/model, /provider, /agent) the resume command
+			 * would otherwise silently go back to the original
+			 * one. Printed, not auto-applied -- --resume doesn't
+			 * read it back, this is purely so the user can paste
+			 * it onto -m themselves. */
+			if (u->model != NULL) {
+				printf("session: %s (resume with clm --resume "
+				       "%s -m %s)\n",
+				    clm_session_id(u->session),
+				    clm_session_id(u->session), u->model);
+			} else {
+				printf(
+				    "session: %s (resume with clm --resume %s)\n",
+				    clm_session_id(u->session),
+				    clm_session_id(u->session));
+			}
 			clm_session_free(u->session);
 		}
 		u->session = NULL;
