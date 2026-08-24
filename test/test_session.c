@@ -4,6 +4,7 @@
  * libclm/history.c. Pure: no network, no event loop -- a mkdtemp'd
  * session dir stands in for $XDG_STATE_HOME.
  */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -296,6 +297,27 @@ test_listing(const char *dir)
 	    "missing dir is an empty listing");
 }
 
+static void
+remove_dir(const char *dir)
+{
+	DIR *d;
+	struct dirent *ent;
+	char path[512];
+
+	d = opendir(dir);
+	if (d == NULL)
+		return;
+	while ((ent = readdir(d)) != NULL) {
+		if (strcmp(ent->d_name, ".") == 0 ||
+		    strcmp(ent->d_name, "..") == 0)
+			continue;
+		(void)snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+		(void)unlink(path);
+	}
+	(void)closedir(d);
+	(void)rmdir(dir);
+}
+
 static int
 test_session_suite(void *arg)
 {
@@ -313,6 +335,7 @@ test_session_suite(void *arg)
 	test_crash_tolerance(dir);
 	test_id_validation(dir);
 	test_listing(dir);
+	remove_dir(dir);
 
 	return 0;
 }

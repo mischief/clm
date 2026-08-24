@@ -6,10 +6,12 @@ the mock server URL, and renders its output through a pyte terminal emulator so
 tests can assert on the actual on-screen grid (text, cell attributes) and drive
 keystrokes / resizes exactly as a user would.
 """
+import atexit
 import fcntl
 import os
 import pty
 import select
+import shutil
 import signal
 import struct
 import tempfile
@@ -19,8 +21,11 @@ import time
 import pyte
 
 # Shared session-state dir for every Tui spawned by one test run (exported
-# so tests can inspect the .jsonl session logs written under it).
+# so tests can inspect the .jsonl session logs written under it).  Explicitly
+# remove it on normal interpreter shutdown; temporary directories are not
+# automatically reclaimed on OpenBSD.
 STATE_HOME = tempfile.mkdtemp(prefix="clm-tui-state-")
+atexit.register(shutil.rmtree, STATE_HOME, ignore_errors=True)
 
 # Control bytes and xterm key sequences, for readable test scripts.
 CTRL_A = b"\x01"
