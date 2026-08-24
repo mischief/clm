@@ -315,8 +315,8 @@ way typed input does, and appears in its transcript marked as coming from
 a peer.
 It carries text only: a peer cannot make another agent run anything, and
 the receiving model decides whether to answer.
-Delivery is rate limited per sender and messages carry a hop count, so two
-agents answering each other cannot bill forever.
+Delivery is rate limited per sender, so two agents answering each other
+cannot bill forever.
 
 # SEE ALSO
 

@@ -33,10 +33,9 @@
 #include "banned.h"
 
 /* Longest message a peer may deliver, and the most it may deliver per
- * minute. Two agents that answer each other otherwise bill forever. */
+ * minute: two agents answering each other would otherwise bill forever. */
 #define PEER_MSG_MAX 8192
 #define PEER_RATE_PER_MIN 6
-#define PEER_HOPS_MAX 3
 #define PEER_SEND_TIMEOUT_MS 250
 
 struct peer_sender {
@@ -137,16 +136,16 @@ rate_ok(struct clm_peer *p, const char *from)
  * sender's id so a reply can be addressed.
  */
 static void
-deliver(struct clm_peer *p, const char *from, const char *name,
-    const char *text, int hops)
+deliver(
+    struct clm_peer *p, const char *from, const char *name, const char *text)
 {
 	autofree char *framed = NULL;
 
 	if (asprintf(&framed,
-	        "[message from agent %s (%s), hop %d]\n%s\n"
+	        "[message from agent %s (%s)]\n%s\n"
 	        "(Reply with agent_send to \"%s\" if a reply is warranted; "
 	        "this is another agent, not the user.)",
-	        from, name != NULL ? name : "?", hops, text, from) < 0)
+	        from, name != NULL ? name : "?", text, from) < 0)
 		return;
 	if (p->cb != NULL)
 		p->cb(from, name, text, p->cb_user);
@@ -183,8 +182,7 @@ conn_handle(struct peer_conn *c)
 {
 	json_cleanup cJSON *msg = NULL;
 	struct clm_peer *p = c->peer;
-	cJSON *from, *name, *text, *hops;
-	int hop;
+	cJSON *from, *name, *text;
 
 	c->buf[c->len] = '\0';
 	msg = cJSON_Parse(c->buf);
@@ -193,18 +191,13 @@ conn_handle(struct peer_conn *c)
 	from = cJSON_GetObjectItemCaseSensitive(msg, "from");
 	name = cJSON_GetObjectItemCaseSensitive(msg, "from_name");
 	text = cJSON_GetObjectItemCaseSensitive(msg, "text");
-	hops = cJSON_GetObjectItemCaseSensitive(msg, "hops");
 	if (!cJSON_IsString(from) || !cJSON_IsString(text))
 		return;
 
-	hop = cJSON_IsNumber(hops) ? (int)hops->valuedouble : 1;
-	if (hop > PEER_HOPS_MAX)
-		return;
 	if (!rate_ok(p, from->valuestring))
 		return;
 	deliver(p, from->valuestring,
-	    cJSON_IsString(name) ? name->valuestring : NULL, text->valuestring,
-	    hop);
+	    cJSON_IsString(name) ? name->valuestring : NULL, text->valuestring);
 }
 
 static void
@@ -532,7 +525,6 @@ tool_agent_send(struct clm_tool_invocation *inv, void *user)
 	cJSON_AddStringToObject(msg, "from", the_peer->id);
 	cJSON_AddStringToObject(msg, "from_name", the_peer->name);
 	cJSON_AddStringToObject(msg, "text", text->valuestring);
-	cJSON_AddNumberToObject(msg, "hops", 1);
 	body = cJSON_PrintUnformatted(msg);
 	if (body == NULL || asprintf(&line, "%s\n", body) < 0) {
 		clm_tool_fail(inv, "out of memory");
