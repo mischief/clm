@@ -803,6 +803,14 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 	clm_debug("compact response body: %s", resp->body);
 	clm_http_response_free(resp);
 
+	if (parsed != NULL) {
+		const struct clm_provider_ops *ops =
+		    clm_provider_ops_get(agent->llm->provider);
+
+		if (ops->normalize_response != NULL)
+			parsed = ops->normalize_response(parsed);
+	}
+
 	summary = parsed ? extract_message_content(parsed) : NULL;
 	if (summary == NULL || summary[0] == '\0') {
 		const char *reason = response_finish_reason(parsed);
@@ -925,8 +933,9 @@ compact_error_cb(int error_code, const char *error_msg, void *user)
 int
 clm_agent_compact(struct clm_agent *agent)
 {
+	const struct clm_provider_ops *ops;
 	json_cleanup cJSON *req = NULL;
-	cJSON *messages, *msg, *jmodel, *jstream;
+	cJSON *messages, *msg;
 	autofree char *body_str = NULL;
 	char *body;
 	int r;
@@ -940,11 +949,8 @@ clm_agent_compact(struct clm_agent *agent)
 	}
 
 	messages = clm_history_to_json(&agent->history, agent->compressor);
-	req = cJSON_CreateObject();
-	if (messages == NULL || req == NULL) {
-		cJSON_Delete(messages);
+	if (messages == NULL)
 		return -ENOMEM;
-	}
 
 	/* Append the summarization instruction as a trailing user message. */
 	msg = cJSON_CreateObject();
@@ -957,17 +963,14 @@ clm_agent_compact(struct clm_agent *agent)
 	    msg, "content", cJSON_CreateString(compact_prompt));
 	cJSON_AddItemToArray(messages, msg);
 
-	jmodel = cJSON_CreateString(agent->llm->model);
-	jstream = cJSON_CreateBool(0); /* summary is a one-shot, no stream */
-	if (jmodel == NULL || jstream == NULL) {
-		cJSON_Delete(messages);
-		cJSON_Delete(jmodel);
-		cJSON_Delete(jstream);
+	/* Build through the provider seam rather than hand-serializing the
+	 * canonical chat-completions shape.  In particular, Responses API
+	 * providers require `input`, not `messages`; build_request() also owns
+	 * messages, so do not delete it below.  Compaction never exposes tools. */
+	ops = clm_provider_ops_get(agent->llm->provider);
+	req = ops->build_request(agent->llm, messages, NULL, false);
+	if (req == NULL)
 		return -ENOMEM;
-	}
-	cJSON_AddItemToObject(req, "model", jmodel);
-	cJSON_AddItemToObject(req, "messages", messages);
-	cJSON_AddItemToObject(req, "stream", jstream);
 
 	body_str = cJSON_PrintUnformatted(req);
 	if (body_str == NULL)
@@ -1078,8 +1081,18 @@ emit_usage(struct clm_agent *agent, const struct clm_usage *usage)
  */
 static void
 agent_finish(struct clm_agent *agent, cJSON *tool_calls, const char *content,
-    bool streamed)
+    const char *finish_reason, bool streamed)
 {
+	/* A content filter is not a successful empty answer.  The UI has already
+	 * received the finish notification, but complete the turn as an error too
+	 * so callers get an actionable diagnostic rather than only the transient
+	 * "[stopped: content filter]" notice. */
+	if (finish_reason != NULL &&
+	    strcmp(finish_reason, "content_filter") == 0) {
+		agent_fail(agent, "response stopped by content filter", -EACCES);
+		return;
+	}
+
 	if (tool_calls != NULL && cJSON_IsArray(tool_calls) &&
 	    cJSON_GetArraySize(tool_calls) > 0) {
 		int r;
@@ -1173,7 +1186,7 @@ stream_finalize(struct clm_async_turn *turn)
 	emit_finish(agent, turn->finish_reason);
 	if (turn->have_usage)
 		emit_usage(agent, &turn->usage);
-	agent_finish(agent, tool_calls, turn->content, true);
+	agent_finish(agent, tool_calls, turn->content, turn->finish_reason, true);
 	clm_async_turn_free(turn);
 }
 
@@ -1332,7 +1345,8 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 	content = cJSON_GetObjectItemCaseSensitive(message, "content");
 	tool_calls = cJSON_GetObjectItemCaseSensitive(message, "tool_calls");
 	agent_finish(agent, tool_calls,
-	    content ? cJSON_GetStringValue(content) : NULL, false);
+	    content ? cJSON_GetStringValue(content) : NULL,
+	    response_finish_reason(turn->parsed), false);
 	clm_async_turn_free(turn);
 }
 

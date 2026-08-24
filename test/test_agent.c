@@ -645,6 +645,80 @@ test_compact_content_filter(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* A normal content-filter finish must also leave a durable error diagnostic,
+ * not merely notify the UI and report an apparently successful empty turn. */
+static void
+test_content_filter_fails_turn(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"content_filter\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\"}}]}");
+	st.agent = make_agent(&st, canned_port(srv));
+
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	run_until_done(&st);
+	CHECK(st.got_finish && st.finish == CLM_FINISH_CONTENT_FILTER,
+	    "filter: emits content-filter finish reason");
+	CHECK(st.turn_status == -EACCES, "filter: fails turn");
+	CHECK(strcmp(clm_agent_get_last_error(st.agent),
+	          "response stopped by content filter") == 0,
+	    "filter: retains diagnostic");
+
+	teardown(&st, srv);
+}
+
+/* Responses API compaction must use the provider request/response adapters:
+ * its wire format calls the history `input`, and its reply has `output` rather
+ * than Chat Completions' `choices`. */
+static void
+test_responses_compact(uv_loop_t *loop)
+{
+	static const char *reply =
+	    "{\"status\":\"completed\",\"output\":[{\"type\":\"message\","
+	    "\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}]}";
+	static const char *summary =
+	    "{\"status\":\"completed\",\"output\":[{\"type\":\"message\","
+	    "\"content\":[{\"type\":\"output_text\","
+	    "\"text\":\"COMPACT_SUMMARY\"}]}]}";
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *req;
+	int i;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "responses compact: canned_start");
+
+	for (i = 0; i < 3; i++) {
+		canned_reply(srv, reply);
+		if (i == 0)
+			st.agent = make_agent(&st, canned_port(srv));
+		CHECK(clm_agent_submit(st.agent, "hi") == 0,
+		    "responses compact: submit");
+		run_until_done(&st);
+		st.turn_done = 0;
+	}
+	canned_reply(srv, summary);
+
+	CHECK(clm_agent_compact(st.agent) == 0, "responses compact: accepted");
+	run_until_done(&st);
+	req = canned_last_request(srv);
+	CHECK(st.turn_status == 0, "responses compact: succeeds");
+	CHECK(req != NULL && strstr(req, "\"input\"") != NULL,
+	    "responses compact: request uses input");
+	CHECK(req != NULL && strstr(req, "\"messages\"") == NULL,
+	    "responses compact: request omits messages");
+
+	teardown(&st, srv);
+}
+
 /* A failed compaction must retain the provider's actionable HTTP diagnostic,
  * just like an ordinary completion does, rather than collapsing it to the
  * unhelpful "compaction request failed". */
@@ -1867,6 +1941,8 @@ main(void)
 	test_autocompact_mid_chain(&loop);
 	test_compact_reasoning_fallback(&loop);
 	test_compact_content_filter(&loop);
+	test_content_filter_fails_turn(&loop);
+	test_responses_compact(&loop);
 	test_compact_http_error_detail(&loop);
 	test_tools_unsupported_retry(&loop);
 	test_file_tools(&loop);
