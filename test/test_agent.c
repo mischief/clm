@@ -1167,7 +1167,9 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	    "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\","
 	    "\"content\":[{\"type\":\"text\",\"text\":\"hi there\"}],"
 	    "\"stop_reason\":\"end_turn\","
-	    "\"usage\":{\"input_tokens\":11,\"output_tokens\":4}}");
+	    "\"usage\":{\"input_tokens\":11,\"output_tokens\":4,"
+	    "\"cache_read_input_tokens\":100,"
+	    "\"cache_creation_input_tokens\":20}}");
 
 	st.agent = make_agent(&st, canned_port(srv));
 	CHECK(clm_agent_submit(st.agent, "hello") == 0, "submit");
@@ -1178,9 +1180,16 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	    "assistant text delivered");
 	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP,
 	    "end_turn mapped to stop");
-	CHECK(st.got_usage && st.usage.prompt_tokens == 11 &&
+	/* Anthropic's input_tokens counts only the uncached tail; the cached
+	 * prefix must be folded back in so prompt_tokens means the whole
+	 * prompt (what the context gauge and autocompact threshold read). */
+	CHECK(st.got_usage && st.usage.prompt_tokens == 131 &&
 	        st.usage.completion_tokens == 4,
 	    "anthropic usage translated");
+	CHECK(st.usage.total_tokens == 135, "cached prefix in total tokens");
+	CHECK(st.usage.cache_read_tokens == 100 &&
+	        st.usage.cache_write_tokens == 20,
+	    "cache token breakout reported");
 
 	req = canned_last_request(srv);
 	CHECK(req != NULL && strstr(req, "x-api-key: test") != NULL,
@@ -1195,6 +1204,21 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	    "system prompt text sent");
 	CHECK(req != NULL && strstr(req, "\"max_tokens\":") != NULL,
 	    "max_tokens sent");
+	/* Explicit cache breakpoints: one on the system block (covering the
+	 * tools + system prefix) and one at the end of the history. */
+	CHECK(req != NULL &&
+	        strstr(req, "\"system\":[{\"type\":\"text\"") != NULL,
+	    "system sent as a text block array");
+	CHECK(req != NULL &&
+	        strstr(req,
+	            "\"cache_control\":{\"type\":\"ephemeral\"}}],"
+	            "\"messages\"") != NULL,
+	    "system block carries a cache breakpoint");
+	CHECK(req != NULL &&
+	        strstr(req,
+	            "\"content\":[{\"type\":\"text\",\"text\":\"hello\","
+	            "\"cache_control\":{\"type\":\"ephemeral\"}}]") != NULL,
+	    "history breakpoint on last message");
 	CHECK(req != NULL && strstr(req, "\"role\":\"system\"") == NULL,
 	    "no system role left in messages[]");
 
@@ -1270,7 +1294,8 @@ test_anthropic_stream(uv_loop_t *loop)
 	canned_reply(srv,
 	    "event: message_start\n"
 	    "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\","
-	    "\"usage\":{\"input_tokens\":9}}}\n\n"
+	    "\"usage\":{\"input_tokens\":9,\"cache_read_input_tokens\":50,"
+	    "\"cache_creation_input_tokens\":0}}}\n\n"
 	    "event: content_block_start\n"
 	    "data: {\"type\":\"content_block_start\",\"index\":0,"
 	    "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
@@ -1299,9 +1324,12 @@ test_anthropic_stream(uv_loop_t *loop)
 	    "streamed deltas assembled");
 	CHECK(st.got_finish && st.finish == CLM_FINISH_STOP,
 	    "end_turn mapped to stop");
-	CHECK(st.got_usage && st.usage.prompt_tokens == 9 &&
+	CHECK(st.got_usage && st.usage.prompt_tokens == 59 &&
 	        st.usage.completion_tokens == 3,
 	    "input/output tokens combined");
+	CHECK(st.usage.cache_read_tokens == 50 &&
+	        st.usage.cache_write_tokens == 0,
+	    "streamed cache token breakout");
 
 	teardown(&st, srv);
 }

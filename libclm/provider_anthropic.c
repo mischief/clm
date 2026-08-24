@@ -358,6 +358,113 @@ convert_tools(cJSON *tools)
 	return out;
 }
 
+/* Build a {"type":"ephemeral"} cache_control value. */
+static cJSON *
+make_cache_control(void)
+{
+	cJSON *cc = cJSON_CreateObject();
+
+	if (cc != NULL)
+		cJSON_AddItemToObject(
+		    cc, "type", cJSON_CreateString("ephemeral"));
+	return cc;
+}
+
+/* True if `block` is a content block that can carry a cache breakpoint: a
+ * text block needs non-empty text, since the API rejects empty text blocks
+ * outright. */
+static bool
+block_is_cacheable(const cJSON *block)
+{
+	cJSON *type = cJSON_GetObjectItemCaseSensitive(block, "type");
+	cJSON *text;
+
+	if (!cJSON_IsString(type))
+		return false;
+	if (strcmp(type->valuestring, "text") != 0)
+		return true;
+	text = cJSON_GetObjectItemCaseSensitive(block, "text");
+	return cJSON_IsString(text) && text->valuestring[0] != '\0';
+}
+
+/* Mark the end of the conversation as a cache breakpoint so the next turn
+ * reads the history back instead of re-paying for it. Annotates the last
+ * block of the last message that ends in a cacheable one, promoting string
+ * content to a one-element block array, which cache_control needs. */
+static void
+mark_history_breakpoint(cJSON *messages)
+{
+	int i;
+
+	for (i = cJSON_GetArraySize(messages) - 1; i >= 0; i--) {
+		cJSON *msg = cJSON_GetArrayItem(messages, i);
+		cJSON *content =
+		    cJSON_GetObjectItemCaseSensitive(msg, "content");
+		cJSON *block, *cc;
+
+		if (cJSON_IsString(content)) {
+			cJSON *blocks, *tblock;
+
+			if (content->valuestring[0] == '\0')
+				continue;
+			blocks = cJSON_CreateArray();
+			tblock = cJSON_CreateObject();
+			if (blocks == NULL || tblock == NULL) {
+				cJSON_Delete(blocks);
+				cJSON_Delete(tblock);
+				return;
+			}
+			cJSON_AddItemToObject(
+			    tblock, "type", cJSON_CreateString("text"));
+			cJSON_AddItemToObject(tblock, "text",
+			    cJSON_CreateString(content->valuestring));
+			cJSON_AddItemToArray(blocks, tblock);
+			cJSON_ReplaceItemInObjectCaseSensitive(
+			    msg, "content", blocks);
+			content = blocks;
+		}
+		if (!cJSON_IsArray(content))
+			continue;
+
+		block = cJSON_GetArrayItem(
+		    content, cJSON_GetArraySize(content) - 1);
+		if (block == NULL || !block_is_cacheable(block))
+			continue;
+
+		cc = make_cache_control();
+		if (cc != NULL)
+			cJSON_AddItemToObject(block, "cache_control", cc);
+		return;
+	}
+}
+
+/* Render the system prompt as a single text block carrying a cache
+ * breakpoint. Tools render before system, so this one breakpoint covers the
+ * whole static prefix: tool schemas plus system prompt. Returns NULL if the
+ * text is empty (the API rejects empty text blocks) or on OOM. */
+static cJSON *
+system_blocks(const char *text)
+{
+	cJSON *arr, *block, *cc;
+
+	if (text == NULL || text[0] == '\0')
+		return NULL;
+	arr = cJSON_CreateArray();
+	block = cJSON_CreateObject();
+	if (arr == NULL || block == NULL) {
+		cJSON_Delete(arr);
+		cJSON_Delete(block);
+		return NULL;
+	}
+	cJSON_AddItemToObject(block, "type", cJSON_CreateString("text"));
+	cJSON_AddItemToObject(block, "text", cJSON_CreateString(text));
+	cc = make_cache_control();
+	if (cc != NULL)
+		cJSON_AddItemToObject(block, "cache_control", cc);
+	cJSON_AddItemToArray(arr, block);
+	return arr;
+}
+
 static cJSON *
 anthropic_build_request(
     const struct clm_llm *llm, cJSON *messages, cJSON *tools, bool stream)
@@ -386,32 +493,20 @@ anthropic_build_request(
 	}
 
 	cJSON_AddItemToObject(req, "model", cJSON_CreateString(llm->model));
-	if (system != NULL)
-		cJSON_AddItemToObject(
-		    req, "system", cJSON_CreateString(system));
+	if (system != NULL) {
+		cJSON *sys_blocks = system_blocks(system);
+
+		if (sys_blocks != NULL)
+			cJSON_AddItemToObject(req, "system", sys_blocks);
+		else
+			cJSON_AddItemToObject(
+			    req, "system", cJSON_CreateString(system));
+	}
+	mark_history_breakpoint(anth_messages);
 	cJSON_AddItemToObject(req, "messages", anth_messages);
 	cJSON_AddItemToObject(
 	    req, "max_tokens", cJSON_CreateNumber(CLM_ANTHROPIC_MAX_TOKENS));
 	cJSON_AddItemToObject(req, "stream", cJSON_CreateBool(stream));
-
-	/* Top-level auto-caching: caches the last cacheable block (tools,
-	 * then system, then messages, in that render order) without having
-	 * to annotate individual content blocks -- works fine with system
-	 * as a plain string, no restructuring needed. clm resends the full
-	 * history every turn, so on any session long enough to matter this
-	 * turns most of that resend into ~0.1x-cost cache reads instead of
-	 * full-price input tokens. Silently a no-op below the model's
-	 * minimum cacheable prefix (~1024-4096 tokens depending on tier) --
-	 * no error, cache_creation_input_tokens just reads 0. */
-	{
-		cJSON *cache_control = cJSON_CreateObject();
-		if (cache_control != NULL) {
-			cJSON_AddItemToObject(cache_control, "type",
-			    cJSON_CreateString("ephemeral"));
-			cJSON_AddItemToObject(
-			    req, "cache_control", cache_control);
-		}
-	}
 
 	if (cJSON_GetArraySize(anth_tools) > 0) {
 		cJSON_AddItemToObject(req, "tools", anth_tools);
@@ -488,6 +583,29 @@ fail:
 /* ------------------------------------------------------------------ */
 /* Non-streaming response                                              */
 /* ------------------------------------------------------------------ */
+
+/* Read one numeric field out of an Anthropic "usage" object, 0 if absent. */
+static double
+usage_number(const cJSON *usage, const char *name)
+{
+	cJSON *v = cJSON_GetObjectItemCaseSensitive(usage, name);
+
+	return cJSON_IsNumber(v) ? v->valuedouble : 0;
+}
+
+/* Total prompt size from an Anthropic "usage" object. Anthropic's
+ * input_tokens counts only what follows the last cache breakpoint; the
+ * cached prefix is billed separately in cache_read_input_tokens and
+ * cache_creation_input_tokens. Summing all three gives the whole prompt,
+ * which is what the canonical prompt_tokens means, and what the context
+ * gauge and the autocompact threshold both read. */
+static double
+anthropic_prompt_tokens(const cJSON *usage)
+{
+	return usage_number(usage, "input_tokens") +
+	    usage_number(usage, "cache_read_input_tokens") +
+	    usage_number(usage, "cache_creation_input_tokens");
+}
 
 static const char *
 map_stop_reason(const char *reason)
@@ -630,12 +748,10 @@ anthropic_normalize_response(cJSON *raw)
 
 	jusage = cJSON_GetObjectItemCaseSensitive(in, "usage");
 	if (cJSON_IsObject(jusage)) {
-		cJSON *jin =
-		    cJSON_GetObjectItemCaseSensitive(jusage, "input_tokens");
 		cJSON *jout =
 		    cJSON_GetObjectItemCaseSensitive(jusage, "output_tokens");
-		double itok = cJSON_IsNumber(jin) ? jin->valuedouble : 0;
 		double otok = cJSON_IsNumber(jout) ? jout->valuedouble : 0;
+		double itok = anthropic_prompt_tokens(jusage);
 
 		usage = cJSON_CreateObject();
 		if (usage != NULL) {
@@ -645,6 +761,12 @@ anthropic_normalize_response(cJSON *raw)
 			    cJSON_CreateNumber(otok));
 			cJSON_AddItemToObject(usage, "total_tokens",
 			    cJSON_CreateNumber(itok + otok));
+			cJSON_AddItemToObject(usage, "cache_read_tokens",
+			    cJSON_CreateNumber(usage_number(
+			        jusage, "cache_read_input_tokens")));
+			cJSON_AddItemToObject(usage, "cache_write_tokens",
+			    cJSON_CreateNumber(usage_number(
+			        jusage, "cache_creation_input_tokens")));
 			cJSON_AddItemToObject(out, "usage", usage);
 		}
 	}
@@ -662,6 +784,8 @@ anthropic_normalize_response(cJSON *raw)
  * chunk -- so the input count is stashed here until message_delta arrives. */
 struct anth_stream_state {
 	double input_tokens;
+	double cache_read_tokens;
+	double cache_write_tokens;
 };
 
 static struct anth_stream_state *
@@ -809,13 +933,15 @@ anthropic_normalize_stream_event(cJSON *raw, void **state)
 		cJSON *usage = message
 		    ? cJSON_GetObjectItemCaseSensitive(message, "usage")
 		    : NULL;
-		cJSON *jin = usage
-		    ? cJSON_GetObjectItemCaseSensitive(usage, "input_tokens")
-		    : NULL;
 		struct anth_stream_state *st = stream_state(state);
 
-		if (st != NULL && cJSON_IsNumber(jin))
-			st->input_tokens = jin->valuedouble;
+		if (st != NULL && cJSON_IsObject(usage)) {
+			st->input_tokens = anthropic_prompt_tokens(usage);
+			st->cache_read_tokens =
+			    usage_number(usage, "cache_read_input_tokens");
+			st->cache_write_tokens =
+			    usage_number(usage, "cache_creation_input_tokens");
+		}
 		return NULL;
 	}
 
@@ -860,6 +986,14 @@ anthropic_normalize_stream_event(cJSON *raw, void **state)
 				cJSON_AddItemToObject(cu, "total_tokens",
 				    cJSON_CreateNumber(
 				        itok + jout->valuedouble));
+				cJSON_AddItemToObject(cu, "cache_read_tokens",
+				    cJSON_CreateNumber(st != NULL
+				            ? st->cache_read_tokens
+				            : 0));
+				cJSON_AddItemToObject(cu, "cache_write_tokens",
+				    cJSON_CreateNumber(st != NULL
+				            ? st->cache_write_tokens
+				            : 0));
 				cJSON_AddItemToObject(out, "usage", cu);
 			}
 		}
