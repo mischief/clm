@@ -71,10 +71,13 @@ fstype_note(const char *path)
 const char *
 clm_cli_sysinfo(void)
 {
+	/* utsname plus a path buffer overflow the 2 KiB frame budget the
+	 * build enforces; this runs once and caches, so keep them out of the
+	 * stack entirely. */
 	static char block[2048];
+	static struct utsname u;
+	static char cwd[1024];
 	static int built;
-	struct utsname u;
-	char cwd[1024];
 	long cores;
 	uint64_t mem, disk;
 	int off;
