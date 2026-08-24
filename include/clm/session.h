@@ -26,9 +26,9 @@
  * corrupts prior lines; the loader ignores a truncated or unparsable
  * final line and skips lines of unknown "type" (forward compatibility).
  *
- * The log is the raw transcript: history rewrites (compaction,
- * supersede stubs) are not represented, and a resumed session replays
- * the full uncompacted history (autocompaction re-fires as needed).
+ * Messages are appended as they happen; supersede stubs are not
+ * represented, so a resumed session replays the full-size tool results.
+ * A compaction is represented, via clm_session_rewrite() below.
  *
  * All functions taking a dir accept NULL to mean the default state
  * directory (see clm_session_state_dir). All return 0 or a negative
@@ -68,6 +68,15 @@ CLM_API int clm_session_open(
  */
 CLM_API int clm_session_append(struct clm_session *s,
     const struct clm_message *m, const struct clm_compressor *cz);
+
+/*
+ * Replace the log with `h`, keeping the original meta line. Written to a
+ * temp file and renamed, so a crash leaves the old log or the new one.
+ * For use after a compaction, which an append-only log cannot represent:
+ * what the compaction dropped leaves the log with it.
+ */
+CLM_API int clm_session_rewrite(struct clm_session *s,
+    const struct clm_history *h, const struct clm_compressor *cz);
 
 /* The session's id (borrowed, valid until clm_session_free). */
 CLM_API const char *clm_session_id(const struct clm_session *s);

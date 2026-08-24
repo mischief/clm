@@ -13,6 +13,7 @@
 .Nm clm_agent_set_provider ,
 .Nm clm_agent_set_effort ,
 .Nm clm_agent_get_effort ,
+.Nm clm_agent_get_history ,
 .Nm clm_provider_from_str ,
 .Nm clm_agent_get_state ,
 .Nm clm_agent_get_ctx_max ,
@@ -50,6 +51,8 @@
 .Fn clm_agent_set_effort "struct clm_agent *agent" "const char *effort"
 .Ft "const char *"
 .Fn clm_agent_get_effort "const struct clm_agent *agent"
+.Ft "const struct clm_history *"
+.Fn clm_agent_get_history "const struct clm_agent *agent"
 .Ft int
 .Fo clm_agent_restore_history
 .Fa "struct clm_agent *agent"
@@ -353,6 +356,13 @@ and the server, not clm, rejects a level its model does not accept.
 returns the effort in force, or
 .Dv NULL ,
 borrowed from the agent.
+.Pp
+.Fn clm_agent_get_history
+returns the agent's live history, borrowed and valid until the next turn
+changes it.
+It exists for persisting a rewrite the
+.Va on_message
+callback never sees, such as the fold a compaction performs.
 .Sh RETURN VALUES
 .Fn clm_agent_new ,
 .Fn clm_agent_submit ,

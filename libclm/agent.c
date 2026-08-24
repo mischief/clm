@@ -1988,6 +1988,12 @@ clm_agent_get_effort(const struct clm_agent *agent)
 	return agent->llm->effort;
 }
 
+const struct clm_history *
+clm_agent_get_history(const struct clm_agent *agent)
+{
+	return agent != NULL ? &agent->history : NULL;
+}
+
 int
 clm_agent_clear_history(struct clm_agent *agent)
 {

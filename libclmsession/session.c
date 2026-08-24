@@ -331,6 +331,100 @@ clm_session_append(struct clm_session *s, const struct clm_message *m,
 	return 0;
 }
 
+/* Read the log's first line (the meta record) so a rewrite can keep it. */
+static char *
+read_meta_line(const char *path)
+{
+	FILE *f = fopen(path, "r");
+	char *line = NULL;
+	size_t cap = 0;
+	ssize_t n;
+
+	if (f == NULL)
+		return NULL;
+	n = getline(&line, &cap, f);
+	(void)fclose(f);
+	if (n <= 0) {
+		free(line);
+		return NULL;
+	}
+	if (line[n - 1] == '\n')
+		line[n - 1] = '\0';
+	return line;
+}
+
+int
+clm_session_rewrite(struct clm_session *s, const struct clm_history *h,
+    const struct clm_compressor *cz)
+{
+	const struct clm_message *m;
+	autofree char *meta = NULL;
+	autofree char *tmp = NULL;
+	int fd = -1, r = 0;
+	bool msgs = false;
+
+	ASSERT_RETURN(s != NULL && h != NULL, -EINVAL);
+
+	meta = read_meta_line(s->path);
+	if (meta == NULL)
+		return -EIO;
+	if (asprintf(&tmp, "%s.tmp", s->path) < 0)
+		return -ENOMEM;
+
+	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (fd < 0)
+		return -errno;
+
+	if (dprintf(fd, "%s\n", meta) < 0) {
+		r = -EIO;
+		goto fail;
+	}
+	TAILQ_FOREACH(m, h, entries)
+	{
+		json_cleanup cJSON *obj = NULL;
+
+		/* The system prologue is rebuilt from config on resume, and
+		 * the append path leaves it out for that reason. */
+		if (m->role == CLM_ROLE_SYSTEM)
+			continue;
+		obj = clm_message_to_json_full(m, cz);
+
+		if (obj == NULL ||
+		    cJSON_AddStringToObject(obj, "type", "msg") == NULL) {
+			r = -ENOMEM;
+			goto fail;
+		}
+		r = write_line(fd, obj);
+		if (r < 0)
+			goto fail;
+		if (m->role == CLM_ROLE_USER || m->role == CLM_ROLE_ASSISTANT)
+			msgs = true;
+	}
+
+	/* The rename is only atomic with respect to a crash if the contents
+	 * are on disk first. */
+	if (fsync(fd) != 0) {
+		r = -errno;
+		goto fail;
+	}
+	if (rename(tmp, s->path) != 0) {
+		r = -errno;
+		goto fail;
+	}
+
+	(void)close(s->fd);
+	s->fd = fd;
+	s->has_msgs = msgs;
+	if (lseek(s->fd, 0, SEEK_END) < 0)
+		return -errno;
+	return 0;
+
+fail:
+	(void)close(fd);
+	(void)unlink(tmp);
+	return r;
+}
+
 const char *
 clm_session_id(const struct clm_session *s)
 {

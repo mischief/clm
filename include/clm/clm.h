@@ -581,6 +581,12 @@ CLM_API int clm_agent_set_effort(struct clm_agent *agent, const char *effort);
 /* The effort last set, or NULL if none is in force. Borrowed. */
 CLM_API const char *clm_agent_get_effort(const struct clm_agent *agent);
 
+/* The agent's live history, borrowed and valid until the next turn mutates
+ * it. For persisting a rewrite (compaction) the on_message callback cannot
+ * see; do not hold it across a submit. */
+CLM_API const struct clm_history *clm_agent_get_history(
+    const struct clm_agent *agent);
+
 /*
  * Append a copy of every non-system message in h to the agent's history,
  * re-applying the agent's compressor on store. Intended for resuming a

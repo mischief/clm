@@ -141,6 +141,7 @@ ui_set_state(struct ui *u, enum clm_agent_state st)
 static void drain_steering_queue(struct ui *u); /* injects at decision point */
 static void enqueue_steering(struct ui *u, const char *prompt);
 static bool do_submit(struct ui *u, const char *prompt, bool echo);
+static void session_after_compact(struct ui *u);
 
 /* ---- libclm callbacks ---- */
 
@@ -564,6 +565,7 @@ cb_state(enum clm_agent_state st, void *user)
 	}
 	if (clm_agent_take_mid_chain_compact_succeeded(u->agent)) {
 		ui_push(u, ST_META, "[autocompact complete, resuming]\n");
+		session_after_compact(u);
 		u->dirty = true;
 	}
 	if (clm_agent_take_mid_chain_compact_error(u->agent)) {
@@ -632,6 +634,11 @@ cb_turn_done(int status, void *user)
 		ui_push(u, ST_META, "]\n");
 	}
 	ui_push(u, ST_NORMAL, "\n");
+	if (u->compacting) {
+		u->compacting = false;
+		if (status == 0)
+			session_after_compact(u);
+	}
 	u->busy = false;
 	u->perm_count = 0; /* no prompt outlives its turn */
 	u->perm_showing = false;
@@ -671,6 +678,7 @@ cb_turn_done(int status, void *user)
 		if (rc == 0) {
 			u->busy = true;
 			u->autocompacting = true;
+			u->compacting = true;
 			/* Compaction's own completion re-enters this same
 			 * callback (see compact_success_cb/compact_error_cb
 			 * in agent.c, both of which call cb_on_turn_done)
@@ -879,6 +887,29 @@ cb_message(const struct clm_message *msg, void *user)
 		/* Warn once and stop logging rather than spamming a warning
 		 * per message on e.g. a full disk. */
 		ui_push(u, ST_META, "\n[session logging failed; disabled]\n");
+		clm_session_free(u->session);
+		u->session = NULL;
+		u->dirty = true;
+	}
+}
+
+/*
+ * Persist a history rewrite. on_message never fires for one, so without
+ * this the log would still hold everything compaction just folded away and
+ * a resume would replay it all.
+ */
+static void
+session_after_compact(struct ui *u)
+{
+	const struct clm_history *h;
+
+	if (u->session == NULL)
+		return;
+	h = clm_agent_get_history(u->agent);
+	if (h == NULL)
+		return;
+	if (clm_session_rewrite(u->session, h, NULL) < 0) {
+		ui_push(u, ST_META, "\n[session rewrite failed; disabled]\n");
 		clm_session_free(u->session);
 		u->session = NULL;
 		u->dirty = true;
@@ -2675,6 +2706,7 @@ run_command(struct ui *u, const char *line)
 		int rc = clm_agent_compact(u->agent);
 		if (rc == 0) {
 			u->busy = true;
+			u->compacting = true;
 			ui_push(
 			    u, ST_META, "\n[compacting the conversation...]\n");
 		} else if (rc == -EBUSY) {

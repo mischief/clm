@@ -151,6 +151,9 @@ struct ui {
 	/* /effort override for this session, "" when config decides. Survives
 	 * the agent rebuild a /model or /agent switch does. */
 	char effort_override[16];
+	/* A compaction is in flight (auto or /compact): its completion has to
+	 * rewrite the session log, which on_message cannot see. */
+	bool compacting;
 	int64_t ctx_used;    /* tokens carried forward, for the context gauge */
 	bool autocompacting; /* true while cb_turn_done re-enters for a compact
 	                        attempt */

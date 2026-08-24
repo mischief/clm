@@ -7,6 +7,7 @@ LLM) and asserts on the rendered terminal grid: markdown rendering, scrollback
 paging, resize reflow, and line editing. The binary under test comes from the
 CLM_BIN environment variable (set by meson).
 """
+import json
 import os
 import sys
 
@@ -396,6 +397,46 @@ def test_agent_name(url):
               "agent: status bar shows provider/model:agent from config")
 
 
+def test_session_compact(url):
+    """/compact rewrites the session log, so a resume starts compacted."""
+    sessions = os.path.join(STATE_HOME, "clm")
+    before = set(os.listdir(sessions)) if os.path.isdir(sessions) else set()
+
+    with Tui(BIN, url, rows=24, cols=70) as t:
+        t.wait_for("online", timeout=8)
+        for _ in range(3):
+            t.send(b"show me fruit\r")
+            assert t.wait_for("Yellow", timeout=15), "no reply to log"
+            t.pump(0.3)
+        t.send(b"/compact\r")
+        assert t.wait_for("compacting", timeout=10), "no compaction started"
+        t.pump(3.0)
+        t.send(b"/quit\r")
+        t.pump(0.8)
+
+    new_files = [f for f in os.listdir(sessions)
+                 if f.endswith(".jsonl") and f not in before]
+    check(len(new_files) == 1, "compact: one session log for the run")
+    path = os.path.join(sessions, new_files[0])
+    lines = [ln for ln in open(path).read().splitlines() if ln.strip()]
+    kinds = [json.loads(ln).get("type") for ln in lines]
+    check(kinds[0] == "meta", "compact: rewritten log keeps its meta line")
+    check(all(k == "msg" for k in kinds[1:]),
+          "compact: every later line is a message")
+    msgs = [json.loads(ln) for ln in lines[1:]]
+    check(all(m.get("role") != "system" for m in msgs),
+          "compact: the rebuilt-on-resume system prologue stays out")
+    # The mock answers the summarize call with its usual reply, so the
+    # summary shows up as a user message carrying assistant-looking text.
+    users = [m.get("content") or "" for m in msgs if m.get("role") == "user"]
+    check(any("Fruit" in c for c in users),
+          "compact: the summary replaced the folded turns")
+    check(len(users) < 4,
+          "compact: fewer prompts remain than were typed")
+    check(not os.path.exists(path + ".tmp"),
+          "compact: no temporary file left behind")
+
+
 def test_session_resume(url):
     """A conversation is logged to a session file, and --resume replays it."""
     sessions = os.path.join(STATE_HOME, "clm")
@@ -452,6 +493,7 @@ TESTS = {
     "cancel": test_cancel,
     "paste": test_bracketed_paste,
     "session": test_session_resume,
+    "session_compact": test_session_compact,
 }
 
 

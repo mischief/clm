@@ -158,10 +158,14 @@ Sessions are logged automatically to
 (default
 *~/.local/state/clm*)
 ,
-one append-only
+one
 *.jsonl*
-file per session; on exit the session id is printed for later
-resumption, and a session in which nothing was said is deleted.
+file per session, appended to as the conversation goes; on exit the
+session id is printed for later resumption, and a session in which
+nothing was said is deleted.
+A compaction rewrites the file to match the shortened history, so a
+resumed session starts compacted rather than replaying what was folded
+away.
 The
 **/clear**
 command starts a fresh session file, leaving the old one resumable.

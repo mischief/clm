@@ -12,6 +12,7 @@ CLM\_AGENT(3) - Library Functions Manual
 **clm\_agent\_set\_provider**,
 **clm\_agent\_set\_effort**,
 **clm\_agent\_get\_effort**,
+**clm\_agent\_get\_history**,
 **clm\_provider\_from\_str**,
 **clm\_agent\_get\_state**,
 **clm\_agent\_get\_ctx\_max**,
@@ -58,6 +59,9 @@ CLM\_AGENT(3) - Library Functions Manual
 
 *const char \*&zwnj;*  
 **clm\_agent\_get\_effort**(*const struct clm\_agent \*agent*);
+
+*const struct clm\_history \*&zwnj;*  
+**clm\_agent\_get\_history**(*const struct clm\_agent \*agent*);
 
 *int*  
 **clm\_agent\_restore\_history**(*struct clm\_agent \*agent*,
@@ -364,6 +368,13 @@ and the server, not clm, rejects a level its model does not accept.
 returns the effort in force, or
 `NULL`,
 borrowed from the agent.
+
+**clm\_agent\_get\_history**()
+returns the agent's live history, borrowed and valid until the next turn
+changes it.
+It exists for persisting a rewrite the
+*on\_message*
+callback never sees, such as the fold a compaction performs.
 
 # RETURN VALUES
 
