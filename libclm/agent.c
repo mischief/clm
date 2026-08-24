@@ -64,25 +64,28 @@ fmt_rfc2822(char *buf, size_t len)
 }
 
 /*
- * Build the session-start system prompt: the base prompt, a current-time stamp,
- * and the note explaining future time updates. Returns a malloc'd string the
- * caller must free, or NULL on OOM.
+ * Build the session-start system prompt: the base prompt, a current-time
+ * stamp, the note explaining future time updates, and the caller's host-facts
+ * suffix. Returns a malloc'd string the caller must free, or NULL on OOM.
  */
 static char *
-build_system_prompt(const char *base)
+build_system_prompt(const char *base, const char *suffix)
 {
 	char stamp[64];
 	autofree char *out = NULL;
 	size_t len;
 
 	fmt_rfc2822(stamp, sizeof(stamp));
+	if (suffix == NULL)
+		suffix = "";
 
-	len = strlen(base) + strlen(stamp) + strlen(time_context_note) + 20;
+	len = strlen(base) + strlen(stamp) + strlen(time_context_note) +
+	    strlen(suffix) + 24;
 	out = malloc(len);
 	if (out == NULL)
 		return NULL;
-	snprintf(out, len, "%s\n\ncurrent time: %s%s", base, stamp,
-	    time_context_note);
+	snprintf(out, len, "%s\n\ncurrent time: %s%s%s%s", base, stamp,
+	    time_context_note, suffix[0] != '\0' ? "\n\n" : "", suffix);
 
 	char *ret = out;
 	out = NULL;
@@ -257,11 +260,19 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 			return -ENOMEM;
 		}
 	}
+	if (cfg->system_prompt_suffix != NULL) {
+		agent->system_prompt_suffix = strdup(cfg->system_prompt_suffix);
+		if (agent->system_prompt_suffix == NULL) {
+			clm_agent_free(agent);
+			return -ENOMEM;
+		}
+	}
 	{
 		const char *base = agent->system_prompt_base
 		    ? agent->system_prompt_base
 		    : default_system_prompt;
-		autofree char *sys = build_system_prompt(base);
+		autofree char *sys =
+		    build_system_prompt(base, agent->system_prompt_suffix);
 		struct clm_message *m;
 
 		if (sys == NULL ||
@@ -324,6 +335,7 @@ clm_agent_free(struct clm_agent *agent)
 	clm_llm_free(agent->llm);
 	clm_history_free(&agent->history);
 	free(agent->system_prompt_base);
+	free(agent->system_prompt_suffix);
 	free(agent->last_error);
 	free(agent->models_url);
 	free(agent->props_url);
@@ -1912,7 +1924,7 @@ clm_agent_clear_history(struct clm_agent *agent)
 
 	base = agent->system_prompt_base ? agent->system_prompt_base
 	                                 : default_system_prompt;
-	sys = build_system_prompt(base);
+	sys = build_system_prompt(base, agent->system_prompt_suffix);
 	if (sys == NULL)
 		return -ENOMEM;
 

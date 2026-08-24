@@ -238,6 +238,10 @@ struct clm_cfg {
 	size_t max_iterations;
 	bool stream;               /* request streamed (SSE) responses */
 	const char *system_prompt; /* system message; NULL uses a default */
+	/* Appended verbatim to the end of every system message the agent
+	 * builds, including rebuilds after an agent-profile switch. For host
+	 * facts the model cannot see (OS, userland, hardware). */
+	const char *system_prompt_suffix;
 
 	/* Provider-specific overrides (0 = use defaults) */
 	int64_t context_size;        /* override ctx_max (tokens) */

@@ -44,6 +44,8 @@ struct clm_agent {
 	 * clm_agent_new() would produce -- current-time stamp included --
 	 * without the caller having to supply it again. */
 	char *system_prompt_base;
+	/* cfg->system_prompt_suffix, owned; appended to every prompt build. */
+	char *system_prompt_suffix;
 	struct clm_tool_list tools;
 	size_t tool_count; /* live (non-removed) tools; diagnostics only */
 	size_t max_iterations;

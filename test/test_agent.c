@@ -23,6 +23,7 @@ struct tstate {
 	int stream;
 	enum clm_provider provider;
 	const char *system_prompt;
+	const char *system_prompt_suffix;
 	int turn_done;
 	int turn_status;
 	size_t asst_len;
@@ -208,6 +209,7 @@ make_agent(struct tstate *st, int port)
 	cfg.model = "test-model";
 	cfg.stream = st->stream;
 	cfg.system_prompt = st->system_prompt;
+	cfg.system_prompt_suffix = st->system_prompt_suffix;
 
 	r = clm_host_uv_new(st->loop, &st->host);
 	CHECK(r == 0, "clm_host_uv_new");
@@ -1160,6 +1162,7 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	st.loop = loop;
 	st.provider = CLM_PROVIDER_ANTHROPIC;
 	st.system_prompt = "SENTINEL_SYS_PROMPT";
+	st.system_prompt_suffix = "SENTINEL_HOST_BLOCK";
 	srv = canned_start(loop);
 	CHECK(srv != NULL, "canned_start");
 
@@ -1202,6 +1205,10 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	    "system sent as top-level field");
 	CHECK(req != NULL && strstr(req, "SENTINEL_SYS_PROMPT") != NULL,
 	    "system prompt text sent");
+	/* Host facts ride at the end of the system prompt, ahead of the cache
+	 * breakpoint, so they stay in the cached prefix. */
+	CHECK(req != NULL && strstr(req, "SENTINEL_HOST_BLOCK") != NULL,
+	    "system prompt suffix sent");
 	CHECK(req != NULL && strstr(req, "\"max_tokens\":") != NULL,
 	    "max_tokens sent");
 	/* Explicit cache breakpoints: one on the system block (covering the

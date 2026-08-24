@@ -101,11 +101,17 @@ every string field inside it
 .Va base_url ,
 .Va model ,
 .Va system_prompt ,
+.Va system_prompt_suffix ,
 .Va volatile_tools
 .Pc
 is
 .Em borrowed ,
 not copied, and must stay valid for the life of the agent.
+.Va system_prompt_suffix ,
+if set, is appended to the end of every system message the agent builds,
+including the rebuild after
+.Fn clm_agent_clear_history :
+it carries facts about the host that the model cannot otherwise see.
 .Fa cb
 may be
 .Dv NULL
