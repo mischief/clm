@@ -306,8 +306,14 @@ responses_build_request(
 	}
 }
 
+/*
+ * Canonical finish reason for one Responses API status. A failure is not a
+ * content filter -- it is how this API reports a rate limit, a server
+ * error, or a cancellation -- so it must not hide the message saying which.
+ * A real filter arrives as incomplete, named in incomplete_details.
+ */
 static const char *
-map_status(const char *status, bool has_tool_calls)
+map_status(const cJSON *response, const char *status, bool has_tool_calls)
 {
 	if (has_tool_calls)
 		return "tool_calls";
@@ -315,11 +321,42 @@ map_status(const char *status, bool has_tool_calls)
 		return NULL;
 	if (strcmp(status, "completed") == 0)
 		return "stop";
-	if (strcmp(status, "incomplete") == 0)
+	if (strcmp(status, "incomplete") == 0) {
+		cJSON *det = cJSON_GetObjectItemCaseSensitive(
+		    response, "incomplete_details");
+		cJSON *why = cJSON_IsObject(det)
+		    ? cJSON_GetObjectItemCaseSensitive(det, "reason")
+		    : NULL;
+
+		if (cJSON_IsString(why) &&
+		    strcmp(why->valuestring, "content_filter") == 0)
+			return "content_filter";
 		return "length";
+	}
 	if (strcmp(status, "failed") == 0 || strcmp(status, "cancelled") == 0)
-		return "content_filter";
+		return "error";
 	return status;
+}
+
+/* Copy the response's own error message into the canonical object, so the
+ * agent can report what the server said instead of a guess. */
+static void
+carry_error(cJSON *out, const cJSON *response)
+{
+	cJSON *err = cJSON_GetObjectItemCaseSensitive(response, "error");
+	cJSON *msg = cJSON_IsObject(err)
+	    ? cJSON_GetObjectItemCaseSensitive(err, "message")
+	    : NULL;
+	cJSON *copy;
+
+	if (!cJSON_IsString(msg))
+		return;
+	copy = cJSON_CreateObject();
+	if (copy == NULL)
+		return;
+	cJSON_AddItemToObject(
+	    copy, "message", cJSON_CreateString(msg->valuestring));
+	cJSON_AddItemToObject(out, "error", copy);
 }
 
 /* Prompt tokens served from an upstream cache, per the Responses API's
@@ -496,12 +533,14 @@ responses_normalize_response(cJSON *raw)
 
 	jstatus = cJSON_GetObjectItemCaseSensitive(in, "status");
 	{
-		const char *mapped = map_status(
+		const char *mapped = map_status(in,
 		    cJSON_IsString(jstatus) ? jstatus->valuestring : NULL,
 		    tool_calls != NULL);
 		if (mapped != NULL)
 			cJSON_AddItemToObject(choice0, "finish_reason",
 			    cJSON_CreateString(mapped));
+		if (mapped != NULL && strcmp(mapped, "error") == 0)
+			carry_error(out, in);
 	}
 
 	jusage = cJSON_GetObjectItemCaseSensitive(in, "usage");
@@ -702,12 +741,15 @@ responses_normalize_stream_event(cJSON *raw, void **state)
 		cJSON_AddItemToObject(out, "choices", choices);
 		cJSON_AddItemToArray(choices, choice0);
 
-		mapped = map_status(
+		mapped = map_status(response,
 		    cJSON_IsString(jstatus) ? jstatus->valuestring : NULL,
 		    st != NULL && st->saw_tool_call);
 		if (mapped != NULL)
 			cJSON_AddItemToObject(choice0, "finish_reason",
 			    cJSON_CreateString(mapped));
+		if (mapped != NULL && strcmp(mapped, "error") == 0 &&
+		    response != NULL)
+			carry_error(out, response);
 
 		if (cJSON_IsObject(jusage)) {
 			cJSON *jin = cJSON_GetObjectItemCaseSensitive(

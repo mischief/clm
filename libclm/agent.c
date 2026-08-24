@@ -676,6 +676,22 @@ sb_append(char **buf, size_t *len, size_t *cap, const char *data, size_t n)
 static cJSON *response_message(cJSON *parsed);
 static void agent_fail(struct clm_agent *agent, const char *msg, int err);
 
+/* Return error.message from a canonical response, or NULL. Providers put
+ * the server's own words there when a response failed rather than stopped. */
+static const char *
+response_error_message(cJSON *parsed)
+{
+	cJSON *err, *msg;
+
+	if (parsed == NULL)
+		return NULL;
+	err = cJSON_GetObjectItemCaseSensitive(parsed, "error");
+	msg = cJSON_IsObject(err)
+	    ? cJSON_GetObjectItemCaseSensitive(err, "message")
+	    : NULL;
+	return cJSON_IsString(msg) ? cJSON_GetStringValue(msg) : NULL;
+}
+
 /* Return choices[0].finish_reason from a canonical completion response. */
 static const char *
 response_finish_reason(cJSON *parsed)
@@ -1140,12 +1156,24 @@ agent_finish(struct clm_agent *agent, cJSON *tool_calls, const char *content,
 	/* A content filter is not a successful empty answer.  The UI has
 	 * already received the finish notification, but complete the turn as an
 	 * error too so callers get an actionable diagnostic rather than only
-	 * the transient
-	 * "[stopped: content filter]" notice. */
+	 * the transient "[stopped: content filter]" notice. */
 	if (finish_reason != NULL &&
 	    strcmp(finish_reason, "content_filter") == 0) {
 		agent_fail(
 		    agent, "response stopped by content filter", -EACCES);
+		return;
+	}
+
+	/* The provider reported a failed response rather than a stopped one.
+	 * agent->last_error already holds whatever the server said. */
+	if (finish_reason != NULL && strcmp(finish_reason, "error") == 0) {
+		const char *why = clm_agent_get_last_error(agent);
+
+		agent_fail(agent,
+		    why != NULL && why[0] != '\0' ? why
+		                                  : "provider reported a "
+		                                    "failed response",
+		    -EIO);
 		return;
 	}
 
@@ -1401,6 +1429,12 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 
 	content = cJSON_GetObjectItemCaseSensitive(message, "content");
 	tool_calls = cJSON_GetObjectItemCaseSensitive(message, "tool_calls");
+	{
+		const char *emsg = response_error_message(turn->parsed);
+
+		if (emsg != NULL)
+			clm_agent_set_error(agent, emsg);
+	}
 	agent_finish(agent, tool_calls,
 	    content ? cJSON_GetStringValue(content) : NULL,
 	    response_finish_reason(turn->parsed), false);
@@ -1534,11 +1568,18 @@ stream_handle_line(struct clm_async_turn *turn)
 	{
 		cJSON *jfinish =
 		    cJSON_GetObjectItemCaseSensitive(choice, "finish_reason");
+		const char *emsg;
+
 		if (jfinish != NULL && cJSON_IsString(jfinish)) {
 			free(turn->finish_reason);
 			turn->finish_reason =
 			    strdup(cJSON_GetStringValue(jfinish));
 		}
+		/* Keep what the server said about a failed response: the
+		 * chunk carrying it is gone by the time the turn ends. */
+		emsg = response_error_message(obj);
+		if (emsg != NULL)
+			clm_agent_set_error(turn->agent, emsg);
 	}
 
 	delta = cJSON_GetObjectItemCaseSensitive(choice, "delta");

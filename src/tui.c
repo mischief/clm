@@ -137,10 +137,16 @@ buf_reserve(char **buf, size_t *cap, size_t need)
 	size_t want = *cap ? *cap : 256;
 	char *p;
 
+	if (need == SIZE_MAX)
+		return false;
 	if (need + 1 <= *cap)
 		return true;
-	while (want < need + 1)
-		want *= 2;
+	while (want < need + 1) {
+		if (want > SIZE_MAX / 2)
+			want = need + 1;
+		else
+			want *= 2;
+	}
 	p = realloc(*buf, want);
 	if (p == NULL)
 		return false;
@@ -1755,14 +1761,21 @@ wrap_ensure_checkpoints(struct ui *u, int w, size_t base)
 
 		while (ncap < base + 1)
 			ncap *= 2;
-		r = realloc(u->wrap_row, ncap * sizeof(*r));
-		c = realloc(u->wrap_col, ncap * sizeof(*c));
-		if (r != NULL)
-			u->wrap_row = r;
-		if (c != NULL)
-			u->wrap_col = c;
-		if (r == NULL || c == NULL)
+		r = malloc(ncap * sizeof(*r));
+		c = malloc(ncap * sizeof(*c));
+		if (r == NULL || c == NULL) {
+			free(r);
+			free(c);
 			return; /* leave wrap_valid false; retry next tick */
+		}
+		if (u->cap_wrap > 0) {
+			memcpy(r, u->wrap_row, u->cap_wrap * sizeof(*r));
+			memcpy(c, u->wrap_col, u->cap_wrap * sizeof(*c));
+		}
+		free(u->wrap_row);
+		free(u->wrap_col);
+		u->wrap_row = r;
+		u->wrap_col = c;
 		u->cap_wrap = ncap;
 	}
 

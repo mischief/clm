@@ -1423,6 +1423,72 @@ test_compact_within_budget(void)
 }
 
 /*
+ * A Responses API failure is not a content filter. Reporting one as the
+ * other hid the server's own message -- a rate limit read as "stopped by
+ * content filter", with the retry advice thrown away.
+ */
+static void
+test_responses_failure_is_not_a_filter(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "{\"status\":\"failed\",\"output\":[],"
+	    "\"error\":{\"code\":\"rate_limit_exceeded\","
+	    "\"message\":\"Rate limit reached for gpt-5.6-luna on tokens "
+	    "per min (TPM): Limit 200000. Please try again in 8.562s.\"}}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status != 0, "failed response ends the turn in error");
+	CHECK(st.got_finish && st.finish != CLM_FINISH_CONTENT_FILTER,
+	    "a failed response is not reported as a content filter");
+	CHECK(strstr(clm_agent_get_last_error(st.agent), "Rate limit") != NULL,
+	    "the server's own message survives");
+	CHECK(strstr(clm_agent_get_last_error(st.agent), "8.562s") != NULL,
+	    "including the retry advice");
+
+	teardown(&st, srv);
+}
+
+/*
+ * The genuine filter still reports as one: this API says so with an
+ * incomplete response whose incomplete_details name the reason.
+ */
+static void
+test_responses_real_content_filter(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "{\"status\":\"incomplete\",\"output\":[],"
+	    "\"incomplete_details\":{\"reason\":\"content_filter\"}}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.got_finish && st.finish == CLM_FINISH_CONTENT_FILTER,
+	    "an incomplete response naming the filter reports one");
+
+	teardown(&st, srv);
+}
+
+/*
  * (g2) Anthropic Messages API: request shape (auth headers, system pulled
  * out of messages[], max_tokens) and a non-streaming text reply translated
  * back from Anthropic's content-block response shape.
@@ -2263,6 +2329,8 @@ test_agent_suite(void *arg)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_responses_failure_is_not_a_filter(&loop);
+	test_responses_real_content_filter(&loop);
 	test_compact_within_budget();
 	test_compact_keeps_tools(&loop);
 	test_anthropic_ctx_max(&loop);
