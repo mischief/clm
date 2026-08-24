@@ -123,13 +123,19 @@ cb_mcp_status(const char *msg, void *user)
 	ui_push(u, ST_META, line);
 }
 
+/*
+ * The agent is the authority on whether a turn is running: it can start one
+ * on its own (a notification queued mid-turn, submitted once the previous
+ * one lands), so a flag set only where this file calls submit goes stale and
+ * input typed in that window is rejected as "turn already in progress".
+ */
 static void
 ui_set_state(struct ui *u, enum clm_agent_state st)
 {
 	u->state = st;
 	u->dirty = true;
-	if (st == CLM_STATE_RATE_LIMITED)
-		u->busy = true;
+	u->busy = st == CLM_STATE_THINKING || st == CLM_STATE_CALLING_TOOL ||
+	    st == CLM_STATE_RATE_LIMITED;
 }
 
 static void drain_steering_queue(struct ui *u); /* injects at decision point */
@@ -689,6 +695,11 @@ cb_turn_done(int status, void *user)
 		 * having shrunk the context -- not fatal, just try again
 		 * next turn. */
 	}
+
+	/* Anything typed while the turn ran goes in now, ahead of --forever:
+	 * a human waiting on their own prompt outranks the loop's. */
+	if (!u->busy && u->steering_nqueue > 0)
+		drain_steering_queue(u);
 
 	/* --forever: keep the agent going instead of idling for human input.
 	 * Skip on a real error so a broken backend/tool doesn't spin forever
@@ -1871,9 +1882,9 @@ drain_steering_queue(struct ui *u)
 	enum clm_agent_state prev_state;
 	int r;
 
-	if (!u->busy || u->steering_nqueue == 0)
+	if (u->steering_nqueue == 0)
 		return;
-	/* Mid-turn steering: inject immediately at decision point. */
+	/* Idle or mid-turn: clm_agent_notify below handles both. */
 	prompt = u->steering_queue[0];
 	memmove(u->steering_queue, u->steering_queue + 1,
 	    (u->steering_nqueue - 1) * sizeof(*u->steering_queue));
@@ -1908,6 +1919,7 @@ drain_steering_queue(struct ui *u)
 		 * does on a successful submit. */
 		u->started_assist = false;
 		u->usage[0] = '\0';
+		u->busy = true;
 	}
 	free(prompt);
 	u->dirty = true;
@@ -2778,10 +2790,14 @@ submit_line(struct ui *u)
 		run_command(u, u->input);
 	else if (strcmp(u->input, "quit") == 0 || strcmp(u->input, "exit") == 0)
 		u->quit = true;
-	else if (u->busy)
+	else {
+		/* Always queue, never submit straight through: the drain
+		 * hands it to the agent the moment the agent will take it,
+		 * and that keeps one path for idle and mid-turn input. */
 		enqueue_steering(u, u->input);
-	else
-		do_submit(u, u->input, true);
+		if (!u->busy)
+			drain_steering_queue(u);
+	}
 
 	u->input_len = 0;
 	u->input_pos = 0;

@@ -241,6 +241,32 @@ def test_queueing(url):
         t.send(b"second\r")
         check(t.wait_for("(queued)", timeout=3),
               "queueing: a prompt sent while busy shows the queue marker")
+        t.pump(6.0)
+        check("turn already in progress" not in t.text(),
+              "queueing: no in-progress rejection reaches the transcript")
+        t.send(b"/quit\r")
+        t.pump(0.8)
+
+    # The queued line reaching the agent is the point, and the session log
+    # is a steadier witness than a grid mid-repaint of a streamed table.
+    sessions = os.path.join(STATE_HOME, "clm")
+    logged = ""
+    for f in os.listdir(sessions):
+        if f.endswith(".jsonl"):
+            with open(os.path.join(sessions, f)) as fh:
+                logged += fh.read()
+    check('"second"' in logged,
+          "queueing: the queued prompt is submitted when the turn ends")
+
+    # Same path from idle: nothing is submitted straight through any more,
+    # so a prompt typed with no turn running still has to reach the agent.
+    with Tui(BIN, url, rows=20, cols=70) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"show me fruit\r")
+        check(t.wait_for("Yellow", timeout=15),
+              "queueing: an idle prompt still runs a turn")
+        check("turn already in progress" not in t.text(),
+              "queueing: idle submit is not rejected")
 
 
 def test_cancel(url):
