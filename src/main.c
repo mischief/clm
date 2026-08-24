@@ -508,6 +508,7 @@ main(int argc, char *argv[])
 	char endpoint[256];
 	int opt, r;
 	struct clm_lua_cfg *lcfg = NULL;
+	autofree char *config_load_err = NULL;
 
 	init_escapes();
 
@@ -589,8 +590,22 @@ main(int argc, char *argv[])
 	{
 		autofree char *cpath = xdg_config_path("clm/config.lua");
 		if (cpath != NULL)
-			lcfg = clm_lua_cfg_load(cpath);
+			lcfg = clm_lua_cfg_load(cpath, &config_load_err);
 	}
+	/* A NULL lcfg with a non-NULL config_load_err means config.lua exists
+	 * but failed to load (syntax error, runtime error, wrong return
+	 * type -- see clm_lua_cfg_load's doc comment) -- as opposed to no
+	 * config.lua at all, which is silent and falls back to defaults.
+	 * That distinction used to be lost entirely (both looked like
+	 * lcfg == NULL to every caller), so a config.lua with e.g. `local =
+	 * {...}` as a table key -- a Lua syntax error, "local" being
+	 * reserved -- failed to load with zero indication anything was
+	 * wrong: no error, no warning, just every setting in it silently
+	 * absent. Surfaced here loudly (headless paths only -- the TUI path
+	 * shows its own banner once curses is up, see tui_run). */
+	if (lcfg == NULL && config_load_err != NULL)
+		fprintf(stderr, "%serror: config.lua failed to load: %s%s\n",
+		    esc_err, config_load_err, esc_reset);
 	if (lcfg != NULL) {
 		autofree char *adir = xdg_config_path("clm/agents");
 		clm_lua_cfg_load_agent(lcfg, adir, agent_name);
@@ -729,8 +744,8 @@ main(int argc, char *argv[])
 				    strerror(-r));
 		}
 
-		rc = tui_run(
-		    &cfg, plugin_dir, lcfg, forever_prompt, sess, restorep);
+		rc = tui_run(&cfg, plugin_dir, lcfg, config_load_err,
+		    forever_prompt, sess, restorep);
 		clm_history_free(&restore);
 		return rc;
 	}

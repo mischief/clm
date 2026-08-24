@@ -6,13 +6,25 @@
 #include "clm/clm.h"
 #include "clm/session.h"
 
-struct clm_lua_cfg; /* opaque; NULL if no config.lua was found */
+struct clm_lua_cfg; /* opaque; NULL if no config.lua was found or loading it
+                     * failed -- see config_load_err below for telling those
+                     * two apart */
 
 /*
  * Run the interactive ncurses frontend on a fresh default loop. Blocks until
  * the user quits. Returns 0 on success, non-zero on setup failure.
  * plugin_dir may be NULL (uses XDG default).
- * lcfg may be NULL (no config file found).
+ * lcfg may be NULL (no config file found, or it failed to load).
+ * config_load_err may be NULL (no config.lua, or the caller isn't
+ * distinguishing that from a load failure); when non-NULL, lcfg is also
+ * NULL and this holds clm_lua_cfg_load()'s human-readable error -- config.lua
+ * exists but failed to parse/run/return a table (see clm_lua_cfg_load's doc
+ * comment for examples). The TUI pushes this as a prominent, impossible-to-
+ * miss error banner once curses is up (a plain clm_debug() line, gated
+ * behind $CLM_DEBUG_LOG and off by default, is not enough for this -- a
+ * silently-ignored config.lua otherwise looks identical to "nothing
+ * configured yet", which cost real debugging time before this existed). The
+ * caller retains ownership and frees it (it does not outlive this call).
  * forever_prompt may be NULL (normal one-turn-per-message behavior); when
  * set, this prompt is auto-resubmitted every time a turn completes with
  * nothing else queued, so the agent keeps going without a human re-prompting
@@ -26,7 +38,8 @@ struct clm_lua_cfg; /* opaque; NULL if no config.lua was found */
  * ownership and frees it after tui_run returns.
  */
 int tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
-    struct clm_lua_cfg *lcfg, const char *forever_prompt,
-    struct clm_session *session, const struct clm_history *restore);
+    struct clm_lua_cfg *lcfg, const char *config_load_err,
+    const char *forever_prompt, struct clm_session *session,
+    const struct clm_history *restore);
 
 #endif /* CLM_FRONTEND_H */

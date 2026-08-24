@@ -1459,17 +1459,40 @@ push_secrets(lua_State *L, const char *config_path)
 }
 
 CLM_API struct clm_lua_cfg *
-clm_lua_cfg_load(const char *path)
+clm_lua_cfg_load(const char *path, char **errmsg)
 {
 	struct clm_lua_cfg *cfg;
 	lua_State *L;
+	struct stat st;
+
+	if (errmsg != NULL)
+		*errmsg = NULL;
 
 	if (path == NULL)
 		return NULL;
 
-	L = luaL_newstate();
-	if (L == NULL)
+	/*
+	 * A missing config.lua is the ordinary "nothing configured yet" case
+	 * (e.g. before `clm setup` has ever been run, or XDG_CONFIG_HOME
+	 * points somewhere with no clm/ subdirectory) -- callers fall back
+	 * to hardcoded defaults for that and it must stay silent. A
+	 * config.lua that exists but fails to load (syntax error, runtime
+	 * error, wrong return type -- e.g. `local = {...}` in the providers
+	 * table, which is a Lua syntax error because `local` is a reserved
+	 * word) is a real problem the caller should surface loudly instead
+	 * of quietly running with none of the user's settings applied. This
+	 * stat() is what tells the two apart: everything past it treats any
+	 * failure as belonging to the second case.
+	 */
+	if (stat(path, &st) != 0)
 		return NULL;
+
+	L = luaL_newstate();
+	if (L == NULL) {
+		if (errmsg != NULL)
+			*errmsg = strdup("out of memory creating Lua state");
+		return NULL;
+	}
 
 	luaL_requiref(L, "_G", luaopen_base, 1);
 	lua_pop(L, 1);
@@ -1491,22 +1514,31 @@ clm_lua_cfg_load(const char *path)
 	if (luaL_loadfile(L, path) != LUA_OK) {
 		clm_debug(
 		    "config: failed to load %s: %s", path, lua_tostring(L, -1));
+		if (errmsg != NULL)
+			*errmsg = strdup(lua_tostring(L, -1));
 		lua_close(L);
 		return NULL;
 	}
 	if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
 		clm_debug("config: error in %s: %s", path, lua_tostring(L, -1));
+		if (errmsg != NULL)
+			*errmsg = strdup(lua_tostring(L, -1));
 		lua_close(L);
 		return NULL;
 	}
 	if (!lua_istable(L, -1)) {
 		clm_debug("config: %s did not return a table", path);
+		if (errmsg != NULL)
+			*errmsg = strdup("config.lua did not return a table "
+			                  "(missing \"return {...}\"?)");
 		lua_close(L);
 		return NULL;
 	}
 
 	cfg = calloc(1, sizeof(*cfg));
 	if (cfg == NULL) {
+		if (errmsg != NULL)
+			*errmsg = strdup("out of memory");
 		lua_close(L);
 		return NULL;
 	}
@@ -2088,7 +2120,7 @@ clm_lua_cfg_get_agent_name(struct clm_lua_cfg *cfg)
 CLM_API char *
 clm_lua_load_config(const char *path)
 {
-	struct clm_lua_cfg *cfg = clm_lua_cfg_load(path);
+	struct clm_lua_cfg *cfg = clm_lua_cfg_load(path, NULL);
 	if (cfg == NULL)
 		return NULL;
 	char *json = clm_lua_cfg_tools_json(cfg);

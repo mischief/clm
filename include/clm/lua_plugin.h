@@ -48,16 +48,29 @@ CLM_API void clm_lua_env_free(struct clm_lua_env *env);
 
 /*
  * Load and evaluate a config.lua file. Keeps the lua_State alive for
- * subsequent queries. Returns NULL on failure (missing file, parse error).
+ * subsequent queries. Returns NULL on failure.
+ *
+ * A missing file is treated as "nothing configured" and is silent: NULL is
+ * returned and *errmsg (if errmsg is non-NULL) is set to NULL, since every
+ * caller falls back to hardcoded defaults for this case and it is not an
+ * error. A file that exists but fails to load (Lua syntax error, a runtime
+ * error while it runs, or a value other than a table returned -- e.g. using
+ * the reserved word `local` as a bare table key, or a config.lua missing its
+ * "return {...}") is a real failure: *errmsg is set to a malloc'd,
+ * human-readable description the caller should surface (free with free()).
+ * errmsg may be NULL if the caller doesn't need to distinguish the two
+ * cases or report the failure.
  *
  * Before evaluating config.lua, also loads a sibling secrets.lua (same
  * directory) if present and exposes it as the global clm.secrets table,
  * so config.lua -- and, since clm_lua_cfg_load_agent reuses this same
  * lua_State, agent profile files too -- can write e.g.
  * api_key = clm.secrets.tavily instead of a literal key. A missing or
- * invalid secrets.lua yields an empty clm.secrets rather than failing.
+ * invalid secrets.lua yields an empty clm.secrets rather than failing (and
+ * is never reported through errmsg -- only config.lua's own load is).
  */
-CLM_API struct clm_lua_cfg *clm_lua_cfg_load(const char *path);
+CLM_API struct clm_lua_cfg *clm_lua_cfg_load(
+    const char *path, char **errmsg);
 
 /*
  * Load an agent profile. If agent_name is non-NULL, loads
