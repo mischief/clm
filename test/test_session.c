@@ -15,17 +15,9 @@
 
 #include "clm/history.h"
 #include "clm/session.h"
+#include "tap.h"
 
-static int failures;
-
-#define CHECK(cond, msg)                                                       \
-	do {                                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                         \
-			failures++;                                            \
-		}                                                              \
-	} while (0)
+#define CHECK(cond, msg) TAP_CHECK(cond, msg)
 
 /* Build the canonical 5-message conversation used by several tests. */
 static void
@@ -304,8 +296,8 @@ test_listing(const char *dir)
 	    "missing dir is an empty listing");
 }
 
-int
-main(void)
+static int
+test_session_suite(void)
 {
 	char dir[] = "/tmp/clm-session-test-XXXXXX";
 
@@ -321,9 +313,12 @@ main(void)
 	test_id_validation(dir);
 	test_listing(dir);
 
-	if (failures == 0)
-		printf("test_session: all tests passed\n");
-	else
-		printf("test_session: %d failure(s)\n", failures);
-	return failures == 0 ? 0 : 1;
+	return 0;
+}
+
+int
+main(void)
+{
+	TAP_CHECK(tap_add("session", test_session_suite) == 0, "register session suite");
+	return tap_run();
 }

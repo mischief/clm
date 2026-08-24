@@ -21,17 +21,9 @@
 #include "clm/internal.h"
 #include "clm/lua_plugin.h"
 #include "canned.h"
+#include "tap.h"
 
-static int failures;
-
-#define CHECK(cond, msg)                                                       \
-	do {                                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                         \
-			failures++;                                            \
-		}                                                              \
-	} while (0)
+#define CHECK(cond, msg) TAP_CHECK(cond, msg)
 
 struct pending_host;
 
@@ -852,8 +844,8 @@ test_oom_does_not_abort(void)
 	    ok, "plugin at its memory cap fails the call instead of aborting");
 }
 
-int
-main(void)
+static int
+test_lua_plugin_suite(void)
 {
 	printf("test_lua_plugin: running...\n");
 	test_plugin_loads();
@@ -865,10 +857,12 @@ main(void)
 	test_deadline_rearmed_after_yield();
 	test_oom_does_not_abort();
 
-	if (failures > 0) {
-		printf("test_lua_plugin: %d failure(s)\n", failures);
-		return 1;
-	}
-	printf("test_lua_plugin: PASS\n");
 	return 0;
+}
+
+int
+main(void)
+{
+	TAP_CHECK(tap_add("lua plugin", test_lua_plugin_suite) == 0, "register lua suite");
+	return tap_run();
 }

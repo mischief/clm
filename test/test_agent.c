@@ -12,17 +12,9 @@
 #include "clm/internal.h"
 #include "clm/history.h"
 #include "canned.h"
+#include "tap.h"
 
-static int failures;
-
-#define CHECK(cond, msg)                                                       \
-	do {                                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                         \
-			failures++;                                            \
-		}                                                              \
-	} while (0)
+#define CHECK(cond, msg) TAP_CHECK(cond, msg)
 
 struct tstate {
 	uv_loop_t *loop;
@@ -1927,8 +1919,8 @@ test_hidden_tool(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
-int
-main(void)
+static int
+test_agent_suite(void)
 {
 	uv_loop_t loop;
 
@@ -1969,10 +1961,12 @@ main(void)
 	test_hidden_tool(&loop);
 	uv_loop_close(&loop);
 
-	if (failures > 0) {
-		fprintf(stderr, "%d check(s) failed\n", failures);
-		return 1;
-	}
-	printf("all tests passed\n");
 	return 0;
+}
+
+int
+main(void)
+{
+	TAP_CHECK(tap_add("agent", test_agent_suite) == 0, "register agent suite");
+	return tap_run();
 }

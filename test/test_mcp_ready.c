@@ -10,18 +10,9 @@
 #include "clm/clm.h"
 #include "clm/host.h"
 #include "clm/mcp.h"
+#include "tap.h"
 
-static int failures;
-
-#define CHECK(cond, msg)                                                       \
-	do {                                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "fail: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                         \
-			failures++;                                            \
-		}                                                              \
-	} while (0)
-
+#define CHECK(cond, msg) TAP_CHECK(cond, msg)
 struct test_state {
 	struct clm_mcp_client *client;
 	uv_timer_t timeout;
@@ -117,7 +108,7 @@ server_main(void)
 	return 0;
 }
 
-static void
+static int
 test_restart_callback_lifetime(const char *self_path)
 {
 	struct clm_host host = {.http_post = test_http_post};
@@ -143,7 +134,7 @@ test_restart_callback_lifetime(const char *self_path)
 	    "agent creation");
 	if (agent == NULL) {
 		uv_loop_close(&loop);
-		return;
+		return 1;
 	}
 	CHECK(uv_timer_init(&loop, &state.timeout) == 0,
 	    "timeout initialization");
@@ -156,7 +147,7 @@ test_restart_callback_lifetime(const char *self_path)
 		uv_run(&loop, UV_RUN_DEFAULT);
 		clm_agent_free(agent);
 		uv_loop_close(&loop);
-		return;
+		return 1;
 	}
 	ctx->state = &state;
 	r = clm_mcp_connect(agent, &loop, &server_cfg, on_ready, ctx,
@@ -185,21 +176,36 @@ test_restart_callback_lifetime(const char *self_path)
 
 	clm_agent_free(agent);
 	CHECK(uv_loop_close(&loop) == 0, "loop close");
+	return 0;
+}
+
+static const char *program_path;
+
+static int
+test_restart_callback_lifetime_from_argv0(void)
+{
+	char *self_path;
+
+	self_path = realpath(program_path, NULL);
+	TAP_CHECK(self_path != NULL, "resolve test executable path");
+	if (self_path == NULL)
+		return 1;
+	{
+		int r = test_restart_callback_lifetime(self_path);
+		free(self_path);
+		return r;
+	}
 }
 
 int
 main(int argc, char **argv)
 {
-	char *self_path;
-
 	if (argc == 2 && strcmp(argv[1], "--server") == 0)
 		return server_main();
-
-	self_path = realpath(argv[0], NULL);
-	CHECK(self_path != NULL, "resolve test executable path");
-	if (self_path != NULL) {
-		test_restart_callback_lifetime(self_path);
-		free(self_path);
-	}
-	return failures == 0 ? 0 : 1;
+	program_path = argv[0];
+	TAP_CHECK(tap_add("restart callback lifetime",
+	              test_restart_callback_lifetime_from_argv0) == 0,
+	    "register restart callback test");
+	/* argv[0] remains valid for this process while the registered test runs. */
+	return tap_run();
 }

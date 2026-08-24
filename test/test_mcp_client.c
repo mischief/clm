@@ -12,17 +12,9 @@
 #include "clm/http_async.h"
 #include "clm/mcp.h"
 #include "clm/tools.h"
+#include "tap.h"
 
-static int failures;
-
-#define CHECK(cond, msg)                                                       \
-	do {                                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "fail: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                         \
-			failures++;                                            \
-		}                                                              \
-	} while (0)
+#define CHECK(cond, msg) TAP_CHECK(cond, msg)
 
 struct clm_http_mux {
 	uv_loop_t *loop;
@@ -341,16 +333,19 @@ test_free_pending_tool_call(void)
 	CHECK(uv_loop_close(&loop) == 0, "close loop");
 }
 
-int
-main(void)
+static int
+test_mcp_client_suite(void)
 {
 	test_free_pending_initialize();
 	test_free_pending_tools_list();
 	test_free_pending_tool_call();
 
-	if (failures != 0) {
-		fprintf(stderr, "%d test(s) failed\n", failures);
-		return 1;
-	}
 	return 0;
+}
+
+int
+main(void)
+{
+	TAP_CHECK(tap_add("mcp client", test_mcp_client_suite) == 0, "register mcp client suite");
+	return tap_run();
 }

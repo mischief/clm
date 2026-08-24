@@ -18,6 +18,7 @@ static struct tap_test *tests;
 static size_t ntests;
 static size_t cap;
 static bool running;
+static bool current_failed;
 
 int
 tap_add(const char *name, tap_fn fn)
@@ -61,6 +62,16 @@ tap_diag(const char *fmt, ...)
 	fputc('\n', stdout);
 }
 
+void
+tap_check(bool passed, const char *file, int line, const char *context,
+    const char *expression)
+{
+	if (!passed) {
+		current_failed = true;
+		tap_diag("%s:%d: %s: %s", file, line, context, expression);
+	}
+}
+
 int
 tap_run(void)
 {
@@ -71,9 +82,11 @@ tap_run(void)
 	puts("TAP version 13");
 	printf("1..%zu\n", ntests);
 	for (i = 0; i < ntests; i++) {
-		int r = tests[i].fn();
+		int r;
 
-		if (r == 0)
+		current_failed = false;
+		r = tests[i].fn();
+		if (r == 0 && !current_failed)
 			printf("ok %zu - %s\n", i + 1, tests[i].name);
 		else {
 			printf("not ok %zu - %s\n", i + 1, tests[i].name);

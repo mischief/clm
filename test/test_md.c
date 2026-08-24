@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "md_render.h"
+#include "tap.h"
 
 /*
  * Local autofree: this test links only md_render (no libclm), so it does not
@@ -18,18 +19,7 @@ autofree_fn(void *p)
 }
 #define autofree __attribute__((cleanup(autofree_fn)))
 
-static int failures;
-
-#define CHECK(cond, msg)                                                       \
-	do {                                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                         \
-			failures++;                                            \
-		} else {                                                       \
-			printf("ok    %s\n", (msg));                           \
-		}                                                              \
-	} while (0)
+#define CHECK(cond, msg) TAP_CHECK(cond, msg)
 
 /* Collect emitted runs into a flat buffer for inspection. */
 struct capture {
@@ -199,8 +189,8 @@ test_table_glyphs(void)
 	    "unicode table has corner glyphs");
 }
 
-int
-main(void)
+static int
+test_md_suite(void)
 {
 	/* Table alignment measures display width via wcwidth; needs a locale.
 	 */
@@ -213,10 +203,12 @@ main(void)
 	test_table_bold_cell();
 	test_table_glyphs();
 
-	if (failures > 0) {
-		fprintf(stderr, "%d failure(s)\n", failures);
-		return 1;
-	}
-	printf("all md_render tests passed\n");
 	return 0;
+}
+
+int
+main(void)
+{
+	TAP_CHECK(tap_add("md render", test_md_suite) == 0, "register md suite");
+	return tap_run();
 }

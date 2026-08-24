@@ -10,17 +10,9 @@
 #include "clm/host_uv.h"
 #include "clm/mcp.h"
 #include "canned.h"
+#include "tap.h"
 
-static int failures;
-
-#define check(cond, msg)                                                       \
-	do {                                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "fail: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                         \
-			failures++;                                            \
-		}                                                              \
-	} while (0)
+#define check(cond, msg) TAP_CHECK(cond, msg)
 
 struct state {
 	uv_loop_t *loop;
@@ -308,8 +300,8 @@ test_stdio_timeout(uv_loop_t *loop)
 	cleanup(&st, client, model, NULL);
 }
 
-int
-main(void)
+static int
+test_mcp_suite(void)
 {
 	uv_loop_t loop;
 
@@ -318,10 +310,12 @@ main(void)
 	test_stdio_timeout(&loop);
 	check(uv_loop_close(&loop) == 0, "close loop");
 
-	if (failures != 0) {
-		fprintf(stderr, "%d check(s) failed\n", failures);
-		return 1;
-	}
-	printf("all mcp tests passed\n");
 	return 0;
+}
+
+int
+main(void)
+{
+	TAP_CHECK(tap_add("mcp", test_mcp_suite) == 0, "register mcp suite");
+	return tap_run();
 }

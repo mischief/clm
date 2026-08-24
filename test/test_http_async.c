@@ -4,18 +4,11 @@
 #include <uv.h>
 
 #include "clm/http_async.h"
+#include "tap.h"
 
-static int failures;
 static int callbacks;
 
-#define CHECK(cond, msg)                                                       \
-	do {                                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "fail: %s (%s:%d)\n", (msg), __FILE__, \
-			    __LINE__);                                         \
-			failures++;                                            \
-		}                                                              \
-	} while (0)
+#define CHECK(cond, msg) TAP_CHECK(cond, msg)
 
 static void
 on_success(struct clm_http_response *resp, void *user)
@@ -34,8 +27,8 @@ on_error(int error_code, const char *error_msg, void *user)
 	callbacks++;
 }
 
-int
-main(void)
+static int
+test_inline_completion(void)
 {
 	struct clm_http_request *req = (struct clm_http_request *)1;
 	struct clm_http_mux *mux;
@@ -56,11 +49,13 @@ main(void)
 	clm_http_mux_free(mux);
 	uv_run(&loop, UV_RUN_DEFAULT);
 	CHECK(uv_loop_close(&loop) == 0, "loop close");
-
-	if (failures != 0) {
-		printf("test_http_async: %d failure(s)\n", failures);
-		return 1;
-	}
-	printf("test_http_async: pass\n");
 	return 0;
+}
+
+int
+main(void)
+{
+	TAP_CHECK(tap_add("inline completion", test_inline_completion) == 0,
+	    "register inline completion test");
+	return tap_run();
 }

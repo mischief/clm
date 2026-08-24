@@ -26,18 +26,18 @@ test('tap', test_tap)
 
 # Uses the uv host (clm_host_uv) + shell_exec, so it links the uv layer.
 test_agent = executable('test_agent',
-  files('test_agent.c', 'canned.c', '../libclm/props.c', '../libclm/history.c', '../libclm/models_list.c'),
+  files('test_agent.c', 'canned.c', '../libclm/props.c', '../libclm/history.c', '../libclm/models_list.c') + tap_src,
   dependencies: [clmuv_dep],
-  include_directories: [include_directories('.'), clm_inc, include_directories('../include')],
+  include_directories: [tap_inc, include_directories('.'), clm_inc, include_directories('../include')],
   c_args: test_cflags,
 )
 test('agent', test_agent)
 
 # mcp transport regressions use the uv host plus the local canned http server.
 test_mcp = executable('test_mcp',
-  files('test_mcp.c', 'canned.c'),
+  files('test_mcp.c', 'canned.c') + tap_src,
   dependencies: [clmuv_dep],
-  include_directories: [include_directories('.'), clm_inc, include_directories('../include')],
+  include_directories: [tap_inc, include_directories('.'), clm_inc, include_directories('../include')],
   c_args: test_cflags,
 )
 test('mcp', test_mcp)
@@ -45,9 +45,9 @@ test('mcp', test_mcp)
 # compile the mcp client against a delayed http stub so teardown can settle
 # each cancelled request after clm_mcp_client_free returns.
 test_mcp_client = executable('test_mcp_client',
-  files('test_mcp_client.c', '../libclmuv/mcp_client.c') + clm_core_src + [version_h],
+  files('test_mcp_client.c', '../libclmuv/mcp_client.c') + tap_src + clm_core_src + [version_h],
   dependencies: clmuv_deps,
-  include_directories: [clm_lib_inc, clm_inc, include_directories('../include')],
+  include_directories: [tap_inc, clm_lib_inc, clm_inc, include_directories('../include')],
   c_args: ['-DCLM_BUILDING'] + clm_hardening_args + test_cflags,
 )
 test('mcp_client', test_mcp_client)
@@ -55,9 +55,9 @@ test('mcp_client', test_mcp_client)
 # the callback lifetime test runs itself as a stdio server, lets that server
 # exit after one handshake, and verifies status callbacks across the restart.
 test_mcp_ready = executable('test_mcp_ready',
-  files('test_mcp_ready.c'),
+  files('test_mcp_ready.c') + tap_src,
   dependencies: [clmuv_dep],
-  include_directories: [clm_inc, include_directories('../include')],
+  include_directories: [tap_inc, clm_inc, include_directories('../include')],
   c_args: test_cflags,
 )
 test('mcp_ready', test_mcp_ready, timeout: 15)
@@ -65,9 +65,9 @@ test('mcp_ready', test_mcp_ready, timeout: 15)
 # malformed urls complete in curl's initial socket action. this checks that
 # completion does not publish a dead cancellation handle.
 test_http_async = executable('test_http_async',
-  files('test_http_async.c'),
+  files('test_http_async.c') + tap_src,
   dependencies: [clmuv_dep],
-  include_directories: [clm_inc, include_directories('../include')],
+  include_directories: [tap_inc, clm_inc, include_directories('../include')],
   c_args: test_cflags,
 )
 test('http_async', test_http_async)
@@ -76,8 +76,8 @@ test('http_async', test_http_async)
 # do not need a server or large allocations.
 test_http_response_buffer = executable('test_http_response_buffer',
   files('test_http_response_buffer.c',
-    '../libclmuv/http_response_buffer.c'),
-  include_directories: [include_directories('../libclmuv'),
+    '../libclmuv/http_response_buffer.c') + tap_src,
+  include_directories: [tap_inc, include_directories('../libclmuv'),
     include_directories('..')],
   c_args: test_cflags,
 )
@@ -87,9 +87,9 @@ test('http_response_buffer', test_http_response_buffer)
 # and session.c directly, same pattern as test_agent, so internals are
 # reachable without going through the shared library's export list.
 test_session = executable('test_session',
-  files('test_session.c', '../libclm/history.c', '../libclmsession/session.c'),
+  files('test_session.c', '../libclm/history.c', '../libclmsession/session.c') + tap_src,
   dependencies: [cjson_dep],
-  include_directories: [include_directories('.'), clm_inc,
+  include_directories: [tap_inc, include_directories('.'), clm_inc,
     include_directories('../include'), include_directories('../libclmsession')],
   c_args: test_cflags,
 )
@@ -103,9 +103,9 @@ test('session', test_session)
 # the seam, not a preprocessor branch inside it.
 if have_lua
   test_lua = executable('test_lua_plugin',
-    files('test_lua_plugin.c', 'canned.c'),
+    files('test_lua_plugin.c', 'canned.c') + tap_src,
     dependencies: [clmuv_dep, clmlua_dep],
-    include_directories: [clm_inc, include_directories('../include')],
+    include_directories: [tap_inc, clm_inc, include_directories('../include')],
     c_args: test_cflags,
   )
   test('lua_plugin', test_lua, workdir: meson.project_source_root())
@@ -114,9 +114,9 @@ endif
 # md_render unit test: pure, links only the internal md_render static library
 # (no ncurses, no libclm), so the markdown-to-runs logic is tested in isolation.
 test_md = executable('test_md',
-  files('test_md.c'),
+  files('test_md.c') + tap_src,
   link_with: [md_render_lib],
-  include_directories: [md_render_inc],
+  include_directories: [tap_inc, md_render_inc],
   c_args: ['-D_XOPEN_SOURCE=700'], # wcwidth(3) is XSI
 )
 test('md', test_md, suite: 'md')
