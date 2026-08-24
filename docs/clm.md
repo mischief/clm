@@ -294,6 +294,30 @@ Under
 the exit status instead reflects whether that single turn completed
 successfully (0) or not (1).
 
+# AGENT MESSAGING
+
+Each interactive session binds a unix socket named after its session id
+under
+`XDG_RUNTIME_DIR`*/clm*
+(or */tmp/clm-&lt;uid&gt;* where that is unset),
+alongside a
+*.json*
+file describing the session.
+Other clm instances running as the same user find it by reading that
+directory: the
+**agents\_list**
+tool reports who is running, and
+**agent\_send**
+delivers a line of text to one of them.
+
+A delivered message arrives between the receiving agent's turns, the same
+way typed input does, and appears in its transcript marked as coming from
+a peer.
+It carries text only: a peer cannot make another agent run anything, and
+the receiving model decides whether to answer.
+Delivery is rate limited per sender and messages carry a hop count, so two
+agents answering each other cannot bill forever.
+
 # SEE ALSO
 
 [clm_agent(3)](clm_agent.md),

@@ -496,6 +496,54 @@ def test_scratch(url):
         check(mode == 0o700, "scratch: private to the user")
 
 
+def test_peers(url):
+    """Two clm instances discover each other over their sockets, and a
+    message from one lands in the other's transcript between turns."""
+    run = os.path.join(STATE_HOME, "run")
+    os.makedirs(run, exist_ok=True)
+    os.environ["XDG_RUNTIME_DIR"] = run
+
+    with Tui(BIN, url, rows=30, cols=100) as a, \
+         Tui(BIN, url, rows=30, cols=100) as b:
+        a.wait_for("online", timeout=8)
+        b.wait_for("online", timeout=8)
+
+        d = os.path.join(run, "clm")
+        socks = sorted(f for f in os.listdir(d) if f.endswith(".sock"))
+        check(len(socks) == 2, "peers: each instance binds its own socket")
+        metas = sorted(f for f in os.listdir(d) if f.endswith(".json"))
+        check(len(metas) == 2, "peers: each announces itself for discovery")
+        if metas:
+            meta = json.load(open(os.path.join(d, metas[0])))
+            check(all(k in meta for k in ("id", "name", "model", "cwd",
+                                          "pid")),
+                  "peers: the announcement carries who and where")
+
+        b_id = None
+        for ln in b.lines():
+            if " clm " in ln:
+                b_id = ln.split()[1]
+        check(b_id is not None, "peers: target's short id is on screen")
+
+        # The mock turns "peersend to=<id>" into one agent_send call.
+        a.send(("peersend to=%s please\r" % b_id).encode())
+        assert a.wait_for("allow tool agent_send", timeout=15), \
+            "no permission prompt for agent_send"
+        check(True, "peers: sending to another agent asks first")
+        a.send(b"y")
+        a.pump(2.5)
+        b.pump(2.0)
+        check("hello from the other agent" in b.text(),
+              "peers: the message reaches the other agent")
+        check("peer " in b.text(),
+              "peers: the transcript marks it as coming from a peer")
+
+    # Both instances are gone: their sockets must not be left behind.
+    leftover = [f for f in os.listdir(os.path.join(run, "clm"))
+                if f.endswith(".sock")]
+    check(leftover == [], "peers: sockets are removed on exit")
+
+
 def test_session_resume(url):
     """A conversation is logged to a session file, and --resume replays it."""
     sessions = os.path.join(STATE_HOME, "clm")
@@ -572,6 +620,7 @@ TESTS = {
     "session": test_session_resume,
     "session_compact": test_session_compact,
     "scratch": test_scratch,
+    "peers": test_peers,
 }
 
 

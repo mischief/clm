@@ -162,6 +162,7 @@ struct ui {
 	 * out without digging through the transcript. Empty when logging is
 	 * off. */
 	char session_short[16];
+	struct clm_peer *peer; /* this agent's socket, or NULL */
 	/* A compaction is in flight (auto or /compact): its completion has to
 	 * rewrite the session log, which on_message cannot see. */
 	bool compacting;

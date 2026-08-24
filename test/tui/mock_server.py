@@ -94,6 +94,28 @@ class Handler(BaseHTTPRequestHandler):
             m.get("role") == "tool" for m in msgs)
         return asked and not has_result
 
+    def _stream_peer_send(self, target, text):
+        """Stream an agent_send tool call aimed at another clm instance."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def send(obj):
+            self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
+            self.wfile.flush()
+        try:
+            args = json.dumps({"to": target, "text": text})
+            send({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                "index": 0, "id": "call_p", "type": "function",
+                "function": {"name": "agent_send", "arguments": args}}]}}]})
+            send({"choices": [{"index": 0, "delta": {},
+                               "finish_reason": "tool_calls"}]})
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionError):
+            return
+
     def _stream_tool_call(self, multiline=False):
         """Stream a shell_exec call, optionally with multi-line arguments."""
         self.send_response(200)
@@ -121,7 +143,27 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionError):
             return
 
+    def _peer_send_request(self, req):
+        """A prompt of the form "peersend to=<id> <text>" asks for one
+        agent_send call; returns (target, text) or None."""
+        msgs = req.get("messages", [])
+        if any(m.get("role") == "tool" for m in msgs):
+            return None
+        for m in msgs:
+            c = str(m.get("content", ""))
+            if m.get("role") != "user" or "peersend" not in c:
+                continue
+            for word in c.split():
+                if word.startswith("to="):
+                    return word[3:], "hello from the other agent"
+        return None
+
     def _stream(self, req=None):
+        if req is not None:
+            peer = self._peer_send_request(req)
+            if peer is not None:
+                self._stream_peer_send(peer[0], peer[1])
+                return
         if req is not None and self._wants_tool(req):
             text = " ".join(str(m.get("content", "")) for m in
                             req.get("messages", []))

@@ -12,6 +12,7 @@ clmuv_src = files(
   'tool_shell.c',
   'tool_bg.c',
   'mcp_client.c',
+  'peer.c',
 )
 
 clmuv_deps = [

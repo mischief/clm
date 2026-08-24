@@ -256,6 +256,28 @@ Under
 .Fl -oneshot ,
 the exit status instead reflects whether that single turn completed
 successfully (0) or not (1).
+.Sh AGENT MESSAGING
+Each interactive session binds a unix socket named after its session id
+under
+.Ev XDG_RUNTIME_DIR Ns Pa /clm
+.Pq or Pa /tmp/clm-<uid> No where that is unset ,
+alongside a
+.Pa .json
+file describing the session.
+Other clm instances running as the same user find it by reading that
+directory: the
+.Sy agents_list
+tool reports who is running, and
+.Sy agent_send
+delivers a line of text to one of them.
+.Pp
+A delivered message arrives between the receiving agent's turns, the same
+way typed input does, and appears in its transcript marked as coming from
+a peer.
+It carries text only: a peer cannot make another agent run anything, and
+the receiving model decides whether to answer.
+Delivery is rate limited per sender and messages carry a hop count, so two
+agents answering each other cannot bill forever.
 .Sh SEE ALSO
 .Xr clm_agent 3 ,
 .Xr clm-config 5 ,

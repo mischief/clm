@@ -30,6 +30,7 @@
 #include "clm/cleanup.h"
 #include "clm/log.h"
 #include "clm/host_uv.h"
+#include "clm/peer.h"
 #include "clm/lua_plugin.h"
 #include "clm/provider.h"
 #include "complete.h"
@@ -954,6 +955,24 @@ session_after_compact(struct ui *u)
 		u->session = NULL;
 		u->dirty = true;
 	}
+}
+
+/* Show what another agent said. The agent itself gets the same text via
+ * clm_agent_notify, framed with the sender's id. */
+static void
+cb_peer_message(
+    const char *from, const char *name, const char *text, void *user)
+{
+	struct ui *u = user;
+	char head[128];
+	size_t n = strlen(from);
+
+	(void)snprintf(head, sizeof(head), "\npeer %s (%s)> ",
+	    n > 8 ? from + n - 8 : from, name != NULL ? name : "?");
+	ui_push(u, ST_META, head);
+	ui_push(u, ST_USER, text);
+	ui_push(u, ST_USER, "\n");
+	u->dirty = true;
 }
 
 static const struct clm_callbacks tui_callbacks = {
@@ -3649,6 +3668,14 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		return 1;
 	}
 	apply_effort(u, cfg->provider_name, cfg->model);
+
+	/* Peer messaging is optional: a bind failure (no runtime dir, a
+	 * hostile /tmp) costs the socket, not the session. */
+	if (u->session != NULL &&
+	    clm_peer_start(u->agent, loop, clm_session_id(u->session),
+	        u->agent_name != NULL ? u->agent_name : "clm", cfg->model,
+	        cb_peer_message, u, &u->peer) == 0)
+		(void)clm_peer_register_tools(u->agent);
 	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the
 	 * portable core). */
 	clm_tools_register_shell(u->agent);
@@ -3855,6 +3882,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	for (size_t i = 0; i < u->nhist; i++)
 		free(u->hist[i]);
 	free(u->hist);
+	clm_peer_free(u->peer);
 	free(u->input);
 	free(u->kill);
 	free(u->hist_saved);
