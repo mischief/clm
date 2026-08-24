@@ -584,7 +584,7 @@ clm_peer_start(struct clm_agent *agent, uv_loop_t *loop, const char *id,
 	struct clm_peer *p;
 	int r;
 
-	if (agent == NULL || loop == NULL || id == NULL || out == NULL)
+	if (agent == NULL || loop == NULL || out == NULL)
 		return -EINVAL;
 	*out = NULL;
 
@@ -595,7 +595,7 @@ clm_peer_start(struct clm_agent *agent, uv_loop_t *loop, const char *id,
 	p->loop = loop;
 	p->cb = cb;
 	p->cb_user = user;
-	(void)snprintf(p->id, sizeof(p->id), "%s", id);
+	(void)snprintf(p->id, sizeof(p->id), "%s", id != NULL ? id : "");
 	(void)snprintf(
 	    p->name, sizeof(p->name), "%s", name != NULL ? name : "clm");
 
@@ -604,6 +604,16 @@ clm_peer_start(struct clm_agent *agent, uv_loop_t *loop, const char *id,
 		free(p);
 		return r;
 	}
+	/* No id means client only: this process can find and message the
+	 * agents that are running, but does not announce itself. A oneshot
+	 * exits in seconds, and a socket that answers for that long is worse
+	 * than no socket at all. */
+	if (id == NULL) {
+		the_peer = p;
+		*out = p;
+		return 0;
+	}
+
 	(void)snprintf(
 	    p->sock_path, sizeof(p->sock_path), "%s/%s.sock", p->dir, id);
 	(void)snprintf(
@@ -684,8 +694,10 @@ clm_peer_free(struct clm_peer *p)
 		return;
 	if (p->listening && !uv_is_closing((uv_handle_t *)&p->server))
 		uv_close((uv_handle_t *)&p->server, NULL);
-	(void)unlink(p->sock_path);
-	(void)unlink(p->meta_path);
+	if (p->sock_path[0] != '\0') {
+		(void)unlink(p->sock_path);
+		(void)unlink(p->meta_path);
+	}
 	if (the_peer == p)
 		the_peer = NULL;
 	free(p);

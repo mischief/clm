@@ -19,6 +19,7 @@
 #include "seed_plugins.h"
 #include "clm/cleanup.h"
 #include "clm/session.h"
+#include "clm/peer.h"
 #include "mcp_setup.h"
 #include "sysinfo.h"
 
@@ -114,6 +115,7 @@ struct cli_state {
 	struct clm_agent *agent;
 	struct clm_lua_env *lua_env;
 	struct clm_lua_cfg *lua_cfg;
+	struct clm_peer *peer;
 	struct clm_mcp_client **mcp_clients;
 	size_t mcp_client_count;
 	uv_pipe_t stdin_pipe;
@@ -1003,6 +1005,13 @@ main(int argc, char *argv[])
 	if (effort != NULL && clm_agent_set_effort(state->agent, effort) < 0)
 		fprintf(
 		    stderr, "warning: could not set effort \"%s\"\n", effort);
+	/* Client-only peer messaging: a headless run can find and message the
+	 * agents that are running, but does not advertise itself -- it exits
+	 * as soon as its turn does. */
+	if (clm_peer_start(state->agent, loop, NULL, "clm", model_name, NULL,
+	        NULL, &state->peer) == 0)
+		(void)clm_peer_register_tools(state->agent);
+
 	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the
 	 * portable core). */
 	clm_tools_register_shell(state->agent);
@@ -1046,6 +1055,7 @@ main(int argc, char *argv[])
 		clm_lua_env_free(state->lua_env);
 		clm_cli_free_mcp_servers(
 		    state->mcp_clients, state->mcp_client_count);
+		clm_peer_free(state->peer);
 		clm_agent_free(state->agent);
 		clm_host_uv_free(state->host);
 		r = state->turn_status;
@@ -1074,6 +1084,7 @@ main(int argc, char *argv[])
 
 	clm_lua_env_free(state->lua_env);
 	clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
+	clm_peer_free(state->peer);
 	clm_agent_free(state->agent);
 	clm_host_uv_free(state->host);
 	free(state);

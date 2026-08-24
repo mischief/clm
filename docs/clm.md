@@ -310,6 +310,12 @@ tool reports who is running, and
 **agent\_send**
 delivers a line of text to one of them.
 
+A headless or
+**--oneshot**
+run gets the same two tools but binds no socket of its own: it can find
+and message the agents that are running, and exits too quickly to be
+worth answering.
+
 A delivered message arrives between the receiving agent's turns, the same
 way typed input does, and appears in its transcript marked as coming from
 a peer.

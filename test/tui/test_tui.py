@@ -9,6 +9,7 @@ CLM_BIN environment variable (set by meson).
 """
 import json
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -556,6 +557,33 @@ def test_peers(url):
     leftover = [f for f in os.listdir(os.path.join(run, "clm"))
                 if f.endswith(".sock")]
     check(leftover == [], "peers: sockets are removed on exit")
+
+    # A headless run can message a running agent without advertising
+    # itself: it exits in seconds, so a socket answering for it would
+    # only mislead whoever found it.
+    with Tui(BIN, url, rows=30, cols=100) as t:
+        t.wait_for("online", timeout=8)
+        tui_id = None
+        for ln in t.lines():
+            if " clm " in ln:
+                tui_id = ln.split()[1]
+
+        env = dict(os.environ)
+        env["CLM_YOLO"] = "1"
+        out = subprocess.run(
+            [BIN, "-u", url, "-m", "mock-model", "-o",
+             "peersend to=%s please" % tui_id],
+            capture_output=True, text=True, env=env, timeout=60)
+        check(out.returncode == 0, "peers: the headless run completes")
+        check("delivered to" in out.stdout,
+              "peers: a headless run can send to a running agent")
+        socks = [f for f in os.listdir(os.path.join(run, "clm"))
+                 if f.endswith(".sock")]
+        check(len(socks) == 1,
+              "peers: the headless run does not announce itself")
+        t.pump(2.0)
+        check("hello from the other agent" in t.text(),
+              "peers: the running agent receives it")
 
 
 def test_session_resume(url):

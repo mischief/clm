@@ -17,8 +17,9 @@ struct uv_loop_s;
 /*
  * Bind this agent's socket so other clm instances of the same user can find
  * and message it. `id` names the socket (the session id); `name` and `model`
- * are recorded for listings. Returns 0, or a negative errno with *out NULL:
- * peer messaging is optional, and a caller may carry on without it.
+ * are recorded for listings. A NULL id is client only: this agent can find
+ * and message others without announcing itself, which is what a run too
+ * short to be worth answering wants. Returns 0 or a negative errno.
  */
 typedef void (*clm_peer_msg_cb)(
     const char *from, const char *name, const char *text, void *user);
