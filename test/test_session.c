@@ -271,8 +271,7 @@ test_dangling_tool_call_repair(const char *dir)
 	CHECK(history_len(&h) == 3, "synthetic result appended");
 	r = TAILQ_LAST(&h, clm_history);
 	CHECK(r->role == CLM_ROLE_TOOL, "synthetic message is a tool result");
-	CHECK(r->tool_call_id != NULL &&
-	        strcmp(r->tool_call_id, "call_1") == 0,
+	CHECK(r->tool_call_id != NULL && strcmp(r->tool_call_id, "call_1") == 0,
 	    "synthetic result targets the dangling call id");
 	CHECK(r->tool_name != NULL && strcmp(r->tool_name, "shell_exec") == 0,
 	    "synthetic result keeps the tool name");
@@ -308,8 +307,8 @@ test_dangling_tool_call_repair(const char *dir)
 	        strcmp(r->content, "ok") == 0,
 	    "real result for call_a untouched and stays first");
 	r = TAILQ_NEXT(r, entries); /* second tool result: call_b, synthetic */
-	CHECK(r->role == CLM_ROLE_TOOL &&
-	        strcmp(r->tool_call_id, "call_b") == 0,
+	CHECK(
+	    r->role == CLM_ROLE_TOOL && strcmp(r->tool_call_id, "call_b") == 0,
 	    "synthetic result for call_b follows it");
 	clm_history_free(&h);
 
@@ -326,8 +325,8 @@ test_dangling_tool_call_repair(const char *dir)
 
 	CHECK(clm_history_repair_dangling_tool_calls(&h) == 2,
 	    "both batches' calls repaired");
-	CHECK(history_len(&h) == 5,
-	    "two synthetic results added, one per batch");
+	CHECK(
+	    history_len(&h) == 5, "two synthetic results added, one per batch");
 	clm_history_free(&h);
 
 	/* Well-formed history: nothing to do. Note fill_history()'s canonical
@@ -357,8 +356,7 @@ test_dangling_tool_call_repair(const char *dir)
 
 		clm_history_init(&tmp);
 		clm_history_add_user(&tmp, "do a thing", NULL);
-		CHECK(clm_session_append(s,
-		          TAILQ_FIRST(&tmp), NULL) == 0,
+		CHECK(clm_session_append(s, TAILQ_FIRST(&tmp), NULL) == 0,
 		    "append user message");
 		tm = clm_history_add_assistant_tool_calls(&tmp);
 		clm_message_add_tool_call(

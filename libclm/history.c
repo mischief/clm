@@ -473,15 +473,16 @@ clm_history_repair_dangling_tool_calls(struct clm_history *h)
 
 		next = TAILQ_NEXT(m, entries);
 
-		if (m->role != CLM_ROLE_ASSISTANT || TAILQ_EMPTY(&m->tool_calls))
+		if (m->role != CLM_ROLE_ASSISTANT ||
+		    TAILQ_EMPTY(&m->tool_calls))
 			continue;
 
 		/* Insert after any results already there, to preserve order
 		 * and not mistake a repair for a real later result. */
 		batch_first = next;
 		insert_after = m;
-		for (scan = batch_first; scan != NULL &&
-		    scan->role == CLM_ROLE_TOOL;
+		for (scan = batch_first;
+		    scan != NULL && scan->role == CLM_ROLE_TOOL;
 		    scan = TAILQ_NEXT(scan, entries))
 			insert_after = scan;
 

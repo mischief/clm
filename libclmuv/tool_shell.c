@@ -203,7 +203,8 @@ shell_on_close(uv_handle_t *handle)
 		 * shell_cancel): the child went away on its own well within
 		 * the grace period, so there's nothing left for the timer to
 		 * escalate against. Stop waiting on it and close it now
-		 * instead of sitting idle for the rest of CLM_SHELL_KILL_GRACE_MS
+		 * instead of sitting idle for the rest of
+		 * CLM_SHELL_KILL_GRACE_MS
 		 * -- shell_kill_timer_cb/shell_force_close handle the timer
 		 * actually firing instead.
 		 */
@@ -304,8 +305,8 @@ shell_cancel(struct clm_tool_invocation *inv, void *user)
 		s->handles++;
 		s->kill_timer.data = s;
 		uv_timer_init(loop, &s->kill_timer);
-		uv_timer_start(
-		    &s->kill_timer, shell_kill_timer_cb, shell_kill_grace_ms(), 0);
+		uv_timer_start(&s->kill_timer, shell_kill_timer_cb,
+		    shell_kill_grace_ms(), 0);
 	}
 }
 
