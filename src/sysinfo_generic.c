@@ -20,3 +20,10 @@ clm_cli_sysinfo_hints(void)
 {
 	return "";
 }
+
+const char *
+clm_cli_sysinfo_fstype(const char *path)
+{
+	(void)path;
+	return "";
+}

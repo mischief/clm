@@ -28,4 +28,8 @@ uint64_t clm_cli_sysinfo_physmem(void);
  * saying. Implemented per OS. */
 const char *clm_cli_sysinfo_hints(void);
 
+/* Filesystem type name for `path` ("ext4", "tmpfs", "ffs", ...), or "" when
+ * the host cannot report it. Implemented per OS. */
+const char *clm_cli_sysinfo_fstype(const char *path);
+
 #endif /* CLM_CLI_SYSINFO_H */

@@ -2,13 +2,27 @@
 
 /* OpenBSD half of the system-prompt host block (see sysinfo.h). */
 #include <sys/types.h>
+#include <sys/mount.h>
 #include <sys/sysctl.h>
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "sysinfo.h"
 #include "banned.h"
+
+const char *
+clm_cli_sysinfo_fstype(const char *path)
+{
+	static char name[MFSNAMELEN];
+	struct statfs sfs;
+
+	if (statfs(path, &sfs) != 0)
+		return "";
+	(void)snprintf(name, sizeof(name), "%s", sfs.f_fstypename);
+	return name;
+}
 
 uint64_t
 clm_cli_sysinfo_physmem(void)

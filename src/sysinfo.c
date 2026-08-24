@@ -47,6 +47,27 @@ same_fs(const char *a, const char *b)
 	return sa.st_dev == sb.st_dev;
 }
 
+/*
+ * ", <type>" for a filesystem worth naming, "" otherwise. A RAM-backed
+ * filesystem is the case that matters: writing there spends memory, and
+ * whatever lands in it is gone after a reboot.
+ */
+static const char *
+fstype_note(const char *path)
+{
+	static char note[64];
+	const char *type = clm_cli_sysinfo_fstype(path);
+	int ramdisk;
+
+	if (type[0] == '\0')
+		return "";
+	ramdisk = strcmp(type, "tmpfs") == 0 || strcmp(type, "ramfs") == 0 ||
+	    strcmp(type, "mfs") == 0;
+	(void)snprintf(
+	    note, sizeof(note), ", %s%s", type, ramdisk ? ", in RAM" : "");
+	return note;
+}
+
 const char *
 clm_cli_sysinfo(void)
 {
@@ -90,12 +111,14 @@ clm_cli_sysinfo(void)
 	 * nothing about where the next write lands. */
 	if (disk > 0 && (size_t)off < sizeof(block))
 		off += snprintf(block + off, sizeof(block) - (size_t)off,
-		    "\ndisk free on the filesystem holding %s: %llu GiB", cwd,
-		    gib(disk));
+		    "\nfree space where the working directory lives (%s%s): "
+		    "%llu GiB",
+		    cwd, fstype_note("."), gib(disk));
 	if (!same_fs(".", "/tmp") && fs_free("/tmp") > 0 &&
 	    (size_t)off < sizeof(block))
 		off += snprintf(block + off, sizeof(block) - (size_t)off,
-		    "\ndisk free on /tmp: %llu GiB", gib(fs_free("/tmp")));
+		    "\nfree space on /tmp (%s): %llu GiB",
+		    fstype_note("/tmp") + 2, gib(fs_free("/tmp")));
 	if ((size_t)off < sizeof(block))
 		off += snprintf(block + off, sizeof(block) - (size_t)off,
 		    "\nother mount points may have their own free space; "
