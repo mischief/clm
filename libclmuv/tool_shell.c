@@ -11,6 +11,7 @@
  */
 #include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -239,17 +240,18 @@ shell_on_exit(uv_process_t *proc, int64_t exit_status, int term_signal)
 }
 
 /*
- * Force-close any pipe/process handles that are still open, bypassing the
- * normal "wait for the child to actually exit / close its end" path. Each
- * uv_close() here still runs through shell_on_close, so `handles` reaches
- * zero and shell_finish() fires exactly as it would on a clean exit -- this
- * just stops waiting on a child that may never cooperate.
+ * Force-close the pipes still held open by whatever outlived the child, so
+ * shell_finish() no longer waits on EOF that may never come.
+ *
+ * The process handle is deliberately left alone: libuv reaps a child only
+ * while its uv_process_t is registered on the loop, so closing it before the
+ * exit callback leaves the child unreaped -- a zombie for the life of the
+ * process. SIGKILL has already gone to the process group, so the exit
+ * callback arrives on its own and closes the handle there.
  */
 static void
 shell_force_close(struct shell_state *s)
 {
-	if (!uv_is_closing((uv_handle_t *)&s->proc))
-		uv_close((uv_handle_t *)&s->proc, shell_on_close);
 	if (!uv_is_closing((uv_handle_t *)&s->out))
 		uv_close((uv_handle_t *)&s->out, shell_on_close);
 	if (!uv_is_closing((uv_handle_t *)&s->err))

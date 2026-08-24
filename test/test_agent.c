@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: ISC
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1047,6 +1048,61 @@ test_shell_exec_sigterm_ignored(uv_loop_t *loop)
 
 	teardown(&st, srv);
 	unsetenv("CLM_SHELL_KILL_GRACE_MS");
+}
+
+/*
+ * (d5) libuv reaps a child only while its uv_process_t is registered, so the
+ * escalation path must not close that handle early. The child here is still
+ * alive when the grace period expires (it ignores SIGTERM in the
+ * foreground), which is when a forced close would strand it as a zombie.
+ */
+static void
+test_shell_exec_cancel_reaps_child(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i, wstatus;
+	pid_t p = 0;
+
+	CHECK(setenv("CLM_SHELL_KILL_GRACE_MS", "50", 1) == 0,
+	    "set grace period override");
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_tool_call(srv, "shell_exec",
+	    "{\"command\":\"trap '' TERM; echo started; while :; do sleep 5; "
+	    "done\"}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(
+	    clm_agent_submit(st.agent, "run an unkillable job") == 0, "submit");
+	/* Real time, not just loop turns: the trap has to be installed before
+	 * the cancel below, or the shell dies to the SIGTERM and never
+	 * reaches the escalation path this test is about. */
+	for (i = 0; i < 40; i++) {
+		uv_run(loop, UV_RUN_NOWAIT);
+		uv_sleep(10);
+	}
+	CHECK(!st.turn_done, "turn still waiting on the shell command");
+
+	CHECK(clm_agent_cancel(st.agent) == 0, "cancel accepted");
+	run_until_done(&st);
+	teardown(&st, srv);
+	unsetenv("CLM_SHELL_KILL_GRACE_MS");
+
+	/* -1 means libuv reaped everything; a pid means it left one behind,
+	 * which is the bug; 0 means one is still running, so wait. */
+	for (i = 0; i < 100; i++) {
+		p = waitpid(-1, &wstatus, WNOHANG);
+		if (p != 0)
+			break;
+		uv_run(loop, UV_RUN_NOWAIT);
+		uv_sleep(10);
+	}
+	CHECK(p < 0 && errno == ECHILD,
+	    "cancelled shell child was reaped, not left a zombie");
 }
 
 /* Queue an SSE text reply split across two content deltas. */
@@ -2188,6 +2244,7 @@ test_agent_suite(void *arg)
 	test_agent_free_during_shell_exec(&loop);
 	test_shell_exec_cancel_backgrounded_job(&loop);
 	test_shell_exec_sigterm_ignored(&loop);
+	test_shell_exec_cancel_reaps_child(&loop);
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
