@@ -105,32 +105,34 @@ shell_finish(struct shell_state *s)
 	} else if (s->exit_status != 0 || s->term_signal != 0) {
 		size_t mlen = s->len + 128;
 		autofree char *msg = malloc(mlen);
+		const char *body = s->len ? s->buf : "(no output)";
+		/* Command output usually ends in its own newline; do not add
+		 * a second one before the status line. */
+		const char *sep =
+		    (s->len && s->buf[s->len - 1] == '\n') ? "" : "\n";
+
 		if (msg != NULL) {
-			/* A signal-terminated process has no real exit status
-			 * -- uv_process_t's exit callback reports exit_status
-			 * as 0 in that case, not the process's own value (there
-			 * isn't one; it never called exit()). Printing "exit
-			 * status 0" alongside "killed by signal" was actively
-			 * misleading (reads as "succeeded, but also killed?"),
-			 * so show the actual signal instead of the meaningless
-			 * exit status when term_signal is set, rather than both
-			 * at once. */
+			/* A signal-terminated process has no real exit status:
+			 * uv_process_t reports 0 there, so print the signal
+			 * instead of a meaningless "exit status 0". */
 			if (s->term_signal != 0) {
 				const char *signame = strsignal(s->term_signal);
 				(void)snprintf(msg, mlen,
-				    "%s%s(killed by signal %d: %s)",
-				    s->len ? s->buf : "", s->len ? "\n" : "",
+				    "%s%s(killed by signal %d: %s)", body, sep,
 				    s->term_signal,
 				    signame != NULL ? signame : "unknown");
 			} else {
 				(void)snprintf(msg, mlen,
-				    "%s%s(exit status %lld)",
-				    s->len ? s->buf : "", s->len ? "\n" : "",
+				    "%s%s(exit status %lld)", body, sep,
 				    (long long)s->exit_status);
 			}
-			clm_tool_fail(inv, msg);
+			/* A nonzero exit is an answer, not a broken tool:
+			 * grep(1), test(1), and diff(1) all report findings
+			 * that way. Reporting it as a failure makes the model
+			 * retry a command that already answered. */
+			clm_tool_complete(inv, msg);
 		} else {
-			clm_tool_fail(inv, "command failed");
+			clm_tool_fail(inv, "out of memory");
 		}
 	} else {
 		clm_tool_complete(
