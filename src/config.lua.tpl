@@ -117,7 +117,16 @@ return {
         -- needed at all, hence commented out rather than shipped
         -- with a blank one (see clm-config(5)'s api_key for why an
         -- explicit empty key isn't the same as no key here).
-        -- local = {
+        --
+        -- NOTE: "local" is a reserved word in Lua (it starts a local
+        -- variable declaration), so it can't be used as a bare table
+        -- key the way every other entry in this table is -- `local =
+        -- {...}` is a syntax error, not a table entry, and the whole
+        -- file fails to load. The ["local"] = {...} quoted-key form
+        -- below is required here specifically; any other name (e.g.
+        -- llamacpp, ollama) could use the bare form like its
+        -- neighbors above.
+        -- ["local"] = {
         --     kind = "ollama",
         --     url = "http://127.0.0.1:8081/v1",
         --     -- Models nest under their provider, keyed by the
