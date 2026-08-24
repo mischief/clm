@@ -385,6 +385,30 @@ def test_bracketed_paste(url):
         check("line one" in txt and "line two" in txt and "line three" in txt,
               "paste: all three lines appear in the submitted turn")
 
+    # A paste far past the old fixed 1 KiB line buffer must arrive whole:
+    # it used to be silently truncated mid-character-insert.
+    with Tui(BIN, url, rows=24, cols=80) as t:
+        t.wait_for("online", timeout=8)
+        big = "\r".join("log line %03d filler filler filler" % i
+                         for i in range(120))
+        check(len(big) > 4000, "paste: fixture is well past the old limit")
+        t.send(PASTE_START + big.encode() + PASTE_END)
+        t.pump(0.6)
+        t.send(b"\r")
+        assert t.wait_for("Apple", timeout=15), "no reply after big paste"
+        t.pump(0.5)
+        t.send(b"/quit\r")
+        t.pump(0.8)
+
+    sessions = os.path.join(STATE_HOME, "clm")
+    logged = ""
+    for f in os.listdir(sessions):
+        if f.endswith(".jsonl"):
+            with open(os.path.join(sessions, f)) as fh:
+                logged += fh.read()
+    check("log line 000" in logged and "log line 119" in logged,
+          "paste: a paste past the old 1 KiB cap arrives whole")
+
 
 def test_agent_name(url):
     """The status bar should show provider/model:agent from config."""

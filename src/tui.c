@@ -129,6 +129,31 @@ cb_mcp_status(const char *msg, void *user)
  * one lands), so a flag set only where this file calls submit goes stale and
  * input typed in that window is rejected as "turn already in progress".
  */
+/* Grow a byte buffer to hold `need` bytes plus a terminator. */
+static bool
+buf_reserve(char **buf, size_t *cap, size_t need)
+{
+	size_t want = *cap ? *cap : 256;
+	char *p;
+
+	if (need + 1 <= *cap)
+		return true;
+	while (want < need + 1)
+		want *= 2;
+	p = realloc(*buf, want);
+	if (p == NULL)
+		return false;
+	*buf = p;
+	*cap = want;
+	return true;
+}
+
+bool
+ui_input_reserve(struct ui *u, size_t need)
+{
+	return buf_reserve(&u->input, &u->input_cap, need);
+}
+
 static void
 ui_set_state(struct ui *u, enum clm_agent_state st)
 {
@@ -2767,8 +2792,8 @@ hist_load(struct ui *u, const char *text)
 {
 	size_t n = strlen(text);
 
-	if (n >= sizeof(u->input))
-		n = sizeof(u->input) - 1;
+	if (!ui_input_reserve(u, n))
+		return;
 	memcpy(u->input, text, n);
 	u->input[n] = '\0';
 	u->input_len = n;
@@ -2793,8 +2818,8 @@ hist_recall(struct ui *u, int dir)
 		if (u->hist_pos == u->nhist) {
 			/* Leaving the live line: save it for the trip back. */
 			u->input[u->input_len] = '\0';
-			(void)snprintf(u->hist_saved, sizeof(u->hist_saved),
-			    "%s", u->input);
+			free(u->hist_saved);
+			u->hist_saved = strdup(u->input);
 		}
 		u->hist_pos--;
 		hist_load(u, u->hist[u->hist_pos]);
@@ -2803,7 +2828,9 @@ hist_recall(struct ui *u, int dir)
 			return; /* already at the live line */
 		u->hist_pos++;
 		if (u->hist_pos == u->nhist)
-			hist_load(u, u->hist_saved); /* back to the live line */
+			hist_load(u,
+			    u->hist_saved != NULL ? u->hist_saved
+			                          : ""); /* the live line */
 		else
 			hist_load(u, u->hist[u->hist_pos]);
 	}
@@ -2834,7 +2861,8 @@ submit_line(struct ui *u)
 	u->input_len = 0;
 	u->input_pos = 0;
 	u->hist_pos = u->nhist; /* reset recall to the live line */
-	u->hist_saved[0] = '\0';
+	free(u->hist_saved);
+	u->hist_saved = NULL;
 	u->dirty = true;
 }
 
@@ -2900,7 +2928,7 @@ tui_expand_emoji_at_cursor(struct ui *u)
 
 	size_t fullspan = close - i + 1; /* ":name:" including both colons */
 	if (glyphlen > fullspan &&
-	    u->input_len + (glyphlen - fullspan) >= sizeof(u->input) - 1)
+	    !ui_input_reserve(u, u->input_len + (glyphlen - fullspan)))
 		return;
 
 	size_t tail_len = u->input_len - u->input_pos;
@@ -2918,7 +2946,7 @@ input_char(struct ui *u, wint_t wch)
 	int n = wctomb(mb, (wchar_t)wch);
 	if (n <= 0)
 		return;
-	if (u->input_len + (size_t)n >= sizeof(u->input) - 1)
+	if (!ui_input_reserve(u, u->input_len + (size_t)n))
 		return;
 	/* Insert at the cursor, shifting the tail right. */
 	memmove(u->input + u->input_pos + (size_t)n, u->input + u->input_pos,
@@ -2952,8 +2980,8 @@ input_kill(struct ui *u, size_t from, size_t to)
 	if (to <= from)
 		return;
 	size_t n = to - from;
-	if (n >= sizeof(u->kill))
-		n = sizeof(u->kill) - 1;
+	if (!buf_reserve(&u->kill, &u->kill_cap, n))
+		return;
 	memcpy(u->kill, u->input + from, n);
 	u->kill_len = n;
 	memmove(u->input + from, u->input + to, u->input_len - to);
@@ -2970,7 +2998,7 @@ input_yank(struct ui *u)
 {
 	if (u->kill_len == 0)
 		return;
-	if (u->input_len + u->kill_len >= sizeof(u->input) - 1)
+	if (!ui_input_reserve(u, u->input_len + u->kill_len))
 		return;
 	memmove(u->input + u->input_pos + u->kill_len, u->input + u->input_pos,
 	    u->input_len - u->input_pos);
@@ -3520,6 +3548,12 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		return 1;
 	}
 	u->last_total = -1; /* draw_transcript hasn't painted yet */
+	if (!ui_input_reserve(u, 1024)) {
+		fprintf(stderr, "error: out of memory\n");
+		free(u);
+		return 1;
+	}
+	u->input[0] = '\0';
 
 	loop = uv_default_loop();
 	u->loop = loop;
@@ -3769,6 +3803,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	for (size_t i = 0; i < u->nhist; i++)
 		free(u->hist[i]);
 	free(u->hist);
+	free(u->input);
+	free(u->kill);
+	free(u->hist_saved);
 	free(u);
 
 	return 0;

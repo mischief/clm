@@ -123,11 +123,18 @@ struct ui {
 	                 * rows drag the view along with them. -1 = not
 	                 * yet painted. */
 
-	/* Input line editor (byte buffer, UTF-8; cursor is a byte offset). */
-	char input[1024];
+	/*
+	 * Input line editor (byte buffer, UTF-8; cursor is a byte offset).
+	 * Grown on demand through ui_input_reserve: a pasted build log runs
+	 * to tens of kilobytes, and silently dropping the tail of one is
+	 * worse than any allocation it costs.
+	 */
+	char *input;
+	size_t input_cap;
 	size_t input_len;
 	size_t input_pos;
-	char kill[1024];
+	char *kill;
+	size_t kill_cap;
 	size_t kill_len;
 
 	/* Bumped on every key handled in handle_keys() (tui.c), including the
@@ -201,7 +208,7 @@ struct ui {
 	char **hist;
 	size_t nhist, cap_hist;
 	size_t hist_pos;
-	char hist_saved[1024];
+	char *hist_saved; /* live line parked while browsing history */
 
 	bool color;       /* print text in color, otherwise just attributes */
 	bool dirty;       /* repaint requested */
@@ -213,6 +220,10 @@ struct ui {
  * to show candidate lists / errors the same way any other UI message is
  * shown. */
 void ui_push(struct ui *u, enum ui_style style, const char *text);
+
+/* Make room for `need` bytes plus a terminator in u->input. False on OOM,
+ * leaving the buffer as it was. */
+bool ui_input_reserve(struct ui *u, size_t need);
 
 /* If input[input_pos - 1] is a ':' that closes a ":shortcode:" run right
  * behind the cursor, replace that whole span with the looked-up emoji

@@ -111,7 +111,7 @@ apply_insert(struct ui *u, size_t wstart, size_t wlen, size_t replace_off,
 	size_t tail_len = u->input_len - replace_end;
 	size_t new_len = replace_start + insert_len + tail_len;
 
-	if (new_len >= sizeof(u->input))
+	if (!ui_input_reserve(u, new_len))
 		return;
 
 	memmove(u->input + replace_start + insert_len, u->input + replace_end,
