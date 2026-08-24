@@ -1117,6 +1117,11 @@ emit_usage(struct clm_agent *agent, const struct clm_usage *usage)
 	 * mid-chain without depending on a UI layer to track it. */
 	agent->ctx_used =
 	    (int64_t)usage->prompt_tokens + usage->completion_tokens;
+	clm_debug("usage: prompt=%d (cache read=%d write=%d) completion=%d "
+	          "ctx_used=%lld/%lld",
+	    usage->prompt_tokens, usage->cache_read_tokens,
+	    usage->cache_write_tokens, usage->completion_tokens,
+	    (long long)agent->ctx_used, (long long)agent->ctx_max);
 	if (agent->cb_on_usage)
 		agent->cb_on_usage(usage, agent->cb_user);
 }
