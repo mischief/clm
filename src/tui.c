@@ -2098,8 +2098,11 @@ cmd_agent(struct ui *u, const char *arg)
 			                             : "");
 			newcfg.system_prompt = sprompt;
 			/* A profile switch builds a whole new agent, so the
-			 * host block has to be handed over again. */
-			newcfg.system_prompt_suffix = clm_cli_sysinfo();
+			 * host block has to be handed over again. The agent
+			 * copies it, so this frees at the end of the switch. */
+			autofree char *sysinfo = clm_cli_sysinfo();
+
+			newcfg.system_prompt_suffix = sysinfo;
 			newcfg.provider = clm_provider_from_str(pkind);
 			newcfg.stream = 1;
 			if (prov != NULL && spec_model != NULL) {

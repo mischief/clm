@@ -18,6 +18,9 @@
 #include "sysinfo.h"
 #include "banned.h"
 
+#define SYSINFO_MAX 2048
+#define SYSINFO_PATH_MAX 1024
+
 /* Bytes rendered as a whole number of GiB, or 0 if the value is unknown. */
 static unsigned long long
 gib(uint64_t bytes)
@@ -48,87 +51,91 @@ same_fs(const char *a, const char *b)
 }
 
 /*
- * ", <type>" for a filesystem worth naming, "" otherwise. A RAM-backed
+ * Write ", <type>" for a filesystem worth naming, "" otherwise. A RAM-backed
  * filesystem is the case that matters: writing there spends memory, and
  * whatever lands in it is gone after a reboot.
  */
-static const char *
-fstype_note(const char *path)
+static void
+fstype_note(const char *path, char *buf, size_t len)
 {
-	static char note[64];
-	const char *type = clm_cli_sysinfo_fstype(path);
-	int ramdisk;
+	char type[64];
+	bool ramdisk;
 
-	if (type[0] == '\0')
-		return "";
+	clm_cli_sysinfo_fstype(path, type, sizeof(type));
+	if (type[0] == '\0') {
+		if (len > 0)
+			buf[0] = '\0';
+		return;
+	}
 	ramdisk = strcmp(type, "tmpfs") == 0 || strcmp(type, "ramfs") == 0 ||
 	    strcmp(type, "mfs") == 0;
-	(void)snprintf(
-	    note, sizeof(note), ", %s%s", type, ramdisk ? ", in RAM" : "");
-	return note;
+	(void)snprintf(buf, len, ", %s%s", type, ramdisk ? ", in RAM" : "");
 }
 
-const char *
+char *
 clm_cli_sysinfo(void)
 {
-	/* utsname plus a path buffer overflow the 2 KiB frame budget the
-	 * build enforces; this runs once and caches, so keep them out of the
-	 * stack entirely. */
-	static char block[2048];
-	static struct utsname u;
-	static char cwd[1024];
-	static int built;
+	struct utsname u;
+	char *block, *cwd;
+	char cwd_fs[80], tmp_fs[80];
 	long cores;
-	uint64_t mem, disk;
+	uint64_t mem, disk, tmp_free;
 	int off;
 
-	if (built)
-		return block;
-	built = 1;
-
-	if (uname(&u) != 0)
-		return block;
+	block = malloc(SYSINFO_MAX);
+	cwd = malloc(SYSINFO_PATH_MAX);
+	if (block == NULL || cwd == NULL || uname(&u) != 0) {
+		free(block);
+		free(cwd);
+		return NULL;
+	}
 
 	cores = sysconf(_SC_NPROCESSORS_ONLN);
 	mem = clm_cli_sysinfo_physmem();
 	disk = fs_free(".");
-	if (getcwd(cwd, sizeof(cwd)) == NULL)
-		(void)snprintf(cwd, sizeof(cwd), ".");
+	if (getcwd(cwd, SYSINFO_PATH_MAX) == NULL)
+		(void)snprintf(cwd, SYSINFO_PATH_MAX, ".");
+	fstype_note(".", cwd_fs, sizeof(cwd_fs));
 
-	off = snprintf(block, sizeof(block), "host: %s %s %s (%s)", u.sysname,
+	off = snprintf(block, SYSINFO_MAX, "host: %s %s %s (%s)", u.sysname,
 	    u.release, u.machine, u.nodename);
-	if (off < 0 || (size_t)off >= sizeof(block)) {
-		block[0] = '\0';
-		return block;
+	if (off < 0 || off >= SYSINFO_MAX) {
+		free(block);
+		free(cwd);
+		return NULL;
 	}
 
 	if (cores > 0)
-		off += snprintf(block + off, sizeof(block) - (size_t)off,
+		off += snprintf(block + off, (size_t)(SYSINFO_MAX - off),
 		    "\ncpu cores: %ld", cores);
-	if (mem > 0 && (size_t)off < sizeof(block))
-		off += snprintf(block + off, sizeof(block) - (size_t)off,
+	if (mem > 0 && off < SYSINFO_MAX)
+		off += snprintf(block + off, (size_t)(SYSINFO_MAX - off),
 		    "\nmemory: %llu GiB", gib(mem));
 	/* Name the directory the number belongs to: a split layout (the
 	 * OpenBSD default) gives /, /usr, /var, /tmp, and /home each their
 	 * own free space, and the one under the working directory says
 	 * nothing about where the next write lands. */
-	if (disk > 0 && (size_t)off < sizeof(block))
-		off += snprintf(block + off, sizeof(block) - (size_t)off,
+	if (disk > 0 && off < SYSINFO_MAX)
+		off += snprintf(block + off, (size_t)(SYSINFO_MAX - off),
 		    "\nfree space where the working directory lives (%s%s): "
 		    "%llu GiB",
-		    cwd, fstype_note("."), gib(disk));
-	if (!same_fs(".", "/tmp") && fs_free("/tmp") > 0 &&
-	    (size_t)off < sizeof(block))
-		off += snprintf(block + off, sizeof(block) - (size_t)off,
+		    cwd, cwd_fs, gib(disk));
+	tmp_free = same_fs(".", "/tmp") ? 0 : fs_free("/tmp");
+	if (tmp_free > 0 && off < SYSINFO_MAX) {
+		fstype_note("/tmp", tmp_fs, sizeof(tmp_fs));
+		off += snprintf(block + off, (size_t)(SYSINFO_MAX - off),
 		    "\nfree space on /tmp (%s): %llu GiB",
-		    fstype_note("/tmp") + 2, gib(fs_free("/tmp")));
-	if ((size_t)off < sizeof(block))
-		off += snprintf(block + off, sizeof(block) - (size_t)off,
+		    tmp_fs[0] != '\0' ? tmp_fs + 2 : "unknown type",
+		    gib(tmp_free));
+	}
+	if (off < SYSINFO_MAX)
+		off += snprintf(block + off, (size_t)(SYSINFO_MAX - off),
 		    "\nother mount points may have their own free space; "
 		    "check df(1) before a large write");
-	if ((size_t)off < sizeof(block))
-		(void)snprintf(block + off, sizeof(block) - (size_t)off, "%s",
+	if (off < SYSINFO_MAX)
+		(void)snprintf(block + off, (size_t)(SYSINFO_MAX - off), "%s",
 		    clm_cli_sysinfo_hints());
 
+	free(cwd);
 	return block;
 }

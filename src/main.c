@@ -732,7 +732,9 @@ main(int argc, char *argv[])
 	cfg.model = model_name;
 	cfg.max_iterations = 0;
 	cfg.stream = stream;
-	cfg.system_prompt_suffix = clm_cli_sysinfo();
+	autofree char *sysinfo = clm_cli_sysinfo();
+
+	cfg.system_prompt_suffix = sysinfo;
 	if (lcfg != NULL) {
 		cfg.system_prompt = clm_lua_cfg_get_str(lcfg, "system_prompt");
 		/* Agent policy: fnmatch patterns for tools whose old results

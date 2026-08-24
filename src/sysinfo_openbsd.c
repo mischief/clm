@@ -12,16 +12,15 @@
 #include "sysinfo.h"
 #include "banned.h"
 
-const char *
-clm_cli_sysinfo_fstype(const char *path)
+void
+clm_cli_sysinfo_fstype(const char *path, char *buf, size_t len)
 {
-	static char name[MFSNAMELEN];
 	struct statfs sfs;
 
 	if (statfs(path, &sfs) != 0)
-		return "";
-	(void)snprintf(name, sizeof(name), "%s", sfs.f_fstypename);
-	return name;
+		(void)snprintf(buf, len, "%s", "");
+	else
+		(void)snprintf(buf, len, "%s", sfs.f_fstypename);
 }
 
 uint64_t

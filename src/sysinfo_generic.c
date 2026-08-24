@@ -4,6 +4,7 @@
  * their own (see sysinfo.h). uname and the core count still work; memory and
  * userland guidance are left out rather than guessed. */
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 
 #include "sysinfo.h"
@@ -21,9 +22,9 @@ clm_cli_sysinfo_hints(void)
 	return "";
 }
 
-const char *
-clm_cli_sysinfo_fstype(const char *path)
+void
+clm_cli_sysinfo_fstype(const char *path, char *buf, size_t len)
 {
 	(void)path;
-	return "";
+	(void)snprintf(buf, len, "%s", "");
 }

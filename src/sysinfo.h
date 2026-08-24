@@ -14,10 +14,10 @@
 
 /*
  * OS, hardware, and the userland quirks that decide which command spellings
- * work here. Built once and cached; never NULL (empty if nothing could be
- * collected). Not freed by the caller.
+ * work here. Returns a malloc'd string the caller frees, or NULL on
+ * allocation failure. Holds no state of its own.
  */
-const char *clm_cli_sysinfo(void);
+char *clm_cli_sysinfo(void);
 
 /* Installed physical memory in bytes, or 0 when the host cannot report it.
  * Implemented per OS. */
@@ -28,8 +28,8 @@ uint64_t clm_cli_sysinfo_physmem(void);
  * saying. Implemented per OS. */
 const char *clm_cli_sysinfo_hints(void);
 
-/* Filesystem type name for `path` ("ext4", "tmpfs", "ffs", ...), or "" when
- * the host cannot report it. Implemented per OS. */
-const char *clm_cli_sysinfo_fstype(const char *path);
+/* Write the filesystem type of `path` ("ext", "tmpfs", "ffs", ...) into buf,
+ * or "" when the host cannot report it. Implemented per OS. */
+void clm_cli_sysinfo_fstype(const char *path, char *buf, size_t len);
 
 #endif /* CLM_CLI_SYSINFO_H */
