@@ -205,7 +205,8 @@ main(int argc, char **argv)
 		return server_main();
 	program_path = argv[0];
 	TAP_ADD("restart callback lifetime",
-	              test_restart_callback_lifetime_from_argv0, NULL);
-	/* argv[0] remains valid for this process while the registered test runs. */
+	    test_restart_callback_lifetime_from_argv0, NULL);
+	/* argv[0] remains valid for this process while the registered test
+	 * runs. */
 	return tap_run();
 }

@@ -53,8 +53,8 @@ tap_add(const char *name, tap_fn fn, void *arg)
 }
 
 void
-tap_add_or_die(const char *name, tap_fn fn, void *arg, const char *file,
-    int line)
+tap_add_or_die(
+    const char *name, tap_fn fn, void *arg, const char *file, int line)
 {
 	int r = tap_add(name, fn, arg);
 

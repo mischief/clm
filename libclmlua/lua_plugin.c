@@ -1530,7 +1530,7 @@ clm_lua_cfg_load(const char *path, char **errmsg)
 		clm_debug("config: %s did not return a table", path);
 		if (errmsg != NULL)
 			*errmsg = strdup("config.lua did not return a table "
-			                  "(missing \"return {...}\"?)");
+			                 "(missing \"return {...}\"?)");
 		lua_close(L);
 		return NULL;
 	}

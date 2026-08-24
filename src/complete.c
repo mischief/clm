@@ -656,8 +656,8 @@ struct arg_source {
 
 /* /cd's argument source is just complete_path (below) with the generation
  * parameter arg_complete_fn requires but complete_path doesn't need. */
-static void
-source_cd_path(struct ui *u, uint64_t generation, size_t wstart, size_t wlen);
+static void source_cd_path(
+    struct ui *u, uint64_t generation, size_t wstart, size_t wlen);
 
 /*
  * Which commands have a completable argument, and what completes it.

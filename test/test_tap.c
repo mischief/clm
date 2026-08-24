@@ -28,10 +28,10 @@ static int
 rejects_bad_registration(void *arg)
 {
 	(void)arg;
-	TAP_CHECK(tap_add(NULL, pass, NULL) == -EINVAL,
-	    "NULL test name is rejected");
-	TAP_CHECK(tap_add("", pass, NULL) == -EINVAL,
-	    "empty test name is rejected");
+	TAP_CHECK(
+	    tap_add(NULL, pass, NULL) == -EINVAL, "NULL test name is rejected");
+	TAP_CHECK(
+	    tap_add("", pass, NULL) == -EINVAL, "empty test name is rejected");
 	TAP_CHECK(tap_add("null callback", NULL, NULL) == -EINVAL,
 	    "NULL callback is rejected");
 	return 0;

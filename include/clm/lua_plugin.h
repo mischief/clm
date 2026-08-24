@@ -69,8 +69,7 @@ CLM_API void clm_lua_env_free(struct clm_lua_env *env);
  * invalid secrets.lua yields an empty clm.secrets rather than failing (and
  * is never reported through errmsg -- only config.lua's own load is).
  */
-CLM_API struct clm_lua_cfg *clm_lua_cfg_load(
-    const char *path, char **errmsg);
+CLM_API struct clm_lua_cfg *clm_lua_cfg_load(const char *path, char **errmsg);
 
 /*
  * Load an agent profile. If agent_name is non-NULL, loads

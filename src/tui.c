@@ -3537,8 +3537,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 				    clm_session_id(u->session),
 				    clm_session_id(u->session), u->model);
 			} else {
-				printf(
-				    "session: %s (resume with clm --resume %s)\n",
+				printf("session: %s (resume with clm --resume "
+				       "%s)\n",
 				    clm_session_id(u->session),
 				    clm_session_id(u->session));
 			}

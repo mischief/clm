@@ -38,7 +38,8 @@ struct host_uv_ctx {
 	struct clm_http_mux *mux;
 	/* Every call is tracked, including fire-and-forget health/model probes.
 	 * The core intentionally does not retain cancellable handles for those
-	 * probes, but the host must still settle them before it destroys mux. */
+	 * probes, but the host must still settle them before it destroys mux.
+	 */
 	struct host_uv_call *calls;
 };
 
@@ -316,15 +317,17 @@ clm_host_uv_free(struct clm_host *host)
 		for (call = hctx->calls; call != NULL;) {
 			struct host_uv_call *next = call->next;
 
-			/* At this point core owners have already been destroyed, so
-			 * suppress callbacks: their user pointers may be gone too. */
+			/* At this point core owners have already been
+			 * destroyed, so suppress callbacks: their user pointers
+			 * may be gone too. */
 			if (call->req != NULL)
 				clm_http_request_free(call->req);
 			free(call);
 			call = next;
 		}
 		hctx->calls = NULL;
-		/* Direct request teardown removes every easy handle synchronously. */
+		/* Direct request teardown removes every easy handle
+		 * synchronously. */
 		assert(hctx->calls == NULL);
 		clm_http_mux_free(hctx->mux);
 		free(hctx);

@@ -737,8 +737,8 @@ extract_message_content(cJSON *parsed)
  * limits), so do not hide the status/error envelope behind a generic error.
  */
 static void
-format_http_error(const struct clm_http_response *resp, int status, char *buf,
-    size_t bufsz)
+format_http_error(
+    const struct clm_http_response *resp, int status, char *buf, size_t bufsz)
 {
 	const char *detail = NULL;
 	json_cleanup cJSON *errjson = NULL;
@@ -746,8 +746,8 @@ format_http_error(const struct clm_http_response *resp, int status, char *buf,
 	if (resp != NULL && resp->body != NULL && resp->body[0] != '\0') {
 		errjson = cJSON_Parse(resp->body);
 		if (errjson != NULL) {
-			cJSON *err = cJSON_GetObjectItemCaseSensitive(errjson,
-			    "error");
+			cJSON *err =
+			    cJSON_GetObjectItemCaseSensitive(errjson, "error");
 			cJSON *msg = cJSON_IsObject(err)
 			    ? cJSON_GetObjectItemCaseSensitive(err, "message")
 			    : NULL;
@@ -761,7 +761,8 @@ format_http_error(const struct clm_http_response *resp, int status, char *buf,
 	else if (resp != NULL && resp->body != NULL && resp->body[0] != '\0')
 		(void)snprintf(buf, bufsz, "HTTP %d: %s", status, resp->body);
 	else if (resp != NULL)
-		(void)snprintf(buf, bufsz, "HTTP %d: empty response body", status);
+		(void)snprintf(
+		    buf, bufsz, "HTTP %d: empty response body", status);
 	else
 		(void)snprintf(buf, bufsz, "HTTP %d", status);
 }
@@ -814,8 +815,8 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 	summary = parsed ? extract_message_content(parsed) : NULL;
 	if (summary == NULL || summary[0] == '\0') {
 		const char *reason = response_finish_reason(parsed);
-		const char *why = reason != NULL &&
-		    strcmp(reason, "content_filter") == 0
+		const char *why =
+		    reason != NULL && strcmp(reason, "content_filter") == 0
 		    ? "compaction stopped by content filter"
 		    : "compaction produced no summary";
 
@@ -966,7 +967,8 @@ clm_agent_compact(struct clm_agent *agent)
 	/* Build through the provider seam rather than hand-serializing the
 	 * canonical chat-completions shape.  In particular, Responses API
 	 * providers require `input`, not `messages`; build_request() also owns
-	 * messages, so do not delete it below.  Compaction never exposes tools. */
+	 * messages, so do not delete it below.  Compaction never exposes tools.
+	 */
 	ops = clm_provider_ops_get(agent->llm->provider);
 	req = ops->build_request(agent->llm, messages, NULL, false);
 	if (req == NULL)
@@ -1095,13 +1097,15 @@ static void
 agent_finish(struct clm_agent *agent, cJSON *tool_calls, const char *content,
     const char *finish_reason, bool streamed)
 {
-	/* A content filter is not a successful empty answer.  The UI has already
-	 * received the finish notification, but complete the turn as an error too
-	 * so callers get an actionable diagnostic rather than only the transient
+	/* A content filter is not a successful empty answer.  The UI has
+	 * already received the finish notification, but complete the turn as an
+	 * error too so callers get an actionable diagnostic rather than only
+	 * the transient
 	 * "[stopped: content filter]" notice. */
 	if (finish_reason != NULL &&
 	    strcmp(finish_reason, "content_filter") == 0) {
-		agent_fail(agent, "response stopped by content filter", -EACCES);
+		agent_fail(
+		    agent, "response stopped by content filter", -EACCES);
 		return;
 	}
 
@@ -1198,7 +1202,8 @@ stream_finalize(struct clm_async_turn *turn)
 	emit_finish(agent, turn->finish_reason);
 	if (turn->have_usage)
 		emit_usage(agent, &turn->usage);
-	agent_finish(agent, tool_calls, turn->content, turn->finish_reason, true);
+	agent_finish(
+	    agent, tool_calls, turn->content, turn->finish_reason, true);
 	clm_async_turn_free(turn);
 }
 
