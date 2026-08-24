@@ -198,51 +198,123 @@ message_bytes(const struct clm_message *m)
 }
 
 /*
- * How many trailing user turns to keep: those fitting keep_bytes, at least
- * keep_min_turns, and always at least one turn short of the whole history so
- * a caller that asked for compaction gets some.
+ * Replace [start, cut) with one summary message. Returns how many messages
+ * were folded, or a negative errno; nothing is touched on failure.
  */
-static size_t
-turns_within(
-    const struct clm_history *h, size_t keep_bytes, size_t keep_min_turns)
+static int
+fold_range(struct clm_history *h, struct clm_message *start,
+    struct clm_message *cut, const char *summary,
+    const struct clm_compressor *cz)
 {
-	const struct clm_message *m;
-	size_t turns = 0, kept = 0, bytes = 0, cap;
-	bool over = false;
+	struct clm_message *m, *summ;
+	int folded = 0;
 
-	if (keep_min_turns == 0)
-		keep_min_turns = 1;
-	for (m = TAILQ_LAST(h, clm_history); m != NULL;
-	    m = TAILQ_PREV(m, clm_history, entries)) {
-		if (m->role == CLM_ROLE_SYSTEM)
-			break;
-		if (!over)
-			bytes += message_bytes(m);
-		if (m->role != CLM_ROLE_USER)
-			continue;
-		turns++;
-		if (over)
-			continue;
-		if (turns <= keep_min_turns || bytes <= keep_bytes)
-			kept = turns;
-		else
-			over = true;
+	summ = clm_message_create(CLM_ROLE_USER);
+	if (summ == NULL)
+		return -ENOMEM;
+	if (message_set_content(summ, summary, cz) < 0) {
+		clm_message_free(summ);
+		return -ENOMEM;
 	}
 
-	if (kept == 0)
-		kept = keep_min_turns;
-	cap = turns > keep_min_turns ? turns - 1 : keep_min_turns;
-	return kept < cap ? kept : cap;
+	m = start;
+	while (m != NULL && m != cut) {
+		struct clm_message *next = TAILQ_NEXT(m, entries);
+
+		TAILQ_REMOVE(h, m, entries);
+		clm_message_free(m);
+		folded++;
+		m = next;
+	}
+	TAILQ_INSERT_BEFORE(cut, summ, entries);
+	return folded;
+}
+
+/*
+ * A message the history can be cut at without orphaning anything: the start
+ * of a user turn, or the assistant message that opens a tool exchange (its
+ * results follow it, so they stay together).
+ */
+static bool
+is_cut_point(const struct clm_message *m)
+{
+	if (m->role == CLM_ROLE_USER)
+		return true;
+	return m->role == CLM_ROLE_ASSISTANT && !TAILQ_EMPTY(&m->tool_calls);
 }
 
 int
 clm_history_compact_within(struct clm_history *h, const char *summary,
     size_t keep_bytes, size_t keep_min_turns, const struct clm_compressor *cz)
 {
+	struct clm_message *m, *sys_last = NULL, *first_nonsys;
+	struct clm_message *cut = NULL, *newest_cut = NULL;
+	size_t bytes = 0, removed = 0, turns = 0;
+
 	if (h == NULL || summary == NULL)
 		return -EINVAL;
-	return clm_history_compact(
-	    h, summary, turns_within(h, keep_bytes, keep_min_turns), cz);
+
+	TAILQ_FOREACH(m, h, entries)
+	{
+		if (m->role != CLM_ROLE_SYSTEM)
+			break;
+		sys_last = m;
+	}
+	first_nonsys = m;
+	if (first_nonsys == NULL)
+		return 0;
+
+	/*
+	 * Walk back keeping cut points while they fit. A turn's tool chain can
+	 * exceed the budget alone, so an exchange head counts as a cut point:
+	 * a whole-turn floor leaves the history above the threshold that
+	 * triggered the fold, and the caller folds again forever.
+	 */
+	for (m = TAILQ_LAST(h, clm_history); m != NULL && m != sys_last;
+	    m = TAILQ_PREV(m, clm_history, entries)) {
+		bytes += message_bytes(m);
+		if (!is_cut_point(m))
+			continue;
+		if (newest_cut == NULL)
+			newest_cut = m;
+		if (bytes > keep_bytes)
+			break;
+		cut = m;
+		if (m->role == CLM_ROLE_USER && ++turns >= keep_min_turns &&
+		    bytes > keep_bytes)
+			break;
+	}
+
+	/*
+	 * Cutting at the first message folds nothing, so step forward to the
+	 * next boundary: the whole history fitting the budget still means a
+	 * caller who asked for a fold gets one.
+	 */
+	if (cut == first_nonsys) {
+		for (m = TAILQ_NEXT(first_nonsys, entries); m != NULL;
+		    m = TAILQ_NEXT(m, entries))
+			if (is_cut_point(m))
+				break;
+		cut = m;
+	}
+	/* Not even the newest exchange fits the budget: keep it anyway, so
+	 * the agent has something to continue from. */
+	if (cut == NULL)
+		cut = newest_cut;
+	if (cut == NULL || cut == first_nonsys)
+		return 0;
+
+	for (m = first_nonsys; m != NULL && m != cut;
+	    m = TAILQ_NEXT(m, entries))
+		removed += message_bytes(m);
+
+	/* Folding one summary into another of the same size is not progress,
+	 * however many messages it moves: a positive return tells the caller
+	 * the history shrank. */
+	if (removed <= strlen(summary) + 32)
+		return 0;
+
+	return fold_range(h, first_nonsys, cut, summary, cz);
 }
 
 int

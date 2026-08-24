@@ -1357,10 +1357,22 @@ test_compact_keeps_tools(uv_loop_t *loop)
 }
 
 /*
- * The kept tail is sized, not counted: a turn holding a huge tool result
- * costs the turns that would otherwise be kept beside it, so what survives
- * compaction stays inside the budget either way.
+ * The kept tail is sized, not counted: what survives a fold stays inside the
+ * budget, so a history full of huge tool results cannot come back over the
+ * threshold that triggered the fold and start it looping.
  */
+/* Rough size of a history, the same measure compaction budgets against. */
+static size_t
+history_bytes(const struct clm_history *h)
+{
+	const struct clm_message *m;
+	size_t n = 0;
+
+	TAILQ_FOREACH(m, h, entries)
+	n += (size_t)m->content_len + 32;
+	return n;
+}
+
 static void
 test_compact_within_budget(void)
 {
@@ -1387,6 +1399,8 @@ test_compact_within_budget(void)
 	if (m->role == CLM_ROLE_USER)
 		kept++;
 	CHECK(kept == 6, "budget compact: summary plus the five kept turns");
+	CHECK(history_bytes(&h) <= 100000,
+	    "budget compact: the kept tail fits the budget");
 	clm_history_free(&h);
 
 	/* Same shape, but each answer is 4 KiB and the budget is 6 KiB, so
@@ -1399,11 +1413,12 @@ test_compact_within_budget(void)
 	}
 	CHECK(clm_history_compact_within(&h, "SUMMARY", 6144, 2, NULL) > 0,
 	    "budget compact: folds under a tight budget");
-	kept = 0;
-	TAILQ_FOREACH(m, &h, entries)
-	if (m->role == CLM_ROLE_USER)
-		kept++;
-	CHECK(kept == 3, "budget compact: summary plus the two-turn floor");
+	CHECK(history_bytes(&h) <= 6144 + 1024,
+	    "budget compact: a tight budget still bounds the tail");
+	/* Nothing left worth folding: the caller must not be told otherwise,
+	 * or it compacts again on the next turn and never stops. */
+	CHECK(clm_history_compact_within(&h, "SUMMARY", 6144, 2, NULL) == 0,
+	    "budget compact: a second fold reports no progress");
 	clm_history_free(&h);
 }
 
