@@ -58,3 +58,31 @@ clm_parse_props(const char *body, int64_t *ctx_out)
 	*ctx_out = n_ctx / n_slots;
 	return 0;
 }
+
+/*
+ * Context window from a model-metadata document: Anthropic's
+ * GET /v1/models/<id> reports max_input_tokens, and OpenAI-compatible
+ * catalogues that carry a window at all spell it context_length. Returns 0
+ * on success, -1 when the body says nothing about a window.
+ */
+int
+clm_parse_model_ctx(const char *body, int64_t *ctx_out)
+{
+	json_cleanup cJSON *root = NULL;
+	cJSON *v;
+
+	if (body == NULL || ctx_out == NULL)
+		return -1;
+	root = cJSON_Parse(body);
+	if (root == NULL || !cJSON_IsObject(root))
+		return -1;
+
+	v = cJSON_GetObjectItemCaseSensitive(root, "max_input_tokens");
+	if (!cJSON_IsNumber(v))
+		v = cJSON_GetObjectItemCaseSensitive(root, "context_length");
+	if (!cJSON_IsNumber(v) || v->valuedouble <= 0)
+		return -1;
+
+	*ctx_out = (int64_t)v->valuedouble;
+	return 0;
+}

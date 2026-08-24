@@ -1639,6 +1639,51 @@ clm_agent_fetch_props(struct clm_agent *agent)
 	    props_error_cb, NULL, agent, NULL);
 }
 
+/* GET <models_url>/<model> completed: take the window the backend reports. */
+static void
+model_meta_success_cb(struct clm_http_response *resp, void *user)
+{
+	struct clm_agent *agent = user;
+	int64_t ctx = 0;
+
+	if (resp != NULL && resp->status_code >= 200 &&
+	    resp->status_code < 300 && resp->body != NULL &&
+	    clm_parse_model_ctx(resp->body, &ctx) == 0)
+		agent->ctx_max = ctx;
+	if (resp)
+		clm_http_response_free(resp);
+}
+
+/*
+ * Ask the backend about the model itself: Anthropic has no /props, but its
+ * GET /v1/models/<id> carries max_input_tokens. Without a window the gauge
+ * reads nothing and compaction falls back to a fixed token count.
+ */
+static void
+clm_agent_fetch_model_meta(struct clm_agent *agent)
+{
+	autofree char *url = NULL;
+
+	if (agent->models_url == NULL || agent->llm == NULL ||
+	    agent->llm->model == NULL)
+		return;
+	if (asprintf(&url, "%s/%s", agent->models_url, agent->llm->model) < 0)
+		return;
+	(void)agent_http_post(agent, url, NULL, model_meta_success_cb,
+	    props_error_cb, NULL, agent, NULL);
+}
+
+/* Learn the context window however this backend exposes it. */
+static void
+clm_agent_fetch_ctx_max(struct clm_agent *agent)
+{
+	if (agent->llm != NULL &&
+	    agent->llm->provider == CLM_PROVIDER_ANTHROPIC)
+		clm_agent_fetch_model_meta(agent);
+	else
+		clm_agent_fetch_props(agent);
+}
+
 /* Health probe completed (GET /v1/models): 2xx is online, anything else is
  * offline. user is the agent (not a turn). */
 static void
@@ -1647,16 +1692,12 @@ health_success_cb(struct clm_http_response *resp, void *user)
 	struct clm_agent *agent = user;
 	int status = resp ? resp->status_code : -1;
 
+	/* 2xx = healthy; 4xx = server is reachable but the models endpoint is
+	 * missing or auth-gated. Either way, the server is up. */
 	if (agent->cb_on_connection) {
 		if (status >= 200 && status < 500) {
-			/* 2xx = healthy; 4xx = server is reachable but the
-			 * models endpoint is missing or auth-gated. Either
-			 * way, the server is up. */
 			agent->cb_on_connection(
 			    CLM_CONN_ONLINE, NULL, agent->cb_user);
-			if (agent->ctx_max == 0 && status >= 200 &&
-			    status < 300)
-				clm_agent_fetch_props(agent);
 		} else {
 			char detail[64];
 			(void)snprintf(
@@ -1665,6 +1706,10 @@ health_success_cb(struct clm_http_response *resp, void *user)
 			    CLM_CONN_OFFLINE, detail, agent->cb_user);
 		}
 	}
+	/* The window drives compaction, not just the gauge, so learn it even
+	 * when no UI is listening for connection events. */
+	if (agent->ctx_max == 0 && status >= 200 && status < 300)
+		clm_agent_fetch_ctx_max(agent);
 	if (resp)
 		clm_http_response_free(resp);
 }

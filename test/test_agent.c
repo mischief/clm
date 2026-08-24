@@ -1211,6 +1211,45 @@ test_stream_meta(uv_loop_t *loop)
 }
 
 /*
+ * The connection probe learns the context window from the model document a
+ * hosted API serves (Anthropic's GET /v1/models/<id>), since there is no
+ * /props to ask. Without it the context gauge has no denominator and
+ * compaction runs off a fixed token count instead.
+ */
+static void
+test_anthropic_ctx_max(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	/* First the health probe's model list, then the model document. */
+	canned_reply(srv, "{\"data\":[{\"id\":\"test-model\"}]}");
+	canned_reply(srv,
+	    "{\"type\":\"model\",\"id\":\"test-model\","
+	    "\"max_input_tokens\":1000000,\"max_tokens\":128000}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_get_ctx_max(st.agent) == 0, "ctx_max unknown at first");
+	CHECK(clm_agent_check_connection(st.agent) == 0, "check_connection");
+	/* NOWAIT so a probe that never fires fails the check below instead of
+	 * parking the suite in uv_run forever. */
+	for (i = 0; i < 20000 && clm_agent_get_ctx_max(st.agent) == 0; i++)
+		uv_run(loop, UV_RUN_NOWAIT);
+
+	CHECK(clm_agent_get_ctx_max(st.agent) == 1000000,
+	    "ctx_max learned from the model document");
+	CHECK(canned_request_count(srv) == 2, "health probe plus model fetch");
+
+	teardown(&st, srv);
+}
+
+/*
  * (g2) Anthropic Messages API: request shape (auth headers, system pulled
  * out of messages[], max_tokens) and a non-streaming text reply translated
  * back from Anthropic's content-block response shape.
@@ -2050,6 +2089,7 @@ test_agent_suite(void *arg)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_anthropic_ctx_max(&loop);
 	test_anthropic_text_reply(&loop);
 	test_anthropic_tool_call(&loop);
 	test_anthropic_stream(&loop);

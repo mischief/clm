@@ -191,6 +191,7 @@ void clm_agent_tools_done(struct clm_agent *agent, int status);
  * body. Declared here so it is unit-testable without a live server.
  */
 int clm_parse_props(const char *body, int64_t *ctx_out);
+int clm_parse_model_ctx(const char *body, int64_t *ctx_out);
 
 /*
  * Parse an OpenAI-compatible GET /v1/models body ({"data":[{"id":...}]})
