@@ -2419,8 +2419,7 @@ cmd_cd(struct ui *u, const char *arg)
 		if (asprintf(&msg, "\ncd: %s: %s\n", target, strerror(errno)) <
 		    0)
 			msg = NULL;
-		ui_push(u, ST_ERROR,
-		    msg != NULL ? msg : "\ncd: failed\n");
+		ui_push(u, ST_ERROR, msg != NULL ? msg : "\ncd: failed\n");
 		return;
 	}
 
@@ -3413,8 +3412,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	/* cbreak still leaves terminal flow control enabled: on many terminals
 	 * Ctrl-S/Ctrl-Q are intercepted and, more importantly for editing, the
 	 * configured delayed-suspend character can swallow Ctrl-Y before curses
-	 * sees it.  raw mode gives the input editor every control key it handles
-	 * itself (including Ctrl-Y yank). */
+	 * sees it.  raw mode gives the input editor every control key it
+	 * handles itself (including Ctrl-Y yank). */
 	raw();
 	noecho();
 	nonl();
