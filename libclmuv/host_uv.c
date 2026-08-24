@@ -4,8 +4,10 @@
  * delegating to the existing async HTTP engine (http_async.c), and timers via
  * uv_timer. See clm/host_uv.h.
  */
+#include <assert.h>
 #include <errno.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
 #include <curl/curl.h>
@@ -34,7 +36,79 @@
 struct host_uv_ctx {
 	uv_loop_t *loop;
 	struct clm_http_mux *mux;
+	/* Every call is tracked, including fire-and-forget health/model probes.
+	 * The core intentionally does not retain cancellable handles for those
+	 * probes, but the host must still settle them before it destroys mux. */
+	struct host_uv_call *calls;
 };
+
+struct host_uv_call {
+	struct host_uv_ctx *hctx;
+	struct host_uv_call *next;
+	struct clm_http_request *req;
+	clm_http_success_cb success;
+	clm_http_error_cb error;
+	clm_http_data_cb data;
+	void *user;
+	bool starting;
+	bool completed;
+};
+
+static void
+host_uv_call_unlink(struct host_uv_call *call)
+{
+	struct host_uv_call **p;
+
+	for (p = &call->hctx->calls; *p != NULL; p = &(*p)->next) {
+		if (*p == call) {
+			*p = call->next;
+			return;
+		}
+	}
+}
+
+static void
+host_uv_http_success(struct clm_http_response *resp, void *user)
+{
+	struct host_uv_call *call = user;
+	clm_http_success_cb success = call->success;
+	void *cb_user = call->user;
+
+	host_uv_call_unlink(call);
+	call->completed = true;
+	if (call->starting) {
+		success(resp, cb_user);
+		return;
+	}
+	free(call);
+	success(resp, cb_user);
+}
+
+static void
+host_uv_http_error(int error_code, const char *error_msg, void *user)
+{
+	struct host_uv_call *call = user;
+	clm_http_error_cb error = call->error;
+	void *cb_user = call->user;
+
+	host_uv_call_unlink(call);
+	call->completed = true;
+	if (call->starting) {
+		error(error_code, error_msg, cb_user);
+		return;
+	}
+	free(call);
+	error(error_code, error_msg, cb_user);
+}
+
+static void
+host_uv_http_data(const char *data, size_t len, void *user)
+{
+	struct host_uv_call *call = user;
+
+	if (call->data != NULL)
+		call->data(data, len, call->user);
+}
 
 /* ------------------------------------------------------------------ */
 /* HTTP transport                                                      */
@@ -46,12 +120,25 @@ host_uv_http_post(void *ctx, const struct clm_http_req *req,
     void *user, struct clm_http_call **out)
 {
 	struct host_uv_ctx *hctx = ctx;
+	struct host_uv_call *call;
 	struct curl_slist *hdrs = NULL;
 	struct clm_http_request *r = NULL;
 	int rc;
 
 	if (out != NULL)
 		*out = NULL;
+
+	call = calloc(1, sizeof(*call));
+	if (call == NULL)
+		return -ENOMEM;
+	call->hctx = hctx;
+	call->success = success;
+	call->error = error;
+	call->data = data;
+	call->user = user;
+	call->next = hctx->calls;
+	hctx->calls = call;
+	call->starting = true;
 
 	/* Translate the portable "Name: Value" header list into a curl_slist.
 	 * clm_http_async_post takes ownership on success. */
@@ -60,6 +147,8 @@ host_uv_http_post(void *ctx, const struct clm_http_req *req,
 			struct curl_slist *n = curl_slist_append(hdrs, *h);
 			if (n == NULL) {
 				curl_slist_free_all(hdrs);
+				host_uv_call_unlink(call);
+				free(call);
 				return -ENOMEM;
 			}
 			hdrs = n;
@@ -67,12 +156,23 @@ host_uv_http_post(void *ctx, const struct clm_http_req *req,
 	}
 
 	rc = clm_http_async_post(hctx->mux, req->url, req->api_key, req->body,
-	    hdrs, success, error, data, req->client_suffix, user, &r);
+	    hdrs, host_uv_http_success, host_uv_http_error,
+	    data != NULL ? host_uv_http_data : NULL, req->client_suffix, call,
+	    &r);
 	if (rc < 0) {
 		/* The engine did not take the headers on a start failure. */
 		curl_slist_free_all(hdrs);
+		host_uv_call_unlink(call);
+		free(call);
 		return rc;
 	}
+	call->starting = false;
+	if (call->completed) {
+		free(call);
+		return 0;
+	}
+	if (r != NULL)
+		call->req = r;
 	if (out != NULL)
 		*out = (struct clm_http_call *)r;
 	return 0;
@@ -203,15 +303,29 @@ clm_host_uv_free(struct clm_host *host)
 		return;
 
 	/*
-	 * clm_http_mux_free asserts nothing is still attached (see its
-	 * comment in http_async.c) -- the caller freeing this host is
-	 * responsible for having already settled every request it started
-	 * (cancelled or completed), same existing invariant clm_agent_free
-	 * and clm_mcp_client_free already rely on for their own in-flight
-	 * requests today.
+	 * The core deliberately leaves one-shot probes (health, /props, and
+	 * live-model lookups) unowned. They can still be attached when Ctrl-D
+	 * tears the UI down, though, so discard every host-owned request before
+	 * freeing the shared mux. Do not call their callbacks: their agent/UI
+	 * user pointers have already been released by the caller.
 	 */
 	hctx = host->ctx;
 	if (hctx != NULL) {
+		struct host_uv_call *call;
+
+		for (call = hctx->calls; call != NULL;) {
+			struct host_uv_call *next = call->next;
+
+			/* At this point core owners have already been destroyed, so
+			 * suppress callbacks: their user pointers may be gone too. */
+			if (call->req != NULL)
+				clm_http_request_free(call->req);
+			free(call);
+			call = next;
+		}
+		hctx->calls = NULL;
+		/* Direct request teardown removes every easy handle synchronously. */
+		assert(hctx->calls == NULL);
 		clm_http_mux_free(hctx->mux);
 		free(hctx);
 	}
