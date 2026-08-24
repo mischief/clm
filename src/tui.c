@@ -2763,6 +2763,7 @@ run_command(struct ui *u, const char *line)
 				free(u->segs[i].text);
 			u->nsegs = 0;
 			u->scroll = 0;
+			u->usage[0] = '\0';
 			u->gen++;
 			/* Rotate the session log too: the cleared transcript
 			 * stays resumable under its old id, and what follows
