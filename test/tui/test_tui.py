@@ -207,6 +207,31 @@ def test_commands(url):
         check("Apple" not in t.text(), "commands: /clear wipes the transcript")
 
 
+def test_effort(url):
+    with Tui(BIN, url, rows=20, cols=70) as t:
+        t.wait_for("online", timeout=8)
+        # Bare /effort reports; the mock server's connection sets none.
+        t.send(b"/effort\r")
+        t.pump(0.4)
+        check("effort:" in t.text(), "effort: bare command reports the level")
+        t.send(b"/effort low\r")
+        t.pump(0.4)
+        check("effort: low" in t.text(), "effort: level accepted")
+        # Argument completion offers the levels.
+        t.send(b"/effort \t")
+        t.pump(0.5)
+        txt = t.text()
+        check("xhigh" in txt and "medium" in txt,
+              "effort: TAB lists the levels")
+        t.send(CTRL_U)
+        t.pump(0.2)
+        # Command-name completion reaches it too.
+        t.send(b"/effo\t")
+        t.pump(0.5)
+        check("/effort" in t.text(), "effort: command name completes")
+        t.send(CTRL_U)
+
+
 def test_queueing(url):
     with Tui(BIN, url, rows=20, cols=70) as t:
         t.wait_for("online", timeout=8)
@@ -384,6 +409,7 @@ TESTS = {
     "editing": test_editing,
     "history": test_history,
     "commands": test_commands,
+    "effort": test_effort,
     "queueing": test_queueing,
     "permission": test_permission,
     "cancel": test_cancel,

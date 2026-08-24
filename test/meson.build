@@ -153,7 +153,8 @@ if have_lua and have_pyte
   )
   test('tui_interaction',
     py,
-    args: [files('tui/test_tui.py'), 'commands', 'queueing', 'permission',
+    args: [files('tui/test_tui.py'), 'commands', 'effort', 'queueing',
+      'permission',
            'cancel'],
     env: {'CLM_BIN': clm_exe.full_path()},
     depends: clm_exe,

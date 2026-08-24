@@ -647,6 +647,30 @@ source_model_names(
 	}
 }
 
+/* /effort's levels: a fixed list, since the accepted set is the backend's
+ * business and clm passes the string through. */
+static void
+source_effort_levels(
+    struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
+{
+	static const char *const levels[] = {
+	    "low", "medium", "high", "xhigh", "max", "default"};
+	const char *prefix = u->input + wstart;
+	const char *matches[MAX_CANDIDATES];
+	size_t nmatches = 0, i;
+
+	(void)generation;
+	for (i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
+		if (strncmp(levels[i], prefix, wlen) == 0)
+			matches[nmatches++] = levels[i];
+	}
+	if (nmatches == 0)
+		return;
+	if (nmatches > 1)
+		list_plain(u, NULL, matches, nmatches);
+	apply_insert(u, wstart, wlen, 0, matches, nmatches, wlen, '\0');
+}
+
 typedef void (*arg_complete_fn)(
     struct ui *u, uint64_t generation, size_t wstart, size_t wlen);
 
@@ -668,6 +692,7 @@ static const struct arg_source arg_sources[] = {
     {"agent", source_agent_names},
     {"provider", source_provider_names},
     {"model", source_model_names},
+    {"effort", source_effort_levels},
 };
 #define N_ARG_SOURCES (sizeof(arg_sources) / sizeof(arg_sources[0]))
 
