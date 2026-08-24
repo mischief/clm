@@ -270,7 +270,9 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 		}
 		clm_agent_emit_message(agent, m);
 	}
-	agent->last_time_stamp = time(NULL);
+	/* Zero, not now: the system prompt carries no timestamp, so the first
+	 * turn has to inject one. */
+	agent->last_time_stamp = 0;
 
 	if (clm_tools_register_builtins(agent) < 0) {
 		clm_agent_free(agent);
