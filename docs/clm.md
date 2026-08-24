@@ -308,6 +308,20 @@ Under
 the exit status instead reflects whether that single turn completed
 successfully (0) or not (1).
 
+# CONVERSATION STATE
+
+Every request carries the whole conversation: these APIs keep no session,
+so the transcript is the state.
+Against an
+"openai-responses"
+provider clm continues the server's own chain instead, sending only the
+new turn and pointing at the previous response, which cuts the request
+body without changing what the model processes or what it costs.
+The chain is abandoned whenever the history stops being an append-only
+extension of what the server holds
+(compaction, superseded tool results, **/clear**, a provider switch),
+and the next request carries everything again.
+
 # AGENT MESSAGING
 
 Each interactive session binds a unix socket named after its session id

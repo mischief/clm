@@ -255,6 +255,13 @@ responses_build_request(
 	cJSON_AddItemToObject(req, "input", input);
 	cJSON_AddItemToObject(req, "stream", cJSON_CreateBool(stream));
 
+	/* Continue the chain the server already holds instead of resending
+	 * it. The agent only sets this when every message before the ones in
+	 * this request is already on the server. */
+	if (llm->prev_response_id != NULL)
+		cJSON_AddItemToObject(req, "previous_response_id",
+		    cJSON_CreateString(llm->prev_response_id));
+
 	/* The Responses API nests effort under "reasoning". */
 	if (llm->effort != NULL) {
 		cJSON *rz = cJSON_CreateObject();
@@ -531,6 +538,15 @@ responses_normalize_response(cJSON *raw)
 	if (tool_calls != NULL)
 		cJSON_AddItemToObject(message, "tool_calls", tool_calls);
 
+	{
+		cJSON *rid = cJSON_GetObjectItemCaseSensitive(in, "id");
+
+		/* The agent keeps this to continue the chain next turn. */
+		if (cJSON_IsString(rid))
+			cJSON_AddItemToObject(out, "provider_response_id",
+			    cJSON_CreateString(rid->valuestring));
+	}
+
 	jstatus = cJSON_GetObjectItemCaseSensitive(in, "status");
 	{
 		const char *mapped = map_status(in,
@@ -740,6 +756,17 @@ responses_normalize_stream_event(cJSON *raw, void **state)
 		}
 		cJSON_AddItemToObject(out, "choices", choices);
 		cJSON_AddItemToArray(choices, choice0);
+
+		{
+			cJSON *rid = response
+			    ? cJSON_GetObjectItemCaseSensitive(response, "id")
+			    : NULL;
+
+			if (cJSON_IsString(rid))
+				cJSON_AddItemToObject(out,
+				    "provider_response_id",
+				    cJSON_CreateString(rid->valuestring));
+		}
 
 		mapped = map_status(response,
 		    cJSON_IsString(jstatus) ? jstatus->valuestring : NULL,

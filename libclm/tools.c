@@ -732,8 +732,9 @@ inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content,
 		char stub[128];
 		(void)snprintf(
 		    stub, sizeof(stub), "[superseded by newer %s]", inv->name);
-		(void)clm_history_supersede_tool(
-		    &agent->history, inv->name, stub);
+		if (clm_history_supersede_tool(
+		        &agent->history, inv->name, stub) > 0)
+			clm_agent_chain_reset(agent);
 	}
 
 	{

@@ -92,6 +92,21 @@ build_system_prompt(const char *base, const char *suffix)
 	return ret;
 }
 
+/*
+ * Forget the server-side chain. Called whenever the history stops being an
+ * append-only extension of what the server holds: the stored copy cannot be
+ * edited, so a rewrite means the next request has to carry everything again.
+ */
+void
+clm_agent_chain_reset(struct clm_agent *agent)
+{
+	if (agent == NULL)
+		return;
+	free(agent->resp_chain_id);
+	agent->resp_chain_id = NULL;
+	agent->resp_chain_sent = 0;
+}
+
 void
 clm_agent_set_error(struct clm_agent *agent, const char *msg)
 {
@@ -336,6 +351,7 @@ clm_agent_free(struct clm_agent *agent)
 	clm_history_free(&agent->history);
 	free(agent->system_prompt_base);
 	free(agent->system_prompt_suffix);
+	free(agent->resp_chain_id);
 	free(agent->last_error);
 	free(agent->models_url);
 	free(agent->props_url);
@@ -622,6 +638,12 @@ struct clm_async_turn {
 	struct clm_usage usage;
 	bool have_usage;
 
+	/* History length this request represents, and the byte size of the
+	 * whole conversation it stands for -- the request body may be much
+	 * smaller when the server already holds the earlier turns. */
+	size_t history_msgs;
+	size_t ctx_bytes;
+
 	/* Opaque per-turn scratch space for the provider's
 	 * normalize_stream_event -- e.g. the Anthropic ops use this to carry
 	 * input-token usage from message_start to message_delta. Always
@@ -675,6 +697,23 @@ sb_append(char **buf, size_t *len, size_t *cap, const char *data, size_t n)
 
 static cJSON *response_message(cJSON *parsed);
 static void agent_fail(struct clm_agent *agent, const char *msg, int err);
+
+/* Remember the provider's response id, so the next request can continue
+ * from it instead of resending the conversation. */
+static void
+chain_note_response(struct clm_agent *agent, cJSON *parsed, size_t msgs)
+{
+	cJSON *rid;
+
+	if (agent == NULL || parsed == NULL)
+		return;
+	rid = cJSON_GetObjectItemCaseSensitive(parsed, "provider_response_id");
+	if (!cJSON_IsString(rid))
+		return;
+	free(agent->resp_chain_id);
+	agent->resp_chain_id = strdup(rid->valuestring);
+	agent->resp_chain_sent = agent->resp_chain_id != NULL ? msgs : 0;
+}
 
 /* Return error.message from a canonical response, or NULL. Providers put
  * the server's own words there when a response failed rather than stopped. */
@@ -876,6 +915,10 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 		int folded =
 		    clm_history_compact_within(&agent->history, summary,
 		        keep_bytes, CLM_COMPACT_KEEP_MIN, agent->compressor);
+
+		/* The server's stored copy still holds what was folded. */
+		if (folded > 0)
+			clm_agent_chain_reset(agent);
 		/* folded == 0 is failure here, not success: the history had no
 		 * valid cut point, so nothing shrank and the summary we just
 		 * paid a full-history LLM call for was discarded. Reporting it
@@ -1324,6 +1367,21 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 		 * "tools" field and remember the model can't take it for
 		 * the rest of this session (see tools_unsupported), instead
 		 * of repeating the same failing request forever. */
+		/*
+		 * The stored response is gone (expired, or another process
+		 * ended it). Nothing is lost: clm still holds the whole
+		 * conversation, so drop the chain and send it again.
+		 */
+		if (agent->resp_chain_id != NULL && resp != NULL &&
+		    resp->body != NULL &&
+		    strstr(resp->body, "previous_response") != NULL) {
+			clm_agent_chain_reset(agent);
+			clm_http_response_free(resp);
+			clm_async_turn_free(turn);
+			clm_agent_start_turn(agent);
+			return;
+		}
+
 		if (status == 400 && !agent->tools_unsupported &&
 		    resp != NULL && resp->body != NULL &&
 		    strstr(resp->body, "does not support tools") != NULL) {
@@ -1435,6 +1493,7 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 		if (emsg != NULL)
 			clm_agent_set_error(agent, emsg);
 	}
+	chain_note_response(agent, turn->parsed, turn->history_msgs);
 	agent_finish(agent, tool_calls,
 	    content ? cJSON_GetStringValue(content) : NULL,
 	    response_finish_reason(turn->parsed), false);
@@ -1580,6 +1639,7 @@ stream_handle_line(struct clm_async_turn *turn)
 		emsg = response_error_message(obj);
 		if (emsg != NULL)
 			clm_agent_set_error(turn->agent, emsg);
+		chain_note_response(turn->agent, obj, turn->history_msgs);
 	}
 
 	delta = cJSON_GetObjectItemCaseSensitive(choice, "delta");
@@ -2065,6 +2125,7 @@ clm_agent_clear_history(struct clm_agent *agent)
 
 	clm_history_free(&agent->history);
 	clm_history_init(&agent->history);
+	clm_agent_chain_reset(agent);
 	{
 		struct clm_message *m = clm_history_add_system(
 		    &agent->history, sys, agent->compressor);
@@ -2097,6 +2158,8 @@ clm_agent_restore_history(struct clm_agent *agent, const struct clm_history *h)
 	    agent->state == CLM_STATE_CALLING_TOOL ||
 	    agent->state == CLM_STATE_RATE_LIMITED)
 		return -EBUSY;
+
+	clm_agent_chain_reset(agent);
 
 	TAILQ_FOREACH(m, h, entries)
 	{
@@ -2199,6 +2262,8 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 		}
 	}
 
+	clm_agent_chain_reset(
+	    agent); /* another server, or another model: no chain */
 	clm_debug("provider switched: %s model=%s", cfg->base_url, new_model);
 	return 0;
 }
@@ -2219,7 +2284,8 @@ on_llm_rl_timer(void *arg)
 		agent->llm_rl_timer = NULL;
 	}
 
-	size_t est_tokens = strlen(turn->body) / 4;
+	size_t est_tokens =
+	    (turn->ctx_bytes ? turn->ctx_bytes : strlen(turn->body)) / 4;
 	if (est_tokens == 0)
 		est_tokens = 1;
 	clm_ratelimit_consume(agent->llm_rl, est_tokens);
@@ -2242,8 +2308,11 @@ on_llm_rl_timer(void *arg)
 static void
 llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
 {
-	/* Estimate token cost from body size (1 token ~ 4 bytes) */
-	size_t est_tokens = strlen(turn->body) / 4;
+	/* Estimate token cost from the conversation this request stands for,
+	 * not the bytes uploaded: a continued chain ships a few hundred bytes
+	 * while the server still processes the whole context. */
+	size_t est_tokens =
+	    (turn->ctx_bytes ? turn->ctx_bytes : strlen(turn->body)) / 4;
 	if (est_tokens == 0)
 		est_tokens = 1;
 
@@ -2284,6 +2353,8 @@ clm_agent_start_turn(struct clm_agent *agent)
 	struct clm_async_turn *turn;
 	autofree char *body_str = NULL;
 	char *body;
+	size_t turn_ctx_bytes = 0;
+	size_t msgs_in_history;
 
 	messages = clm_history_to_json(&agent->history, agent->compressor);
 	/* Skip building/attaching "tools" entirely once this model/provider
@@ -2305,6 +2376,32 @@ clm_agent_start_turn(struct clm_agent *agent)
 			agent->cb_on_state(agent->state, agent->cb_user);
 		agent_turn_done(agent, -ENOMEM);
 		return;
+	}
+
+	msgs_in_history = (size_t)cJSON_GetArraySize(messages);
+
+	/*
+	 * Everything before resp_chain_sent is already on the server, so send
+	 * only what is new. Size the rate limiter from the whole history
+	 * first: the body shrinks, but the tokens the server processes do
+	 * not, and pacing off the body would let bursts straight through.
+	 */
+	agent->llm->prev_response_id = NULL;
+	if (agent->resp_chain_id != NULL) {
+		int total = cJSON_GetArraySize(messages);
+		size_t sent = agent->resp_chain_sent;
+
+		if (sent > 0 && (int)sent <= total) {
+			autofree char *full = cJSON_PrintUnformatted(messages);
+			size_t i;
+
+			turn_ctx_bytes = full != NULL ? strlen(full) : 0;
+			for (i = 0; i < sent; i++)
+				cJSON_DeleteItemFromArray(messages, 0);
+			agent->llm->prev_response_id = agent->resp_chain_id;
+		} else {
+			clm_agent_chain_reset(agent);
+		}
 	}
 
 	/* build_request always takes ownership of messages/tools, translating
@@ -2352,6 +2449,10 @@ clm_agent_start_turn(struct clm_agent *agent)
 	turn->agent = agent;
 	turn->body = body;
 	turn->streaming = agent->stream;
+	/* What the server will hold once this request lands, and what it
+	 * costs to process regardless of how little we uploaded. */
+	turn->history_msgs = msgs_in_history;
+	turn->ctx_bytes = turn_ctx_bytes != 0 ? turn_ctx_bytes : strlen(body);
 	body = NULL;
 
 	clm_debug("posting body: %s", turn->body);

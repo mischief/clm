@@ -1489,6 +1489,73 @@ test_responses_real_content_filter(uv_loop_t *loop)
 }
 
 /*
+ * The Responses API keeps the conversation, so a follow-up sends only what
+ * is new and points at the previous response. A rewrite of the history
+ * (compaction here) invalidates that: the server cannot be told to forget,
+ * so the next request has to carry everything again.
+ */
+static void
+test_responses_chain(uv_loop_t *loop)
+{
+	static const char *reply =
+	    "{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":"
+	    "[{\"type\":\"message\",\"content\":[{\"type\":"
+	    "\"output_text\",\"text\":\"ok\"}]}]}";
+	static const char *reply2 =
+	    "{\"id\":\"resp_2\",\"status\":\"completed\",\"output\":"
+	    "[{\"type\":\"message\",\"content\":[{\"type\":"
+	    "\"output_text\",\"text\":\"ok\"}]}]}";
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *req;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv, reply);
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "first") == 0, "submit");
+	run_until_done(&st);
+	st.turn_done = 0;
+	req = canned_last_request(srv);
+	CHECK(req != NULL && strstr(req, "previous_response_id") == NULL,
+	    "chain: the opening request has nothing to continue from");
+
+	canned_reply(srv, reply2);
+	CHECK(clm_agent_submit(st.agent, "second") == 0, "submit again");
+	run_until_done(&st);
+	st.turn_done = 0;
+	req = canned_last_request(srv);
+	CHECK(req != NULL &&
+	        strstr(req, "\"previous_response_id\":\"resp_1\"") != NULL,
+	    "chain: the follow-up continues from the first response");
+	CHECK(req != NULL && strstr(req, "first") == NULL,
+	    "chain: the follow-up leaves the sent history out");
+	CHECK(req != NULL && strstr(req, "second") != NULL,
+	    "chain: the follow-up carries the new turn");
+
+	/* Compaction rewrites history, so the chain must be abandoned. */
+	canned_reply(srv,
+	    "{\"id\":\"resp_3\",\"status\":\"completed\",\"output\":"
+	    "[{\"type\":\"message\",\"content\":[{\"type\":"
+	    "\"output_text\",\"text\":\"SUMMARY\"}]}]}");
+	CHECK(clm_agent_compact(st.agent) == 0, "compact accepted");
+	run_until_done(&st);
+	st.turn_done = 0;
+
+	canned_reply(srv, reply2);
+	CHECK(clm_agent_submit(st.agent, "third") == 0, "submit after compact");
+	run_until_done(&st);
+	req = canned_last_request(srv);
+	CHECK(req != NULL && strstr(req, "previous_response_id") == NULL,
+	    "chain: a rewritten history is sent in full, not continued");
+
+	teardown(&st, srv);
+}
+
+/*
  * (g2) Anthropic Messages API: request shape (auth headers, system pulled
  * out of messages[], max_tokens) and a non-streaming text reply translated
  * back from Anthropic's content-block response shape.
@@ -2329,6 +2396,7 @@ test_agent_suite(void *arg)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_responses_chain(&loop);
 	test_responses_failure_is_not_a_filter(&loop);
 	test_responses_real_content_filter(&loop);
 	test_compact_within_budget();

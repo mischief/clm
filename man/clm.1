@@ -268,6 +268,18 @@ Under
 .Fl -oneshot ,
 the exit status instead reflects whether that single turn completed
 successfully (0) or not (1).
+.Sh CONVERSATION STATE
+Every request carries the whole conversation: these APIs keep no session,
+so the transcript is the state.
+Against an
+.Qq openai-responses
+provider clm continues the server's own chain instead, sending only the
+new turn and pointing at the previous response, which cuts the request
+body without changing what the model processes or what it costs.
+The chain is abandoned whenever the history stops being an append-only
+extension of what the server holds
+.Pq compaction, superseded tool results, Ic /clear , No a provider switch ,
+and the next request carries everything again.
 .Sh AGENT MESSAGING
 Each interactive session binds a unix socket named after its session id
 under

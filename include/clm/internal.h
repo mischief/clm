@@ -46,6 +46,15 @@ struct clm_agent {
 	char *system_prompt_base;
 	/* cfg->system_prompt_suffix, owned; appended to every prompt build. */
 	char *system_prompt_suffix;
+
+	/*
+	 * Responses API chain: the last response's id and how many history
+	 * messages the server holds. A rewrite (compaction, supersede,
+	 * clear, restore) makes the server's copy wrong, so both reset and
+	 * the next request resends everything.
+	 */
+	char *resp_chain_id;
+	size_t resp_chain_sent;
 	struct clm_tool_list tools;
 	size_t tool_count; /* live (non-removed) tools; diagnostics only */
 	size_t max_iterations;
@@ -190,6 +199,10 @@ void clm_agent_tools_done(struct clm_agent *agent, int status);
  * context budget and returns 0; returns -1 for a non-llama.cpp or malformed
  * body. Declared here so it is unit-testable without a live server.
  */
+/* Forget the Responses API chain: the history is no longer an append-only
+ * extension of what the server holds. */
+void clm_agent_chain_reset(struct clm_agent *agent);
+
 int clm_parse_props(const char *body, int64_t *ctx_out);
 int clm_parse_model_ctx(const char *body, int64_t *ctx_out);
 
