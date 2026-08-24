@@ -473,9 +473,17 @@ cb_usage(const struct clm_usage *usage, void *user)
 	 * drawn in the status bar. */
 	u->ctx_used = (int64_t)usage->prompt_tokens + usage->completion_tokens;
 
-	if (usage->tokens_per_sec > 0)
+	/* Cache reads say the prompt prefix stayed byte-stable; a run of turns
+	 * with 0 there means every resend is being paid for in full. */
+	if (usage->tokens_per_sec > 0 && usage->cache_read_tokens > 0)
+		snprintf(u->usage, sizeof(u->usage), "%.0f tok/s, %d cached",
+		    usage->tokens_per_sec, usage->cache_read_tokens);
+	else if (usage->tokens_per_sec > 0)
 		snprintf(u->usage, sizeof(u->usage), "%.0f tok/s",
 		    usage->tokens_per_sec);
+	else if (usage->cache_read_tokens > 0)
+		snprintf(u->usage, sizeof(u->usage), "%d cached",
+		    usage->cache_read_tokens);
 	else
 		u->usage[0] = '\0';
 	u->dirty = true;
@@ -3397,6 +3405,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	}
 	u->mcp_clients = clm_cli_connect_mcp_servers(
 	    u->agent, loop, lcfg, cb_mcp_status, u, &u->mcp_client_count);
+	clm_cli_wait_mcp_ready(loop, CLM_MCP_READY_WAIT_MS);
 
 	initscr();
 	/* cbreak still leaves terminal flow control enabled: on many terminals

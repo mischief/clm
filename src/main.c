@@ -164,6 +164,8 @@ cb_usage(const struct clm_usage *usage, void *user)
 	(void)user;
 	printf("%s[%d+%d tok", esc_dim, usage->prompt_tokens,
 	    usage->completion_tokens);
+	if (usage->cache_read_tokens > 0)
+		printf(", %d cached", usage->cache_read_tokens);
 	if (usage->tokens_per_sec > 0)
 		printf(", %.1f tok/s", usage->tokens_per_sec);
 	printf("]%s\n", esc_reset);
@@ -844,6 +846,7 @@ main(int argc, char *argv[])
 	}
 	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop,
 	    lcfg, cb_mcp_status, state, &state->mcp_client_count);
+	clm_cli_wait_mcp_ready(loop, CLM_MCP_READY_WAIT_MS);
 
 	if (oneshot != NULL) {
 		r = clm_agent_submit(state->agent, oneshot);

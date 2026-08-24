@@ -127,12 +127,18 @@ enum clm_finish_reason {
 	CLM_FINISH_OTHER,
 };
 
-/* Token accounting for a model response, when the server reports it. */
+/* Token accounting for a model response, when the server reports it.
+ * prompt_tokens counts the whole prompt, cached parts included, so it stays
+ * comparable across turns whether or not a prompt cache hit. cache_read and
+ * cache_write break out how much of that came from a provider-side prompt
+ * cache; both are 0 when the provider reports no cache activity. */
 struct clm_usage {
 	int prompt_tokens;
 	int completion_tokens;
 	int total_tokens;
-	double tokens_per_sec; /* generation rate, 0 if unknown */
+	int cache_read_tokens;  /* prompt tokens served from cache */
+	int cache_write_tokens; /* prompt tokens written to cache */
+	double tokens_per_sec;  /* generation rate, 0 if unknown */
 };
 
 /* Per-tool behaviour flags (clm_tool_def.flags). */

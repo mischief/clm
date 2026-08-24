@@ -311,6 +311,21 @@ map_status(const char *status, bool has_tool_calls)
 	return status;
 }
 
+/* Prompt tokens served from an upstream cache, per the Responses API's
+ * usage.input_tokens_details.cached_tokens. Unlike Anthropic, input_tokens
+ * already counts these, so this is reporting only. */
+static double
+responses_cached_tokens(const cJSON *usage)
+{
+	cJSON *d =
+	    cJSON_GetObjectItemCaseSensitive(usage, "input_tokens_details");
+	cJSON *v = cJSON_IsObject(d)
+	    ? cJSON_GetObjectItemCaseSensitive(d, "cached_tokens")
+	    : NULL;
+
+	return cJSON_IsNumber(v) ? v->valuedouble : 0;
+}
+
 static cJSON *
 responses_normalize_response(cJSON *raw)
 {
@@ -495,6 +510,9 @@ responses_normalize_response(cJSON *raw)
 			    cJSON_CreateNumber(otok));
 			cJSON_AddItemToObject(usage, "total_tokens",
 			    cJSON_CreateNumber(itok + otok));
+			cJSON_AddItemToObject(usage, "cache_read_tokens",
+			    cJSON_CreateNumber(
+			        responses_cached_tokens(jusage)));
 			cJSON_AddItemToObject(out, "usage", usage);
 		}
 	}
@@ -698,6 +716,9 @@ responses_normalize_stream_event(cJSON *raw, void **state)
 				    cJSON_CreateNumber(otok));
 				cJSON_AddItemToObject(cu, "total_tokens",
 				    cJSON_CreateNumber(itok + otok));
+				cJSON_AddItemToObject(cu, "cache_read_tokens",
+				    cJSON_CreateNumber(
+				        responses_cached_tokens(jusage)));
 				cJSON_AddItemToObject(out, "usage", cu);
 			}
 		}

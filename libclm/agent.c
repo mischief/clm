@@ -1038,7 +1038,7 @@ emit_finish(struct clm_agent *agent, const char *reason)
 static bool
 extract_usage(cJSON *root, struct clm_usage *out)
 {
-	cJSON *u, *t, *v;
+	cJSON *u, *t, *v, *d;
 
 	u = cJSON_GetObjectItemCaseSensitive(root, "usage");
 	if (u == NULL || !cJSON_IsObject(u))
@@ -1051,6 +1051,18 @@ extract_usage(cJSON *root, struct clm_usage *out)
 		out->completion_tokens = (int)cJSON_GetNumberValue(v);
 	if ((v = cJSON_GetObjectItemCaseSensitive(u, "total_tokens")) != NULL)
 		out->total_tokens = (int)cJSON_GetNumberValue(v);
+	if ((v = cJSON_GetObjectItemCaseSensitive(u, "cache_read_tokens")) !=
+	    NULL)
+		out->cache_read_tokens = (int)cJSON_GetNumberValue(v);
+	if ((v = cJSON_GetObjectItemCaseSensitive(u, "cache_write_tokens")) !=
+	    NULL)
+		out->cache_write_tokens = (int)cJSON_GetNumberValue(v);
+	/* OpenAI-compatible servers instead nest the cache hit under
+	 * prompt_tokens_details, already counted inside prompt_tokens. */
+	d = cJSON_GetObjectItemCaseSensitive(u, "prompt_tokens_details");
+	if (cJSON_IsObject(d) &&
+	    (v = cJSON_GetObjectItemCaseSensitive(d, "cached_tokens")) != NULL)
+		out->cache_read_tokens = (int)cJSON_GetNumberValue(v);
 	t = cJSON_GetObjectItemCaseSensitive(root, "timings");
 	if (t != NULL && cJSON_IsObject(t) &&
 	    (v = cJSON_GetObjectItemCaseSensitive(t, "predicted_per_second")) !=
