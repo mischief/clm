@@ -15,6 +15,12 @@
 #include "clm/cleanup.h"
 #include "useful.h"
 
+/*
+ * How long to wait before resending a rate-limited request, given the
+ * server's error body and how many times this turn has already retried.
+ */
+CLM_API uint64_t clm_rl_retry_delay_ms(const char *body, int attempt);
+
 /* Default maximum agent loop iterations when cfg->max_iterations is 0. */
 #define CLM_DEFAULT_MAX_ITERATIONS 25
 

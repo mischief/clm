@@ -655,7 +655,9 @@ struct clm_async_turn {
 	 * smaller when the server already holds the earlier turns. */
 	size_t history_msgs;
 	size_t ctx_bytes;
-	int rl_retries; /* rate-limit waits already served for this turn */
+	int rl_retries;  /* rate-limit waits already served for this turn */
+	char *rl_advice; /* server's rate-limit wording, if a stream carried one
+	                  */
 
 	/* Opaque per-turn scratch space for the provider's
 	 * normalize_stream_event -- e.g. the Anthropic ops use this to carry
@@ -684,6 +686,7 @@ clm_async_turn_free(struct clm_async_turn *turn)
 	}
 	free(turn->calls);
 	free(turn->provider_stream_state);
+	free(turn->rl_advice);
 	free(turn);
 }
 
@@ -732,10 +735,15 @@ chain_note_response(struct clm_agent *agent, cJSON *parsed, size_t msgs)
 
 static void on_llm_rl_timer(void *arg);
 
-/* Longest a turn waits out rate limits before giving up, and how many
- * times. A limit that outlasts this is a capacity problem, not a blip. */
-#define CLM_RL_RETRY_MAX 5
+/*
+ * Longest a turn waits out rate limits before giving up, and how many times.
+ * The wait never goes below the floor, which doubles per attempt, even when
+ * the server names a shorter one: the server's figure is when your own
+ * bucket refills, which is wrong whenever something else keeps draining it.
+ */
+#define CLM_RL_RETRY_MAX 8
 #define CLM_RL_RETRY_CAP_MS 60000
+#define CLM_RL_RETRY_FLOOR_MS 1000
 #define CLM_RL_RETRY_DEFAULT_MS 5000
 
 /*
@@ -745,7 +753,7 @@ static void on_llm_rl_timer(void *arg);
  * fixed pause when nothing can be read.
  */
 static uint64_t
-retry_delay_ms(const char *body)
+server_delay_ms(const char *body)
 {
 	const char *p;
 	double v;
@@ -766,6 +774,104 @@ retry_delay_ms(const char *body)
 	if (unit[0] == 'm')
 		return (uint64_t)(v * 60000.0);
 	return CLM_RL_RETRY_DEFAULT_MS;
+}
+
+CLM_API uint64_t
+clm_rl_retry_delay_ms(const char *body, int attempt)
+{
+	uint64_t delay = server_delay_ms(body);
+	uint64_t floor_ms;
+
+	if (attempt < 0)
+		attempt = 0;
+	if (attempt > 20)
+		attempt = 20;
+	floor_ms = (uint64_t)CLM_RL_RETRY_FLOOR_MS << attempt;
+
+	if (delay < floor_ms)
+		delay = floor_ms;
+	if (delay > CLM_RL_RETRY_CAP_MS)
+		delay = CLM_RL_RETRY_CAP_MS;
+	return delay;
+}
+
+/*
+ * Drop everything a turn accumulated from one attempt, keeping only what is
+ * needed to send it again: the request body, the history it stands for, and
+ * the retry count.
+ */
+static void
+turn_reset_response(struct clm_async_turn *turn)
+{
+	size_t i;
+
+	if (turn->parsed != NULL) {
+		cJSON_Delete(turn->parsed);
+		turn->parsed = NULL;
+	}
+	free(turn->line);
+	turn->line = NULL;
+	turn->line_len = turn->line_cap = 0;
+	free(turn->content);
+	turn->content = NULL;
+	turn->content_len = turn->content_cap = 0;
+	free(turn->finish_reason);
+	turn->finish_reason = NULL;
+	for (i = 0; i < turn->ncalls; i++) {
+		free(turn->calls[i].id);
+		free(turn->calls[i].name);
+		free(turn->calls[i].args);
+	}
+	free(turn->calls);
+	turn->calls = NULL;
+	turn->ncalls = 0;
+	free(turn->provider_stream_state);
+	turn->provider_stream_state = NULL;
+	free(turn->rl_advice);
+	turn->rl_advice = NULL;
+	memset(&turn->usage, 0, sizeof(turn->usage));
+	turn->have_usage = false;
+}
+
+/*
+ * A rate limit does not always arrive as a 429: the Responses API also
+ * reports one inside an otherwise successful response, so recognize it by
+ * what the server said.
+ */
+static bool
+is_rate_limit_message(const char *msg)
+{
+	return msg != NULL &&
+	    (strcasestr(msg, "rate limit") != NULL ||
+	        strcasestr(msg, "rate_limit") != NULL);
+}
+
+/*
+ * Wait out a rate limit and send the same request again. False if the turn
+ * has already waited as often as it may, or there is no timer to wait on;
+ * the caller then reports the failure as it otherwise would.
+ */
+static bool
+rl_retry(struct clm_async_turn *turn, const char *advice)
+{
+	struct clm_agent *agent = turn->agent;
+	uint64_t delay;
+
+	if (turn->rl_retries >= CLM_RL_RETRY_MAX ||
+	    agent->host->timer_set == NULL)
+		return false;
+
+	delay = clm_rl_retry_delay_ms(advice, turn->rl_retries);
+	turn->rl_retries++;
+	clm_debug("rate limited, retry %d in %llu ms", turn->rl_retries,
+	    (unsigned long long)delay);
+	turn_reset_response(turn);
+	agent->state = CLM_STATE_RATE_LIMITED;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	agent->host->timer_set(agent->host->ctx, delay, on_llm_rl_timer, turn,
+	    &agent->llm_rl_timer);
+	return true;
 }
 
 /* Return error.message from a canonical response, or NULL. Providers put
@@ -1366,6 +1472,14 @@ stream_finalize(struct clm_async_turn *turn)
 	struct clm_agent *agent = turn->agent;
 	json_cleanup cJSON *tool_calls = stream_build_tool_calls(turn);
 
+	/*
+	 * A stream that failed on a rate limit produced no text and no calls,
+	 * so resending it repeats nothing the user has already seen.
+	 */
+	if (turn->rl_advice != NULL && turn->content_len == 0 &&
+	    tool_calls == NULL && rl_retry(turn, turn->rl_advice))
+		return;
+
 	emit_finish(agent, turn->finish_reason);
 	if (turn->have_usage)
 		emit_usage(agent, &turn->usage);
@@ -1429,25 +1543,17 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 		 * ending the turn. The agent parks in the same state the
 		 * token bucket uses, so the UI already shows it waiting.
 		 */
-		if (status == 429 && turn->rl_retries < CLM_RL_RETRY_MAX &&
-		    agent->host->timer_set != NULL) {
-			uint64_t delay =
-			    retry_delay_ms(resp != NULL ? resp->body : NULL);
+		if (status == 429) {
+			autofree char *advice =
+			    (resp != NULL && resp->body != NULL)
+			    ? strdup(resp->body)
+			    : NULL;
 
-			if (delay > CLM_RL_RETRY_CAP_MS)
-				delay = CLM_RL_RETRY_CAP_MS;
-			turn->rl_retries++;
-			clm_debug("rate limited, retry %d in %llu ms",
-			    turn->rl_retries, (unsigned long long)delay);
-			if (resp != NULL)
-				clm_http_response_free(resp);
-			agent->state = CLM_STATE_RATE_LIMITED;
-			if (agent->cb_on_state)
-				agent->cb_on_state(
-				    agent->state, agent->cb_user);
-			agent->host->timer_set(agent->host->ctx, delay,
-			    on_llm_rl_timer, turn, &agent->llm_rl_timer);
-			return;
+			if (rl_retry(turn, advice)) {
+				if (resp != NULL)
+					clm_http_response_free(resp);
+				return;
+			}
 		}
 
 		/*
@@ -1573,6 +1679,8 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 	{
 		const char *emsg = response_error_message(turn->parsed);
 
+		if (is_rate_limit_message(emsg) && rl_retry(turn, emsg))
+			return;
 		if (emsg != NULL)
 			clm_agent_set_error(agent, emsg);
 	}
@@ -1720,8 +1828,13 @@ stream_handle_line(struct clm_async_turn *turn)
 		/* Keep what the server said about a failed response: the
 		 * chunk carrying it is gone by the time the turn ends. */
 		emsg = response_error_message(obj);
-		if (emsg != NULL)
+		if (emsg != NULL) {
 			clm_agent_set_error(turn->agent, emsg);
+			if (is_rate_limit_message(emsg)) {
+				free(turn->rl_advice);
+				turn->rl_advice = strdup(emsg);
+			}
+		}
 		chain_note_response(turn->agent, obj, turn->history_msgs);
 	}
 

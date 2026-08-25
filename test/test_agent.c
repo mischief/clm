@@ -1458,9 +1458,9 @@ test_responses_failure_is_not_a_filter(uv_loop_t *loop)
 
 	canned_reply(srv,
 	    "{\"status\":\"failed\",\"output\":[],"
-	    "\"error\":{\"code\":\"rate_limit_exceeded\","
-	    "\"message\":\"Rate limit reached for gpt-5.6-luna on tokens "
-	    "per min (TPM): Limit 200000. Please try again in 8.562s.\"}}");
+	    "\"error\":{\"code\":\"server_error\","
+	    "\"message\":\"The model produced no output. Please try again "
+	    "in 8.562s.\"}}");
 
 	st.agent = make_agent(&st, canned_port(srv));
 	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
@@ -1469,7 +1469,7 @@ test_responses_failure_is_not_a_filter(uv_loop_t *loop)
 	CHECK(st.turn_status != 0, "failed response ends the turn in error");
 	CHECK(st.got_finish && st.finish != CLM_FINISH_CONTENT_FILTER,
 	    "a failed response is not reported as a content filter");
-	CHECK(strstr(clm_agent_get_last_error(st.agent), "Rate limit") != NULL,
+	CHECK(strstr(clm_agent_get_last_error(st.agent), "no output") != NULL,
 	    "the server's own message survives");
 	CHECK(strstr(clm_agent_get_last_error(st.agent), "8.562s") != NULL,
 	    "including the retry advice");
@@ -1507,6 +1507,46 @@ test_responses_real_content_filter(uv_loop_t *loop)
 }
 
 /*
+ * The Responses API reports a rate limit two ways: as a 429, and as a failed
+ * response inside an ordinary 200. Both have to be waited out -- the second
+ * kind ended the turn immediately, with no wait and no sign of one.
+ */
+static void
+test_responses_rate_limit_is_waited_out(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "{\"status\":\"failed\",\"output\":[],"
+	    "\"error\":{\"code\":\"rate_limit_exceeded\","
+	    "\"message\":\"Rate limit reached for gpt-5.6-luna on tokens "
+	    "per min (TPM): Limit 200000. Please try again in 0.05s.\"}}");
+	canned_reply(srv,
+	    "{\"id\":\"resp_ok\",\"status\":\"completed\",\"output\":"
+	    "[{\"type\":\"message\",\"content\":[{\"type\":"
+	    "\"output_text\",\"text\":\"done\"}]}]}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0,
+	    "a rate limit inside a 200 does not end the turn");
+	CHECK(canned_request_count(srv) == 2,
+	    "the request is sent again after waiting");
+	CHECK(strstr(st.assistant, "done") != NULL,
+	    "the retried turn delivers its answer");
+
+	teardown(&st, srv);
+}
+
+/*
  * The Responses API keeps the conversation, so a follow-up sends only what
  * is new and points at the previous response. A rewrite of the history
  * (compaction here) invalidates that: the server cannot be told to forget,
@@ -1534,7 +1574,7 @@ test_responses_chain(uv_loop_t *loop)
 
 	canned_reply(srv, reply);
 	st.agent = make_agent(&st, canned_port(srv));
-	CHECK(clm_agent_submit(st.agent, "first") == 0, "submit");
+	CHECK(clm_agent_submit(st.agent, "openingturn") == 0, "submit");
 	run_until_done(&st);
 	st.turn_done = 0;
 	req = canned_last_request(srv);
@@ -1542,16 +1582,16 @@ test_responses_chain(uv_loop_t *loop)
 	    "chain: the opening request has nothing to continue from");
 
 	canned_reply(srv, reply2);
-	CHECK(clm_agent_submit(st.agent, "second") == 0, "submit again");
+	CHECK(clm_agent_submit(st.agent, "secondturn") == 0, "submit again");
 	run_until_done(&st);
 	st.turn_done = 0;
 	req = canned_last_request(srv);
 	CHECK(req != NULL &&
 	        strstr(req, "\"previous_response_id\":\"resp_1\"") != NULL,
 	    "chain: the follow-up continues from the first response");
-	CHECK(req != NULL && strstr(req, "first") == NULL,
+	CHECK(req != NULL && strstr(req, "openingturn") == NULL,
 	    "chain: the follow-up leaves the sent history out");
-	CHECK(req != NULL && strstr(req, "second") != NULL,
+	CHECK(req != NULL && strstr(req, "secondturn") != NULL,
 	    "chain: the follow-up carries the new turn");
 
 	/* Compaction rewrites history, so the chain must be abandoned. */
@@ -1748,6 +1788,44 @@ test_rate_limit_delay_forms(uv_loop_t *loop)
 		CHECK(canned_request_count(srv) == 2, "request repeated");
 		teardown(&st, srv);
 	}
+}
+
+/*
+ * The backoff between rate-limit retries. The server's suggestion is a floor
+ * to beat, not an instruction: it says when this client's bucket refills,
+ * which is wrong when several agents share one budget. Each attempt waits at
+ * least twice as long as the last, up to a cap.
+ */
+static void
+test_rate_limit_backoff_grows(void)
+{
+	const char *soon =
+	    "{\"error\":{\"message\":\"Rate limit reached. Please try "
+	    "again in 1.987s.\"}}";
+	const char *nothing = "{\"error\":{\"message\":\"Slow down.\"}}";
+	uint64_t prev;
+	int i;
+
+	CHECK(clm_rl_retry_delay_ms(soon, 0) >= 1987,
+	    "the first wait honours a server suggestion longer than the floor");
+	CHECK(clm_rl_retry_delay_ms(soon, 3) > clm_rl_retry_delay_ms(soon, 0),
+	    "a later attempt waits longer than the first for the same advice");
+
+	prev = 0;
+	for (i = 0; i < 6; i++) {
+		uint64_t d = clm_rl_retry_delay_ms(soon, i);
+
+		CHECK(d > prev, "each attempt waits longer than the last");
+		CHECK(d <= 60000, "no wait exceeds the cap");
+		prev = d;
+	}
+
+	CHECK(clm_rl_retry_delay_ms(nothing, 0) > 0,
+	    "advice-free rate limits still yield a wait");
+	CHECK(clm_rl_retry_delay_ms(NULL, 12) <= 60000,
+	    "growth saturates at the cap rather than overflowing");
+	CHECK(clm_rl_retry_delay_ms(soon, -1) > 0,
+	    "a nonsense attempt count is clamped, not shifted by");
 }
 
 /*
@@ -2668,10 +2746,12 @@ test_agent_suite(void *arg)
 	test_responses_stream(&loop);
 	test_rate_limit_retry(&loop);
 	test_rate_limit_delay_forms(&loop);
+	test_rate_limit_backoff_grows();
 	test_autocompact_absolute_cap(&loop);
 	test_responses_chain(&loop);
 	test_responses_chain_dropped_by_supersede(&loop);
 	test_responses_failure_is_not_a_filter(&loop);
+	test_responses_rate_limit_is_waited_out(&loop);
 	test_responses_real_content_filter(&loop);
 	test_compact_within_budget();
 	test_compact_keeps_tools(&loop);

@@ -37,6 +37,14 @@
  * invocation left by the time this matters to clamp against. */
 #define CLM_BG_OUTPUT_CAP (16 * 1024)
 
+/*
+ * How much of the start of the output survives once the cap is reached. A
+ * long-running job says what it is doing at the start and how it went at the
+ * end, so keep both ends and drop the middle. Dropping the end instead would
+ * throw away the very line the job was started to produce.
+ */
+#define CLM_BG_HEAD_KEEP (4 * 1024)
+
 /* Local copy of the core's arg_string helper (kept private so libclmuv
  * depends only on libclm's public API; tool_shell.c has its own copy for the
  * same reason). */
@@ -58,6 +66,7 @@ struct clm_bg_job {
 	uv_pipe_t out, err;
 	char *buf;
 	size_t len, bufcap;
+	size_t dropped; /* bytes evicted from the middle; see bg_append() */
 
 	int handles; /* proc + out + err; job frees itself at 0 */
 	int64_t exit_status;
@@ -88,22 +97,36 @@ bg_detach(void *user)
 	}
 }
 
-/* Same growth strategy as tool_shell.c's shell_append, capped at
- * CLM_BG_OUTPUT_CAP instead of a per-invocation output_cap. */
+/*
+ * Append to the job's output, growing like tool_shell.c's shell_append until
+ * CLM_BG_OUTPUT_CAP. At the cap the buffer keeps its first CLM_BG_HEAD_KEEP
+ * bytes and slides the rest, so the newest output always survives and the
+ * middle is what goes; j->dropped counts what went, for the finish message.
+ */
 static void
 bg_append(struct clm_bg_job *j, const char *data, size_t n)
 {
-	size_t room, take;
+	const size_t tail_room = CLM_BG_OUTPUT_CAP - CLM_BG_HEAD_KEEP;
+	size_t want;
 
-	if (j->len >= CLM_BG_OUTPUT_CAP)
-		return; /* full; drain and discard the rest */
-	room = CLM_BG_OUTPUT_CAP - j->len;
-	take = n < room ? n : room;
+	if (n == 0)
+		return;
 
-	if (j->len + take + 1 > j->bufcap) {
+	/* A single chunk larger than the sliding region: only its own tail
+	 * can survive, so discard the front of it here and account for it. */
+	if (n > tail_room) {
+		j->dropped += n - tail_room;
+		data += n - tail_room;
+		n = tail_room;
+	}
+
+	want = j->len + n;
+	if (want > CLM_BG_OUTPUT_CAP)
+		want = CLM_BG_OUTPUT_CAP;
+	if (want + 1 > j->bufcap) {
 		size_t nc = j->bufcap ? j->bufcap * 2 : 4096;
 		char *p;
-		while (nc < j->len + take + 1)
+		while (nc < want + 1)
 			nc *= 2;
 		if (nc > CLM_BG_OUTPUT_CAP + 1)
 			nc = CLM_BG_OUTPUT_CAP + 1;
@@ -113,8 +136,23 @@ bg_append(struct clm_bg_job *j, const char *data, size_t n)
 		j->buf = p;
 		j->bufcap = nc;
 	}
-	memcpy(j->buf + j->len, data, take);
-	j->len += take;
+
+	/*
+	 * Evict from just past the head region. n <= tail_room bounds this to
+	 * at most j->len - CLM_BG_HEAD_KEEP, so the head is never touched.
+	 */
+	if (j->len + n > CLM_BG_OUTPUT_CAP) {
+		size_t evict = j->len + n - CLM_BG_OUTPUT_CAP;
+
+		memmove(j->buf + CLM_BG_HEAD_KEEP,
+		    j->buf + CLM_BG_HEAD_KEEP + evict,
+		    j->len - CLM_BG_HEAD_KEEP - evict);
+		j->len -= evict;
+		j->dropped += evict;
+	}
+
+	memcpy(j->buf + j->len, data, n);
+	j->len += n;
 	j->buf[j->len] = '\0';
 }
 
@@ -135,6 +173,11 @@ bg_finish(struct clm_bg_job *j)
 	 */
 	if (j->started && j->agent != NULL) {
 		autofree char *msg = NULL;
+		char dropnote[64] = "";
+
+		if (j->dropped > 0)
+			(void)snprintf(dropnote, sizeof(dropnote),
+			    ", %zu bytes dropped from the middle", j->dropped);
 
 		/* asprintf's contents-of-*strp-on-failure is unspecified by
 		 * POSIX (glibc happens to leave it NULL, but that's not a
@@ -150,17 +193,17 @@ bg_finish(struct clm_bg_job *j)
 			if (asprintf(&msg,
 			        "[background job %llu (\"%s\") finished, "
 			        "killed by "
-			        "signal %d: %s]\n%s",
+			        "signal %d: %s%s]\n%s",
 			        (unsigned long long)j->id, j->label,
 			        j->term_signal,
-			        signame != NULL ? signame : "unknown",
+			        signame != NULL ? signame : "unknown", dropnote,
 			        j->len ? j->buf : "(no output)") < 0)
 				msg = NULL;
 		} else if (asprintf(&msg,
 		               "[background job %llu (\"%s\") finished, exit "
-		               "status %lld]\n%s",
+		               "status %lld%s]\n%s",
 		               (unsigned long long)j->id, j->label,
-		               (long long)j->exit_status,
+		               (long long)j->exit_status, dropnote,
 		               j->len ? j->buf : "(no output)") < 0)
 			msg = NULL;
 		/* On OOM building msg: drop the notification silently. The
@@ -330,7 +373,10 @@ clm_tools_register_bg(struct clm_agent *agent)
 	        "(use shell_exec for that). The command's real output arrives "
 	        "later as a separate message tagged with the same job id, not "
 	        "as this call's result -- do not wait for it, continue with "
-	        "other work.",
+	        "other work. Only the first and last few kilobytes of a "
+	        "chatty job's output survive; redirect to a file and read "
+	        "that instead if you need all of it, or progress before it "
+	        "exits.",
 	    .params_schema =
 	        "{\"type\":\"object\","
 	        "\"properties\":{"
