@@ -593,6 +593,8 @@ cb_state(enum clm_agent_state st, void *user)
 	if (clm_agent_take_mid_chain_compact_started(u->agent)) {
 		ui_push(u, ST_META,
 		    "\n[context over threshold, auto-compacting...]\n");
+		/* Stale: it counts a prompt prefix compaction is discarding. */
+		u->usage[0] = '\0';
 		u->dirty = true;
 	}
 	if (clm_agent_take_mid_chain_compact_succeeded(u->agent)) {
@@ -720,8 +722,11 @@ cb_turn_done(int status, void *user)
 			 * that re-entry doesn't see the same over-threshold
 			 * reading and try to compact again immediately. It'll
 			 * be replaced with a real number on the next actual
-			 * LLM call either way. */
+			 * LLM call either way. The cache-read/rate line goes
+			 * with it: it describes the prompt that just got
+			 * thrown away. */
 			u->ctx_used = 0;
+			u->usage[0] = '\0';
 			ui_push(u, ST_META,
 			    "\n[context over threshold, auto-compacting...]\n");
 			return; /* re-enters this function (see above) with
@@ -2828,6 +2833,7 @@ run_command(struct ui *u, const char *line)
 		if (rc == 0) {
 			u->busy = true;
 			u->compacting = true;
+			u->usage[0] = '\0';
 			ui_push(
 			    u, ST_META, "\n[compacting the conversation...]\n");
 		} else if (rc == -EBUSY) {
