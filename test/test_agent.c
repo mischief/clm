@@ -27,6 +27,8 @@ struct tstate {
 	const char *system_prompt_suffix;
 	const char *effort;
 	const char *const *volatile_tools;
+	int64_t context_size;
+	int64_t autocompact_tokens;
 	int turn_done;
 	int turn_status;
 	size_t asst_len;
@@ -214,6 +216,8 @@ make_agent(struct tstate *st, int port)
 	cfg.system_prompt = st->system_prompt;
 	cfg.system_prompt_suffix = st->system_prompt_suffix;
 	cfg.volatile_tools = st->volatile_tools;
+	cfg.context_size = st->context_size;
+	cfg.autocompact_tokens = st->autocompact_tokens;
 
 	r = clm_host_uv_new(st->loop, &st->host);
 	CHECK(r == 0, "clm_host_uv_new");
@@ -1623,6 +1627,43 @@ test_responses_chain_dropped_by_supersede(uv_loop_t *loop)
 }
 
 /*
+ * An account whose throughput limit binds long before its context window
+ * needs an absolute compaction threshold: a percentage of a million-token
+ * window never fires when the practical ceiling is a tenth of that.
+ */
+static void
+test_autocompact_absolute_cap(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i;
+
+	st.loop = loop;
+	st.context_size = 1000000;
+	st.autocompact_tokens = 20000;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	/* 30k tokens used: nowhere near half the window, over the cap. */
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}],"
+	    "\"usage\":{\"prompt_tokens\":29000,"
+	    "\"completion_tokens\":1000,\"total_tokens\":30000}}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(clm_agent_over_autocompact_threshold(st.agent),
+	    "absolute cap triggers compaction below the window percentage");
+
+	for (i = 0; i < 2; i++)
+		uv_run(loop, UV_RUN_NOWAIT);
+	teardown(&st, srv);
+}
+
+/*
  * (g2) Anthropic Messages API: request shape (auth headers, system pulled
  * out of messages[], max_tokens) and a non-streaming text reply translated
  * back from Anthropic's content-block response shape.
@@ -2463,6 +2504,7 @@ test_agent_suite(void *arg)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_autocompact_absolute_cap(&loop);
 	test_responses_chain(&loop);
 	test_responses_chain_dropped_by_supersede(&loop);
 	test_responses_failure_is_not_a_filter(&loop);

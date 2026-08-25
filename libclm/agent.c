@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
 #include <errno.h>
+#include <fnmatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -333,6 +334,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 		agent->ctx_max = cfg->context_size;
 	if (cfg->autocompact_pct > 0)
 		agent->autocompact_pct = cfg->autocompact_pct;
+	agent->autocompact_tokens = cfg->autocompact_tokens;
 
 	agent->volatile_tools = cfg->volatile_tools;
 
@@ -428,6 +430,12 @@ clm_agent_over_autocompact_threshold(const struct clm_agent *agent)
 {
 	if (agent == NULL || agent->ctx_used <= 0)
 		return false;
+	/* An absolute cap wins wherever it is set: a share of a million-token
+	 * window says nothing about an account whose throughput limit binds
+	 * first. */
+	if (agent->autocompact_tokens > 0 &&
+	    agent->ctx_used >= agent->autocompact_tokens)
+		return true;
 	if (agent->ctx_max <= 0)
 		return agent->ctx_used >= CLM_AUTOCOMPACT_FALLBACK_TOKENS;
 	int pct = agent->autocompact_pct > 0 ? agent->autocompact_pct
@@ -2176,6 +2184,34 @@ clm_agent_restore_history(struct clm_agent *agent, const struct clm_history *h)
 		    &agent->history, obj, agent->compressor);
 		if (r < 0)
 			return r;
+	}
+
+	/*
+	 * The log is the raw transcript, so a volatile tool's superseded
+	 * results come back at full size -- a resumed console-driving session
+	 * reloads every stale screen it had already stubbed. Apply the policy
+	 * again here, keeping the newest result of each such tool.
+	 */
+	if (agent->volatile_tools != NULL) {
+		const char *const *pat;
+
+		for (pat = agent->volatile_tools; *pat != NULL; pat++) {
+			const struct clm_message *msg;
+
+			TAILQ_FOREACH(msg, &agent->history, entries)
+			{
+				char stub[128];
+
+				if (msg->role != CLM_ROLE_TOOL ||
+				    msg->tool_name == NULL ||
+				    fnmatch(*pat, msg->tool_name, 0) != 0)
+					continue;
+				(void)snprintf(stub, sizeof(stub),
+				    "[superseded by newer %s]", msg->tool_name);
+				(void)clm_history_supersede_tool(
+				    &agent->history, msg->tool_name, stub);
+			}
+		}
 	}
 
 	return 0;

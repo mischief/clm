@@ -244,8 +244,13 @@ struct clm_cfg {
 	const char *system_prompt_suffix;
 
 	/* Provider-specific overrides (0 = use defaults) */
-	int64_t context_size;        /* override ctx_max (tokens) */
-	int autocompact_pct;         /* override CLM_AUTOCOMPACT_PCT (1-99) */
+	int64_t context_size; /* override ctx_max (tokens) */
+	int autocompact_pct;
+	/* Compact once the conversation reaches this many tokens, whatever
+	 * the window allows. For an account whose throughput limit bites
+	 * long before the context window does. 0 leaves it to the
+	 * percentage. */
+	int64_t autocompact_tokens;  /* override CLM_AUTOCOMPACT_PCT (1-99) */
 	int64_t rate_tokens_per_sec; /* token-bucket refill rate */
 	int64_t rate_burst;          /* token-bucket burst size */
 

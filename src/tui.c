@@ -2383,6 +2383,10 @@ cmd_agent(struct ui *u, const char *arg)
 				newcfg.autocompact_pct =
 				    (int)clm_lua_cfg_provider_model_int(u->lcfg,
 				        prov, spec_model, "autocompact_pct", 0);
+				newcfg.autocompact_tokens =
+				    clm_lua_cfg_provider_model_int(u->lcfg,
+				        prov, spec_model, "autocompact_tokens",
+				        0);
 			}
 			if (prov) {
 				newcfg.rate_tokens_per_sec =

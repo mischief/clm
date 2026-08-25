@@ -66,7 +66,8 @@ struct clm_agent {
 	int64_t ctx_used; /* last known prompt+completion tokens, 0 = unknown;
 	                   * updated in emit_usage(), read by
 	                   * clm_agent_over_autocompact_threshold() */
-	int autocompact_pct; /* 0 = use default CLM_AUTOCOMPACT_PCT */
+	int autocompact_pct;        /* 0 = use default CLM_AUTOCOMPACT_PCT */
+	int64_t autocompact_tokens; /* absolute cap, 0 = percentage only */
 	const char *const *volatile_tools; /* borrowed from cfg; see clm_cfg */
 	char *props_url;                   /* llama.cpp GET /props, or NULL */
 	char *compact_body; /* POST body for an in-flight /compact, freed on

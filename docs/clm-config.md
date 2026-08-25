@@ -220,6 +220,16 @@ Every turn re-reads the whole history, so a lower value trades more
 frequent summarization for a cheaper turn.
 Compaction then keeps the newest turns that fit a tenth of the window.
 
+*autocompact\_tokens*
+
+Compact once the conversation reaches this many tokens, whatever the
+window allows.
+For a connection whose throughput limit binds before its context window
+does: a share of a million-token window never fires when the practical
+ceiling is a tenth of that.
+Unset leaves the decision to
+*autocompact\_pct*.
+
 *effort*
 
 Reasoning effort for this model, overriding the provider-wide

@@ -811,6 +811,9 @@ main(int argc, char *argv[])
 			    (int)clm_lua_cfg_provider_model_int(lcfg,
 			        spec_provider, spec_model, "autocompact_pct",
 			        0);
+			cfg.autocompact_tokens =
+			    clm_lua_cfg_provider_model_int(lcfg, spec_provider,
+			        spec_model, "autocompact_tokens", 0);
 		}
 		if (spec_model != NULL)
 			model_name = spec_model;
