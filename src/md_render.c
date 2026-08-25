@@ -472,6 +472,55 @@ emit_wrapped_row(struct ctx *c, struct table *t, size_t i,
 	}
 }
 
+/*
+ * Fit columns into `avail`, taking the space from the widest. A column
+ * within its fair share keeps its natural width and leaves the remainder to
+ * the others. One ratio applied to every column would squeeze a four-column
+ * "Size" heading as hard as a column of prose.
+ */
+static void
+shrink_columns(int *w, size_t cols, int avail)
+{
+	size_t open = cols;
+	int left = avail;
+	bool *fixed;
+
+	fixed = calloc(cols, sizeof(*fixed));
+	if (fixed == NULL)
+		return;
+
+	for (bool changed = true; changed && open > 0;) {
+		int share = left / (int)open;
+
+		changed = false;
+		if (share < WRAP_MIN_COL)
+			share = WRAP_MIN_COL;
+		for (size_t j = 0; j < cols; j++) {
+			if (fixed[j] || w[j] > share)
+				continue;
+			fixed[j] = true;
+			left -= w[j];
+			open--;
+			changed = true;
+		}
+	}
+
+	/* Split what is left among the columns still over their share. */
+	for (size_t j = 0; j < cols; j++) {
+		int share;
+
+		if (fixed[j] || open == 0)
+			continue;
+		share = left / (int)open;
+		if (share < WRAP_MIN_COL)
+			share = WRAP_MIN_COL;
+		left -= share;
+		open--;
+		w[j] = share;
+	}
+	free(fixed);
+}
+
 static void
 layout_table(struct ctx *c, struct table *t)
 {
@@ -516,27 +565,8 @@ layout_table(struct ctx *c, struct table *t)
 	for (size_t j = 0; j < t->cols; j++)
 		sum += w[j];
 
-	if (sum > avail && sum > 0) {
-		int assigned = 0;
-		for (size_t j = 0; j < t->cols; j++) {
-			int nw = (int)((int64_t)w[j] * avail / sum);
-			if (nw < WRAP_MIN_COL)
-				nw = WRAP_MIN_COL;
-			w[j] = nw;
-			assigned += nw;
-		}
-		/* Give any leftover (or take back any excess) from rounding
-		 * to the widest column, so we land close to `avail`. */
-		if (t->cols > 0) {
-			size_t wide = 0;
-			for (size_t j = 1; j < t->cols; j++)
-				if (w[j] > w[wide])
-					wide = j;
-			int diff = avail - assigned;
-			if (w[wide] + diff >= WRAP_MIN_COL)
-				w[wide] += diff;
-		}
-	}
+	if (sum > avail && sum > 0)
+		shrink_columns(w, t->cols, avail);
 
 	wcells = calloc(t->rows * t->cols, sizeof(*wcells));
 	if (wcells == NULL) {

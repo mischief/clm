@@ -199,6 +199,30 @@ test_table_long_word(void)
 	    "long word: the word is split, not emitted whole");
 }
 
+/* A narrow column keeps its width when a wide one has to give up space. */
+static void
+test_table_narrow_column_kept(void)
+{
+	static const char *md =
+	    "| Size | What it is |\n"
+	    "|---|---|\n"
+	    "| 661 M | a long stretch of prose that has to be wrapped down "
+	    "to fit the space left over after the narrow column takes what "
+	    "it needs |\n";
+	autofree struct capture *c = render_at(md, MD_TABLE_ASCII, 40);
+	char l0[256];
+
+	if (c == NULL)
+		return;
+	line_at(c, 0, l0, sizeof(l0));
+	CHECK(md_display_width(l0, strlen(l0)) <= 40,
+	    "narrow column: table still fits the width");
+	CHECK(strstr(c->text, "661 M") != NULL,
+	    "narrow column: a short cell is not broken up");
+	CHECK(strstr(c->text, "Size") != NULL,
+	    "narrow column: its heading is not broken up");
+}
+
 static void
 test_table_bold_cell(void)
 {
@@ -243,6 +267,7 @@ test_md_suite(void *arg)
 	test_table_bold_cell();
 	test_table_glyphs();
 	test_table_long_word();
+	test_table_narrow_column_kept();
 
 	return 0;
 }
