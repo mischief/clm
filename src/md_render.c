@@ -296,9 +296,43 @@ wcell_free(struct wcell *wc)
 	wc->n = wc->cap = 0;
 }
 
-/* Greedy word-wrap: break on runs of ' ', never splitting a word (an
- * over-long word is simply left to overflow that one line). Styling is
- * preserved per fragment across the break. */
+/*
+ * Bytes of text that fit in `width` columns, always on a character
+ * boundary. Returns 0 when not even one character fits.
+ */
+static size_t
+prefix_within(const char *text, size_t len, int width, int *used)
+{
+	mbstate_t ps;
+	size_t i = 0;
+	int cols = 0;
+
+	memset(&ps, 0, sizeof(ps));
+	while (i < len) {
+		wchar_t wc;
+		size_t k = mbrtowc(&wc, text + i, len - i, &ps);
+		int cw;
+
+		if (k == (size_t)-1 || k == (size_t)-2 || k == 0) {
+			k = 1; /* invalid/incomplete: one column, one byte */
+			cw = 1;
+		} else {
+			int t = wcwidth(wc);
+			cw = (t > 0) ? t : (t == 0 ? 0 : 1);
+		}
+		if (cols + cw > width)
+			break;
+		cols += cw;
+		i += k;
+	}
+	*used = cols;
+	return i;
+}
+
+/* Greedy word-wrap: break on runs of ' '. A word longer than the whole
+ * column has no break to use, so it is split at the column edge rather than
+ * left to overflow, which would push everything after it out of line.
+ * Styling is preserved per fragment across the break. */
 static int
 wrap_cell(struct wcell *wc, struct runbuf *cell, int width)
 {
@@ -345,6 +379,36 @@ wrap_cell(struct wcell *wc, struct runbuf *cell, int width)
 					return -1;
 				has_content = false;
 			}
+
+			/* Still too wide on a line of its own: split it. */
+			while (cur->width + tw > width) {
+				int room = width - cur->width;
+				int fit_w = 0;
+				size_t fit = room > 0
+				    ? prefix_within(
+				          text + start, tlen, room, &fit_w)
+				    : 0;
+
+				if (fit == 0 && cur->width == 0)
+					break; /* column too narrow to split */
+				if (fit > 0) {
+					if (cline_push(cur, style, text + start,
+					        fit) < 0)
+						return -1;
+					start += fit;
+					tlen -= fit;
+					tw -= fit_w;
+				}
+				cur = wcell_newline(wc);
+				if (cur == NULL)
+					return -1;
+				has_content = false;
+				if (tlen == 0)
+					break;
+			}
+
+			if (tlen == 0)
+				continue;
 			if (cline_push(cur, style, text + start, tlen) < 0)
 				return -1;
 			has_content = true;

@@ -49,15 +49,21 @@ cap_emit(const struct md_run *run, void *userdata)
 }
 
 static struct capture *
-render(const char *md, enum md_table_style tables)
+render_at(const char *md, enum md_table_style tables, int width)
 {
-	struct md_opts o = {.width = 80, .tables = tables};
+	struct md_opts o = {.width = width, .tables = tables};
 	struct capture *c = calloc(1, sizeof(*c));
 
 	if (c == NULL)
 		return NULL;
 	md_render(md, strlen(md), &o, cap_emit, c);
 	return c;
+}
+
+static struct capture *
+render(const char *md, enum md_table_style tables)
+{
+	return render_at(md, tables, 80);
 }
 
 /* Does any run whose text contains needle carry all of the given style bits? */
@@ -160,6 +166,39 @@ test_table_alignment(void)
 	    "table columns aligned to equal width");
 }
 
+/*
+ * A word wider than its column has no space to break at. It must be split
+ * at the column edge: left to overflow, it pushes every column after it out
+ * of line for that row.
+ */
+static void
+test_table_long_word(void)
+{
+	static const char *md = "| Path | Note |\n"
+	                        "|---|---|\n"
+	                        "| c/c-template-with-a-long-name | short |\n"
+	                        "| x | y |\n";
+	autofree struct capture *c = render_at(md, MD_TABLE_ASCII, 24);
+	char l0[256], ln[256];
+	int w0;
+
+	if (c == NULL)
+		return;
+	line_at(c, 0, l0, sizeof(l0));
+	w0 = md_display_width(l0, strlen(l0));
+	CHECK(w0 > 0 && w0 <= 24, "long word: table fits the given width");
+
+	for (size_t i = 1; i < 8; i++) {
+		line_at(c, i, ln, sizeof(ln));
+		if (ln[0] == '\0')
+			break;
+		CHECK(md_display_width(ln, strlen(ln)) == w0,
+		    "long word: every row keeps the table width");
+	}
+	CHECK(strstr(c->text, "c/c-template-with-a-long-name") == NULL,
+	    "long word: the word is split, not emitted whole");
+}
+
 static void
 test_table_bold_cell(void)
 {
@@ -203,6 +242,7 @@ test_md_suite(void *arg)
 	test_table_alignment();
 	test_table_bold_cell();
 	test_table_glyphs();
+	test_table_long_word();
 
 	return 0;
 }
