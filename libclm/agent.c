@@ -872,6 +872,7 @@ rl_retry(struct clm_async_turn *turn, const char *advice)
 	agent->state = CLM_STATE_RATE_LIMITED;
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
+	agent->rl_parked_turn = turn;
 	agent->host->timer_set(agent->host->ctx, delay, on_llm_rl_timer, turn,
 	    &agent->llm_rl_timer);
 	return true;
@@ -2340,6 +2341,33 @@ clm_agent_cancel(struct clm_agent *agent)
 	if (agent->cancelling)
 		return -EALREADY;
 
+	/*
+	 * Parked waiting out a rate limit. Nothing is in flight to abort, so
+	 * drop the timer and retire what it was holding: the turn it would
+	 * have resent, or the compaction body it would have sent again.
+	 */
+	if (agent->llm_rl_timer != NULL || agent->compact_rl_timer != NULL) {
+		if (agent->llm_rl_timer != NULL) {
+			agent->host->timer_cancel(agent->llm_rl_timer);
+			agent->llm_rl_timer = NULL;
+		}
+		if (agent->compact_rl_timer != NULL) {
+			agent->host->timer_cancel(agent->compact_rl_timer);
+			agent->compact_rl_timer = NULL;
+		}
+		if (agent->rl_parked_turn != NULL) {
+			clm_async_turn_free(agent->rl_parked_turn);
+			agent->rl_parked_turn = NULL;
+		}
+		compact_done(agent);
+		agent->compact_resume_chain = false;
+		agent->state = CLM_STATE_COMPLETE;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		agent_turn_done(agent, -ECANCELED);
+		return 0;
+	}
+
 	if (agent->inflight != NULL) {
 		/* Waiting on the model: abort the request. Its error callback
 		 * fires on_turn_done(-ECANCELED) and clears inflight. Mark the
@@ -2603,6 +2631,7 @@ on_llm_rl_timer(void *arg)
 		agent->host->timer_cancel(agent->llm_rl_timer);
 		agent->llm_rl_timer = NULL;
 	}
+	agent->rl_parked_turn = NULL;
 
 	size_t est_tokens =
 	    (turn->ctx_bytes ? turn->ctx_bytes : strlen(turn->body)) / 4;
@@ -2659,6 +2688,7 @@ llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
 			agent->cb_on_state(agent->state, agent->cb_user);
 		agent->host->timer_set(agent->host->ctx, delay_ms,
 		    on_llm_rl_timer, turn, &agent->llm_rl_timer);
+		agent->rl_parked_turn = turn;
 	}
 }
 

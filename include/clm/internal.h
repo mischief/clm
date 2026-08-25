@@ -15,6 +15,8 @@
 #include "clm/cleanup.h"
 #include "useful.h"
 
+struct clm_async_turn;
+
 /*
  * How long to wait before resending a rate-limited request, given the
  * server's error body and how many times this turn has already retried.
@@ -111,6 +113,9 @@ struct clm_agent {
 	struct clm_ratelimit *llm_rl;
 	struct clm_timer
 	    *llm_rl_timer; /* non-NULL while a start_turn retry is parked */
+	/* The turn that timer will resend, so a cancel can retire it: nothing
+	 * else holds it while it waits. */
+	struct clm_async_turn *rl_parked_turn;
 
 	/* Text queued by clm_agent_notify() while a turn was in flight, to be
 	 * submitted as a fresh turn once the current one lands (see

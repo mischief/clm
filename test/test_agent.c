@@ -698,6 +698,47 @@ test_compact_waits_out_rate_limit(uv_loop_t *loop)
 }
 
 /*
+ * Escape during a rate-limit wait. Nothing is in flight then, so a cancel
+ * used to find nothing to cancel and the wait ran to its end regardless --
+ * up to a minute of a terminal that ignores you.
+ */
+static void
+test_cancel_during_rate_limit_wait(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	/* A wait long enough that the test cancels well inside it. */
+	canned_reply_status(srv, 429,
+	    "{\"error\":{\"message\":\"Rate limit reached. Please try "
+	    "again in 30s.\"}}");
+	canned_reply(srv, final_reply);
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+
+	/* Run until the wait is parked: one request out, turn not done. */
+	for (i = 0; i < 200 && canned_request_count(srv) < 1; i++)
+		uv_run(loop, UV_RUN_NOWAIT);
+	CHECK(canned_request_count(srv) == 1, "the rate-limited request went");
+	CHECK(!st.turn_done, "the turn is waiting, not finished");
+
+	CHECK(clm_agent_cancel(st.agent) == 0, "cancel reaches the wait");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == -ECANCELED, "the turn ends as cancelled");
+	CHECK(canned_request_count(srv) == 1,
+	    "the cancelled wait never resends the request");
+
+	teardown(&st, srv);
+}
+
+/*
  * (b3) Compaction summary from the reasoning channel: a "thinking" model can
  * spend its whole completion budget on chain-of-thought and hit
  * finish_reason "length" with an empty "content" but a non-empty
@@ -2856,6 +2897,7 @@ test_agent_suite(void *arg)
 	test_autocompact_mid_chain(&loop);
 	test_autocompact_mid_chain_responses_stream(&loop);
 	test_compact_waits_out_rate_limit(&loop);
+	test_cancel_during_rate_limit_wait(&loop);
 	test_compact_reasoning_fallback(&loop);
 	test_compact_content_filter(&loop);
 	test_content_filter_fails_turn(&loop);
