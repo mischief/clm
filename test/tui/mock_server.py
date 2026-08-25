@@ -13,6 +13,7 @@ Run standalone for manual poking:
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,6 +38,15 @@ REPLY_MD = (
     "| Apple | Red |\n"
     "| Banana | Yellow |\n"
 )
+
+# Where the "manytest" tool calls leave their marks. A test counts the files
+# here to tell which calls actually ran.
+TOOL_SCRATCH = tempfile.mkdtemp(prefix="clm-tui-tools-")
+
+# Enough calls to outrun the agent's tool rate limit, so the tail of the batch
+# is still parked when a test cancels the turn.
+MANY_CALLS = 16
+
 
 # Split into a few deltas so the streaming path is genuinely exercised.
 def _chunks(text, n=8):
@@ -96,6 +106,7 @@ class Handler(BaseHTTPRequestHandler):
         text = " ".join(str(m.get("content", "")) for m in msgs)
         asked = any(("shelltest" in str(m.get("content", "")).lower() or
                      "multilinetest" in str(m.get("content", "")).lower() or
+                     "manytest" in str(m.get("content", "")).lower() or
                      "edittest" in str(m.get("content", "")).lower())
                     for m in msgs if m.get("role") == "user")
         has_result = "<tool_response>" in text or any(
@@ -117,6 +128,30 @@ class Handler(BaseHTTPRequestHandler):
             send({"choices": [{"index": 0, "delta": {"tool_calls": [{
                 "index": 0, "id": "call_p", "type": "function",
                 "function": {"name": "agent_send", "arguments": args}}]}}]})
+            send({"choices": [{"index": 0, "delta": {},
+                               "finish_reason": "tool_calls"}]})
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionError):
+            return
+
+    def _stream_many_tool_calls(self):
+        """Stream MANY_CALLS shell_exec calls, each touching one file."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def send(obj):
+            self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
+            self.wfile.flush()
+        try:
+            for i in range(MANY_CALLS):
+                path = os.path.join(TOOL_SCRATCH, f"ran{i}")
+                send({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                    "index": i, "id": f"call_{i}", "type": "function",
+                    "function": {"name": "shell_exec", "arguments": json.dumps(
+                        {"command": f"touch {path}"})}}]}}]})
             send({"choices": [{"index": 0, "delta": {},
                                "finish_reason": "tool_calls"}]})
             self.wfile.write(b"data: [DONE]\n\n")
@@ -186,6 +221,9 @@ class Handler(BaseHTTPRequestHandler):
         if req is not None and self._wants_tool(req):
             text = " ".join(str(m.get("content", "")) for m in
                             req.get("messages", []))
+            if "manytest" in text.lower():
+                self._stream_many_tool_calls()
+                return
             self._stream_tool_call("multilinetest" in text.lower(),
                                    "edittest" in text.lower())
             return

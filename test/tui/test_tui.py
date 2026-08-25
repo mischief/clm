@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from driver import (Tui, STATE_HOME, CTRL_A, CTRL_K, CTRL_U, CTRL_Y, PGUP,
                     PGDN, UP, DOWN, END, PASTE_START, PASTE_END)
-from mock_server import MockServer
+from mock_server import MANY_CALLS, TOOL_SCRATCH, MockServer
 
 BIN = os.environ.get("CLM_BIN", "clm")
 
@@ -327,6 +327,32 @@ def test_cancel(url):
         t.send(b"hello again\r")
         t.pump(0.3)
         check("hello again" in t.text(), "cancel: input works after cancel")
+
+
+def test_cancel_tools(url):
+    """Escape must stop the calls a batch has not started yet, not just the
+    ones already running."""
+    for name in os.listdir(TOOL_SCRATCH):
+        os.unlink(os.path.join(TOOL_SCRATCH, name))
+    with Tui(BIN, url, rows=20, cols=80,
+             extra_args=("--allow-all-tools",)) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"manytest please\r")
+        assert t.wait_for("executing shell command", timeout=15), "no tool call"
+        t.pump(0.5)
+        started = len(os.listdir(TOOL_SCRATCH))
+        check(started < MANY_CALLS,
+              "cancel: the rate limit leaves part of the batch parked")
+        t.send(b"\x1b")
+        assert t.wait_for("cancelled", timeout=8), "cancel not reflected"
+        for _ in range(6):
+            t.pump(1.0)
+        ran = len(os.listdir(TOOL_SCRATCH))
+        check(ran <= started + 1,
+              "cancel: parked calls do not run after the turn is cancelled")
+        t.send(b"hello again\r")
+        check(t.wait_for("Apple", timeout=15),
+              "cancel: a new turn runs after cancel")
 
 
 def test_history(url):
@@ -739,6 +765,7 @@ TESTS = {
     "queueing": test_queueing,
     "permission": test_permission,
     "cancel": test_cancel,
+    "cancel_tools": test_cancel_tools,
     "paste": test_bracketed_paste,
     "session": test_session_resume,
     "session_compact": test_session_compact,

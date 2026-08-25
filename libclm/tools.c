@@ -1093,11 +1093,41 @@ clm_tools_cancel(struct clm_agent *agent)
 		return;
 
 	batch = agent->active_batch;
+
+	/* Hold the batch open across the loop: retiring the parked calls
+	 * below can drain pending to zero and free the batch mid-iteration. */
+	batch->pending++;
+
 	for (i = 0; i < batch->n; i++) {
 		struct clm_tool_invocation *inv = &batch->inv[i];
-		if (!inv->completed && inv->cancel != NULL)
+		static const char msg[] = "[tool failed: cancelled]";
+
+		if (inv->completed)
+			continue;
+		if (inv->rl_timer != NULL) {
+			/* Parked waiting for rate-limit tokens: it never
+			 * started, so there is nothing to signal, and its
+			 * timer would otherwise dispatch the call after the
+			 * cancel. Drop the timer and retire it here. */
+			agent->host->timer_cancel(inv->rl_timer);
+			inv->rl_timer = NULL;
+			inv_finalize(inv, (const uint8_t *)msg, sizeof(msg) - 1,
+			    CLM_TOOL_FAILED);
+			continue;
+		}
+		/* A call parked on a permission decision stays parked: the
+		 * frontend that asked still owes it an answer, and answering
+		 * is what retires it. */
+		if (inv->awaiting_perm)
+			continue;
+		if (inv->cancel != NULL)
 			inv->cancel(inv, inv->cancel_user);
 	}
+
+	if (batch->pending > 0)
+		batch->pending--;
+	if (batch->pending == 0)
+		batch_finalize(batch);
 	clm_debug("clm_tools_cancel: batch abandoned during teardown");
 }
 
