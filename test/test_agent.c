@@ -1386,6 +1386,7 @@ test_compact_within_budget(void)
 	struct clm_message *m;
 	char big[4096];
 	int i, kept;
+	size_t before_bytes;
 
 	memset(big, 'x', sizeof(big) - 1);
 	big[sizeof(big) - 1] = '\0';
@@ -1393,20 +1394,31 @@ test_compact_within_budget(void)
 	clm_history_init(&h);
 	clm_history_add_system(&h, "sys", NULL);
 	for (i = 0; i < 6; i++) {
+		char answer[2048];
+
+		memset(answer, 'a' + i, sizeof(answer) - 1);
+		answer[sizeof(answer) - 1] = '\0';
 		clm_history_add_user(&h, "small question", NULL);
-		clm_history_add_assistant_text(&h, "small answer", NULL);
+		clm_history_add_assistant_text(&h, answer, NULL);
 	}
 
 	/* Budget large enough for every small turn: all but one survive. */
+	/* A history that already fits the budget still folds when asked:
+	 * "/compact" is a request to shrink, and reporting no progress there
+	 * reads as a failure. */
+	before_bytes = history_bytes(&h);
 	CHECK(clm_history_compact_within(&h, "SUMMARY", 100000, 2, NULL) > 0,
 	    "budget compact: folds something");
 	kept = 0;
 	TAILQ_FOREACH(m, &h, entries)
 	if (m->role == CLM_ROLE_USER)
 		kept++;
-	CHECK(kept == 6, "budget compact: summary plus the five kept turns");
+	CHECK(kept >= 2 && kept <= 6,
+	    "budget compact: the summary replaces the older turns");
 	CHECK(history_bytes(&h) <= 100000,
 	    "budget compact: the kept tail fits the budget");
+	CHECK(history_bytes(&h) <= before_bytes / 2 + 2048,
+	    "budget compact: an oversized budget still halves the history");
 	clm_history_free(&h);
 
 	/* Same shape, but each answer is 4 KiB and the budget is 6 KiB, so

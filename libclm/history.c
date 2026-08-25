@@ -265,6 +265,21 @@ clm_history_compact_within(struct clm_history *h, const char *summary,
 		return 0;
 
 	/*
+	 * Never keep more than half of what is there. Asking to fold a
+	 * history that already fits the budget is a request to shrink it --
+	 * stepping one boundary forward would remove less than the summary
+	 * adds, which is reported as no progress at all.
+	 */
+	{
+		size_t total = 0;
+
+		for (m = first_nonsys; m != NULL; m = TAILQ_NEXT(m, entries))
+			total += message_bytes(m);
+		if (keep_bytes > total / 2)
+			keep_bytes = total / 2;
+	}
+
+	/*
 	 * Walk back keeping cut points while they fit. A turn's tool chain can
 	 * exceed the budget alone, so an exchange head counts as a cut point:
 	 * a whole-turn floor leaves the history above the threshold that

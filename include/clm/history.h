@@ -169,9 +169,9 @@ CLM_API int clm_history_compact(struct clm_history *h, const char *summary,
 
 /*
  * Same fold, but the kept tail is sized: turns and tool exchanges are kept
- * newest-first while they fit keep_bytes, and keep_min_turns turns are kept
- * when they fit. The newest exchange is always kept. Returns 0 when the fold
- * would not actually shrink the history, so a caller cannot loop on it.
+ * newest-first while they fit keep_bytes, never more than half of what is
+ * there, and the newest exchange always. Returns 0 when the fold would not
+ * shrink the history, so a caller cannot loop on it.
  */
 CLM_API int clm_history_compact_within(struct clm_history *h,
     const char *summary, size_t keep_bytes, size_t keep_min_turns,
