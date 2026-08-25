@@ -2004,6 +2004,12 @@ on_repaint(uv_timer_t *t)
 		u->full_redraw = false;
 	}
 
+	/* The transcript window is inset, so the gutter columns belong to no
+	 * window and no erase covers them. Blank the screen underneath first;
+	 * the three windows paint over it before the single doupdate below. */
+	werase(stdscr);
+	wnoutrefresh(stdscr);
+
 	draw_transcript(u);
 	draw_status(u);
 	draw_input(u);

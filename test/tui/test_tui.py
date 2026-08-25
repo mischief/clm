@@ -206,6 +206,22 @@ def test_margin(url):
         check(widest <= cols - MARGIN,
               "margin: no transcript line runs into the right edge")
 
+    # The gutters belong to no window. Whatever a full-width window drew
+    # there must not survive it moving or shrinking.
+    with Tui(BIN, url, rows=14, cols=cols) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"show me fruit\r")
+        assert t.wait_for("Apple", timeout=15), "no response before resize"
+        t.send(b"x" * 200)   # grow the input box, moving the status bar up
+        t.pump(0.6)
+        t.send(CTRL_U)       # shrink it back, vacating those rows
+        t.pump(0.6)
+        rows = t.lines()[:-2]
+        check(all(ln[:MARGIN].strip() == "" for ln in rows),
+              "margin: the left gutter is clear after the box shrinks")
+        check(all(len(ln.rstrip()) <= cols - MARGIN for ln in rows),
+              "margin: the right gutter is clear after the box shrinks")
+
     # A screen too narrow to spare the columns drops the margin rather
     # than squeezing the text.
     with Tui(BIN, url, rows=10, cols=7) as t:
