@@ -16,6 +16,11 @@ file in
 or an agent-specific
 .Pa ~/.config/clm/agents/ Ns Ar agent Ns Pa /
 directory) as a plugin.
+The seeded copies of the builtin plugins are the ones that run.
+.Xr clm 1 Ns 's
+setup step copies them once and never touches them again, so a later
+change to the installed source has no effect until the copy is replaced
+by hand.
 Each plugin file gets its own sandboxed
 .Xr lua 1
 state and is expected to call
