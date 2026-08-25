@@ -2017,6 +2017,8 @@ clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 	agent_turn_done(agent, error_code);
 }
 
+static void clm_agent_fetch_model_meta(struct clm_agent *agent);
+
 /* GET /props completed: parse llama.cpp context info; ignore failures (the
  * feature is best-effort and only meaningful for llama.cpp backends). */
 static void
@@ -2030,18 +2032,30 @@ props_success_cb(struct clm_http_response *resp, void *user)
 	    clm_parse_props(resp->body, &ctx) == 0) {
 		agent->backend = CLM_BACKEND_LLAMACPP; /* /props => llama.cpp */
 		agent->ctx_max = ctx;
+	} else {
+		/* Not llama.cpp: ask the backend about the model instead. */
+		clm_agent_fetch_model_meta(agent);
 	}
 	if (resp)
 		clm_http_response_free(resp);
 }
 
+/* No /props at all. The model document is the remaining source. */
 static void
 props_error_cb(int error_code, const char *error_msg, void *user)
 {
 	(void)error_code;
 	(void)error_msg;
-	(void)user; /* no /props (not llama.cpp, or old build): leave ctx
-	               unknown */
+	clm_agent_fetch_model_meta(user);
+}
+
+/* The model document is the last source; a failure leaves ctx unknown. */
+static void
+model_meta_error_cb(int error_code, const char *error_msg, void *user)
+{
+	(void)error_code;
+	(void)error_msg;
+	(void)user;
 }
 
 /*
@@ -2092,7 +2106,7 @@ clm_agent_fetch_model_meta(struct clm_agent *agent)
 	if (asprintf(&url, "%s/%s", agent->models_url, agent->llm->model) < 0)
 		return;
 	(void)agent_http_post(agent, url, NULL, model_meta_success_cb,
-	    props_error_cb, NULL, agent, NULL);
+	    model_meta_error_cb, NULL, agent, NULL);
 }
 
 /* Learn the context window however this backend exposes it. */
@@ -2130,8 +2144,20 @@ health_success_cb(struct clm_http_response *resp, void *user)
 	}
 	/* The window drives compaction, not just the gauge, so learn it even
 	 * when no UI is listening for connection events. */
-	if (agent->ctx_max == 0 && status >= 200 && status < 300)
-		clm_agent_fetch_ctx_max(agent);
+	if (agent->ctx_max == 0 && status >= 200 && status < 300) {
+		int64_t ctx = 0;
+
+		/* The catalogue this probe just fetched often carries the
+		 * window, which saves a round trip -- and is the only source
+		 * on backends that serve no per-model document. */
+		if (resp != NULL && resp->body != NULL && agent->llm != NULL &&
+		    agent->llm->model != NULL &&
+		    clm_parse_models_ctx_for(
+		        resp->body, agent->llm->model, &ctx) == 0)
+			agent->ctx_max = ctx;
+		else
+			clm_agent_fetch_ctx_max(agent);
+	}
 	if (resp)
 		clm_http_response_free(resp);
 }

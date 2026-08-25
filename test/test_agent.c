@@ -2432,6 +2432,72 @@ test_parse_models_list(void)
 	    clm_parse_models_list(NULL) == NULL, "models_list: NULL rejected");
 }
 
+/*
+ * (i3) clm_parse_models_ctx_for: pull one model's window out of a catalogue
+ * listing, preferring the routed endpoint's window over the nominal one.
+ */
+static void
+test_parse_models_ctx_for(void)
+{
+	static const char catalog[] =
+	    "{\"data\":["
+	    "{\"id\":\"a\",\"context_length\":8192},"
+	    "{\"id\":\"b\",\"context_length\":1048576,"
+	    "\"top_provider\":{\"context_length\":524288}},"
+	    "{\"id\":\"c\"}]}";
+	int64_t ctx = 0;
+
+	CHECK(clm_parse_models_ctx_for(catalog, "a", &ctx) == 0 && ctx == 8192,
+	    "models_ctx: nominal window when there is no top_provider");
+	ctx = 0;
+	CHECK(
+	    clm_parse_models_ctx_for(catalog, "b", &ctx) == 0 && ctx == 524288,
+	    "models_ctx: top_provider window wins over the nominal one");
+	CHECK(clm_parse_models_ctx_for(catalog, "c", &ctx) < 0,
+	    "models_ctx: entry without a window rejected");
+	CHECK(clm_parse_models_ctx_for(catalog, "missing", &ctx) < 0,
+	    "models_ctx: unknown model rejected");
+	CHECK(clm_parse_models_ctx_for("{\"data\":[]}", "a", &ctx) < 0,
+	    "models_ctx: empty catalog rejected");
+	CHECK(clm_parse_models_ctx_for("not json", "a", &ctx) < 0,
+	    "models_ctx: garbage rejected");
+	CHECK(clm_parse_models_ctx_for(NULL, "a", &ctx) < 0,
+	    "models_ctx: NULL body rejected");
+	CHECK(clm_parse_models_ctx_for("{\"data\":[]}", NULL, &ctx) < 0,
+	    "models_ctx: NULL model rejected");
+}
+
+/*
+ * (i4) clm_parse_model_ctx: a model document reports its window as
+ * max_input_tokens or context_length, bare or inside a "data" envelope.
+ */
+static void
+test_parse_model_ctx(void)
+{
+	int64_t ctx = 0;
+
+	CHECK(clm_parse_model_ctx("{\"max_input_tokens\":200000}", &ctx) == 0 &&
+	        ctx == 200000,
+	    "model_ctx: bare max_input_tokens");
+	ctx = 0;
+	CHECK(clm_parse_model_ctx("{\"context_length\":65536}", &ctx) == 0 &&
+	        ctx == 65536,
+	    "model_ctx: bare context_length");
+	ctx = 0;
+	CHECK(clm_parse_model_ctx(
+	          "{\"data\":{\"id\":\"m\",\"context_length\":131072}}",
+	          &ctx) == 0 &&
+	        ctx == 131072,
+	    "model_ctx: window inside a data envelope");
+	CHECK(clm_parse_model_ctx("{\"context_length\":0}", &ctx) < 0,
+	    "model_ctx: zero window rejected");
+	CHECK(clm_parse_model_ctx("{\"id\":\"m\"}", &ctx) < 0,
+	    "model_ctx: document without a window rejected");
+	CHECK(clm_parse_model_ctx("not json", &ctx) < 0,
+	    "model_ctx: garbage rejected");
+	CHECK(clm_parse_model_ctx(NULL, &ctx) < 0, "model_ctx: NULL rejected");
+}
+
 /* Count messages of a given role in a history. */
 static int
 count_role(struct clm_history *h, enum clm_role role)
@@ -2933,6 +2999,8 @@ test_agent_suite(void *arg)
 	test_set_provider_after_error(&loop);
 	test_parse_props();
 	test_parse_models_list();
+	test_parse_models_ctx_for();
+	test_parse_model_ctx();
 	test_history_compact();
 	test_history_compact_agentic();
 	test_history_supersede();

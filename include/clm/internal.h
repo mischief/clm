@@ -233,4 +233,11 @@ char **clm_parse_models_list(const char *body);
 /* Free a list from clm_parse_models_list(). Safe to call with NULL. */
 void clm_free_models_list(char **ids);
 
+/*
+ * Context window of one model in a GET /v1/models listing. Sets *ctx_out and
+ * returns 0; returns -1 when the listing has no such id or no window for it.
+ */
+int clm_parse_models_ctx_for(
+    const char *body, const char *model, int64_t *ctx_out);
+
 #endif /* CLM_INTERNAL_H */
