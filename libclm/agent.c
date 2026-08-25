@@ -103,6 +103,10 @@ clm_agent_chain_reset(struct clm_agent *agent)
 {
 	if (agent == NULL)
 		return;
+	/* llm->prev_response_id borrows this, so drop the borrow first: the
+	 * next request must not read freed memory. */
+	if (agent->llm != NULL)
+		agent->llm->prev_response_id = NULL;
 	free(agent->resp_chain_id);
 	agent->resp_chain_id = NULL;
 	agent->resp_chain_sent = 0;
@@ -717,8 +721,10 @@ chain_note_response(struct clm_agent *agent, cJSON *parsed, size_t msgs)
 	if (agent == NULL || parsed == NULL)
 		return;
 	rid = cJSON_GetObjectItemCaseSensitive(parsed, "provider_response_id");
-	if (!cJSON_IsString(rid))
+	if (!cJSON_IsString(rid) || rid->valuestring[0] == '\0')
 		return;
+	if (agent->llm != NULL)
+		agent->llm->prev_response_id = NULL; /* borrows the old one */
 	free(agent->resp_chain_id);
 	agent->resp_chain_id = strdup(rid->valuestring);
 	agent->resp_chain_sent = agent->resp_chain_id != NULL ? msgs : 0;
@@ -1109,6 +1115,9 @@ clm_agent_compact(struct clm_agent *agent)
 	 * cached prefix. */
 	ops = clm_provider_ops_get(agent->llm->provider);
 	tools = agent->tools_unsupported ? NULL : clm_tools_build_schema(agent);
+	/* This request carries the conversation itself, so it continues
+	 * nothing -- and the fold that follows invalidates the chain anyway. */
+	agent->llm->prev_response_id = NULL;
 	req = ops->build_request(agent->llm, messages, tools, false);
 	if (req == NULL)
 		return -ENOMEM;

@@ -1550,6 +1550,12 @@ test_responses_chain(uv_loop_t *loop)
 	CHECK(clm_agent_compact(st.agent) == 0, "compact accepted");
 	run_until_done(&st);
 	st.turn_done = 0;
+	req = canned_last_request(srv);
+	/* The summarize call carries the conversation itself, so it must not
+	 * claim to continue one -- it used to send a dangling borrow of the
+	 * id the fold had just freed. */
+	CHECK(req != NULL && strstr(req, "previous_response_id") == NULL,
+	    "chain: the summarize request continues nothing");
 
 	canned_reply(srv, reply2);
 	CHECK(clm_agent_submit(st.agent, "third") == 0, "submit after compact");
