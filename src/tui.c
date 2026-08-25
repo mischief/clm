@@ -785,19 +785,6 @@ push_perm_multiline_value(struct ui *u, const char *value)
 	} while (nl != NULL);
 }
 
-/*
- * Reading order for the arguments of a permission prompt. A model emits
- * object keys in whatever order it likes, and an edit whose replacement
- * comes before the text it replaces reads backwards. Keys named here are
- * shown first, in this order; everything else follows as emitted.
- */
-static const char *const perm_arg_order[] = {
-    "path",
-    "old_str",
-    "new_str",
-    NULL,
-};
-
 /* Render one argument: name and value on a line, or a named indented block
  * when the value spans lines. */
 static void
@@ -829,16 +816,35 @@ push_perm_arg(struct ui *u, cJSON *v, bool *first)
 	}
 }
 
-/* True if key is one of the names perm_arg_order places by hand. */
+/* True if names, a JSON array of strings, holds key. */
 static bool
-perm_arg_ordered(const char *key)
+json_array_has(cJSON *names, const char *key)
 {
-	if (key == NULL)
+	cJSON *n;
+
+	if (key == NULL || !cJSON_IsArray(names))
 		return false;
-	for (const char *const *k = perm_arg_order; *k != NULL; k++)
-		if (strcmp(*k, key) == 0)
-			return true;
+	cJSON_ArrayForEach(n, names) if (cJSON_IsString(n) &&
+	    n->valuestring != NULL &&
+	    strcmp(n->valuestring, key) == 0) return true;
 	return false;
+}
+
+/*
+ * The order a tool declares its required parameters in, read from the
+ * "parameters" object the tool registered. A model emits argument keys in
+ * any order it likes, so an edit can print its replacement before the text
+ * being replaced. Borrowed from schema; NULL when the tool declared none.
+ */
+static cJSON *
+perm_arg_order(cJSON *schema)
+{
+	cJSON *req;
+
+	if (!cJSON_IsObject(schema))
+		return NULL;
+	req = cJSON_GetObjectItemCaseSensitive(schema, "required");
+	return cJSON_IsArray(req) ? req : NULL;
 }
 
 /*
@@ -849,9 +855,9 @@ perm_arg_ordered(const char *key)
  * Falls back to the raw string if it is not a JSON object.
  */
 static void
-push_perm_args(struct ui *u, const char *args)
+push_perm_args(struct ui *u, const char *args, const char *schema)
 {
-	cJSON *obj;
+	cJSON *obj, *sch, *order, *name;
 	bool first = true;
 
 	if (args == NULL || args[0] == '\0' || strcmp(args, "{}") == 0)
@@ -866,16 +872,24 @@ push_perm_args(struct ui *u, const char *args)
 		return;
 	}
 
-	ui_push(u, ST_PERM, ":");
-	for (const char *const *k = perm_arg_order; *k != NULL; k++) {
-		cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, *k);
+	sch = schema != NULL ? cJSON_Parse(schema) : NULL;
+	order = perm_arg_order(sch);
 
+	ui_push(u, ST_PERM, ":");
+	cJSON_ArrayForEach(name, order)
+	{
+		cJSON *v;
+
+		if (!cJSON_IsString(name) || name->valuestring == NULL)
+			continue;
+		v = cJSON_GetObjectItemCaseSensitive(obj, name->valuestring);
 		if (v != NULL)
 			push_perm_arg(u, v, &first);
 	}
 	for (cJSON *v = obj->child; v != NULL; v = v->next)
-		if (!perm_arg_ordered(v->string))
+		if (!json_array_has(order, v->string))
 			push_perm_arg(u, v, &first);
+	cJSON_Delete(sch);
 	cJSON_Delete(obj);
 }
 
@@ -891,7 +905,7 @@ static void
 show_next_perm(struct ui *u)
 {
 	const struct clm_permission_req *req;
-	const char *name, *args;
+	const char *name, *args, *schema;
 
 	if (u->perm_count == 0) {
 		u->perm_showing = false;
@@ -900,11 +914,12 @@ show_next_perm(struct ui *u)
 	req = u->perm_queue[0];
 	name = clm_permission_req_name(req);
 	args = clm_permission_req_args(req);
+	schema = clm_permission_req_schema(req);
 
 	u->perm_showing = true;
 	ui_push(u, ST_PERM, "\nallow tool ");
 	ui_push(u, ST_PERM, name ? name : "?");
-	push_perm_args(u, args);
+	push_perm_args(u, args, schema);
 	ui_push(u, ST_PERM,
 	    "\n(y) once  (n) deny  (a) always  (d) never  [esc = "
 	    "deny+cancel]\n");

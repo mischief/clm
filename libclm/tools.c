@@ -411,6 +411,14 @@ clm_permission_req_args(const struct clm_permission_req *req)
 	return (req && req->inv) ? req->inv->args : NULL;
 }
 
+const char *
+clm_permission_req_schema(const struct clm_permission_req *req)
+{
+	if (req == NULL || req->inv == NULL || req->inv->def == NULL)
+		return NULL;
+	return req->inv->def->params_schema;
+}
+
 /* Mutable lookup of a registered tool by name (for recording decisions). */
 static struct clm_tool *
 find_tool_mut(struct clm_agent *agent, const char *name)

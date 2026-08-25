@@ -126,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _stream_tool_call(self, multiline=False, reversed_edit=False):
         """Stream a shell_exec call, optionally with multi-line arguments,
-        or with edit-style arguments emitted replacement-first."""
+        or an edit_file call whose arguments arrive replacement-first."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")
@@ -151,9 +151,10 @@ class Handler(BaseHTTPRequestHandler):
                         "\"timeout_ms\":10000}")
             else:
                 args = "{\"command\":\"echo hi\"}"
+            tool = "edit_file" if reversed_edit else "shell_exec"
             send({"choices": [{"index": 0, "delta": {"tool_calls": [{
                 "index": 0, "id": "call_1", "type": "function",
-                "function": {"name": "shell_exec", "arguments": args}}]}}]})
+                "function": {"name": tool, "arguments": args}}]}}]})
             send({"choices": [{"index": 0, "delta": {},
                                "finish_reason": "tool_calls"}]})
             self.wfile.write(b"data: [DONE]\n\n")

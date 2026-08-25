@@ -100,6 +100,11 @@ first time it is called in a session (see
 callback); set
 *no\_prompt = true*
 for a tool with no side effects worth confirming.
+The prompt lists arguments in the order
+*params\_schema.required*
+names them, then any remaining ones, so put the parameters a human needs
+to read first, in that order, in
+*required*.
 *hidden = true*
 omits the tool from the schema advertised to the model entirely, for
 a tool meant to be invoked only by other plugin code, not by the

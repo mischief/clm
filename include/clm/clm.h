@@ -110,6 +110,13 @@ CLM_API const char *clm_permission_req_name(
 /* The raw JSON arguments of the call (for the frontend to display). */
 CLM_API const char *clm_permission_req_args(
     const struct clm_permission_req *req);
+/*
+ * The tool's declared JSON "parameters" object, or NULL if it declared
+ * none. A frontend can read the parameter order the tool author chose
+ * from it, which the arguments themselves do not carry.
+ */
+CLM_API const char *clm_permission_req_schema(
+    const struct clm_permission_req *req);
 
 /* Result of a server connectivity probe (see clm_agent_check_connection). */
 enum clm_conn_status {

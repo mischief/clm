@@ -395,8 +395,9 @@ def test_permission(url):
               "    doas true" in lines,
               "tool summary: each command line drawn on its own line")
 
-    # An edit's arguments read old before new whatever order the model
-    # emitted them in, so the prompt shows what is replaced by what.
+    # An edit's arguments follow the order the tool itself declares
+    # (edit_file's required list), not the order the model emitted them,
+    # so the prompt shows what is replaced by what.
     with Tui(BIN, url, rows=24, cols=80) as t:
         t.wait_for("online", timeout=8)
         t.send(b"edittest please\r")
