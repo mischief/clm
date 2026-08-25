@@ -572,6 +572,74 @@ test_autocompact_mid_chain(uv_loop_t *loop)
 }
 
 /*
+ * Mid-chain autocompact on the streamed Responses API: the setup a real
+ * session runs on. The chain has to be dropped (the server still holds what
+ * was folded away) and the interrupted turn has to carry on by itself.
+ */
+static void
+test_autocompact_mid_chain_responses_stream(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+	const char *req;
+
+	st.loop = loop;
+	st.stream = 1;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	/* (1) A tool call, with usage already past the fallback threshold. */
+	canned_reply(srv,
+	    "data: {\"type\":\"response.output_item.added\","
+	    "\"output_index\":0,\"item\":{\"type\":\"function_call\","
+	    "\"call_id\":\"c1\",\"name\":\"echo_hello\"}}\n\n"
+	    "data: {\"type\":\"response.function_call_arguments.delta\","
+	    "\"output_index\":0,\"delta\":\"{}\"}\n\n"
+	    "data: {\"type\":\"response.completed\",\"response\":"
+	    "{\"id\":\"resp_c1\",\"status\":\"completed\","
+	    "\"usage\":{\"input_tokens\":99000,\"output_tokens\":2000}}}\n\n"
+	    "data: [DONE]\n\n");
+	/* (2) The compaction summary. Compaction never streams, whatever the
+	 * session does, so this one is a whole response. */
+	canned_reply(srv,
+	    "{\"id\":\"resp_c2\",\"status\":\"completed\",\"output\":"
+	    "[{\"type\":\"message\",\"content\":[{\"type\":"
+	    "\"output_text\",\"text\":\"SUMMARY\"}]}]}");
+	/* (3) The resumed chain's own next call. */
+	canned_reply(srv,
+	    "data: {\"type\":\"response.output_text.delta\","
+	    "\"delta\":\"done\"}\n\n"
+	    "data: {\"type\":\"response.completed\",\"response\":"
+	    "{\"id\":\"resp_c3\",\"status\":\"completed\"}}\n\n"
+	    "data: [DONE]\n\n");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	def.name = "echo_hello";
+	def.description = "echo hello";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_hello;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "clm_tool_add");
+
+	CHECK(clm_agent_submit(st.agent, "use the tool") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(
+	    st.turn_status == 0, "streamed mid-chain compact: turn completes");
+	CHECK(canned_request_count(srv) == 3,
+	    "streamed mid-chain compact: tool call, compaction, resumed call");
+	CHECK(strstr(st.assistant, "done") != NULL,
+	    "streamed mid-chain compact: the resumed chain answers");
+	req = canned_last_request(srv);
+	CHECK(req != NULL && strstr(req, "previous_response_id") == NULL,
+	    "streamed mid-chain compact: the rewritten history drops the "
+	    "chain");
+
+	teardown(&st, srv);
+}
+
+/*
  * (b3) Compaction summary from the reasoning channel: a "thinking" model can
  * spend its whole completion budget on chain-of-thought and hit
  * finish_reason "length" with an empty "content" but a non-empty
@@ -2728,6 +2796,7 @@ test_agent_suite(void *arg)
 	test_bg_exec(&loop);
 	test_agent_free_during_bg_exec(&loop);
 	test_autocompact_mid_chain(&loop);
+	test_autocompact_mid_chain_responses_stream(&loop);
 	test_compact_reasoning_fallback(&loop);
 	test_compact_content_filter(&loop);
 	test_content_filter_fails_turn(&loop);
