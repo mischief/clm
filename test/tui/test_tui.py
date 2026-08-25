@@ -351,6 +351,24 @@ def test_permission(url):
               "    doas true" in lines,
               "tool summary: each command line drawn on its own line")
 
+    # An edit's arguments read old before new whatever order the model
+    # emitted them in, so the prompt shows what is replaced by what.
+    with Tui(BIN, url, rows=24, cols=80) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"edittest please\r")
+        assert t.wait_for("allow tool", timeout=15), "no edit permission prompt"
+        txt = t.text()
+        check("old_str: before text" in txt and "new_str: after text" in txt,
+              "permission: edit arguments are shown")
+        check(txt.index("path: /tmp/x") < txt.index("old_str: before text") <
+              txt.index("new_str: after text"),
+              "permission: path, then replaced text, then replacement")
+        check(txt.index("new_str: after text") <
+              txt.index("replace_all: false"),
+              "permission: unordered arguments follow the named ones")
+        t.send(b"n")
+        t.pump(1.0)
+
     # A fresh session, deny this time.
     with Tui(BIN, url, rows=24, cols=80) as t:
         t.wait_for("online", timeout=8)

@@ -786,6 +786,62 @@ push_perm_multiline_value(struct ui *u, const char *value)
 }
 
 /*
+ * Reading order for the arguments of a permission prompt. A model emits
+ * object keys in whatever order it likes, and an edit whose replacement
+ * comes before the text it replaces reads backwards. Keys named here are
+ * shown first, in this order; everything else follows as emitted.
+ */
+static const char *const perm_arg_order[] = {
+    "path",
+    "old_str",
+    "new_str",
+    NULL,
+};
+
+/* Render one argument: name and value on a line, or a named indented block
+ * when the value spans lines. */
+static void
+push_perm_arg(struct ui *u, cJSON *v, bool *first)
+{
+	autofree char *printed = NULL;
+	const char *value;
+	bool multiline;
+
+	if (!*first)
+		ui_push(u, ST_PERM, "\n");
+	*first = false;
+	if (cJSON_IsString(v))
+		value = cJSON_GetStringValue(v);
+	else {
+		printed = cJSON_PrintUnformatted(v);
+		value = printed != NULL ? printed : "";
+	}
+	multiline = strchr(value, '\n') != NULL;
+
+	ui_push(u, ST_PERM, "\n  ");
+	ui_push(u, ST_PERM, v->string != NULL ? v->string : "?");
+	if (multiline) {
+		ui_push(u, ST_PERM, ":\n");
+		push_perm_multiline_value(u, value);
+	} else {
+		ui_push(u, ST_PERM, ": ");
+		ui_push(u, ST_PERM, value);
+	}
+}
+
+/* True if key is one of the names perm_arg_order places by hand. */
+static bool
+perm_arg_ordered(const char *key)
+{
+	if (key == NULL)
+		return false;
+	for (const char *const *k = perm_arg_order; *k != NULL; k++)
+		if (strcmp(*k, key) == 0)
+			return true;
+	return false;
+}
+
+/*
  * Render permission arguments one per line.  A one-line value stays beside
  * its name.  Multi-line values get a named, indented block and a blank line
  * before the following parameter, making commands and replacement text safe
@@ -811,32 +867,15 @@ push_perm_args(struct ui *u, const char *args)
 	}
 
 	ui_push(u, ST_PERM, ":");
-	for (cJSON *v = obj->child; v != NULL; v = v->next) {
-		autofree char *printed = NULL;
-		const char *value;
-		bool multiline;
+	for (const char *const *k = perm_arg_order; *k != NULL; k++) {
+		cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, *k);
 
-		if (!first)
-			ui_push(u, ST_PERM, "\n");
-		first = false;
-		if (cJSON_IsString(v))
-			value = cJSON_GetStringValue(v);
-		else {
-			printed = cJSON_PrintUnformatted(v);
-			value = printed != NULL ? printed : "";
-		}
-		multiline = strchr(value, '\n') != NULL;
-
-		ui_push(u, ST_PERM, "\n  ");
-		ui_push(u, ST_PERM, v->string != NULL ? v->string : "?");
-		if (multiline) {
-			ui_push(u, ST_PERM, ":\n");
-			push_perm_multiline_value(u, value);
-		} else {
-			ui_push(u, ST_PERM, ": ");
-			ui_push(u, ST_PERM, value);
-		}
+		if (v != NULL)
+			push_perm_arg(u, v, &first);
 	}
+	for (cJSON *v = obj->child; v != NULL; v = v->next)
+		if (!perm_arg_ordered(v->string))
+			push_perm_arg(u, v, &first);
 	cJSON_Delete(obj);
 }
 

@@ -95,7 +95,8 @@ class Handler(BaseHTTPRequestHandler):
         msgs = req.get("messages", [])
         text = " ".join(str(m.get("content", "")) for m in msgs)
         asked = any(("shelltest" in str(m.get("content", "")).lower() or
-                     "multilinetest" in str(m.get("content", "")).lower())
+                     "multilinetest" in str(m.get("content", "")).lower() or
+                     "edittest" in str(m.get("content", "")).lower())
                     for m in msgs if m.get("role") == "user")
         has_result = "<tool_response>" in text or any(
             m.get("role") == "tool" for m in msgs)
@@ -123,8 +124,9 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionError):
             return
 
-    def _stream_tool_call(self, multiline=False):
-        """Stream a shell_exec call, optionally with multi-line arguments."""
+    def _stream_tool_call(self, multiline=False, reversed_edit=False):
+        """Stream a shell_exec call, optionally with multi-line arguments,
+        or with edit-style arguments emitted replacement-first."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")
@@ -136,10 +138,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             # Real newlines (JSON \n), so this exercises multi-line
             # rendering rather than a literal backslash-n in the value.
-            args = ("{\"command\":\"printf one\\ncat /tmp/x\\ndoas true\","
-                    "\"stdin\":\"first line\\nsecond line\","
-                    "\"timeout_ms\":10000}"
-                    if multiline else "{\"command\":\"echo hi\"}")
+            if reversed_edit:
+                # Key order a model is free to pick, and the one that reads
+                # backwards if the tui renders keys as they arrive.
+                args = ("{\"new_str\":\"after text\","
+                        "\"replace_all\":false,"
+                        "\"old_str\":\"before text\","
+                        "\"path\":\"/tmp/x\"}")
+            elif multiline:
+                args = ("{\"command\":\"printf one\\ncat /tmp/x\\ndoas true\","
+                        "\"stdin\":\"first line\\nsecond line\","
+                        "\"timeout_ms\":10000}")
+            else:
+                args = "{\"command\":\"echo hi\"}"
             send({"choices": [{"index": 0, "delta": {"tool_calls": [{
                 "index": 0, "id": "call_1", "type": "function",
                 "function": {"name": "shell_exec", "arguments": args}}]}}]})
@@ -174,7 +185,8 @@ class Handler(BaseHTTPRequestHandler):
         if req is not None and self._wants_tool(req):
             text = " ".join(str(m.get("content", "")) for m in
                             req.get("messages", []))
-            self._stream_tool_call("multilinetest" in text.lower())
+            self._stream_tool_call("multilinetest" in text.lower(),
+                                   "edittest" in text.lower())
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
