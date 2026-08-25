@@ -1,13 +1,11 @@
-# Fuzz targets using libFuzzer (CC=clang required)
-# These fuzz how clm handles parsed data, not upstream libraries.
+# Fuzz targets for AFL++ persistent mode. These fuzz how clm handles parsed
+# data, not upstream libraries. Built alongside the tests but never run by
+# `meson test`; see README.md for how to drive them.
 #
-# Build:  CC=clang meson setup build-fuzz -Dtests=true
-# Run:    ./build-fuzz/fuzz/fuzz_tool_dispatch
+# Build:  CC=afl-clang-fast meson setup build-fuzz -Dtests=true
+# Run:    afl-fuzz -i fuzz/corpus/session -o out -- ./build-fuzz/fuzz/fuzz_session
 
-# libFuzzer needs the target instrumented, not just linked against it:
-# without fuzzer-no-link at compile time there is no coverage feedback and
-# the run degrades to blind random input.
-fuzz_c_args = ['-fsanitize=fuzzer-no-link,address']
+fuzz_inc = include_directories('.')
 
 fuzz_lib_src = files(
   '../libclm/agent.c', '../libclm/tools.c', '../libclm/history.c',
@@ -24,10 +22,10 @@ fuzz_lib_src = files(
 fuzz_tool_dispatch_exe = executable(
   'fuzz_tool_dispatch',
   files('fuzz_tool_dispatch.c') + fuzz_lib_src,
-  include_directories: [clm_inc, include_directories('../include')],
+  include_directories: [fuzz_inc, clm_inc, include_directories('../include')],
   dependencies: clm_core_deps,
-  c_args: fuzz_c_args + ['-DCLM_BUILDING'],
-  link_args: ['-fsanitize=fuzzer,address'],
+  c_args: ['-DCLM_BUILDING'],
+  build_by_default: false,
   install: false,
 )
 
@@ -39,10 +37,10 @@ if lua_dep.found()
   fuzz_tool_dispatch_lua_exe = executable(
     'fuzz_tool_dispatch_lua',
     files('fuzz_tool_dispatch.c') + fuzz_lib_src,
-    include_directories: [clm_inc, include_directories('../include')],
+    include_directories: [fuzz_inc, clm_inc, include_directories('../include')],
     dependencies: [clm_core_deps, clmlua_dep],
-    c_args: fuzz_c_args + ['-DCLM_BUILDING'],
-    link_args: ['-fsanitize=fuzzer,address'],
+    c_args: ['-DCLM_BUILDING'],
+    build_by_default: false,
     install: false,
   )
 endif
@@ -52,11 +50,11 @@ endif
 fuzz_session_exe = executable(
   'fuzz_session',
   files('fuzz_session.c', '../libclm/history.c', '../libclmsession/session.c'),
-  include_directories: [clm_inc, include_directories('../include'),
+  include_directories: [fuzz_inc, clm_inc, include_directories('../include'),
     include_directories('../libclmsession')],
   dependencies: [cjson_dep],
-  c_args: fuzz_c_args + ['-DCLM_BUILDING'],
-  link_args: ['-fsanitize=fuzzer,address'],
+  c_args: ['-DCLM_BUILDING'],
+  build_by_default: false,
   install: false,
 )
 
@@ -65,22 +63,22 @@ fuzz_session_exe = executable(
 fuzz_text_clean_exe = executable(
   'fuzz_text_clean',
   files('fuzz_text_clean.c', '../libclm/text_clean.c'),
-  include_directories: [clm_inc, include_directories('../include')],
+  include_directories: [fuzz_inc, clm_inc, include_directories('../include')],
   dependencies: [cjson_dep],
-  c_args: fuzz_c_args + ['-DCLM_BUILDING'],
-  link_args: ['-fsanitize=fuzzer,address'],
+  c_args: ['-DCLM_BUILDING'],
+  build_by_default: false,
   install: false,
 )
 
 # fuzz_md: fuzz md_render() with arbitrary markdown input. It compiles
-# md_render.c rather than linking md_render_lib: the library is built for the
-# desktop binary, without the instrumentation libFuzzer steers on.
+# md_render.c rather than linking md_render_lib, so the parser is built with
+# the same instrumentation as the harness.
 fuzz_md_exe = executable(
   'fuzz_md',
   files('fuzz_md.c', '../src/md_render.c'),
   dependencies: [md_dep],
-  include_directories: [md_render_inc, clm_bin_inc, clm_inc],
-  c_args: fuzz_c_args + ['-D_XOPEN_SOURCE=700'],
-  link_args: ['-fsanitize=fuzzer,address'],
+  include_directories: [fuzz_inc, md_render_inc, clm_bin_inc, clm_inc],
+  c_args: ['-D_XOPEN_SOURCE=700'],
+  build_by_default: false,
   install: false,
 )

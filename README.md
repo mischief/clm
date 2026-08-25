@@ -383,6 +383,29 @@ meson setup build-ubsan \
 meson test -C build-ubsan
 ```
 
+## Fuzzing
+
+Fuzz targets are built alongside the tests but never run by `meson test`.
+They use AFL++ persistent mode, so the build needs `afl-clang-fast`:
+
+```sh
+CC=afl-clang-fast meson setup build-fuzz -Dtests=true
+ninja -C build-fuzz fuzz/fuzz_session
+afl-fuzz -i fuzz/corpus/session -o fuzz/out_session -- ./build-fuzz/fuzz/fuzz_session
+```
+
+Add `AFL_USE_ASAN=1` at setup time to fuzz under AddressSanitizer. Built
+with any other compiler, a target reads one case from stdin instead, which
+is how you replay a crash:
+
+```sh
+./build/fuzz/fuzz_session < fuzz/out_session/default/crashes/id:000000*
+```
+
+Targets: `fuzz_tool_dispatch` (and `fuzz_tool_dispatch_lua`) for adversarial
+tool-call JSON, `fuzz_session` for the session log loader, `fuzz_text_clean`
+for captured tool output, `fuzz_md` for the markdown renderer.
+
 ## Tooling
 
 ```sh

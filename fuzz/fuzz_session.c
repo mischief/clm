@@ -13,13 +13,12 @@
 
 #include <cjson/cJSON.h>
 
+#include "afl.h"
 #include "clm/history.h"
 #include "session_internal.h"
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
-
-int
-LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+static void
+fuzz_one(const uint8_t *data, size_t size)
 {
 	struct clm_history h;
 	cJSON *meta = NULL;
@@ -39,5 +38,24 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	if (meta != NULL)
 		cJSON_Delete(meta);
 	clm_history_free(&h);
+}
+
+__AFL_FUZZ_INIT()
+
+int
+main(int argc, char *argv[])
+{
+	(void)argc;
+	(void)argv;
+
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+	__AFL_INIT();
+#endif
+
+	const uint8_t *buf = __AFL_FUZZ_TESTCASE_BUF;
+
+	while (__AFL_LOOP(CLM_FUZZ_LOOPS))
+		fuzz_one(buf, (size_t)__AFL_FUZZ_TESTCASE_LEN);
+
 	return 0;
 }

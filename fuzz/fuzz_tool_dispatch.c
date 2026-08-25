@@ -6,8 +6,6 @@
  * engine. Tests how clm parses, validates, and handles adversarial
  * model responses with malformed or malicious tool calls.
  *
- * Build: CC=clang ninja -C build-fuzz fuzz/fuzz_tool_dispatch
- * Run:   ./build-fuzz/fuzz/fuzz_tool_dispatch
  */
 #include <errno.h>
 #include <stdbool.h>
@@ -18,12 +16,10 @@
 
 #include <cjson/cJSON.h>
 
+#include "afl.h"
 #include "clm/clm.h"
 #include "clm/internal.h"
 #include "clm/cleanup.h"
-
-/* libFuzzer entry; declared here so -Wmissing-prototypes is satisfied. */
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
 /* ------------------------------------------------------------------ */
 /* Minimal stub host (no real I/O)                                     */
@@ -103,8 +99,8 @@ register_tool(struct clm_agent *agent, const char *name)
 
 /* ------------------------------------------------------------------ */
 
-int
-LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+static void
+fuzz_one(const uint8_t *data, size_t size)
 {
 	struct clm_agent *agent;
 	struct clm_cfg cfg;
@@ -112,7 +108,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	cJSON *tool_calls = NULL;
 
 	if (size == 0)
-		return 0;
+		return;
 
 	/* Parse fuzz input as JSON. Invalid input returns NULL, which is safe.
 	 * require_null_terminated=0: fuzz input is not guaranteed
@@ -120,7 +116,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	 * way. */
 	root = cJSON_ParseWithLengthOpts((const char *)data, size, NULL, 0);
 	if (root == NULL)
-		return 0;
+		return;
 
 	/* Extract a JSON array (either top-level or nested under common keys).
 	 */
@@ -139,7 +135,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	}
 
 	if (tool_calls == NULL || cJSON_GetArraySize(tool_calls) == 0)
-		return 0;
+		return;
 
 	/* Build a fresh agent per input. */
 	memset(&cfg, 0, sizeof(cfg));
@@ -150,7 +146,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	cfg.system_prompt = "fuzz";
 
 	if (clm_agent_new(&cfg, &stub_host, NULL, NULL, &agent) < 0)
-		return 0;
+		return;
 
 	/* Register 512 dummy tools to stress the registry lookup. */
 	for (int i = 0; i < 512; i++) {
@@ -163,5 +159,24 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 	clm_tools_dispatch(agent, tool_calls);
 
 	clm_agent_free(agent);
+}
+
+__AFL_FUZZ_INIT()
+
+int
+main(int argc, char *argv[])
+{
+	(void)argc;
+	(void)argv;
+
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+	__AFL_INIT();
+#endif
+
+	const uint8_t *buf = __AFL_FUZZ_TESTCASE_BUF;
+
+	while (__AFL_LOOP(CLM_FUZZ_LOOPS))
+		fuzz_one(buf, (size_t)__AFL_FUZZ_TESTCASE_LEN);
+
 	return 0;
 }

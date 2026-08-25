@@ -58,4 +58,5 @@ cppcheck.
 
 See [CODING_STYLE.md](CODING_STYLE.md) for the full coding standard.
 
-Tests live in `test/`, fuzz corpora in `fuzz/corpus/`.
+Tests live in `test/`, fuzz corpora in `fuzz/corpus/`. Fuzz targets are
+AFL++ persistent-mode binaries; see README.md for how to build and run them.

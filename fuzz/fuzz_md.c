@@ -2,11 +2,11 @@
 /*
  * Fuzz target for md_render(). Feeds arbitrary bytes into the
  * markdown parser. Looks for crashes, hangs, or memory errors.
- *
- * Build: link fuzz_md.c + src/md_render.c + md4c.
  */
 #include <stddef.h>
 #include <stdint.h>
+
+#include "afl.h"
 
 struct md_run {
 	unsigned style;
@@ -36,15 +36,13 @@ sink_emit(const struct md_run *run, void *userdata)
 	(void)userdata;
 }
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
-
-int
-LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+static void
+fuzz_one(const uint8_t *data, size_t size)
 {
 	struct md_opts opts = {.width = 80, .tables = MD_TABLE_PLAIN};
 
 	if (size == 0)
-		return 0;
+		return;
 
 	md_render((const char *)data, size, &opts, sink_emit, NULL);
 
@@ -56,6 +54,24 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 	opts.width = 1;
 	md_render((const char *)data, size, &opts, sink_emit, NULL);
+}
+
+__AFL_FUZZ_INIT()
+
+int
+main(int argc, char *argv[])
+{
+	(void)argc;
+	(void)argv;
+
+#ifdef __AFL_HAVE_MANUAL_CONTROL
+	__AFL_INIT();
+#endif
+
+	const uint8_t *buf = __AFL_FUZZ_TESTCASE_BUF;
+
+	while (__AFL_LOOP(CLM_FUZZ_LOOPS))
+		fuzz_one(buf, (size_t)__AFL_FUZZ_TESTCASE_LEN);
 
 	return 0;
 }

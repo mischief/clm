@@ -183,9 +183,7 @@ subdir('man')
 
 if get_option('tests')
   subdir('test')
-  if cc.has_argument('-fsanitize=fuzzer') and cc.has_argument('-fsanitize=address')
-    subdir('fuzz')
-  endif
+  subdir('fuzz')
 endif
 
 cppcheck = find_program('cppcheck', required: false)
