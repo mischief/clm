@@ -505,6 +505,21 @@ def test_bracketed_paste(url):
         check("line one" in txt and "line two" in txt and "line three" in txt,
               "paste: all three lines appear in the submitted turn")
 
+    # The caret belongs after the last pasted character. The box lays the
+    # text out with newlines as hard breaks, so a width-only calculation
+    # puts the caret rows away from the text it belongs to.
+    with Tui(BIN, url, rows=24, cols=80) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"shape: ")
+        t.send(PASTE_START + b"    typedef int (*handler)(int fd, void *user);"
+               b"\r\r    int add_io(int fd, handler h, void *user);" + PASTE_END)
+        t.pump(0.5)
+        lines = t.lines()
+        last = max(i for i, ln in enumerate(lines) if ln.strip())
+        cy, cx = t.cursor()
+        check((cy, cx) == (last, len(lines[last])),
+              "paste: the caret sits after the last pasted character")
+
     # A paste far past the old fixed 1 KiB line buffer must arrive whole:
     # it used to be silently truncated mid-character-insert.
     with Tui(BIN, url, rows=24, cols=80) as t:

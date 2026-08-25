@@ -1317,62 +1317,51 @@ draw_status(struct ui *u)
 	wnoutrefresh(u->stat);
 }
 
-/* Display columns occupied by the first n bytes of a UTF-8 string. */
-static int
-disp_width(const char *s, size_t n)
-{
-	mbstate_t ps;
-	size_t i = 0;
-	int cols = 0;
-
-	memset(&ps, 0, sizeof(ps));
-	while (i < n) {
-		wchar_t wc;
-		size_t k = mbrtowc(&wc, s + i, n - i, &ps);
-		if (k == (size_t)-1 || k == (size_t)-2 || k == 0) {
-			i++; /* invalid/incomplete: count as one column */
-			cols++;
-			continue;
-		}
-		int w = wcwidth(wc);
-		cols += (w > 0) ? w : 1;
-		i += k;
-	}
-	return cols;
-}
-
 /*
- * Rows the input box needs to show all its text. Unlike a plain
- * disp_width()/w division, this walks the text and treats '\n' as a hard
- * line break rather than just another (near-zero-width) character -- a
- * bracketed paste can land literal newlines in u->input (see
- * UI_KEY_PASTE_START), and a short multi-line paste's *total* display width
- * can easily be smaller than one row, which would make the width-only
- * calculation say "1 row" even though the text is actually three lines.
+ * Walk the input text the way curses lays it out in the box: '\n' is a hard
+ * line break, not a near-zero-width character. A bracketed paste can land
+ * literal newlines in u->input (see UI_KEY_PASTE_START), and a short
+ * multi-line paste's total display width can be less than one row.
+ *
+ * Returns the rows the text needs. When cy/cx are non-NULL they receive the
+ * row and column the byte at `upto` sits at, so the cursor lands where its
+ * character is drawn.
  */
 static int
-input_rows(struct ui *u, int w)
+input_walk(struct ui *u, int w, size_t upto, int *cy, int *cx)
 {
 	mbstate_t ps;
 	size_t i = 0;
 	int rows = 1;
+	int row = 0;
 	int col = 2; /* "> " prefix */
 
 	if (w < 1)
 		w = 1;
+	if (cy != NULL) {
+		*cy = row;
+		*cx = col;
+	}
 
 	memset(&ps, 0, sizeof(ps));
 	while (i < u->input_len) {
+		wchar_t wc;
+		size_t k;
+		int cw = 1;
+
 		if (u->input[i] == '\n') {
+			if (i == upto && cy != NULL) {
+				*cy = row;
+				*cx = col;
+			}
 			rows++;
+			row++;
 			col = 0;
 			i++;
 			continue;
 		}
 
-		wchar_t wc;
-		size_t k = mbrtowc(&wc, u->input + i, u->input_len - i, &ps);
-		int cw = 1;
+		k = mbrtowc(&wc, u->input + i, u->input_len - i, &ps);
 		if (k == (size_t)-1 || k == (size_t)-2 || k == 0) {
 			k = 1; /* invalid/incomplete byte: one column, advance
 			          one byte */
@@ -1382,14 +1371,30 @@ input_rows(struct ui *u, int w)
 				cw = 1;
 		}
 
-		col += cw;
-		if (col >= w) {
+		/* A character that does not fit is drawn on the next row. */
+		if (col + cw > w) {
 			rows++;
-			col = cw;
+			row++;
+			col = 0;
 		}
+		if (i == upto && cy != NULL) {
+			*cy = row;
+			*cx = col;
+		}
+		col += cw;
 		i += k;
 	}
+	if (upto >= u->input_len && cy != NULL) {
+		*cy = row;
+		*cx = col;
+	}
 	return rows;
+}
+
+static int
+input_rows(struct ui *u, int w)
+{
+	return input_walk(u, w, u->input_len, NULL, NULL);
 }
 
 static void
@@ -1397,7 +1402,7 @@ draw_input(struct ui *u)
 {
 	int w = getmaxx(u->in);
 	int h = getmaxy(u->in);
-	int off, cy, cx;
+	int cy, cx;
 
 	werase(u->in);
 	wmove(u->in, 0, 0);
@@ -1405,9 +1410,7 @@ draw_input(struct ui *u)
 	/* Let curses wrap the text across the box's rows. */
 	waddnstr(u->in, u->input, (int)u->input_len);
 
-	off = 2 + disp_width(u->input, u->input_pos);
-	cy = off / w;
-	cx = off % w;
+	input_walk(u, w, u->input_pos, &cy, &cx);
 	if (cy > h - 1) { /* box capped and scrolled: pin cursor to last row */
 		cy = h - 1;
 		cx = w - 1;

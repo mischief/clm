@@ -156,6 +156,10 @@ class Tui:
     def cell(self, y, x):
         return self._screen.buffer[y][x]
 
+    def cursor(self):
+        """Where the terminal would draw the caret: (row, column)."""
+        return self._screen.cursor.y, self._screen.cursor.x
+
     def any_bold(self, needle):
         """True if every char of `needle` appears bold somewhere on screen."""
         found = ""
