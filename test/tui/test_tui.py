@@ -778,6 +778,40 @@ def test_session_resume(url):
               "resume: a follow-up turn works after resuming")
 
 
+def test_resume_collapses_tools(url):
+    """A replayed transcript folds older tool clusters, same as a live one."""
+    sessions = os.path.join(STATE_HOME, "clm")
+
+    with Tui(BIN, url, rows=40, cols=100,
+             extra_args=("--allow-all-tools",)) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"shelltest one\r")
+        assert t.wait_for("Yellow", timeout=15), "no reply to the first turn"
+        t.send(b"shelltest two\r")
+        assert t.wait_for("ran 1 command", timeout=15), "no second cluster"
+        t.pump(1.0)
+        t.send(b"/quit\r")
+        t.pump(0.8)
+
+    files = sorted((f for f in os.listdir(sessions) if f.endswith(".jsonl")),
+                   key=lambda f: os.path.getmtime(os.path.join(sessions, f)))
+    if not files:
+        check(False, "resume: a session log was written")
+        return
+    sid = files[-1][:-len(".jsonl")]
+
+    with Tui(BIN, url, rows=40, cols=100,
+             extra_args=("--resume", sid[-8:])) as t:
+        assert t.wait_for("resumed session", timeout=10), "no resume banner"
+        t.pump(0.5)
+        txt = t.text()
+        check("(^O to expand)" in txt,
+              "resume: an older tool cluster is collapsed")
+        head = txt.split("shelltest two")[0]
+        check("shell_exec" not in head,
+              "resume: the collapsed cluster's own lines are gone")
+
+
 TESTS = {
     "connection": test_connection_online,
     "offline": test_connection_offline,
@@ -799,6 +833,7 @@ TESTS = {
     "tool_escapes": test_tool_output_escapes,
     "paste": test_bracketed_paste,
     "session": test_session_resume,
+    "resume_collapse": test_resume_collapses_tools,
     "session_compact": test_session_compact,
     "scratch": test_scratch,
     "peers": test_peers,

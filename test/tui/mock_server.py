@@ -100,18 +100,22 @@ class Handler(BaseHTTPRequestHandler):
             self._whole()
 
     def _wants_tool(self, req):
-        """True if the latest user turn asks for a shell tool and no tool
-        result is present yet (so we emit the call exactly once)."""
+        """True if the latest user turn asks for a shell tool and its own
+        result is not back yet, so each such turn emits the call once."""
         msgs = req.get("messages", [])
-        text = " ".join(str(m.get("content", "")) for m in msgs)
-        asked = any(("shelltest" in str(m.get("content", "")).lower() or
-                     "multilinetest" in str(m.get("content", "")).lower() or
-                     "manytest" in str(m.get("content", "")).lower() or
-                     "escapetest" in str(m.get("content", "")).lower() or
-                     "edittest" in str(m.get("content", "")).lower())
-                    for m in msgs if m.get("role") == "user")
+        last_user = -1
+        for i, m in enumerate(msgs):
+            if m.get("role") == "user":
+                last_user = i
+        if last_user < 0:
+            return False
+        turn = msgs[last_user:]
+        asked = any(w in str(msgs[last_user].get("content", "")).lower()
+                    for w in ("shelltest", "multilinetest", "manytest",
+                              "escapetest", "edittest"))
+        text = " ".join(str(m.get("content", "")) for m in turn)
         has_result = "<tool_response>" in text or any(
-            m.get("role") == "tool" for m in msgs)
+            m.get("role") == "tool" for m in turn)
         return asked and not has_result
 
     def _stream_peer_send(self, target, text):

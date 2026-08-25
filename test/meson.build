@@ -164,7 +164,7 @@ if have_lua and have_pyte
   test('tui_session',
     py,
     args: [files('tui/test_tui.py'), 'session', 'session_compact',
-      'scratch', 'peers'],
+      'resume_collapse', 'scratch', 'peers'],
     env: {'CLM_BIN': clm_exe.full_path()},
     depends: clm_exe,
     suite: 'tui',

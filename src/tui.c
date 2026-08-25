@@ -501,10 +501,9 @@ format_tool_tally(char *line, size_t cap, const int cnt[4], const char *suffix)
  * later, no-longer-latest cluster can still be folded into a combined
  * aggregate once a newer one takes its place (see rebuild_render). */
 static void
-push_batch_summary(struct ui *u)
+push_batch_counts(struct ui *u, const int cnt[4])
 {
 	char line[128];
-	int cnt[4] = {u->n_cmd, u->n_read, u->n_write, u->n_other};
 
 	if (!format_tool_tally(line, sizeof(line), cnt, "\n"))
 		return;
@@ -515,6 +514,30 @@ push_batch_summary(struct ui *u)
 		u->segs[u->nsegs - 1].cnt[2] = cnt[2];
 		u->segs[u->nsegs - 1].cnt[3] = cnt[3];
 	}
+}
+
+static void
+push_batch_summary(struct ui *u)
+{
+	int cnt[4] = {u->n_cmd, u->n_read, u->n_write, u->n_other};
+
+	push_batch_counts(u, cnt);
+}
+
+/* Which of the four tally slots a tool name belongs to. */
+static void
+tally_tool(int cnt[4], const char *name)
+{
+	if (name == NULL)
+		cnt[3]++;
+	else if (strcmp(name, "shell_exec") == 0)
+		cnt[0]++;
+	else if (strcmp(name, "read_file") == 0)
+		cnt[1]++;
+	else if (strcmp(name, "write_file") == 0)
+		cnt[2]++;
+	else
+		cnt[3]++;
 }
 
 static void
@@ -3680,9 +3703,18 @@ static void
 replay_transcript(struct ui *u, const struct clm_history *h)
 {
 	const struct clm_message *m;
+	int cnt[4] = {0, 0, 0, 0};
 
 	TAILQ_FOREACH(m, h, entries)
 	{
+		/* A cluster ends at the first message that is not one of its
+		 * results. Its tally is what rebuild_render folds older
+		 * clusters into, so a resumed transcript needs it as much as
+		 * a live one does. */
+		if (m->role != CLM_ROLE_TOOL) {
+			push_batch_counts(u, cnt);
+			cnt[0] = cnt[1] = cnt[2] = cnt[3] = 0;
+		}
 		switch (m->role) {
 		case CLM_ROLE_SYSTEM:
 			break;
@@ -3698,8 +3730,12 @@ replay_transcript(struct ui *u, const struct clm_history *h)
 		case CLM_ROLE_ASSISTANT: {
 			const struct clm_tool_call *tc;
 			TAILQ_FOREACH(tc, &m->tool_calls, entries)
-			push_tool_summary(
-			    u, tc->name != NULL ? tc->name : "?", tc->args);
+			{
+				push_tool_summary(u,
+				    tc->name != NULL ? tc->name : "?",
+				    tc->args);
+				tally_tool(cnt, tc->name);
+			}
 			if (m->content != NULL && m->content[0] != '\0') {
 				ui_push(u, ST_LABEL, "\nclm>\n");
 				ui_push(u, ST_ASSIST, m->content);
@@ -3716,6 +3752,7 @@ replay_transcript(struct ui *u, const struct clm_history *h)
 			break;
 		}
 	}
+	push_batch_counts(u, cnt); /* a cluster that ends the history */
 }
 
 int
