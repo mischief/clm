@@ -1379,6 +1379,25 @@ draw_input(struct ui *u)
 }
 
 /*
+ * Blank columns kept between the transcript text and both screen edges, so
+ * lines do not run into the terminal border. Dropped on a screen too narrow
+ * to spare them.
+ */
+#define CLM_TXT_MARGIN 2
+
+/* Left origin and width of the transcript window on a screen w columns wide. */
+static void
+txt_geom(int w, int *x, int *tw)
+{
+	int m = w >= CLM_TXT_MARGIN * 4 ? CLM_TXT_MARGIN : 0;
+
+	*x = m;
+	*tw = w - 2 * m;
+	if (*tw < 1)
+		*tw = 1;
+}
+
+/*
  * Recompute the input box height from its contents and re-tile the screen:
  * the transcript keeps the top, the status bar sits just above the box, and
  * the box occupies the bottom, growing upward. Returns true if geometry
@@ -1389,7 +1408,7 @@ static bool
 relayout(struct ui *u, bool force)
 {
 	int h = LINES, w = COLS;
-	int need, maxih, txt_h;
+	int need, maxih, txt_h, txt_x, txt_w;
 
 	if (h < 3)
 		h = 3;
@@ -1416,10 +1435,12 @@ relayout(struct ui *u, bool force)
 	if (txt_h < 1)
 		txt_h = 1;
 
-	/* The transcript window holds scrollback content, so only resize it in
-	 * place (origin stays 0,0). The status/input windows carry no state, so
-	 * recreate them at the new positions -- simpler and always valid. */
-	wresize(u->txt, txt_h, w);
+	/* The transcript window holds scrollback content, so only move and
+	 * resize it in place. The status and input windows carry no state,
+	 * so recreate them where they now belong. */
+	txt_geom(w, &txt_x, &txt_w);
+	wresize(u->txt, txt_h, txt_w);
+	mvwin(u->txt, 0, txt_x);
 	delwin(u->stat);
 	delwin(u->in);
 	u->stat = newwin(1, w, txt_h, 0);
@@ -3541,7 +3562,10 @@ make_windows(struct ui *u)
 	int h = LINES, w = COLS;
 	if (h < 3)
 		h = 3;
-	u->txt = newwin(h - 2, w, 0, 0);
+	int txt_x, txt_w;
+
+	txt_geom(w, &txt_x, &txt_w);
+	u->txt = newwin(h - 2, txt_w, 0, txt_x);
 	u->stat = newwin(1, w, h - 2, 0);
 	u->in = newwin(1, w, h - 1, 0);
 	u->in_h = 1;

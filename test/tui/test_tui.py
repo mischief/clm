@@ -23,6 +23,25 @@ BIN = os.environ.get("CLM_BIN", "clm")
 _failures = []
 
 
+# Blank columns the tui keeps between the transcript and each screen edge
+# (CLM_TXT_MARGIN in tui.c). Checks on transcript indentation strip it.
+MARGIN = 2
+
+
+def body(t):
+    """Transcript lines with the left margin removed."""
+    return [ln[MARGIN:] if ln[:MARGIN] == " " * MARGIN else ln
+            for ln in t.lines()]
+
+
+def status_line(t):
+    """The status bar: the lowest line naming the binary and its state."""
+    for ln in reversed(t.lines()):
+        if " clm " in ln and "[" in ln:
+            return ln
+    return ""
+
+
 def check(cond, msg):
     print(("ok  " if cond else "FAIL") + "  " + msg)
     if not cond:
@@ -172,6 +191,31 @@ def test_resize(url):
         check("Apple" in t.text(), "resize: content survives wide reflow")
 
 
+def test_margin(url):
+    """Transcript text keeps a blank column on each side of the screen."""
+    cols = 60
+    with Tui(BIN, url, rows=24, cols=cols) as t:
+        t.send(b"show me fruit\r")
+        assert t.wait_for("Apple", timeout=15), "no response to measure"
+        rows = [ln for ln in t.lines()[:-2] if ln.strip()]
+        check(rows and all(ln.startswith(" " * MARGIN) for ln in rows),
+              "margin: no transcript line starts at the left edge")
+        widest = max(len(ln.rstrip()) for ln in rows)
+        check(widest > cols - 2 * MARGIN - 8,
+              "margin: some line is long enough to reach the right edge")
+        check(widest <= cols - MARGIN,
+              "margin: no transcript line runs into the right edge")
+
+    # A screen too narrow to spare the columns drops the margin rather
+    # than squeezing the text.
+    with Tui(BIN, url, rows=10, cols=7) as t:
+        t.send(b"show me fruit\r")
+        t.pump(3.0)
+        rows = [ln for ln in t.lines()[:-2] if ln.strip()]
+        check(rows and any(ln[:1].strip() for ln in rows),
+              "margin: dropped when the screen cannot spare it")
+
+
 def test_editing(url):
     with Tui(BIN, url, rows=12, cols=60) as t:
         # Type, kill to start, yank it back -- input line should round-trip.
@@ -194,7 +238,7 @@ def test_editing(url):
 
 
 def test_commands(url):
-    with Tui(BIN, url, rows=20, cols=70) as t:
+    with Tui(BIN, url, rows=20, cols=80) as t:
         t.wait_for("online", timeout=8)
         t.send(b"/help\r")
         t.pump(0.4)
@@ -344,7 +388,7 @@ def test_permission(url):
         # extra arguments.
         t.send(b"y")
         t.pump(1.0)
-        lines = [ln.rstrip() for ln in t.lines()]
+        lines = [ln.rstrip() for ln in body(t)]
         check("  executing shell command" in lines,
               "tool summary: verb on its own line")
         check("    printf one" in lines and "    cat /tmp/x" in lines and
@@ -535,8 +579,8 @@ def test_allow_all(url):
     with Tui(BIN, url, rows=20, cols=100,
              extra_args=("--allow-all-tools",)) as t:
         t.wait_for("online", timeout=8)
-        status = [ln for ln in t.lines() if " clm " in ln]
-        check(bool(status) and "[allow-all]" in status[0],
+        status = status_line(t)
+        check("[allow-all]" in status,
               "allow-all: the status bar says the session is ungated")
         t.send(b"shelltest please\r")
         # The gated path would stop here waiting for y/n.
@@ -686,6 +730,7 @@ TESTS = {
     "scroll_stable": test_scroll_stable_while_streaming,
     "end_key": test_end_key,
     "resize": test_resize,
+    "margin": test_margin,
     "editing": test_editing,
     "history": test_history,
     "commands": test_commands,

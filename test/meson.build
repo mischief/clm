@@ -137,7 +137,7 @@ if have_lua and have_pyte
   test('tui_basic',
     py,
     args: [files('tui/test_tui.py'), 'connection', 'offline', 'agent',
-           'markdown', 'resize', 'editing', 'history', 'paste'],
+           'markdown', 'resize', 'margin', 'editing', 'history', 'paste'],
     env: {'CLM_BIN': clm_exe.full_path()},
     depends: clm_exe,
     suite: 'tui',
