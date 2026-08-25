@@ -54,6 +54,18 @@ fuzz_session_exe = executable(
   install: false,
 )
 
+# fuzz_text_clean: fuzz the tool-output cleaner (external input: a command
+# prints whatever it likes, including half-formed escape sequences).
+fuzz_text_clean_exe = executable(
+  'fuzz_text_clean',
+  files('fuzz_text_clean.c', '../libclm/text_clean.c'),
+  include_directories: [clm_inc, include_directories('../include')],
+  dependencies: [cjson_dep],
+  c_args: ['-fsanitize=address', '-DCLM_BUILDING'],
+  link_args: ['-fsanitize=fuzzer,address'],
+  install: false,
+)
+
 # fuzz_md: fuzz md_render() with arbitrary markdown input.
 fuzz_md_exe = executable(
   'fuzz_md',

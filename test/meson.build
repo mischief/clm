@@ -26,7 +26,7 @@ test('tap', test_tap, protocol: 'tap')
 
 # Uses the uv host (clm_host_uv) + shell_exec, so it links the uv layer.
 test_agent = executable('test_agent',
-  files('test_agent.c', 'canned.c', '../libclm/props.c', '../libclm/history.c', '../libclm/models_list.c') + tap_src,
+  files('test_agent.c', 'canned.c', '../libclm/props.c', '../libclm/history.c', '../libclm/models_list.c', '../libclm/text_clean.c') + tap_src,
   dependencies: [clmuv_dep],
   include_directories: [tap_inc, include_directories('.'), clm_inc, include_directories('../include')],
   c_args: test_cflags,
@@ -154,7 +154,8 @@ if have_lua and have_pyte
   test('tui_interaction',
     py,
     args: [files('tui/test_tui.py'), 'commands', 'effort', 'queueing',
-      'permission', 'allow_all', 'cancel', 'cancel_tools'],
+      'permission', 'allow_all', 'cancel', 'cancel_tools',
+      'tool_escapes'],
     env: {'CLM_BIN': clm_exe.full_path()},
     depends: clm_exe,
     suite: 'tui',

@@ -719,6 +719,12 @@ inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content,
 	clamped =
 	    clamp_dup(effective, effective_len, inv->output_cap, &out_len);
 	if (clamped != NULL) {
+		/* A tool captures bytes, not a rendered screen, so escape
+		 * sequences and overstrike arrive literally (nroff bolds with
+		 * "c\bc"). Neither means anything to a model, and a frontend
+		 * that echoes them hands the terminal control of itself. */
+		out_len = clm_clean_text(clamped, out_len);
+		clamped[out_len] = '\0';
 		out = clamped;
 	} else {
 		out = effective ? effective : (const uint8_t *)"";

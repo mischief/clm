@@ -2498,6 +2498,55 @@ test_parse_model_ctx(void)
 	CHECK(clm_parse_model_ctx(NULL, &ctx) < 0, "model_ctx: NULL rejected");
 }
 
+/*
+ * (i5) clm_clean_text: nroff overstrike collapses like col(1), escape
+ * sequences and stray control bytes go away, text is left alone.
+ */
+static void
+test_clean_text(void)
+{
+	uint8_t buf[128];
+	size_t n;
+
+#define CLEAN(lit)                                                             \
+	(memcpy(buf, (lit), sizeof(lit) - 1),                                  \
+	    n = clm_clean_text(buf, sizeof(lit) - 1), buf[n] = '\0',           \
+	    (char *)buf)
+
+	CHECK(strcmp(CLEAN("N\bNA\bAM\bME\bE"), "NAME") == 0,
+	    "clean_text: bold overstrike collapses to one copy");
+	CHECK(strcmp(CLEAN("_\bi_\bn_\bt"), "int") == 0,
+	    "clean_text: underline overstrike keeps the letter");
+	CHECK(strcmp(CLEAN("a\b\bb"), "b") == 0,
+	    "clean_text: repeated backspace deletes repeatedly");
+	CHECK(strcmp(CLEAN("\ba"), "a") == 0,
+	    "clean_text: a leading backspace deletes nothing");
+	CHECK(strcmp(CLEAN("\xc3\xa9\bx"), "x") == 0,
+	    "clean_text: backspace deletes a whole multi-byte character");
+	CHECK(strcmp(CLEAN("a\x1b[31mred\x1b[0m"), "ared") == 0,
+	    "clean_text: CSI colour sequences are dropped");
+	CHECK(strcmp(CLEAN("a\x1b]0;title\x07"
+	                   "b"),
+	          "ab") == 0,
+	    "clean_text: an OSC sequence is dropped up to its BEL");
+	CHECK(strcmp(CLEAN("a\x1b]0;title\x1b\\b"), "ab") == 0,
+	    "clean_text: an OSC sequence is dropped up to its string end");
+	CHECK(strcmp(CLEAN("a\x1bMb"), "ab") == 0,
+	    "clean_text: a two-byte escape is dropped");
+	CHECK(strcmp(CLEAN("a\rb\x07"
+	                   "c"),
+	          "abc") == 0,
+	    "clean_text: carriage return and bell are dropped");
+	CHECK(strcmp(CLEAN("one\ttwo\nthree\n"), "one\ttwo\nthree\n") == 0,
+	    "clean_text: tabs and newlines survive");
+	CHECK(strcmp(CLEAN("plain \xc3\xa9 text"), "plain \xc3\xa9 text") == 0,
+	    "clean_text: ordinary text is untouched");
+	CHECK(strcmp(CLEAN("a\x1b["), "a") == 0,
+	    "clean_text: a truncated escape sequence eats no text");
+	CHECK(clm_clean_text(NULL, 10) == 0, "clean_text: NULL rejected");
+#undef CLEAN
+}
+
 /* Count messages of a given role in a history. */
 static int
 count_role(struct clm_history *h, enum clm_role role)
@@ -3001,6 +3050,7 @@ test_agent_suite(void *arg)
 	test_parse_models_list();
 	test_parse_models_ctx_for();
 	test_parse_model_ctx();
+	test_clean_text();
 	test_history_compact();
 	test_history_compact_agentic();
 	test_history_supersede();

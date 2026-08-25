@@ -218,6 +218,13 @@ void clm_agent_tools_done(struct clm_agent *agent, int status);
  * extension of what the server holds. */
 void clm_agent_chain_reset(struct clm_agent *agent);
 
+/*
+ * Reduce captured terminal output to plain text in place: overstrike is
+ * collapsed as col(1) does it, and escape sequences and control bytes other
+ * than tab and newline are dropped. Returns the new length.
+ */
+size_t clm_clean_text(uint8_t *data, size_t len);
+
 int clm_parse_props(const char *body, int64_t *ctx_out);
 int clm_parse_model_ctx(const char *body, int64_t *ctx_out);
 

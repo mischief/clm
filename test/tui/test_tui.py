@@ -355,6 +355,20 @@ def test_cancel_tools(url):
               "cancel: a new turn runs after cancel")
 
 
+def test_tool_output_escapes(url):
+    """Overstrike and escape sequences never reach the transcript."""
+    with Tui(BIN, url, rows=40, cols=80,
+             extra_args=("--allow-all-tools",)) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"escapetest please\r")
+        assert t.wait_for("NAME", timeout=15), "tool output never arrived"
+        # The echoed command line holds the escapes as literal text, so
+        # look at the tool's own output line, not the whole screen.
+        out = [ln.strip() for ln in t.lines() if "NAME" in ln]
+        check(out and out[0] == "NAME int red",
+              "escapes: overstrike collapses and the colour escape is gone")
+
+
 def test_history(url):
     with Tui(BIN, url, rows=12, cols=60) as t:
         t.wait_for("online", timeout=8)
@@ -766,6 +780,7 @@ TESTS = {
     "permission": test_permission,
     "cancel": test_cancel,
     "cancel_tools": test_cancel_tools,
+    "tool_escapes": test_tool_output_escapes,
     "paste": test_bracketed_paste,
     "session": test_session_resume,
     "session_compact": test_session_compact,

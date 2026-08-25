@@ -107,6 +107,7 @@ class Handler(BaseHTTPRequestHandler):
         asked = any(("shelltest" in str(m.get("content", "")).lower() or
                      "multilinetest" in str(m.get("content", "")).lower() or
                      "manytest" in str(m.get("content", "")).lower() or
+                     "escapetest" in str(m.get("content", "")).lower() or
                      "edittest" in str(m.get("content", "")).lower())
                     for m in msgs if m.get("role") == "user")
         has_result = "<tool_response>" in text or any(
@@ -159,7 +160,8 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionError):
             return
 
-    def _stream_tool_call(self, multiline=False, reversed_edit=False):
+    def _stream_tool_call(self, multiline=False, reversed_edit=False,
+                          overstrike=False):
         """Stream a shell_exec call, optionally with multi-line arguments,
         or an edit_file call whose arguments arrive replacement-first."""
         self.send_response(200)
@@ -173,7 +175,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             # Real newlines (JSON \n), so this exercises multi-line
             # rendering rather than a literal backslash-n in the value.
-            if reversed_edit:
+            if overstrike:
+                # nroff bold ("c\bc"), an underline pair, and a colour
+                # escape: what captured terminal output really looks like.
+                args = json.dumps({"command":
+                    "printf 'N\\bNA\\bAM\\bME\\bE _\\bi_\\bn_\\bt "
+                    "\\033[31mred\\033[0m\\n'"})
+            elif reversed_edit:
                 # Key order a model is free to pick, and the one that reads
                 # backwards if the tui renders keys as they arrive.
                 args = ("{\"new_str\":\"after text\","
@@ -225,7 +233,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._stream_many_tool_calls()
                 return
             self._stream_tool_call("multilinetest" in text.lower(),
-                                   "edittest" in text.lower())
+                                   "edittest" in text.lower(),
+                                   "escapetest" in text.lower())
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
