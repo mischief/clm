@@ -642,13 +642,13 @@ main(int argc, char *argv[])
 	                                  spec, or a literal wire id */
 	const char *effort = NULL;
 	bool allow_all = false;
+	char **volatile_tools = NULL;
 	const char *provider_name =
 	    NULL; /* --provider: a config providers[] name override */
 	/* Owned copy of a "provider/model-id" spec's provider half (see
-	 * split_provider_model() in model_spec.h), process-lifetime like
-	 * plenty else in this function -- cfg.provider_name below may alias
-	 * it, and cfg is still read as late as tui_run()'s call at the very
-	 * end of main(), well past any block-scoped cleanup. */
+	 * split_provider_model() in model_spec.h). cfg.provider_name may
+	 * alias it and cfg is read as late as tui_run(), so it is released
+	 * on the way out rather than at any block scope. */
 	char *spec_provider = NULL;
 	const char *plugin_dir = NULL;
 	const char *agent_name = NULL;
@@ -864,12 +864,12 @@ main(int argc, char *argv[])
 	if (lcfg != NULL) {
 		cfg.system_prompt = clm_lua_cfg_get_str(lcfg, "system_prompt");
 		/* Agent policy: fnmatch patterns for tools whose old results
-		 * get stubbed once a newer one lands (see clm_cfg). Never
-		 * freed: the agent borrows it for the process lifetime, same
-		 * as lcfg itself. */
-		cfg.volatile_tools =
-		    (const char *const *)clm_lua_cfg_get_str_list(
-		        lcfg, "volatile_tools");
+		 * get stubbed once a newer one lands (see clm_cfg). The agent
+		 * borrows this, so it outlives every agent and is released
+		 * once they are all gone. */
+		volatile_tools =
+		    clm_lua_cfg_get_str_list(lcfg, "volatile_tools");
+		cfg.volatile_tools = (const char *const *)volatile_tools;
 	}
 
 	/*
@@ -972,6 +972,9 @@ main(int argc, char *argv[])
 		    forever_prompt, sess, restorep, repaired_tool_calls,
 		    allow_all);
 		clm_history_free(&restore);
+		clm_lua_cfg_free_str_list(volatile_tools);
+		clm_lua_cfg_free(lcfg);
+		free(spec_provider);
 		return rc;
 	}
 
@@ -1074,6 +1077,9 @@ main(int argc, char *argv[])
 		free(state);
 		if (scratch != NULL)
 			(void)rmdir(scratch); /* only if nothing was left */
+		clm_lua_cfg_free_str_list(volatile_tools);
+		clm_lua_cfg_free(lcfg);
+		free(spec_provider);
 		return r == 0 ? 0 : 1;
 	}
 
@@ -1102,6 +1108,9 @@ main(int argc, char *argv[])
 	free(state);
 	if (scratch != NULL)
 		(void)rmdir(scratch); /* only if nothing was left */
+	clm_lua_cfg_free_str_list(volatile_tools);
+	clm_lua_cfg_free(lcfg);
+	free(spec_provider);
 
 	return 0;
 }

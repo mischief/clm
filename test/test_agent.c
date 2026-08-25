@@ -1705,6 +1705,114 @@ test_rate_limit_retry(uv_loop_t *loop)
 }
 
 /*
+ * The wait comes out of the server's own words, whatever unit it used, and
+ * a message that says nothing usable still yields a bounded wait rather
+ * than a dead turn.
+ */
+static void
+test_rate_limit_delay_forms(uv_loop_t *loop)
+{
+	static const char *const bodies[] = {
+	    "{\"error\":{\"message\":\"Rate limited. Please try again in "
+	    "20ms.\"}}",
+	    "{\"error\":{\"message\":\"Slow down, no advice here.\"}}",
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(bodies) / sizeof(bodies[0]); i++) {
+		struct tstate st = {0};
+		struct canned_server *srv = canned_start(loop);
+
+		st.loop = loop;
+		CHECK(srv != NULL, "canned_start");
+		canned_reply_status(srv, 429, bodies[i]);
+		canned_reply(srv, final_reply);
+
+		st.agent = make_agent(&st, canned_port(srv));
+		CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+		run_until_done(&st);
+
+		CHECK(st.turn_status == 0, "rate limit waited out");
+		CHECK(canned_request_count(srv) == 2, "request repeated");
+		teardown(&st, srv);
+	}
+}
+
+/*
+ * The Responses API streamed: the path a real session runs on. Covers the
+ * pieces the non-streaming tests never reach -- the chain id and usage
+ * arriving on response.completed, and a failure carrying the server's own
+ * message rather than being called a content filter.
+ */
+static void
+test_responses_stream(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *req;
+
+	st.loop = loop;
+	st.stream = 1;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "data: {\"type\":\"response.output_text.delta\","
+	    "\"delta\":\"hi \"}\n\n"
+	    "data: {\"type\":\"response.output_text.delta\","
+	    "\"delta\":\"there\"}\n\n"
+	    "data: {\"type\":\"response.completed\",\"response\":"
+	    "{\"id\":\"resp_s1\",\"status\":\"completed\","
+	    "\"usage\":{\"input_tokens\":120,\"output_tokens\":7,"
+	    "\"input_tokens_details\":{\"cached_tokens\":100}}}}\n\n"
+	    "data: [DONE]\n\n");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hello") == 0, "submit");
+	run_until_done(&st);
+	st.turn_done = 0;
+
+	CHECK(st.turn_status == 0, "streamed responses turn ok");
+	CHECK(strstr(st.assistant, "hi there") != NULL,
+	    "streamed deltas assembled");
+	CHECK(st.got_usage && st.usage.prompt_tokens == 120 &&
+	        st.usage.cache_read_tokens == 100,
+	    "streamed usage carries the cache split");
+
+	/* The id from the completed event continues the next request. */
+	canned_reply(srv,
+	    "data: {\"type\":\"response.completed\",\"response\":"
+	    "{\"id\":\"resp_s2\",\"status\":\"completed\"}}\n\n"
+	    "data: [DONE]\n\n");
+	CHECK(clm_agent_submit(st.agent, "again") == 0, "submit again");
+	run_until_done(&st);
+	st.turn_done = 0;
+	req = canned_last_request(srv);
+	CHECK(req != NULL &&
+	        strstr(req, "\"previous_response_id\":\"resp_s1\"") != NULL,
+	    "streamed chain continues from the completed response");
+
+	/* A failed response is an error carrying the server's words. */
+	canned_reply(srv,
+	    "data: {\"type\":\"response.failed\",\"response\":"
+	    "{\"id\":\"resp_s3\",\"status\":\"failed\",\"error\":"
+	    "{\"code\":\"server_error\",\"message\":"
+	    "\"upstream exploded\"}}}\n\n"
+	    "data: [DONE]\n\n");
+	CHECK(clm_agent_submit(st.agent, "boom") == 0, "submit failing turn");
+	run_until_done(&st);
+
+	CHECK(st.got_finish && st.finish != CLM_FINISH_CONTENT_FILTER,
+	    "a streamed failure is not called a content filter");
+	CHECK(strstr(clm_agent_get_last_error(st.agent), "upstream exploded") !=
+	        NULL,
+	    "a streamed failure keeps the server's message");
+
+	teardown(&st, srv);
+}
+
+/*
  * (g2) Anthropic Messages API: request shape (auth headers, system pulled
  * out of messages[], max_tokens) and a non-streaming text reply translated
  * back from Anthropic's content-block response shape.
@@ -2545,7 +2653,9 @@ test_agent_suite(void *arg)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_responses_stream(&loop);
 	test_rate_limit_retry(&loop);
+	test_rate_limit_delay_forms(&loop);
 	test_autocompact_absolute_cap(&loop);
 	test_responses_chain(&loop);
 	test_responses_chain_dropped_by_supersede(&loop);

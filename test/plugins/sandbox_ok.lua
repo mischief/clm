@@ -29,6 +29,12 @@ assert(type(clm) == "table", "clm module must be available")
 assert(json.encode({ b = 1, a = 2, c = 3 }) == '{"a":2,"b":1,"c":3}',
     "json.encode must sort object keys")
 
+-- An empty table sorts nothing: the key array is never allocated, and
+-- handing NULL to qsort is undefined even for zero elements.
+assert(json.encode({}) == '{}', "json.encode must handle an empty table")
+assert(json.encode({ outer = {} }) == '{"outer":{}}',
+    "json.encode must handle a nested empty table")
+
 -- Register a marker tool so the C test can confirm this plugin loaded fully.
 clm.tool_register("sandbox_ok_marker", {
     description = "marker: the sandbox self-test plugin loaded cleanly",

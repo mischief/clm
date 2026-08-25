@@ -233,7 +233,11 @@ lua_table_to_object(lua_State *L, int idx, int depth)
 		lua_pop(L, 1);
 	}
 
-	qsort(keys, n, sizeof(*keys), cmp_key);
+	/* An empty table leaves keys NULL, and qsort's array argument is
+	 * declared non-null: passing NULL is undefined even for zero
+	 * elements, and traps under a checking build. */
+	if (n > 1)
+		qsort(keys, n, sizeof(*keys), cmp_key);
 	for (i = 0; i < n; i++) {
 		lua_getfield(L, idx, keys[i]);
 		cJSON_AddItemToObject(
