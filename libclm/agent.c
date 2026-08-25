@@ -2647,6 +2647,22 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
  * refilled in agent->llm_rl, then actually posts the turn that was
  * parked waiting for it.
  */
+/*
+ * Retire a turn the transport refused outright. Nothing was sent, so no
+ * callback will ever arrive to end it: without this the turn leaks and the
+ * agent waits on a request that does not exist.
+ */
+static void
+turn_post_failed(struct clm_agent *agent, struct clm_async_turn *turn, int r)
+{
+	clm_agent_set_error(agent, "request could not be sent");
+	agent->state = CLM_STATE_ERROR;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	clm_async_turn_free(turn);
+	agent_turn_done(agent, r);
+}
+
 static void
 on_llm_rl_timer(void *arg)
 {
@@ -2664,10 +2680,12 @@ on_llm_rl_timer(void *arg)
 	if (est_tokens == 0)
 		est_tokens = 1;
 	clm_ratelimit_consume(agent->llm_rl, est_tokens);
-	agent_http_post(agent, agent->llm->base_url, turn->body,
+	int r = agent_http_post(agent, agent->llm->base_url, turn->body,
 	    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
 	    turn->streaming ? clm_http_data_cb_wrapper : NULL, turn,
 	    &agent->inflight);
+	if (r < 0)
+		turn_post_failed(agent, turn, r);
 }
 
 /*
@@ -2696,10 +2714,12 @@ llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
 		/* Unlimited, no timer available to defer with, or allowed:
 		 * dispatch now (clm_ratelimit_allow already consumed the
 		 * token in the allowed case). */
-		agent_http_post(agent, agent->llm->base_url, turn->body,
+		int r = agent_http_post(agent, agent->llm->base_url, turn->body,
 		    clm_http_success_cb_wrapper, clm_http_error_cb_wrapper,
 		    turn->streaming ? clm_http_data_cb_wrapper : NULL, turn,
 		    &agent->inflight);
+		if (r < 0)
+			turn_post_failed(agent, turn, r);
 		return;
 	}
 
@@ -2712,8 +2732,15 @@ llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
 		agent->state = CLM_STATE_RATE_LIMITED;
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
-		agent->host->timer_set(agent->host->ctx, delay_ms,
-		    on_llm_rl_timer, turn, &agent->llm_rl_timer);
+		/* No timer, no wake-up: send now rather than park a turn
+		 * nothing will ever resume. */
+		if (agent->host->timer_set(agent->host->ctx, delay_ms,
+		        on_llm_rl_timer, turn, &agent->llm_rl_timer) < 0 ||
+		    agent->llm_rl_timer == NULL) {
+			agent->llm_rl_timer = NULL;
+			on_llm_rl_timer(turn); /* consumes and posts */
+			return;
+		}
 		agent->rl_parked_turn = turn;
 	}
 }

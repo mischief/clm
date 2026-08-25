@@ -1069,14 +1069,21 @@ clm_tools_dispatch(struct clm_agent *agent, cJSON *tool_calls)
 			/* Allowed, or no timer to defer with: dispatch now. */
 			dispatch_one(inv);
 		} else {
-			/* Park until tokens refill. */
+			/* Park until tokens refill. A host that cannot give us
+			 * a timer would leave the call parked forever, so run
+			 * it now instead and let the limit slip. */
 			uint64_t delay_us =
 			    clm_ratelimit_delay(agent->tool_rl, 1);
 			uint64_t delay_ms = delay_us / 1000;
 			if (delay_ms == 0)
 				delay_ms = 1;
-			agent->host->timer_set(agent->host->ctx, delay_ms,
-			    on_rl_timer, inv, &inv->rl_timer);
+			if (agent->host->timer_set(agent->host->ctx, delay_ms,
+			        on_rl_timer, inv, &inv->rl_timer) < 0 ||
+			    inv->rl_timer == NULL) {
+				inv->rl_timer = NULL;
+				clm_ratelimit_consume(agent->tool_rl, 1);
+				dispatch_one(inv);
+			}
 		}
 	}
 
