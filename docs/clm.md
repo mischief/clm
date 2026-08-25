@@ -308,6 +308,24 @@ Under
 the exit status instead reflects whether that single turn completed
 successfully (0) or not (1).
 
+# RATE LIMITS
+
+A backend that answers with a rate limit is not a failed turn: the wait
+is served and the same request is sent again, up to five times, honouring
+the delay the server names in its reply and capping any single wait at a
+minute.
+The status line shows the same waiting state the outgoing token bucket
+uses.
+Whether a request is admitted depends on the tokens it carries, not on
+the size of the reply it is allowed to generate, so trimming what the
+conversation carries -- see
+*autocompact\_tokens*
+and
+*volatile\_tools*
+in
+[clm-config(5)](clm-config.md)
+\-- is what buys throughput.
+
 # CONVERSATION STATE
 
 Every request carries the whole conversation: these APIs keep no session,

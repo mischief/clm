@@ -1664,6 +1664,41 @@ test_autocompact_absolute_cap(uv_loop_t *loop)
 }
 
 /*
+ * A rate limit is a pause, not a failure: the server says how long to wait,
+ * so the turn waits and sends the same request again. Ending the turn there
+ * is what made a busy account unusable.
+ */
+static void
+test_rate_limit_retry(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply_status(srv, 429,
+	    "{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":"
+	    "\"Rate limit reached for gpt-5.6-luna on tokens per min (TPM): "
+	    "Limit 200000, Used 181884, Requested 46658. Please try again in "
+	    "0.05s.\"}}");
+	canned_reply(srv, final_reply);
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "the turn survives a rate limit");
+	CHECK(canned_request_count(srv) == 2,
+	    "the same request is sent again after waiting");
+	CHECK(strstr(st.assistant, "done") != NULL,
+	    "the retried turn delivers its answer");
+
+	teardown(&st, srv);
+}
+
+/*
  * (g2) Anthropic Messages API: request shape (auth headers, system pulled
  * out of messages[], max_tokens) and a non-streaming text reply translated
  * back from Anthropic's content-block response shape.
@@ -2504,6 +2539,7 @@ test_agent_suite(void *arg)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_rate_limit_retry(&loop);
 	test_autocompact_absolute_cap(&loop);
 	test_responses_chain(&loop);
 	test_responses_chain_dropped_by_supersede(&loop);

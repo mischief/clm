@@ -651,6 +651,7 @@ struct clm_async_turn {
 	 * smaller when the server already holds the earlier turns. */
 	size_t history_msgs;
 	size_t ctx_bytes;
+	int rl_retries; /* rate-limit waits already served for this turn */
 
 	/* Opaque per-turn scratch space for the provider's
 	 * normalize_stream_event -- e.g. the Anthropic ops use this to carry
@@ -721,6 +722,44 @@ chain_note_response(struct clm_agent *agent, cJSON *parsed, size_t msgs)
 	free(agent->resp_chain_id);
 	agent->resp_chain_id = strdup(rid->valuestring);
 	agent->resp_chain_sent = agent->resp_chain_id != NULL ? msgs : 0;
+}
+
+static void on_llm_rl_timer(void *arg);
+
+/* Longest a turn waits out rate limits before giving up, and how many
+ * times. A limit that outlasts this is a capacity problem, not a blip. */
+#define CLM_RL_RETRY_MAX 5
+#define CLM_RL_RETRY_CAP_MS 60000
+#define CLM_RL_RETRY_DEFAULT_MS 5000
+
+/*
+ * How long the server asked us to wait, in milliseconds. The body carries it
+ * in prose ("Please try again in 14.583s", or "in 500ms"); the headers that
+ * would say it directly are not kept by the HTTP layer. Falls back to a
+ * fixed pause when nothing can be read.
+ */
+static uint64_t
+retry_delay_ms(const char *body)
+{
+	const char *p;
+	double v;
+	char unit[4];
+
+	if (body == NULL)
+		return CLM_RL_RETRY_DEFAULT_MS;
+	p = strstr(body, "try again in ");
+	if (p == NULL)
+		return CLM_RL_RETRY_DEFAULT_MS;
+	p += strlen("try again in ");
+	if (sscanf(p, "%lf%3[a-z]", &v, unit) != 2 || v <= 0)
+		return CLM_RL_RETRY_DEFAULT_MS;
+	if (strncmp(unit, "ms", 2) == 0)
+		return (uint64_t)v;
+	if (unit[0] == 's')
+		return (uint64_t)(v * 1000.0);
+	if (unit[0] == 'm')
+		return (uint64_t)(v * 60000.0);
+	return CLM_RL_RETRY_DEFAULT_MS;
 }
 
 /* Return error.message from a canonical response, or NULL. Providers put
@@ -1375,6 +1414,33 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 		 * "tools" field and remember the model can't take it for
 		 * the rest of this session (see tools_unsupported), instead
 		 * of repeating the same failing request forever. */
+		/*
+		 * Rate limited: the server says how long to wait, so wait
+		 * that long and send the same request again rather than
+		 * ending the turn. The agent parks in the same state the
+		 * token bucket uses, so the UI already shows it waiting.
+		 */
+		if (status == 429 && turn->rl_retries < CLM_RL_RETRY_MAX &&
+		    agent->host->timer_set != NULL) {
+			uint64_t delay =
+			    retry_delay_ms(resp != NULL ? resp->body : NULL);
+
+			if (delay > CLM_RL_RETRY_CAP_MS)
+				delay = CLM_RL_RETRY_CAP_MS;
+			turn->rl_retries++;
+			clm_debug("rate limited, retry %d in %llu ms",
+			    turn->rl_retries, (unsigned long long)delay);
+			if (resp != NULL)
+				clm_http_response_free(resp);
+			agent->state = CLM_STATE_RATE_LIMITED;
+			if (agent->cb_on_state)
+				agent->cb_on_state(
+				    agent->state, agent->cb_user);
+			agent->host->timer_set(agent->host->ctx, delay,
+			    on_llm_rl_timer, turn, &agent->llm_rl_timer);
+			return;
+		}
+
 		/*
 		 * The stored response is gone (expired, or another process
 		 * ended it). Nothing is lost: clm still holds the whole

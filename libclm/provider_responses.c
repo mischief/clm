@@ -40,6 +40,8 @@
 #include "clm/provider.h"
 #include "banned.h"
 
+#define CLM_RESPONSES_MAX_OUTPUT_TOKENS 64000
+
 /* Convert one canonical tool_calls[] entry ({id, type, function:{name,
  * arguments}}) into a Responses API function_call input item -- the shape
  * this API expects when replaying an assistant turn that made tool calls
@@ -254,6 +256,15 @@ responses_build_request(
 	cJSON_AddItemToObject(req, "model", cJSON_CreateString(llm->model));
 	cJSON_AddItemToObject(req, "input", input);
 	cJSON_AddItemToObject(req, "stream", cJSON_CreateBool(stream));
+
+	/*
+	 * A ceiling on one response, to bound what a runaway generation
+	 * costs. Not a throughput knob: the declared maximum changes neither
+	 * what a request consumes nor whether it is admitted. High enough
+	 * that ordinary answers, long files included, finish inside it.
+	 */
+	cJSON_AddItemToObject(req, "max_output_tokens",
+	    cJSON_CreateNumber(CLM_RESPONSES_MAX_OUTPUT_TOKENS));
 
 	/* Continue the chain the server already holds instead of resending
 	 * it. The agent only sets this when every message before the ones in
