@@ -640,6 +640,64 @@ test_autocompact_mid_chain_responses_stream(uv_loop_t *loop)
 }
 
 /*
+ * Compaction carries the whole history, so a rate limit turns it away first.
+ * Giving up leaves the context just as oversized, which asks for another
+ * compaction, which is refused in turn -- so it waits and retries instead.
+ */
+static void
+test_compact_waits_out_rate_limit(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	/* (1) A tool call whose usage crosses the threshold. */
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"echo_hello\",\"arguments\":\"{}\"}"
+	    "}]}}],\"usage\":{\"prompt_tokens\":99000,"
+	    "\"completion_tokens\":2000,\"total_tokens\":101000}}");
+	/* (2) The compaction request, turned away. */
+	canned_reply_status(srv, 429,
+	    "{\"error\":{\"code\":\"rate_limit_exceeded\",\"message\":"
+	    "\"Rate limit reached for gpt-5.6-luna on tokens per min (TPM): "
+	    "Limit 200000. Please try again in 0.05s.\"}}");
+	/* (3) The same compaction request again, this time answered. */
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\","
+	    "\"content\":\"SUMMARY\"}}]}");
+	/* (4) The resumed chain's own next call. */
+	canned_reply(srv, final_reply);
+
+	st.agent = make_agent(&st, canned_port(srv));
+	def.name = "echo_hello";
+	def.description = "echo hello";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_hello;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "clm_tool_add");
+
+	CHECK(clm_agent_submit(st.agent, "use the tool") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "compact rate limit: the turn still lands");
+	CHECK(canned_request_count(srv) == 4,
+	    "compact rate limit: the compaction request is sent again");
+	CHECK(strstr(st.assistant, "done") != NULL,
+	    "compact rate limit: the resumed chain answers");
+	CHECK(!clm_agent_over_autocompact_threshold(st.agent),
+	    "compact rate limit: the retried compaction actually shrank it");
+
+	teardown(&st, srv);
+}
+
+/*
  * (b3) Compaction summary from the reasoning channel: a "thinking" model can
  * spend its whole completion budget on chain-of-thought and hit
  * finish_reason "length" with an empty "content" but a non-empty
@@ -2797,6 +2855,7 @@ test_agent_suite(void *arg)
 	test_agent_free_during_bg_exec(&loop);
 	test_autocompact_mid_chain(&loop);
 	test_autocompact_mid_chain_responses_stream(&loop);
+	test_compact_waits_out_rate_limit(&loop);
 	test_compact_reasoning_fallback(&loop);
 	test_compact_content_filter(&loop);
 	test_content_filter_fails_turn(&loop);

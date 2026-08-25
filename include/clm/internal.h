@@ -76,8 +76,11 @@ struct clm_agent {
 	int64_t autocompact_tokens; /* absolute cap, 0 = percentage only */
 	const char *const *volatile_tools; /* borrowed from cfg; see clm_cfg */
 	char *props_url;                   /* llama.cpp GET /props, or NULL */
-	char *compact_body; /* POST body for an in-flight /compact, freed on
-	                       done */
+	char *compact_body;     /* POST body for an in-flight /compact, freed on
+	                           done */
+	int compact_rl_retries; /* rate-limit waits this compaction
+	                           has already served */
+	struct clm_timer *compact_rl_timer; /* non-NULL while one is parked */
 	time_t
 	    last_time_stamp; /* wall clock of the last injected time context */
 	struct clm_tool_batch *active_batch;

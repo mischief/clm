@@ -368,6 +368,9 @@ clm_agent_free(struct clm_agent *agent)
 	if (agent->llm_rl_timer != NULL && agent->host != NULL &&
 	    agent->host->timer_cancel != NULL)
 		agent->host->timer_cancel(agent->llm_rl_timer);
+	if (agent->compact_rl_timer != NULL && agent->host != NULL &&
+	    agent->host->timer_cancel != NULL)
+		agent->host->timer_cancel(agent->compact_rl_timer);
 	clm_ratelimit_free(agent->llm_rl);
 	free(agent);
 }
@@ -1000,6 +1003,57 @@ format_http_error(
 		(void)snprintf(buf, bufsz, "HTTP %d", status);
 }
 
+/* Release the stashed compaction request body once no retry can need it. */
+static void
+compact_done(struct clm_agent *agent)
+{
+	free(agent->compact_body);
+	agent->compact_body = NULL;
+}
+
+static void compact_post(struct clm_agent *agent);
+
+/* Resend a compaction request that was turned away by a rate limit. */
+static void
+on_compact_rl_timer(void *arg)
+{
+	struct clm_agent *agent = arg;
+
+	if (agent->compact_rl_timer != NULL) {
+		agent->host->timer_cancel(agent->compact_rl_timer);
+		agent->compact_rl_timer = NULL;
+	}
+	compact_post(agent);
+}
+
+/*
+ * Wait out a rate limit and send the compaction request again. Compaction
+ * carries the whole history, so it is the largest request a session makes and
+ * the first one a limit turns away -- and giving up leaves the context just
+ * as oversized, which asks for another compaction, which is refused in turn.
+ */
+static bool
+compact_rl_retry(struct clm_agent *agent, const char *advice)
+{
+	uint64_t delay;
+
+	if (agent->compact_body == NULL ||
+	    agent->compact_rl_retries >= CLM_RL_RETRY_MAX ||
+	    agent->host->timer_set == NULL)
+		return false;
+
+	delay = clm_rl_retry_delay_ms(advice, agent->compact_rl_retries);
+	agent->compact_rl_retries++;
+	clm_debug("compaction rate limited, retry %d in %llu ms",
+	    agent->compact_rl_retries, (unsigned long long)delay);
+	agent->state = CLM_STATE_RATE_LIMITED;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	agent->host->timer_set(agent->host->ctx, delay, on_compact_rl_timer,
+	    agent, &agent->compact_rl_timer);
+	return true;
+}
+
 static void
 compact_success_cb(struct clm_http_response *resp, void *user)
 {
@@ -1011,8 +1065,20 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 	agent->compact_resume_chain = false;
 
 	agent->inflight = NULL;
-	free(agent->compact_body);
-	agent->compact_body = NULL;
+
+	if (status == 429) {
+		autofree char *advice = resp != NULL && resp->body != NULL
+		    ? strdup(resp->body)
+		    : NULL;
+
+		agent->compact_resume_chain = resume;
+		if (compact_rl_retry(agent, advice)) {
+			if (resp != NULL)
+				clm_http_response_free(resp);
+			return;
+		}
+		agent->compact_resume_chain = false;
+	}
 
 	if (status != 200 || resp == NULL || resp->body == NULL) {
 		char detail[256];
@@ -1020,6 +1086,7 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 		format_http_error(resp, status, detail, sizeof(detail));
 		if (resp)
 			clm_http_response_free(resp);
+		compact_done(agent);
 		if (resume) {
 			/* Mid-chain: not fatal, just didn't shrink anything --
 			 * continue the interrupted chain as-is rather than
@@ -1047,12 +1114,21 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 
 	summary = parsed ? extract_message_content(parsed) : NULL;
 	if (summary == NULL || summary[0] == '\0') {
+		const char *emsg = response_error_message(parsed);
 		const char *reason = response_finish_reason(parsed);
+
+		if (is_rate_limit_message(emsg)) {
+			agent->compact_resume_chain = resume;
+			if (compact_rl_retry(agent, emsg))
+				return;
+			agent->compact_resume_chain = false;
+		}
 		const char *why =
 		    reason != NULL && strcmp(reason, "content_filter") == 0
 		    ? "compaction stopped by content filter"
 		    : "compaction produced no summary";
 
+		compact_done(agent);
 		if (resume) {
 			clm_agent_set_error(agent, why);
 			agent->mid_chain_compact_failed = true;
@@ -1088,6 +1164,7 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 			const char *why = folded < 0
 			    ? "compaction failed"
 			    : "compaction made no progress";
+			compact_done(agent);
 			if (resume) {
 				clm_agent_set_error(agent, why);
 				agent->mid_chain_compact_failed = true;
@@ -1099,6 +1176,7 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 		}
 	}
 
+	compact_done(agent);
 	if (resume) {
 		/* Not a real turn ending -- resume the interrupted tool
 		 * chain's next LLM call directly instead of reporting
@@ -1137,8 +1215,7 @@ compact_error_cb(int error_code, const char *error_msg, void *user)
 	agent->compact_resume_chain = false;
 
 	agent->inflight = NULL;
-	free(agent->compact_body);
-	agent->compact_body = NULL;
+	compact_done(agent);
 
 	if (resume && error_code != -ECANCELED) {
 		/* Mid-chain, non-cancel failure: same "not fatal, keep going"
@@ -1176,6 +1253,24 @@ compact_error_cb(int error_code, const char *error_msg, void *user)
  * rare, user-invoked operation whose whole point is to shrink an oversized
  * context.
  */
+/* Send the stashed compaction body. Shared by the first attempt and by the
+ * rate-limit retry, which must resend exactly the same request. */
+static void
+compact_post(struct clm_agent *agent)
+{
+	agent->state = CLM_STATE_THINKING;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	if (agent_http_post(agent, agent->llm->base_url, agent->compact_body,
+	        compact_success_cb, compact_error_cb, NULL, agent,
+	        &agent->inflight) < 0) {
+		free(agent->compact_body);
+		agent->compact_body = NULL;
+		clm_agent_set_error(agent, "compaction request failed");
+		compact_error_cb(-EIO, "compaction request failed", agent);
+	}
+}
+
 int
 clm_agent_compact(struct clm_agent *agent)
 {
@@ -1237,14 +1332,15 @@ clm_agent_compact(struct clm_agent *agent)
 	if (body == NULL)
 		return -ENOMEM;
 
-	agent->state = CLM_STATE_THINKING;
-	if (agent->cb_on_state)
-		agent->cb_on_state(agent->state, agent->cb_user);
-
 	/* curl borrows the POST body (CURLOPT_POSTFIELDS), so it must outlive
 	 * the request; stash it and free it when the request completes. */
 	free(agent->compact_body);
 	agent->compact_body = body;
+	agent->compact_rl_retries = 0;
+
+	agent->state = CLM_STATE_THINKING;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
 
 	r = agent_http_post(agent, agent->llm->base_url, body,
 	    compact_success_cb, compact_error_cb, NULL, agent,
