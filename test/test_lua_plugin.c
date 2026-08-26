@@ -23,6 +23,8 @@
 #include "canned.h"
 #include "tap.h"
 
+#include "cfg_tuning.h"
+
 #define CHECK(cond, msg) TAP_CHECK(cond, msg)
 
 struct pending_host;
@@ -844,6 +846,84 @@ test_oom_does_not_abort(void)
 	    ok, "plugin at its memory cap fails the call instead of aborting");
 }
 
+/*
+ * Context tuning falls back from the model entry to the provider, so one
+ * value can cover every model on a connection.
+ */
+static void
+test_cfg_tuning(void)
+{
+	static const char cfg_lua[] =
+	    "return {\n"
+	    "  providers = {\n"
+	    "    p = {\n"
+	    "      url = 'http://127.0.0.1:0/v1',\n"
+	    "      context_size = 200000,\n"
+	    "      autocompact_pct = 40,\n"
+	    "      autocompact_tokens = 1000,\n"
+	    "      models = {\n"
+	    "        picky = { autocompact_pct = 75 },\n"
+	    "        plain = {},\n"
+	    "      },\n"
+	    "    },\n"
+	    "  },\n"
+	    "}\n";
+	char path[] = "/tmp/clm-tuning-XXXXXX";
+	struct clm_lua_cfg *lcfg;
+	struct clm_cfg cfg;
+	char *err = NULL;
+	int fd;
+
+	fd = mkstemp(path);
+	if (fd < 0) {
+		CHECK(false, "tuning: temp config created");
+		return;
+	}
+	(void)write(fd, cfg_lua, sizeof(cfg_lua) - 1);
+	close(fd);
+
+	lcfg = clm_lua_cfg_load(path, &err);
+	unlink(path);
+	CHECK(lcfg != NULL, "tuning: config loads");
+	if (lcfg == NULL) {
+		free(err);
+		return;
+	}
+
+	/* A model with no entry of its own takes the provider's values. */
+	memset(&cfg, 0, sizeof(cfg));
+	clm_cfg_apply_tuning(lcfg, "p", "plain", &cfg);
+	CHECK(cfg.context_size == 200000,
+	    "tuning: provider context_size reaches a model without one");
+	CHECK(cfg.autocompact_pct == 40,
+	    "tuning: provider autocompact_pct reaches a model without one");
+	CHECK(cfg.autocompact_tokens == 1000,
+	    "tuning: provider autocompact_tokens reaches a model without one");
+
+	/* An entry of its own wins, key by key. */
+	memset(&cfg, 0, sizeof(cfg));
+	clm_cfg_apply_tuning(lcfg, "p", "picky", &cfg);
+	CHECK(cfg.autocompact_pct == 75,
+	    "tuning: a model entry overrides the provider value");
+	CHECK(cfg.context_size == 200000,
+	    "tuning: keys it does not set still come from the provider");
+
+	/* A model that is not configured at all is still covered. */
+	memset(&cfg, 0, sizeof(cfg));
+	clm_cfg_apply_tuning(lcfg, "p", "unlisted", &cfg);
+	CHECK(cfg.autocompact_pct == 40,
+	    "tuning: an unconfigured model takes the provider values");
+
+	/* No provider addressed: nothing to apply. */
+	memset(&cfg, 0, sizeof(cfg));
+	clm_cfg_apply_tuning(lcfg, NULL, "plain", &cfg);
+	CHECK(cfg.context_size == 0 && cfg.autocompact_pct == 0,
+	    "tuning: no provider leaves the config untouched");
+
+	clm_lua_cfg_free(lcfg);
+	free(err);
+}
+
 static int
 test_lua_plugin_suite(void *arg)
 {
@@ -858,6 +938,7 @@ test_lua_plugin_suite(void *arg)
 	test_inline_http_completion();
 	test_deadline_rearmed_after_yield();
 	test_oom_does_not_abort();
+	test_cfg_tuning();
 
 	return 0;
 }

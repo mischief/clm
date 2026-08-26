@@ -177,6 +177,10 @@ Backends with no such control ignore it.
 A per-model entry overrides this provider-wide value, and the TUI's
 .Sy /effort
 command overrides both for one session.
+.It Va context_size , Va autocompact_pct , Va autocompact_tokens
+Context tuning for every model on this connection; see the
+.Va models
+entries of the same name below, which override these per model.
 .It Va models
 A table of per-model overrides nested under this provider, keyed by
 the literal wire model id (the same string sent on the wire and used
@@ -190,11 +194,13 @@ Each entry may set:
 .Bl -tag -width Ds
 .It Va context_size
 Override the context window size (tokens) the agent assumes, instead
-of learning it from the backend.
+of learning it from the backend, and instead of the provider-wide
+value of the same name.
 .It Va autocompact_pct
 Override the percentage of the context window that triggers automatic
 conversation summarization
-.Pq default 50 .
+.Pq default 50 ,
+and the provider-wide value of the same name.
 Every turn re-reads the whole history, so a lower value trades more
 frequent summarization for a cheaper turn.
 Compaction then keeps the newest turns that fit a tenth of the window.
@@ -204,7 +210,8 @@ window allows.
 For a connection whose throughput limit binds before its context window
 does: a share of a million-token window never fires when the practical
 ceiling is a tenth of that.
-Unset leaves the decision to
+Unset takes the provider-wide value of the same name, and with neither
+set the decision is left to
 .Va autocompact_pct .
 .It Va effort
 Reasoning effort for this model, overriding the provider-wide

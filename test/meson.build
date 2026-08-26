@@ -105,7 +105,8 @@ if have_lua
   test_lua = executable('test_lua_plugin',
     files('test_lua_plugin.c', 'canned.c') + tap_src,
     dependencies: [clmuv_dep, clmlua_dep],
-    include_directories: [tap_inc, clm_inc, include_directories('../include')],
+    include_directories: [tap_inc, clm_inc, include_directories('../include'),
+      include_directories('../src')],
     c_args: test_cflags,
   )
   test('lua_plugin', test_lua, protocol: 'tap', workdir: meson.project_source_root())

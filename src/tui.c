@@ -38,6 +38,7 @@
 #include "frontend.h"
 #include "md_render.h"
 #include "mcp_setup.h"
+#include "cfg_tuning.h"
 #include "model_spec.h"
 #include "tui_internal.h"
 #include "sysinfo.h"
@@ -2488,18 +2489,8 @@ cmd_agent(struct ui *u, const char *arg)
 			newcfg.system_prompt_suffix = sysinfo;
 			newcfg.provider = clm_provider_from_str(pkind);
 			newcfg.stream = 1;
-			if (prov != NULL && spec_model != NULL) {
-				newcfg.context_size =
-				    clm_lua_cfg_provider_model_int(u->lcfg,
-				        prov, spec_model, "context_size", 0);
-				newcfg.autocompact_pct =
-				    (int)clm_lua_cfg_provider_model_int(u->lcfg,
-				        prov, spec_model, "autocompact_pct", 0);
-				newcfg.autocompact_tokens =
-				    clm_lua_cfg_provider_model_int(u->lcfg,
-				        prov, spec_model, "autocompact_tokens",
-				        0);
-			}
+			clm_cfg_apply_tuning(
+			    u->lcfg, prov, spec_model, &newcfg);
 			if (prov) {
 				newcfg.rate_tokens_per_sec =
 				    clm_lua_cfg_provider_int(u->lcfg, prov,
@@ -2672,13 +2663,8 @@ cmd_model(struct ui *u, const char *arg)
 			    u->lcfg, spec_provider, "api_key");
 			newcfg.provider = provider;
 			newcfg.model = spec_model;
-			newcfg.context_size =
-			    clm_lua_cfg_provider_model_int(u->lcfg,
-			        spec_provider, spec_model, "context_size", 0);
-			newcfg.autocompact_pct =
-			    (int)clm_lua_cfg_provider_model_int(u->lcfg,
-			        spec_provider, spec_model, "autocompact_pct",
-			        0);
+			clm_cfg_apply_tuning(
+			    u->lcfg, spec_provider, spec_model, &newcfg);
 			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(
 			    u->lcfg, spec_provider, "rate_tokens_per_sec", 0);
 			newcfg.rate_burst = clm_lua_cfg_provider_int(
@@ -2739,6 +2725,7 @@ cmd_provider(struct ui *u, const char *arg)
 			    clm_lua_cfg_provider_str(u->lcfg, arg, "kind"));
 			newcfg.model =
 			    u->model; /* keep the currently active model */
+			clm_cfg_apply_tuning(u->lcfg, arg, u->model, &newcfg);
 			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(
 			    u->lcfg, arg, "rate_tokens_per_sec", 0);
 			newcfg.rate_burst = clm_lua_cfg_provider_int(

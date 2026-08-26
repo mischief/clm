@@ -26,6 +26,7 @@
 /* How long a session log outlives its last write, unless config says
  * otherwise (session_keep_days = 0 keeps everything). */
 #define CLM_SESSION_KEEP_DAYS 90
+#include "cfg_tuning.h"
 #include "model_spec.h"
 #include "templates.h"
 #include "xdg.h"
@@ -804,17 +805,9 @@ main(int argc, char *argv[])
 			    clm_lua_cfg_provider_int(lcfg, prov_name,
 			        "disable_parallel_tool_calls", 0) != 0;
 		}
-		if (spec_provider != NULL && spec_model != NULL) {
-			cfg.context_size = clm_lua_cfg_provider_model_int(
-			    lcfg, spec_provider, spec_model, "context_size", 0);
-			cfg.autocompact_pct =
-			    (int)clm_lua_cfg_provider_model_int(lcfg,
-			        spec_provider, spec_model, "autocompact_pct",
-			        0);
-			cfg.autocompact_tokens =
-			    clm_lua_cfg_provider_model_int(lcfg, spec_provider,
-			        spec_model, "autocompact_tokens", 0);
-		}
+		clm_cfg_apply_tuning(lcfg,
+		    spec_provider != NULL ? spec_provider : prov_name,
+		    spec_model, &cfg);
 		if (spec_model != NULL)
 			model_name = spec_model;
 		/* Model entry wins over the provider-wide default. */

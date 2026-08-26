@@ -194,6 +194,12 @@ A per-model entry overrides this provider-wide value, and the TUI's
 **/effort**
 command overrides both for one session.
 
+*context\_size*, *autocompact\_pct*, *autocompact\_tokens*
+
+Context tuning for every model on this connection; see the
+*models*
+entries of the same name below, which override these per model.
+
 *models*
 
 A table of per-model overrides nested under this provider, keyed by
@@ -209,13 +215,15 @@ Each entry may set:
 *context\_size*
 
 Override the context window size (tokens) the agent assumes, instead
-of learning it from the backend.
+of learning it from the backend, and instead of the provider-wide
+value of the same name.
 
 *autocompact\_pct*
 
 Override the percentage of the context window that triggers automatic
 conversation summarization
-(default 50).
+(default 50),
+and the provider-wide value of the same name.
 Every turn re-reads the whole history, so a lower value trades more
 frequent summarization for a cheaper turn.
 Compaction then keeps the newest turns that fit a tenth of the window.
@@ -227,7 +235,8 @@ window allows.
 For a connection whose throughput limit binds before its context window
 does: a share of a million-token window never fires when the practical
 ceiling is a tenth of that.
-Unset leaves the decision to
+Unset takes the provider-wide value of the same name, and with neither
+set the decision is left to
 *autocompact\_pct*.
 
 *effort*
