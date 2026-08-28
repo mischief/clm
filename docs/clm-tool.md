@@ -282,6 +282,7 @@ as an empty table, not
 
 [clm(1)](clm.md),
 [clm_agent(3)](clm_agent.md),
-[clm-config(5)](clm-config.md)
+[clm-config(5)](clm-config.md),
+[clm-session(5)](clm-session.md)
 
 clm - July 6, 2026

@@ -451,6 +451,7 @@ The corresponding
 # SEE ALSO
 
 [clm(1)](clm.md),
+[clm-session(5)](clm-session.md),
 [clm-tool(5)](clm-tool.md)
 
 clm - July 6, 2026

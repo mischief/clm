@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mischief/clm/docs/session.schema.json",
+  "title": "clm session log record",
+  "description": "One line of a clm session log (JSON Lines, one record per line). See clm-session(5). A reader must skip a line it cannot parse and skip a record whose type it does not know.",
+  "type": "object",
+  "required": ["type"],
+  "oneOf": [
+    { "$ref": "#/$defs/meta" },
+    { "$ref": "#/$defs/msg" },
+    {
+      "description": "Forward compatibility: a record type written by a newer clm.",
+      "not": { "properties": { "type": { "enum": ["meta", "msg"] } } }
+    }
+  ],
+  "$defs": {
+    "meta": {
+      "title": "meta record",
+      "description": "First line of the file. Written once at creation and preserved verbatim across a rewrite.",
+      "type": "object",
+      "required": ["type", "v", "id", "created"],
+      "properties": {
+        "type": { "const": "meta" },
+        "v": {
+          "description": "Format version. A reader refuses a file whose version is larger than the one it knows.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "id": { "$ref": "#/$defs/sessionId" },
+        "created": {
+          "description": "Creation time, seconds since the epoch.",
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model name at creation. Listing only; not restored on resume.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider name at creation. Listing only; not restored on resume.",
+          "type": "string"
+        },
+        "agent": {
+          "description": "Agent profile the session runs under. Listing only.",
+          "type": "string"
+        }
+      }
+    },
+    "msg": {
+      "title": "message record",
+      "description": "One conversation message, in the order it happened. The system prompt is never written: it is rebuilt from the configuration on resume.",
+      "type": "object",
+      "required": ["type", "role"],
+      "properties": {
+        "type": { "const": "msg" },
+        "role": { "enum": ["system", "user", "assistant", "tool"] },
+        "content": {
+          "description": "Message text, always plain. Absent for an assistant message that only requests tool calls. A stored message is capped at 65535 bytes.",
+          "type": "string"
+        },
+        "tool_calls": {
+          "description": "Tool calls the assistant requested. Assistant messages only.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/toolCall" }
+        },
+        "tool_call_id": {
+          "description": "Id of the call this result answers. Tool messages only.",
+          "type": "string"
+        },
+        "tool_name": {
+          "description": "Tool that produced the result. Tool messages only.",
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "role": { "const": "tool" } }, "required": ["role"] },
+          "then": { "required": ["tool_call_id"] }
+        },
+        {
+          "if": { "required": ["tool_calls"] },
+          "then": { "properties": { "role": { "const": "assistant" } } }
+        }
+      ]
+    },
+    "toolCall": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "args": {
+          "description": "Raw JSON arguments object, as a string.",
+          "type": "string"
+        }
+      }
+    },
+    "sessionId": {
+      "description": "Local creation time plus eight hex characters, and the file name without the .jsonl suffix.",
+      "type": "string",
+      "pattern": "^[0-9A-Za-z-]{1,64}$",
+      "examples": ["20260824-060842-544d4eb3"]
+    }
+  }
+}

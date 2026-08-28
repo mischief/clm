@@ -374,6 +374,7 @@ cannot bill forever.
 
 [clm_agent(3)](clm_agent.md),
 [clm-config(5)](clm-config.md),
+[clm-session(5)](clm-session.md),
 [clm-tool(5)](clm-tool.md)
 
 clm - July 6, 2026

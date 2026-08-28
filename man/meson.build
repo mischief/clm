@@ -4,6 +4,7 @@ install_man(files(
   'clm.1',
   'clm_agent.3',
   'clm-config.5',
+  'clm-session.5',
   'clm-tool.5',
 ))
 

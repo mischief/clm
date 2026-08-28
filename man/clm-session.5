@@ -1,0 +1,185 @@
+.\" SPDX-License-Identifier: ISC
+.Dd August 28, 2026
+.Dt CLM-SESSION 5
+.Os
+.Sh NAME
+.Nm clm-session
+.Nd clm session log format
+.Sh DESCRIPTION
+.Xr clm 1
+records each interactive conversation in one JSON Lines file, so a
+session can be listed and resumed later.
+The files live in
+.Ev XDG_STATE_HOME Ns Pa /clm
+.Po default
+.Pa ~/.local/state/clm
+.Pc ,
+one file per session, named
+.Ar id Ns Pa .jsonl
+and created 0600.
+.Pp
+A session id has the form
+.Pa YYYYMMDD-HHMMSS-xxxxxxxx :
+local creation time plus eight hex characters of randomness.
+Only the characters
+.Sy 0-9 A-Z a-z
+and
+.Sy -
+are valid in an id, and an id is at most 64 characters.
+An id outside that set is rejected before any path is built.
+.Pp
+Every line is one complete JSON object followed by a newline.
+Lines are appended with a single write as the conversation goes, so a
+crash cannot damage the lines before it.
+Each object carries a
+.Va type
+field that says how to read the rest of it.
+A reader must skip a line it cannot parse, and skip an object whose
+.Va type
+it does not know; that keeps a truncated final line and a file written
+by a newer
+.Xr clm 1
+readable.
+.Ss The meta record
+The first line of the file is the meta record.
+It is written once, at creation, and preserved verbatim when the file is
+rewritten.
+.Bl -tag -width provider
+.It Va type
+Always
+.Qq meta .
+.It Va v
+Format version, an integer.
+This document describes version 1.
+A reader refuses a file whose
+.Va v
+is larger than the version it knows.
+.It Va id
+The session id, the same as the file name without the suffix.
+.It Va created
+Creation time, seconds since the epoch.
+.It Va model
+Model name at creation, for example
+.Qq claude-sonnet-5 .
+Optional.
+.It Va provider
+Provider name at creation, for example
+.Qq anthropic .
+Optional.
+.It Va agent
+Name of the agent profile the session runs under.
+Optional.
+.El
+.Pp
+The optional fields are recorded for the session listing only.
+Nothing reads them back into the conversation, so resuming a session
+under a different model or provider works.
+.Ss The message record
+Every later line is one message, in the order it happened.
+.Bl -tag -width tool_call_id
+.It Va type
+Always
+.Qq msg .
+.It Va role
+One of
+.Qq system ,
+.Qq user ,
+.Qq assistant ,
+or
+.Qq tool .
+Required.
+.It Va content
+The message text, always plain
+.Pq never the compressed form the agent may hold in memory .
+Absent for an assistant message that only requests tool calls.
+A stored message is capped at 65535 bytes.
+.It Va tool_calls
+Array of tool calls the assistant requested.
+Present on assistant messages only.
+Each element is an object of
+.Va id ,
+.Va name ,
+and
+.Va args ,
+where
+.Va args
+is the raw JSON arguments object as a string, for example
+.Qq {\e"command\e": \e"exit 1\e"} .
+.It Va tool_call_id
+The
+.Va id
+of the call this result answers.
+Present on
+.Qq tool
+messages.
+.It Va tool_name
+The tool that produced the result.
+Present on
+.Qq tool
+messages.
+.El
+.Pp
+The system prompt is not written to the log.
+It is rebuilt from the configuration when the session resumes, so a
+change to the prompt or to the tool set takes effect on the next run.
+.Pp
+Superseded tool results are not represented either.
+The log keeps each result at full size, and a resumed session replays
+it that way.
+.Ss Example
+.Bd -literal -offset indent
+{"type":"meta","v":1,"id":"20260824-060842-544d4eb3",
+ "created":1787576922,"model":"claude-sonnet-5",
+ "provider":"anthropic"}
+{"role":"user","content":"execute `exit 1` for me","type":"msg"}
+{"role":"assistant","tool_calls":[{"id":"toolu_016YkM",
+ "name":"shell_exec","args":"{\e"command\e": \e"exit 1\e"}"}],
+ "type":"msg"}
+{"role":"tool","content":"(no output)\en(exit status 1)",
+ "tool_call_id":"toolu_016YkM","tool_name":"shell_exec",
+ "type":"msg"}
+{"role":"assistant","content":"status 1. no output.","type":"msg"}
+.Ed
+.Pp
+Each object is one line in the file; the lines are wrapped here to fit
+the page.
+.Ss Companion files
+A compaction cannot be expressed by appending, so it rewrites the whole
+file: the messages go to
+.Ar id Ns Pa .jsonl.tmp ,
+the old file is hard linked to
+.Ar id Ns Pa .jsonl.bak ,
+and the temporary file is renamed over the log.
+The log therefore keeps its name at every moment, and the contents from
+before the last compaction stay in the
+.Pa .bak
+file.
+A
+.Pa .tmp
+file left behind belongs to a rewrite that died and is deleted once it
+is a day old.
+.Pp
+A user message that begins with
+.Qq Li [context update]
+is injected by the agent, not typed by the user.
+The session listing skips such a message when it picks the snippet to
+show.
+.Ss Machine-readable schema
+A JSON Schema
+.Pq draft 2020-12
+for one record ships in the source tree as
+.Pa docs/session.schema.json .
+It describes a single line, not the file: validate each line on its own.
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.local/state/clm/ Ns Ar id Ns Pa .jsonl
+The session log.
+.It Pa ~/.local/state/clm/ Ns Ar id Ns Pa .jsonl.bak
+The log as it was before the last compaction.
+.It Pa ~/.local/state/clm/ Ns Ar id Ns Pa .jsonl.tmp
+A rewrite in flight, or the remains of one that failed.
+.El
+.Sh SEE ALSO
+.Xr clm 1 ,
+.Xr clm_agent 3 ,
+.Xr clm-config 5
