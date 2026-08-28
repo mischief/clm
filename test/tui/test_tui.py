@@ -691,8 +691,25 @@ def test_peers(url):
                 b_id = ln.split()[1]
         check(b_id is not None, "peers: target's short id is on screen")
 
+        # /clear starts a new session, and the socket carries the session
+        # id: an agent that kept the old socket is unreachable at the id it
+        # now reports.
+        b.send(b"/clear\r")
+        b.pump(2.0)
+        new_id = None
+        for ln in b.lines():
+            if " clm " in ln:
+                new_id = ln.split()[1]
+        check(new_id is not None and new_id != b_id,
+              "peers: /clear gives the instance a new session id")
+        stems = [f[:-5] for f in os.listdir(d) if f.endswith(".sock")]
+        check(any(st.endswith(new_id) for st in stems),
+              "peers: /clear moves the socket to the new session id")
+        check(not any(st.endswith(b_id) for st in stems),
+              "peers: the socket for the cleared session is gone")
+
         # The mock turns "peersend to=<id>" into one agent_send call.
-        a.send(("peersend to=%s please\r" % b_id).encode())
+        a.send(("peersend to=%s please\r" % new_id).encode())
         assert a.wait_for("allow tool agent_send", timeout=15), \
             "no permission prompt for agent_send"
         check(True, "peers: sending to another agent asks first")
@@ -700,7 +717,7 @@ def test_peers(url):
         a.pump(2.5)
         b.pump(2.0)
         check("hello from the other agent" in b.text(),
-              "peers: the message reaches the other agent")
+              "peers: the message reaches the agent at its new id")
         check("peer " in b.text(),
               "peers: the transcript marks it as coming from a peer")
 

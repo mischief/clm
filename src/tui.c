@@ -1072,6 +1072,21 @@ cb_peer_message(
 	u->dirty = true;
 }
 
+/* Move the peer socket onto the current session id. Other agents address
+ * this one by that id, so a new session needs a new socket. */
+static void
+peer_rebind(struct ui *u)
+{
+	if (u->peer == NULL || u->session == NULL)
+		return;
+	clm_peer_free(u->peer);
+	u->peer = NULL;
+	/* The tools stay registered from startup; only the socket moves. */
+	(void)clm_peer_start(u->agent, u->loop, clm_session_id(u->session),
+	    u->agent_name != NULL ? u->agent_name : "clm", u->model,
+	    cb_peer_message, u, &u->peer);
+}
+
 static const struct clm_callbacks tui_callbacks = {
     .on_assistant_text = cb_assistant_text,
     .on_reasoning = cb_reasoning,
@@ -2907,6 +2922,7 @@ run_command(struct ui *u, const char *line)
 				        u->provider_name, u->agent_name,
 				        &u->session) == 0) {
 					set_session_short(u);
+					peer_rebind(u);
 					ui_push(u, ST_META, "[new session ");
 					ui_push(u, ST_META,
 					    clm_session_id(u->session));
