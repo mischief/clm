@@ -879,7 +879,9 @@ test_cfg_tuning(void)
 		CHECK(false, "tuning: temp config created");
 		return;
 	}
-	(void)write(fd, cfg_lua, sizeof(cfg_lua) - 1);
+	CHECK(write(fd, cfg_lua, sizeof(cfg_lua) - 1) ==
+	        (ssize_t)(sizeof(cfg_lua) - 1),
+	    "tuning: temp config written");
 	close(fd);
 
 	lcfg = clm_lua_cfg_load(path, &err);
