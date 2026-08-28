@@ -169,7 +169,7 @@ if have_lua and have_pyte
     py,
     args: [files('tui/test_tui.py'), 'commands', 'effort', 'queueing',
       'permission', 'allow_all', 'cancel', 'cancel_tools',
-      'tool_escapes'],
+      'tool_escapes', 'clear_gauge'],
     env: {'CLM_BIN': clm_exe.full_path()},
     depends: clm_exe,
     suite: 'tui',

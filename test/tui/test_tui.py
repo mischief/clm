@@ -879,6 +879,21 @@ def test_resume_collapses_tools(url):
               "resume: the collapsed cluster's own lines are gone")
 
 
+def test_clear_gauge(url):
+    """/clear drops the context gauge along with the history it measured."""
+    with Tui(BIN, url, rows=24, cols=80) as t:
+        t.wait_for("online", timeout=8)
+        t.send(b"show me fruit\r")
+        assert t.wait_for("Yellow", timeout=15), "no reply"
+        t.pump(0.5)
+        check("%" in status_line(t),
+              "clear_gauge: the gauge appears once a turn reports usage")
+        t.send(b"/clear\r")
+        t.pump(0.8)
+        check("%" not in status_line(t),
+              "clear_gauge: /clear takes the gauge away with the history")
+
+
 TESTS = {
     "connection": test_connection_online,
     "offline": test_connection_offline,
@@ -902,6 +917,7 @@ TESTS = {
     "session": test_session_resume,
     "resume_collapse": test_resume_collapses_tools,
     "session_compact": test_session_compact,
+    "clear_gauge": test_clear_gauge,
     "scratch": test_scratch,
     "peers": test_peers,
     "allow_all": test_allow_all,

@@ -2583,6 +2583,11 @@ cmd_agent(struct ui *u, const char *arg)
 				u->agent_name = strdup(arg);
 				set_current_model(u, newcfg.model);
 				set_current_provider(u, prov);
+				/* New agent, empty history: the old
+				 * reading describes a conversation this
+				 * agent never saw. */
+				u->ctx_used = 0;
+				u->usage[0] = '\0';
 				char msg[128];
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to agent: %s]\n", arg);
@@ -2908,6 +2913,7 @@ run_command(struct ui *u, const char *line)
 			u->nsegs = 0;
 			u->scroll = 0;
 			u->usage[0] = '\0';
+			u->ctx_used = 0;
 			u->gen++;
 			/* Rotate the session log too: the cleared transcript
 			 * stays resumable under its old id, and what follows

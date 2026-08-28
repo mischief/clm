@@ -21,8 +21,8 @@ clm_cfg_apply_tuning(struct clm_lua_cfg *lcfg, const char *provider,
 
 	size = clm_lua_cfg_provider_int(lcfg, provider, "context_size", 0);
 	pct = clm_lua_cfg_provider_int(lcfg, provider, "autocompact_pct", 0);
-	tokens = clm_lua_cfg_provider_int(
-	    lcfg, provider, "autocompact_tokens", 0);
+	tokens =
+	    clm_lua_cfg_provider_int(lcfg, provider, "autocompact_tokens", 0);
 
 	if (model != NULL) {
 		size = clm_lua_cfg_provider_model_int(
