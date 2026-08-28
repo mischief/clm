@@ -7,10 +7,14 @@
 # actual functions involved are a problem. Not worth restructuring test-only
 # code around (no attributes/pragmas needed either -- this is scoped to the
 # test targets below, so it doesn't loosen the check anywhere real).
+# Layered on top of clm_hardening_args so tests are subject to the same
+# -Werror + extra-warning set as production code; only -Wframe-larger-than
+# is relaxed.
 test_cflags = []
 if cc.has_argument('-Wno-frame-larger-than')
   test_cflags += ['-Wno-frame-larger-than']
 endif
+test_hardening_args = clm_hardening_args + test_cflags
 
 # Tiny TAP 13 harness shared by C test binaries. It intentionally has no
 # production dependency or install target.
@@ -20,7 +24,7 @@ tap_src = files('../libtap/tap.c')
 test_tap = executable('test_tap',
   files('test_tap.c') + tap_src,
   include_directories: [tap_inc],
-  c_args: test_cflags,
+  c_args: test_hardening_args,
 )
 test('tap', test_tap, protocol: 'tap')
 
@@ -29,7 +33,7 @@ test_agent = executable('test_agent',
   files('test_agent.c', 'canned.c', '../libclm/props.c', '../libclm/history.c', '../libclm/models_list.c', '../libclm/text_clean.c') + tap_src,
   dependencies: [clmuv_dep],
   include_directories: [tap_inc, include_directories('.'), clm_inc, include_directories('../include')],
-  c_args: test_cflags,
+  c_args: test_hardening_args,
 )
 test('agent', test_agent, protocol: 'tap')
 
@@ -38,7 +42,7 @@ test_mcp = executable('test_mcp',
   files('test_mcp.c', 'canned.c') + tap_src,
   dependencies: [clmuv_dep],
   include_directories: [tap_inc, include_directories('.'), clm_inc, include_directories('../include')],
-  c_args: test_cflags,
+  c_args: test_hardening_args,
 )
 test('mcp', test_mcp, protocol: 'tap')
 
@@ -58,7 +62,7 @@ test_mcp_ready = executable('test_mcp_ready',
   files('test_mcp_ready.c') + tap_src,
   dependencies: [clmuv_dep],
   include_directories: [tap_inc, clm_inc, include_directories('../include')],
-  c_args: test_cflags,
+  c_args: test_hardening_args,
 )
 test('mcp_ready', test_mcp_ready, protocol: 'tap', timeout: 15)
 
@@ -68,7 +72,7 @@ test_http_async = executable('test_http_async',
   files('test_http_async.c') + tap_src,
   dependencies: [clmuv_dep],
   include_directories: [tap_inc, clm_inc, include_directories('../include')],
-  c_args: test_cflags,
+  c_args: test_hardening_args,
 )
 test('http_async', test_http_async, protocol: 'tap')
 
@@ -79,7 +83,7 @@ test_http_response_buffer = executable('test_http_response_buffer',
     '../libclmuv/http_response_buffer.c') + tap_src,
   include_directories: [tap_inc, include_directories('../libclmuv'),
     include_directories('..')],
-  c_args: test_cflags,
+  c_args: test_hardening_args,
 )
 test('http_response_buffer', test_http_response_buffer, protocol: 'tap')
 
@@ -91,7 +95,7 @@ test_session = executable('test_session',
   dependencies: [cjson_dep],
   include_directories: [tap_inc, include_directories('.'), clm_inc,
     include_directories('../include'), include_directories('../libclmsession')],
-  c_args: test_cflags,
+  c_args: test_hardening_args,
 )
 test('session', test_session, protocol: 'tap')
 
@@ -107,7 +111,7 @@ if have_lua
     dependencies: [clmuv_dep, clmlua_dep],
     include_directories: [tap_inc, clm_inc, include_directories('../include'),
       include_directories('../src')],
-    c_args: test_cflags,
+    c_args: test_hardening_args,
   )
   test('lua_plugin', test_lua, protocol: 'tap', workdir: meson.project_source_root())
 endif
