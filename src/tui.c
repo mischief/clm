@@ -2196,6 +2196,7 @@ set_current_model(struct ui *u, const char *model)
 	char *dup = model != NULL ? strdup(model) : NULL;
 	free(u->model);
 	u->model = dup;
+	clm_peer_set_model(u->peer, u->model);
 }
 
 /*
@@ -3637,6 +3638,15 @@ make_windows(struct ui *u)
 }
 
 static void
+on_term(uv_signal_t *s, int signum)
+{
+	struct ui *u = s->data;
+
+	(void)signum;
+	uv_stop(u->loop);
+}
+
+static void
 on_winch(uv_signal_t *s, int signum)
 {
 	struct ui *u = s->data;
@@ -3976,6 +3986,16 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	uv_signal_init(loop, &u->winch);
 	u->winch.data = u;
 	uv_signal_start(&u->winch, on_winch, SIGWINCH);
+
+	/* Leave by the same path a /quit takes: the terminal is restored and
+	 * the peer socket removed instead of being left for the next listing
+	 * to reap. */
+	uv_signal_init(loop, &u->term);
+	u->term.data = u;
+	uv_signal_start(&u->term, on_term, SIGTERM);
+	uv_signal_init(loop, &u->hup);
+	u->hup.data = u;
+	uv_signal_start(&u->hup, on_term, SIGHUP);
 
 	/* Probe connectivity now (0ms) and every 20s, so a wrong URL or a down
 	 * server shows in the status bar before the first prompt. */

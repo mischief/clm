@@ -9,8 +9,10 @@ CLM_BIN environment variable (set by meson).
 """
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -721,10 +723,43 @@ def test_peers(url):
         check("peer " in b.text(),
               "peers: the transcript marks it as coming from a peer")
 
+        # The announcement is what a listing reports, so it has to track a
+        # model switch.
+        b_meta = [f for f in os.listdir(d)
+                  if f.endswith(".json") and f[:-5].endswith(new_id)]
+        check(len(b_meta) == 1, "peers: the cleared session announces itself")
+        if b_meta:
+            path = os.path.join(d, b_meta[0])
+            b.send(b"/model other-model\r")
+            b.pump(1.5)
+            check(json.load(open(path))["model"] == "other-model",
+                  "peers: /model updates the announced model")
+
     # Both instances are gone: their sockets must not be left behind.
     leftover = [f for f in os.listdir(os.path.join(run, "clm"))
                 if f.endswith(".sock")]
     check(leftover == [], "peers: sockets are removed on exit")
+
+    # A killed instance cleans up too, rather than leaving a socket for the
+    # next listing to reap.
+    t = Tui(BIN, url, rows=30, cols=100)
+    t.__enter__()
+    try:
+        t.wait_for("online", timeout=8)
+        check(any(f.endswith(".sock") for f in os.listdir(
+            os.path.join(run, "clm"))), "peers: the instance bound a socket")
+        os.kill(t.pid, signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if not any(f.endswith(".sock")
+                       for f in os.listdir(os.path.join(run, "clm"))):
+                break
+            time.sleep(0.1)
+        check(not any(f.endswith(".sock") for f in os.listdir(
+            os.path.join(run, "clm"))),
+            "peers: SIGTERM removes the socket")
+    finally:
+        t.close()
 
     # A headless run can message a running agent without advertising
     # itself: it exits in seconds, so a socket answering for it would

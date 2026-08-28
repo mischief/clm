@@ -76,6 +76,8 @@ struct ui {
 	uv_timer_t repaint;
 	uv_timer_t health;
 	uv_signal_t winch;
+	uv_signal_t term; /* SIGTERM: exit the way /quit does */
+	uv_signal_t hup;  /* SIGHUP: the same */
 
 	WINDOW *txt;  /* scrolling transcript */
 	WINDOW *stat; /* status bar */

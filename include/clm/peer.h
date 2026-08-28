@@ -34,6 +34,13 @@ CLM_API int clm_peer_start(struct clm_agent *agent, struct uv_loop_s *loop,
  */
 CLM_API int clm_peer_register_tools(struct clm_agent *agent);
 
+/*
+ * Rewrite the model this agent announces to the others. The metadata file
+ * is read by every listing, so a /model switch is otherwise reported as the
+ * model the session started with.
+ */
+CLM_API void clm_peer_set_model(struct clm_peer *p, const char *model);
+
 /* Stop listening and remove the socket and its metadata. */
 CLM_API void clm_peer_free(struct clm_peer *p);
 

@@ -684,6 +684,14 @@ clm_peer_start(struct clm_agent *agent, uv_loop_t *loop, const char *id,
 	return 0;
 }
 
+void
+clm_peer_set_model(struct clm_peer *p, const char *model)
+{
+	if (p == NULL || p->meta_path[0] == '\0')
+		return;
+	write_meta(p, model);
+}
+
 int
 clm_peer_register_tools(struct clm_agent *agent)
 {
