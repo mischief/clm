@@ -3,9 +3,10 @@
  * Agent-to-agent messaging over a unix socket, one per running clm.
  * Discovery is a readdir of <runtime>/clm: each instance binds
  * <session-id>.sock and writes a sibling .json describing itself. A message
- * is one JSON line, delivered through clm_agent_notify() so it lands between
- * turns. The two tool schemas never mention peers, so the cached prompt
- * prefix does not move as agents come and go.
+ * is one JSON line, delivered through clm_agent_notify() so it lands at the
+ * recipient's next model call. The recipient answers each line, so a sender
+ * is told when its message was refused. The two tool schemas never mention
+ * peers, so the cached prompt prefix does not move as agents come and go.
  */
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -32,17 +33,10 @@
 #include "clm/tools.h"
 #include "banned.h"
 
-/* Longest message a peer may deliver, and the most it may deliver per
- * minute: two agents answering each other would otherwise bill forever. */
+/* Longest message a peer may deliver. */
 #define PEER_MSG_MAX 8192
-#define PEER_RATE_PER_MIN 6
 #define PEER_SEND_TIMEOUT_MS 250
-
-struct peer_sender {
-	char id[64];
-	time_t window;
-	int count;
-};
+#define PEER_ACK_TIMEOUT_MS 1000
 
 struct clm_peer {
 	struct clm_agent *agent;
@@ -56,7 +50,6 @@ struct clm_peer {
 	char name[64];
 	clm_peer_msg_cb cb;
 	void *cb_user;
-	struct peer_sender senders[16];
 };
 
 /* The one live instance, so the tool callbacks can reach it: tools carry a
@@ -98,38 +91,6 @@ peer_dir(char *buf, size_t len)
 /* Receiving                                                           */
 /* ------------------------------------------------------------------ */
 
-/* True if `from` is within its message allowance; counts the message. */
-static bool
-rate_ok(struct clm_peer *p, const char *from)
-{
-	time_t now = time(NULL);
-	size_t i, oldest = 0;
-
-	for (i = 0; i < sizeof(p->senders) / sizeof(p->senders[0]); i++) {
-		struct peer_sender *s = &p->senders[i];
-
-		if (strcmp(s->id, from) != 0) {
-			if (s->window < p->senders[oldest].window)
-				oldest = i;
-			continue;
-		}
-		if (now - s->window >= 60) {
-			s->window = now;
-			s->count = 0;
-		}
-		if (s->count >= PEER_RATE_PER_MIN)
-			return false;
-		s->count++;
-		return true;
-	}
-
-	(void)snprintf(
-	    p->senders[oldest].id, sizeof(p->senders[oldest].id), "%s", from);
-	p->senders[oldest].window = now;
-	p->senders[oldest].count = 1;
-	return true;
-}
-
 /*
  * Hand a delivered message to the agent. The text is framed so the model can
  * see it came from another agent rather than from the user, and carries the
@@ -154,9 +115,11 @@ deliver(
 
 struct peer_conn {
 	uv_pipe_t pipe;
+	uv_write_t wreq;
 	struct clm_peer *peer;
 	char buf[PEER_MSG_MAX + 512];
 	size_t len;
+	char ack[160];
 };
 
 static void
@@ -169,14 +132,18 @@ static void
 conn_alloc(uv_handle_t *h, size_t suggested, uv_buf_t *buf)
 {
 	struct peer_conn *c = h->data;
-	size_t room = sizeof(c->buf) - c->len;
 
 	(void)suggested;
+	/* One byte short of the buffer: conn_handle terminates the line. */
 	buf->base = c->buf + c->len;
-	buf->len = room;
+	buf->len = sizeof(c->buf) - 1 - c->len;
 }
 
-/* Parse one delivered line and hand it to the agent. */
+/*
+ * Parse one delivered line and hand it to the agent. Fills c->ack with the
+ * answer the sender reads back, so a message this side refuses is reported
+ * as a failure by the agent_send that sent it instead of vanishing.
+ */
 static void
 conn_handle(struct peer_conn *c)
 {
@@ -186,18 +153,29 @@ conn_handle(struct peer_conn *c)
 
 	c->buf[c->len] = '\0';
 	msg = cJSON_Parse(c->buf);
-	if (msg == NULL || !cJSON_IsObject(msg))
+	from = msg ? cJSON_GetObjectItemCaseSensitive(msg, "from") : NULL;
+	name = msg ? cJSON_GetObjectItemCaseSensitive(msg, "from_name") : NULL;
+	text = msg ? cJSON_GetObjectItemCaseSensitive(msg, "text") : NULL;
+	if (!cJSON_IsObject(msg) || !cJSON_IsString(from) ||
+	    !cJSON_IsString(text)) {
+		(void)snprintf(c->ack, sizeof(c->ack),
+		    "{\"ok\":false,\"error\":\"malformed message\"}\n");
 		return;
-	from = cJSON_GetObjectItemCaseSensitive(msg, "from");
-	name = cJSON_GetObjectItemCaseSensitive(msg, "from_name");
-	text = cJSON_GetObjectItemCaseSensitive(msg, "text");
-	if (!cJSON_IsString(from) || !cJSON_IsString(text))
-		return;
+	}
 
-	if (!rate_ok(p, from->valuestring))
-		return;
 	deliver(p, from->valuestring,
 	    cJSON_IsString(name) ? name->valuestring : NULL, text->valuestring);
+	(void)snprintf(c->ack, sizeof(c->ack), "{\"ok\":true}\n");
+}
+
+static void
+conn_after_write(uv_write_t *req, int status)
+{
+	struct peer_conn *c = req->data;
+
+	(void)status;
+	if (!uv_is_closing((uv_handle_t *)&c->pipe))
+		uv_close((uv_handle_t *)&c->pipe, conn_closed);
 }
 
 static void
@@ -206,13 +184,24 @@ conn_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf)
 	struct peer_conn *c = s->data;
 
 	(void)buf;
+	if (nread == 0)
+		return; /* no data ready; not EOF, not an error */
 	if (nread > 0) {
 		c->len += (size_t)nread;
 		if (c->len < sizeof(c->buf) - 1)
-			return; /* wait for EOF, the sender closes */
+			return; /* wait for EOF, the sender half-closes */
 	}
-	if (c->len > 0)
+	if (c->len > 0) {
+		uv_buf_t out;
+
 		conn_handle(c);
+		out = uv_buf_init(c->ack, strlen(c->ack));
+		c->wreq.data = c;
+		if (out.len > 0 &&
+		    uv_write(&c->wreq, (uv_stream_t *)&c->pipe, &out, 1,
+		        conn_after_write) == 0)
+			return; /* conn_after_write closes */
+	}
 	if (!uv_is_closing((uv_handle_t *)s))
 		uv_close((uv_handle_t *)s, conn_closed);
 }
@@ -246,13 +235,43 @@ on_connection(uv_stream_t *server, int status)
 /* ------------------------------------------------------------------ */
 
 /*
- * Write one line to a peer's socket. Plain sockets with a short timeout
- * rather than the loop: a send is a local write that either lands at once or
- * is answered by a peer that is wedged, and neither case should be allowed
- * to park the event loop.
+ * Read the recipient's answer. Returns 0 if it accepted the message, -EPERM
+ * with the reason in `err` if it refused. A peer that answers nothing at all
+ * counts as acceptance: it is an older build with no answer to give.
  */
 static int
-send_line(const char *path, const char *line)
+read_ack(int fd, char *err, size_t errlen)
+{
+	json_cleanup cJSON *ack = NULL;
+	struct pollfd pfd;
+	char buf[256];
+	ssize_t n;
+	cJSON *ok, *msg;
+
+	pfd.fd = fd;
+	pfd.events = POLLIN;
+	if (poll(&pfd, 1, PEER_ACK_TIMEOUT_MS) <= 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	ack = cJSON_Parse(buf);
+	if (ack == NULL)
+		return 0;
+	ok = cJSON_GetObjectItemCaseSensitive(ack, "ok");
+	if (cJSON_IsTrue(ok))
+		return 0;
+	msg = cJSON_GetObjectItemCaseSensitive(ack, "error");
+	(void)snprintf(err, errlen, "%s",
+	    cJSON_IsString(msg) ? msg->valuestring : "recipient refused it");
+	return -EPERM;
+}
+
+/* Write one line to a peer's socket and read back whether it took it. */
+/* Plain sockets, not the loop: a wedged peer must not park the loop. */
+static int
+send_line(const char *path, const char *line, char *err, size_t errlen)
 {
 	struct sockaddr_un sa;
 	struct pollfd pfd;
@@ -302,8 +321,15 @@ send_line(const char *path, const char *line)
 		}
 		break;
 	}
+	if (left > 0) {
+		(void)close(fd);
+		return -EIO;
+	}
+	/* Half-close: the recipient reads to EOF, then answers. */
+	(void)shutdown(fd, SHUT_WR);
+	r = read_ack(fd, err, errlen);
 	(void)close(fd);
-	return left == 0 ? 0 : -EIO;
+	return r;
 }
 
 /* ------------------------------------------------------------------ */
@@ -489,7 +515,8 @@ tool_agent_send(struct clm_tool_invocation *inv, void *user)
 	autofree char *body = NULL;
 	cJSON *to, *text;
 	char path[400];
-	char note[128];
+	char note[192];
+	char err[128];
 	int r;
 
 	(void)user;
@@ -532,10 +559,11 @@ tool_agent_send(struct clm_tool_invocation *inv, void *user)
 	}
 
 	(void)snprintf(path, sizeof(path), "%s/%s.sock", the_peer->dir, target);
-	r = send_line(path, line);
+	err[0] = '\0';
+	r = send_line(path, line, err, sizeof(err));
 	if (r < 0) {
-		(void)snprintf(
-		    note, sizeof(note), "delivery failed: %s", strerror(-r));
+		(void)snprintf(note, sizeof(note), "delivery failed: %s",
+		    err[0] != '\0' ? err : strerror(-r));
 		clm_tool_fail(inv, note);
 		return;
 	}
@@ -546,6 +574,14 @@ tool_agent_send(struct clm_tool_invocation *inv, void *user)
 /* ------------------------------------------------------------------ */
 /* Lifecycle                                                           */
 /* ------------------------------------------------------------------ */
+
+/* The listening handle lives inside the peer, so the peer must outlive the
+ * close that libuv finishes on a later turn of the loop. */
+static void
+peer_server_closed(uv_handle_t *h)
+{
+	free(h->data);
+}
 
 static void
 write_meta(struct clm_peer *p, const char *model)
@@ -630,15 +666,13 @@ clm_peer_start(struct clm_agent *agent, uv_loop_t *loop, const char *id,
 	p->server.data = p;
 	r = uv_pipe_bind(&p->server, p->sock_path);
 	if (r != 0) {
-		uv_close((uv_handle_t *)&p->server, NULL);
-		free(p);
+		uv_close((uv_handle_t *)&p->server, peer_server_closed);
 		return -EADDRINUSE;
 	}
 	r = uv_listen((uv_stream_t *)&p->server, 8, on_connection);
 	if (r != 0) {
-		uv_close((uv_handle_t *)&p->server, NULL);
+		uv_close((uv_handle_t *)&p->server, peer_server_closed);
 		(void)unlink(p->sock_path);
-		free(p);
 		return -EIO;
 	}
 	p->listening = true;
@@ -664,8 +698,9 @@ clm_peer_register_tools(struct clm_agent *agent)
 	const struct clm_tool_def send_def = {
 	    .name = "agent_send",
 	    .description =
-	        "send a text message to another clm agent; it arrives between "
-	        "that agent's turns and cannot make it run anything. The "
+	        "send a text message to another clm agent; it reaches that "
+	        "agent at its next model call and cannot make it run "
+	        "anything. The "
 	        "recipient is told your session id and can reply to it, but "
 	        "say in the text that you want a reply, and include your own "
 	        "session id when asking it to tell someone else where to "
@@ -692,13 +727,15 @@ clm_peer_free(struct clm_peer *p)
 {
 	if (p == NULL)
 		return;
-	if (p->listening && !uv_is_closing((uv_handle_t *)&p->server))
-		uv_close((uv_handle_t *)&p->server, NULL);
 	if (p->sock_path[0] != '\0') {
 		(void)unlink(p->sock_path);
 		(void)unlink(p->meta_path);
 	}
 	if (the_peer == p)
 		the_peer = NULL;
+	if (p->listening && !uv_is_closing((uv_handle_t *)&p->server)) {
+		uv_close((uv_handle_t *)&p->server, peer_server_closed);
+		return;
+	}
 	free(p);
 }

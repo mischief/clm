@@ -37,6 +37,15 @@ test_agent = executable('test_agent',
 )
 test('agent', test_agent, protocol: 'tap')
 
+# Peer socket delivery uses the uv host and a plain client socket.
+test_peer = executable('test_peer',
+  files('test_peer.c') + tap_src,
+  dependencies: [clmuv_dep],
+  include_directories: [tap_inc, include_directories('.'), clm_inc, include_directories('../include')],
+  c_args: test_hardening_args,
+)
+test('peer', test_peer, protocol: 'tap')
+
 # mcp transport regressions use the uv host plus the local canned http server.
 test_mcp = executable('test_mcp',
   files('test_mcp.c', 'canned.c') + tap_src,

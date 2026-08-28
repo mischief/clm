@@ -362,13 +362,16 @@ run gets the same two tools but binds no socket of its own: it can find
 and message the agents that are running, and exits too quickly to be
 worth answering.
 
-A delivered message arrives between the receiving agent's turns, the same
-way typed input does, and appears in its transcript marked as coming from
-a peer.
+A delivered message reaches the receiving agent at its next model call,
+the same way typed input does, and appears in its transcript marked as
+coming from a peer.
+An agent in the middle of a chain of tool calls therefore reads it on the
+next step, not after the whole turn.
 It carries text only: a peer cannot make another agent run anything, and
 the receiving model decides whether to answer.
-Delivery is rate limited per sender, so two agents answering each other
-cannot bill forever.
+The recipient answers every message, so
+**agent\_send**
+reports a refusal instead of reporting a delivery that did not happen.
 
 # SEE ALSO
 
