@@ -573,11 +573,12 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 
 /*
  * Fire cb_on_turn_done for the turn that just landed, then submit any text
- * queued by clm_agent_notify() while it was in flight. Every call site that
- * ends a real turn (as opposed to the mid-chain compact resume path, which
- * deliberately does not fire cb_on_turn_done at all) routes through here so
- * a background notification queued mid-turn is never dropped and never
- * jumps ahead of the turn already in progress.
+ * queued by clm_agent_notify() too late for agent_flush_pending_notify() to
+ * fold into the turn itself. Every call site that ends a real turn (as opposed
+ * to the mid-chain compact resume path, which deliberately does not fire
+ * cb_on_turn_done at all) routes through here so a background notification
+ * queued mid-turn is never dropped and never jumps ahead of the turn already in
+ * progress.
  *
  * Safe to call clm_agent_submit() from here: every call site reaches this
  * function only after agent->state has already been set to CLM_STATE_COMPLETE
@@ -2745,6 +2746,26 @@ llm_dispatch(struct clm_agent *agent, struct clm_async_turn *turn)
 	}
 }
 
+/*
+ * Move any text queued by clm_agent_notify() into history as a user message.
+ * Called at the top of every LLM call, so a message that arrives while a
+ * tool chain runs reaches the model on the next round trip of the same turn
+ * instead of waiting for the whole turn to land.
+ */
+static void
+agent_flush_pending_notify(struct clm_agent *agent)
+{
+	autofree char *notify = agent->pending_notify;
+	struct clm_message *m;
+
+	if (notify == NULL)
+		return;
+	agent->pending_notify = NULL;
+	m = clm_history_add_user(&agent->history, notify, agent->compressor);
+	if (m != NULL)
+		clm_agent_emit_message(agent, m);
+}
+
 static void
 clm_agent_start_turn(struct clm_agent *agent)
 {
@@ -2758,6 +2779,8 @@ clm_agent_start_turn(struct clm_agent *agent)
 	char *body;
 	size_t turn_ctx_bytes = 0;
 	size_t msgs_in_history;
+
+	agent_flush_pending_notify(agent);
 
 	messages = clm_history_to_json(&agent->history, agent->compressor);
 	/* Skip building/attaching "tools" entirely once this model/provider

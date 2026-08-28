@@ -231,6 +231,36 @@ convert_messages(cJSON *messages, char **system_out)
 			continue;
 		}
 
+		/*
+		 * A user message right after a batch of tool results (a
+		 * message injected mid-turn, see clm_agent_notify) rides in
+		 * the carrier as one more text block. Two user messages in a
+		 * row is not a shape this API takes.
+		 */
+		if (strcmp(role, "user") == 0) {
+			cJSON *carrier = cJSON_GetArrayItem(
+			    out, cJSON_GetArraySize(out) - 1);
+
+			if (carrier != NULL &&
+			    is_tool_result_carrier(carrier)) {
+				cJSON *carr_content =
+				    cJSON_GetObjectItemCaseSensitive(
+				        carrier, "content");
+				cJSON *tblock = cJSON_CreateObject();
+
+				if (tblock == NULL) {
+					cJSON_Delete(out);
+					return NULL;
+				}
+				cJSON_AddItemToObject(
+				    tblock, "type", cJSON_CreateString("text"));
+				cJSON_AddItemToObject(tblock, "text",
+				    cJSON_CreateString(content ? content : ""));
+				cJSON_AddItemToArray(carr_content, tblock);
+				continue;
+			}
+		}
+
 		/* user / assistant. */
 		{
 			cJSON *tool_calls = m

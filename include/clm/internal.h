@@ -117,9 +117,11 @@ struct clm_agent {
 	 * else holds it while it waits. */
 	struct clm_async_turn *rl_parked_turn;
 
-	/* Text queued by clm_agent_notify() while a turn was in flight, to be
-	 * submitted as a fresh turn once the current one lands (see
-	 * agent_turn_done() in agent.c). NULL when nothing is queued. Multiple
+	/* Text queued by clm_agent_notify() while a turn was in flight. Goes
+	 * into history as a user message at the next LLM call of that turn
+	 * (agent_flush_pending_notify() in agent.c); if the turn lands first,
+	 * agent_turn_done() submits it as a fresh turn. NULL when nothing is
+	 * queued. Multiple
 	 * notifications arriving before the agent goes idle are coalesced into
 	 * one string (blank-line separated) rather than queued as separate
 	 * turns, so a burst of background completions produces one follow-up

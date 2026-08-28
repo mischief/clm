@@ -2103,8 +2103,20 @@ enqueue_steering(struct ui *u, const char *prompt)
 	u->dirty = true;
 }
 
+static void drain_steering_one(struct ui *u);
+
+/* Hand every queued message to the agent at once: notify() coalesces what
+ * it cannot start right away, so a burst lands as one injection instead of
+ * one per decision point. */
 static void
 drain_steering_queue(struct ui *u)
+{
+	while (u->steering_nqueue > 0)
+		drain_steering_one(u);
+}
+
+static void
+drain_steering_one(struct ui *u)
 {
 	char *prompt;
 	enum clm_agent_state prev_state;
@@ -2130,11 +2142,11 @@ drain_steering_queue(struct ui *u)
 	 * transitions) still have the agent's state set to THINKING or
 	 * CALLING_TOOL at this exact instant, and clm_agent_submit()
 	 * unconditionally rejects those with "turn already in progress".
-	 * notify() queues the text as a pending follow-up in that case and
-	 * submits it itself once the current turn lands on COMPLETE/ERROR;
-	 * it only submits right away -- starting a genuinely new turn -- at
-	 * the third decision point (THINKING->COMPLETE), where the agent is
-	 * actually free.
+	 * notify() queues the text in that case and puts it in history at
+	 * the turn's next LLM call, so the model reads it on the next round
+	 * trip of the chain already running; it only submits right away --
+	 * starting a genuinely new turn -- at the third decision point
+	 * (THINKING->COMPLETE), where the agent is actually free.
 	 */
 	prev_state = clm_agent_get_state(u->agent);
 	r = clm_agent_notify(u->agent, prompt);

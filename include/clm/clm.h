@@ -430,11 +430,14 @@ CLM_API int clm_agent_submit(struct clm_agent *agent, const char *prompt);
  * after the tool call that started it already completed and returned. If the
  * agent is idle, this behaves exactly like clm_agent_submit(): text is added
  * as a user turn and a new turn starts immediately. If a turn is already in
- * flight (CLM_STATE_THINKING/CLM_STATE_CALLING_TOOL), text is queued instead
- * and folded into a single follow-up turn once the in-flight one lands via
- * on_turn_done -- multiple notifications arriving before that point are
- * coalesced into one turn (blank-line separated), not one turn each, so a
- * burst of background completions does not cascade into a burst of turns.
+ * flight (CLM_STATE_THINKING/CLM_STATE_CALLING_TOOL), text is queued and
+ * goes into history as a user message at the next LLM call of that same
+ * turn -- so a tool chain sees it on its next round trip, not after the
+ * whole turn ends. Text still queued when the turn lands (nothing left to
+ * flush it) starts a follow-up turn instead. Multiple notifications arriving
+ * before either point are coalesced (blank-line separated), not one turn
+ * each, so a burst of background completions does not cascade into a burst
+ * of turns.
  * Returns 0 on success (submitted or queued), negative errno on failure
  * (e.g. -ENOMEM; the notification is dropped in that case).
  */
