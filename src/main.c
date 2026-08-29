@@ -27,6 +27,7 @@
  * otherwise (session_keep_days = 0 keeps everything). */
 #define CLM_SESSION_KEEP_DAYS 90
 #include "cfg_tuning.h"
+#include "loop_drain.h"
 #include "model_spec.h"
 #include "templates.h"
 #include "xdg.h"
@@ -1007,6 +1008,7 @@ main(int argc, char *argv[])
 	if (r < 0) {
 		fprintf(stderr, "error: failed to create agent (%d)\n", r);
 		clm_host_uv_free(state->host);
+		(void)clm_drain_loop(loop);
 		free(state);
 		return 1;
 	}
@@ -1050,8 +1052,10 @@ main(int argc, char *argv[])
 			clm_lua_env_free(state->lua_env);
 			clm_cli_free_mcp_servers(
 			    state->mcp_clients, state->mcp_client_count);
+			clm_peer_free(state->peer);
 			clm_agent_free(state->agent);
 			clm_host_uv_free(state->host);
+			(void)clm_drain_loop(loop);
 			free(state);
 			return 1;
 		}
@@ -1066,6 +1070,7 @@ main(int argc, char *argv[])
 		clm_peer_free(state->peer);
 		clm_agent_free(state->agent);
 		clm_host_uv_free(state->host);
+		(void)clm_drain_loop(loop);
 		r = state->turn_status;
 		free(state);
 		if (scratch != NULL)
@@ -1091,6 +1096,11 @@ main(int argc, char *argv[])
 		    on_alloc_buffer, on_stdin_read);
 
 		uv_run(loop, UV_RUN_DEFAULT);
+
+		/* Ours to close: nothing else does, and it must be down
+		 * before the drain runs the loop again. */
+		if (!uv_is_closing((uv_handle_t *)&state->stdin_pipe))
+			uv_close((uv_handle_t *)&state->stdin_pipe, NULL);
 	}
 
 	clm_lua_env_free(state->lua_env);
@@ -1098,6 +1108,7 @@ main(int argc, char *argv[])
 	clm_peer_free(state->peer);
 	clm_agent_free(state->agent);
 	clm_host_uv_free(state->host);
+	(void)clm_drain_loop(loop);
 	free(state);
 	if (scratch != NULL)
 		(void)rmdir(scratch); /* only if nothing was left */

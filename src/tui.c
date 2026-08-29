@@ -39,6 +39,7 @@
 #include "md_render.h"
 #include "mcp_setup.h"
 #include "cfg_tuning.h"
+#include "loop_drain.h"
 #include "model_spec.h"
 #include "tui_internal.h"
 #include "sysinfo.h"
@@ -3789,6 +3790,23 @@ replay_transcript(struct ui *u, const struct clm_history *h)
 	push_batch_counts(u, cnt); /* a cluster that ends the history */
 }
 
+/* The handles this frontend owns. Close them before draining the loop: their
+ * callbacks reach into an agent and a ui that teardown has already released.
+ */
+static void
+close_own_handles(struct ui *u)
+{
+	uv_handle_t *own[] = {(uv_handle_t *)&u->stdin_poll,
+	    (uv_handle_t *)&u->repaint, (uv_handle_t *)&u->winch,
+	    (uv_handle_t *)&u->term, (uv_handle_t *)&u->hup,
+	    (uv_handle_t *)&u->health};
+
+	for (size_t i = 0; i < sizeof(own) / sizeof(own[0]); i++) {
+		if (!uv_is_closing(own[i]))
+			uv_close(own[i], NULL);
+	}
+}
+
 int
 tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     struct clm_lua_cfg *lcfg, const char *config_load_err,
@@ -4065,8 +4083,11 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	}
 	clm_lua_env_free(u->lua_env);
 	clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
+	clm_peer_free(u->peer);
 	clm_agent_free(u->agent);
 	clm_host_uv_free(u->host);
+	close_own_handles(u);
+	(void)clm_drain_loop(loop);
 	for (size_t i = 0; i < u->nsegs; i++)
 		free(u->segs[i].text);
 	free(u->segs);
@@ -4082,7 +4103,6 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	for (size_t i = 0; i < u->nhist; i++)
 		free(u->hist[i]);
 	free(u->hist);
-	clm_peer_free(u->peer);
 	free(u->input);
 	free(u->kill);
 	free(u->hist_saved);
