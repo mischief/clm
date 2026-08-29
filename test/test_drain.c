@@ -15,6 +15,7 @@
 #include "clm/host_uv.h"
 #include "clm/mcp.h"
 #include "clm/peer.h"
+#include "canned.h"
 #include "loop_drain.h"
 #include "tap.h"
 
@@ -90,9 +91,61 @@ test_drain(void *arg)
 	return 0;
 }
 
+/*
+ * A turn still in flight at exit belongs to a completion callback that an
+ * abandoned loop never runs, so the exit path cancels it first.
+ */
+static int
+test_settle(void *arg)
+{
+	struct clm_cfg cfg = {0};
+	struct clm_host *host = NULL;
+	struct clm_agent *agent = NULL;
+	struct canned_server *srv;
+	char url[128];
+	uv_loop_t loop;
+	int i;
+
+	(void)arg;
+	CHECK(uv_loop_init(&loop) == 0, "loop init");
+	srv = canned_start(&loop);
+	CHECK(srv != NULL, "canned server");
+	if (srv == NULL)
+		return 1;
+	/* Held open, so the turn is still waiting on the model. */
+	canned_pause_next(srv);
+	(void)snprintf(url, sizeof(url),
+	    "http://127.0.0.1:%d/v1/chat/completions", canned_port(srv));
+
+	cfg.api_key = "test";
+	cfg.base_url = url;
+	cfg.provider = CLM_PROVIDER_OPENAI;
+	cfg.model = "test-model";
+	CHECK(clm_host_uv_new(&loop, &host) == 0, "clm_host_uv_new");
+	CHECK(clm_agent_new(&cfg, host, NULL, NULL, &agent) == 0,
+	    "clm_agent_new");
+	CHECK(clm_agent_submit(agent, "hi") == 0, "submit");
+	for (i = 0; i < 200 && canned_request_count(srv) == 0; i++)
+		uv_run(&loop, UV_RUN_NOWAIT);
+	CHECK(canned_request_count(srv) == 1, "the request is with the server");
+	CHECK(clm_agent_get_state(agent) == CLM_STATE_THINKING,
+	    "the turn is in flight");
+
+	clm_settle_turn(agent, &loop);
+	CHECK(clm_agent_get_state(agent) != CLM_STATE_THINKING,
+	    "the turn is settled before teardown");
+
+	clm_agent_free(agent);
+	clm_host_uv_free(host);
+	canned_stop(srv);
+	CHECK(clm_drain_loop(&loop) == 0, "the drain leaves no handle behind");
+	return 0;
+}
+
 int
 main(void)
 {
 	TAP_ADD("teardown settles every uv handle", test_drain, NULL);
+	TAP_ADD("teardown settles a turn in flight", test_settle, NULL);
 	return tap_run();
 }

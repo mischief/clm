@@ -1097,6 +1097,8 @@ main(int argc, char *argv[])
 
 		uv_run(loop, UV_RUN_DEFAULT);
 
+		clm_settle_turn(state->agent, loop);
+
 		/* Ours to close: nothing else does, and it must be down
 		 * before the drain runs the loop again. */
 		if (!uv_is_closing((uv_handle_t *)&state->stdin_pipe))

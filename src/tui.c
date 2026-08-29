@@ -4042,6 +4042,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 
 	uv_run(loop, UV_RUN_DEFAULT);
 
+	/* Before curses goes away: a cancelled turn still repaints. */
+	clm_settle_turn(u->agent, loop);
+
 	/* Leave the terminal as we found it, and curses with nothing of ours
 	 * still allocated: the windows first, then the screen behind them. */
 	fputs("\033[?2004l", stdout);

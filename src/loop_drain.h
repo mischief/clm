@@ -11,15 +11,41 @@
 
 #include <uv.h>
 
+#include "clm/clm.h"
+
 /* How long the drain waits for the last closes to land. Long enough for a
  * SIGKILL'd MCP server to be reaped, short enough to never feel like a hang.
  */
 #define CLM_DRAIN_MS 500
 
+/* Loop turns spent waiting for a cancelled turn to unwind. */
+#define CLM_SETTLE_ITERATIONS 1000
+
 static inline void
 clm_drain_deadline(uv_timer_t *t)
 {
 	*(bool *)t->data = true;
+}
+
+/*
+ * Cancel a turn still in flight and let the loop deliver the cancellation:
+ * the turn belongs to its completion callback, so an exit that never runs
+ * that callback leaks it. Bounded, so a stuck cancel cannot hang exit.
+ */
+static inline void
+clm_settle_turn(struct clm_agent *agent, uv_loop_t *loop)
+{
+	int i;
+
+	if (agent == NULL || loop == NULL || clm_agent_cancel(agent) != 0)
+		return;
+	for (i = 0; i < CLM_SETTLE_ITERATIONS; i++) {
+		enum clm_agent_state st = clm_agent_get_state(agent);
+
+		if (st != CLM_STATE_THINKING && st != CLM_STATE_CALLING_TOOL)
+			break;
+		uv_run(loop, UV_RUN_NOWAIT);
+	}
 }
 
 /*

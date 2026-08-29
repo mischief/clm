@@ -49,7 +49,7 @@ test('peer', test_peer, protocol: 'tap')
 # The frontends' exit path: teardown schedules uv closes, and the drain in
 # src/loop_drain.h is what settles them.
 test_drain = executable('test_drain',
-  files('test_drain.c') + tap_src,
+  files('test_drain.c', 'canned.c') + tap_src,
   dependencies: [clmuv_dep],
   include_directories: [tap_inc, include_directories('.'), include_directories('../src'), clm_inc, include_directories('../include')],
   c_args: test_hardening_args,
