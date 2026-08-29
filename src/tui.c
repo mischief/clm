@@ -3034,10 +3034,15 @@ run_command(struct ui *u, const char *line)
  * duplicates of the most recent entry. The browse cursor is reset to the live
  * line by the caller after submit.
  */
+/* Bounds on what Up/Down recall keeps: total text, and entry count. */
+#define HIST_MAX_BYTES (256 * 1024)
+#define HIST_MAX_ENTRIES 500
+
 static void
 hist_add(struct ui *u, const char *line)
 {
 	char *dup;
+	size_t len = strlen(line);
 
 	if (line[0] == '\0')
 		return;
@@ -3056,6 +3061,18 @@ hist_add(struct ui *u, const char *line)
 	if (dup == NULL)
 		return;
 	u->hist[u->nhist++] = dup;
+	u->hist_bytes += len;
+
+	/* Recall is a convenience, not a log: a couple of large pastes must
+	 * not pin megabytes for the rest of the session. */
+	while (u->nhist > 1 &&
+	    (u->hist_bytes > HIST_MAX_BYTES || u->nhist > HIST_MAX_ENTRIES)) {
+		u->hist_bytes -= strlen(u->hist[0]);
+		free(u->hist[0]);
+		memmove(
+		    u->hist, u->hist + 1, (u->nhist - 1) * sizeof(*u->hist));
+		u->nhist--;
+	}
 }
 
 /* Load a history entry (or a saved live line) into the input buffer. */

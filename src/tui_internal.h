@@ -221,6 +221,7 @@ struct ui {
 	 */
 	char **hist;
 	size_t nhist, cap_hist;
+	size_t hist_bytes; /* live text held for recall, see HIST_MAX_BYTES */
 	size_t hist_pos;
 	char *hist_saved; /* live line parked while browsing history */
 
