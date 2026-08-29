@@ -135,6 +135,21 @@ if have_lua
   test('lua_plugin', test_lua, protocol: 'tap', workdir: meson.project_source_root())
 endif
 
+# TUI test harness: a Lua interpreter with a pty module and the canned
+# completions server built in, so the end-to-end TUI tests need nothing
+# installed beyond what clm already builds against. Only built when have_lua,
+# same as the clm desktop binary it drives.
+if have_lua
+  tui_harness = executable('tui_harness',
+    files('tui/harness.c', 'tui/mock_server.c',
+      '../libclmlua/lua_json.c'),
+    dependencies: [lua_dep, clmuv_deps],
+    include_directories: [include_directories('tui'),
+      include_directories('..')],
+    c_args: test_hardening_args,
+  )
+endif
+
 # md_render unit test: pure, links only the internal md_render static library
 # (no ncurses, no libclm), so the markdown-to-runs logic is tested in isolation.
 test_md = executable('test_md',
@@ -145,57 +160,33 @@ test_md = executable('test_md',
 )
 test('md', test_md, protocol: 'tap', suite: 'md')
 
-# End-to-end TUI test: drives the real clm binary on a pty against a canned
-# mock server via pyte. Uses only an already-installed python3 + pyte (global
-# or venv); if pyte is not importable the test is skipped. The build never
-# installs anything. clm_exe only exists when have_lua (src/meson.build) --
-# the desktop binary requires the clmlua archive -- so this test is skipped
-# too under -Dlua=disabled rather than referencing a target that was never
-# built.
-pymod = import('python')
-py = pymod.find_installation('python3', required: false)
-have_pyte = py.found() and run_command(
-  py, '-c', 'import pyte', check: false).returncode() == 0
-
-if have_lua and have_pyte
-  test('tui_basic',
-    py,
-    args: [files('tui/test_tui.py'), 'connection', 'offline', 'agent',
-           'markdown', 'resize', 'margin', 'editing', 'history', 'paste'],
-    env: {'CLM_BIN': clm_exe.full_path()},
-    depends: clm_exe,
-    suite: 'tui',
-    timeout: 60,
-  )
-  test('tui_scrollback',
-    py,
-    args: [files('tui/test_tui.py'), 'scrollback', 'scroll_stable', 'end_key'],
-    env: {'CLM_BIN': clm_exe.full_path()},
-    depends: clm_exe,
-    suite: 'tui',
-    timeout: 60,
-  )
-  test('tui_interaction',
-    py,
-    args: [files('tui/test_tui.py'), 'commands', 'effort', 'queueing',
-      'permission', 'allow_all', 'cancel', 'cancel_tools',
-      'tool_escapes', 'clear_gauge'],
-    env: {'CLM_BIN': clm_exe.full_path()},
-    depends: clm_exe,
-    suite: 'tui',
-    timeout: 60,
-  )
-  test('tui_session',
-    py,
-    args: [files('tui/test_tui.py'), 'session', 'session_compact',
-      'resume_collapse', 'scratch', 'peers'],
-    env: {'CLM_BIN': clm_exe.full_path()},
-    depends: clm_exe,
-    suite: 'tui',
-    timeout: 60,
-  )
-elif not have_lua
-  message('lua disabled; skipping TUI test (needs the clm desktop binary)')
+# End-to-end TUI test: drives the real clm binary on a pty against the
+# built-in mock server, rendering its output through the Lua terminal
+# emulator. clm_exe and tui_harness both only exist when have_lua
+# (src/meson.build) -- the desktop binary requires the clmlua archive -- so
+# these are skipped under -Dlua=disabled rather than referencing targets that
+# were never built.
+if have_lua
+  tui_script = files('tui/test_tui.lua')
+  tui_groups = {
+    'tui_basic': ['connection', 'offline', 'agent', 'markdown', 'resize',
+      'margin', 'editing', 'history', 'paste'],
+    'tui_scrollback': ['scrollback', 'scroll_stable', 'end_key'],
+    'tui_interaction': ['commands', 'effort', 'queueing', 'permission',
+      'allow_all', 'cancel', 'cancel_tools', 'tool_escapes', 'clear_gauge'],
+    'tui_session': ['session', 'session_compact', 'resume_collapse',
+      'scratch', 'peers'],
+  }
+  foreach name, cases : tui_groups
+    test(name,
+      tui_harness,
+      args: tui_script + cases,
+      env: {'CLM_BIN': clm_exe.full_path()},
+      depends: clm_exe,
+      suite: 'tui',
+      timeout: 120,
+    )
+  endforeach
 else
-  message('python3+pyte not found; skipping TUI test')
+  message('lua disabled; skipping TUI test (needs the clm desktop binary)')
 endif
