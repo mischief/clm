@@ -162,8 +162,6 @@ l_spawn(lua_State *L)
 	name = ptsname(master);
 	if (name == NULL)
 		return luaL_error(L, "ptsname: %s", strerror(errno));
-	(void)ioctl(master, TIOCSWINSZ, &ws);
-
 	argv = argv_from_table(L, 1);
 	env = env_from_table(L, 2, &nenv);
 	if (argv == NULL)
@@ -174,6 +172,9 @@ l_spawn(lua_State *L)
 		(void)close(master);
 		return luaL_error(L, "open slave: %s", strerror(errno));
 	}
+	/* Size the line discipline once a slave exists: a master with no
+	 * slave open keeps no window size on the BSDs. */
+	(void)ioctl(slave, TIOCSWINSZ, &ws);
 
 	pid = fork();
 	if (pid == 0) {
