@@ -79,10 +79,11 @@ struct ui {
 	uv_signal_t term; /* SIGTERM: exit the way /quit does */
 	uv_signal_t hup;  /* SIGHUP: the same */
 
-	WINDOW *txt;  /* scrolling transcript */
-	WINDOW *stat; /* status bar */
-	WINDOW *in;   /* input box (grows upward as text wraps) */
-	int in_h;     /* current input box height in rows */
+	SCREEN *screen; /* newterm's screen, so exit can delscreen it */
+	WINDOW *txt;    /* scrolling transcript */
+	WINDOW *stat;   /* status bar */
+	WINDOW *in;     /* input box (grows upward as text wraps) */
+	int in_h;       /* current input box height in rows */
 
 	/* Transcript source: an accumulating list of styled spans (text may
 	 * contain newlines; ST_ASSIST spans hold raw markdown). */

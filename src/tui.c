@@ -3906,7 +3906,14 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	    u->agent, loop, lcfg, cb_mcp_status, u, &u->mcp_client_count);
 	clm_cli_wait_mcp_ready(loop, CLM_MCP_READY_WAIT_MS);
 
-	initscr();
+	/* newterm, not initscr: it hands back the screen so the exit path can
+	 * delscreen it and leave nothing of curses outstanding. */
+	u->screen = newterm(NULL, stdout, stdin);
+	if (u->screen == NULL) {
+		fprintf(stderr, "error: cannot initialize the terminal\n");
+		return 1;
+	}
+	def_prog_mode();
 	/* cbreak still leaves terminal flow control enabled: on many terminals
 	 * Ctrl-S/Ctrl-Q are intercepted and, more importantly for editing, the
 	 * configured delayed-suspend character can swallow Ctrl-Y before curses
@@ -4035,10 +4042,16 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 
 	uv_run(loop, UV_RUN_DEFAULT);
 
-	/* Leave the terminal as we found it. */
+	/* Leave the terminal as we found it, and curses with nothing of ours
+	 * still allocated: the windows first, then the screen behind them. */
 	fputs("\033[?2004l", stdout);
 	fflush(stdout);
+	delwin(u->txt);
+	delwin(u->stat);
+	delwin(u->in);
 	endwin();
+	delscreen(u->screen);
+	u->screen = NULL;
 	/* Print the resume handle now that the terminal is sane again; a
 	 * session nothing was said in is deleted instead. */
 	if (u->session != NULL) {
@@ -4106,6 +4119,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	free(u->input);
 	free(u->kill);
 	free(u->hist_saved);
+	free(u->model);
+	free(u->agent_name);
+	free(u->provider_name);
 	free(u);
 
 	return 0;
