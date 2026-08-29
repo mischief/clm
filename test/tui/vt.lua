@@ -606,7 +606,7 @@ local function utf8_at(s, i)
 	elseif b >= 0xf0 and b <= 0xf4 then
 		need, cp = 3, b & 0x07
 	else
-		return 0xfffd, 1 -- stray continuation or overlong lead
+		return 0xfffd, 1, true -- stray continuation or overlong lead
 	end
 	if i + need > #s then
 		return nil, need + 1
@@ -614,7 +614,7 @@ local function utf8_at(s, i)
 	for k = 1, need do
 		local c = s:byte(i + k)
 		if c < 0x80 or c > 0xbf then
-			return 0xfffd, 1
+			return 0xfffd, 1, true
 		end
 		cp = (cp << 6) | (c & 0x3f)
 	end
@@ -627,12 +627,14 @@ function Screen:feed(data)
 	local i = 1
 	local n = #s
 	while i <= n do
-		local cp, len = utf8_at(s, i)
+		local cp, len, bad = utf8_at(s, i)
 		if cp == nil then
 			self.pending = s:sub(i)
 			return
 		end
-		local ch = s:sub(i, i + len - 1)
+		-- A byte that decodes to nothing stands in as U+FFFD, so a
+		-- cell always holds text the caller can decode again.
+		local ch = bad and "\u{fffd}" or s:sub(i, i + len - 1)
 		i = i + len
 		self:consume(cp, ch)
 	end
