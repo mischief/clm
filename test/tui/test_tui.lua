@@ -1134,9 +1134,11 @@ tests.peers = function(url)
 	t:wait_for("online", 8)
 	check(count_socks() > 0, "peers: the instance bound a socket")
 	sys.kill(t.pid, sys.SIGTERM)
+	-- Keep reading: a pty whose output nobody drains blocks the writer,
+	-- and a blocked clm never reaches its exit path.
 	local deadline = sys.now() + 5
 	while sys.now() < deadline and count_socks() > 0 do
-		sys.sleep(0.1)
+		t:pump(0.1)
 	end
 	check(count_socks() == 0, "peers: SIGTERM removes the socket")
 	t:close()
