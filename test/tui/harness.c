@@ -35,6 +35,46 @@ int clm_lua_json_open(lua_State *L);
 
 static struct mock_server *server;
 
+/*
+ * A pty master with no slave open reads EIO on BSD, which a poll-and-read
+ * loop cannot tell from end of file. The parent keeps its own slave fd for
+ * the life of the master, so the only EIO left is a real hangup.
+ */
+#define MAX_PTYS 64
+static struct {
+	int master;
+	int slave;
+} pty_slaves[MAX_PTYS];
+
+static void
+pty_keep_slave(int master, int slave)
+{
+	size_t i;
+
+	for (i = 0; i < MAX_PTYS; i++) {
+		if (pty_slaves[i].master == 0) {
+			pty_slaves[i].master = master;
+			pty_slaves[i].slave = slave;
+			return;
+		}
+	}
+	(void)close(slave);
+}
+
+static void
+pty_drop_slave(int master)
+{
+	size_t i;
+
+	for (i = 0; i < MAX_PTYS; i++) {
+		if (pty_slaves[i].master == master) {
+			(void)close(pty_slaves[i].slave);
+			pty_slaves[i].master = 0;
+			return;
+		}
+	}
+}
+
 /* Copy a Lua array of strings into a NULL-terminated argv. */
 static char **
 argv_from_table(lua_State *L, int idx)
@@ -129,9 +169,16 @@ l_spawn(lua_State *L)
 	if (argv == NULL)
 		return luaL_error(L, "out of memory");
 
+	slave = open(name, O_RDWR | O_NOCTTY);
+	if (slave < 0) {
+		(void)close(master);
+		return luaL_error(L, "open slave: %s", strerror(errno));
+	}
+
 	pid = fork();
 	if (pid == 0) {
 		(void)setsid();
+		(void)close(slave);
 		slave = open(name, O_RDWR);
 		if (slave < 0)
 			_exit(127);
@@ -152,9 +199,11 @@ l_spawn(lua_State *L)
 	free(argv);
 	free_env(env, nenv);
 	if (pid < 0) {
+		(void)close(slave);
 		(void)close(master);
 		return luaL_error(L, "fork: %s", strerror(errno));
 	}
+	pty_keep_slave(master, slave);
 	lua_pushinteger(L, master);
 	lua_pushinteger(L, pid);
 	return 2;
@@ -249,7 +298,10 @@ l_wait(lua_State *L)
 static int
 l_closefd(lua_State *L)
 {
-	(void)close((int)luaL_checkinteger(L, 1));
+	int fd = (int)luaL_checkinteger(L, 1);
+
+	pty_drop_slave(fd);
+	(void)close(fd);
 	return 0;
 }
 
