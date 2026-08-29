@@ -9,6 +9,8 @@
 #include <strings.h>
 #include <unistd.h>
 
+#include <dirent.h>
+
 #include <arpa/inet.h>
 
 #include <cjson/cJSON.h>
@@ -878,6 +880,28 @@ mock_request_log(struct mock_server *s, const char *path)
 	uv_mutex_unlock(&s->lock);
 }
 
+/* The scratch directory only ever holds the marker files the "manytest"
+ * calls touch, so one pass over it is enough. */
+static void
+scratch_clean(const char *path)
+{
+	DIR *d = opendir(path);
+	struct dirent *e;
+
+	if (d == NULL)
+		return;
+	while ((e = readdir(d)) != NULL) {
+		char child[512];
+
+		if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+			continue;
+		(void)snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+		(void)unlink(child);
+	}
+	(void)closedir(d);
+	(void)rmdir(path);
+}
+
 void
 mock_stop(struct mock_server *s)
 {
@@ -889,5 +913,6 @@ mock_stop(struct mock_server *s)
 	}
 	uv_loop_close(&s->loop);
 	uv_mutex_destroy(&s->lock);
+	scratch_clean(s->scratch);
 	free(s);
 }
