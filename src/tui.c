@@ -157,6 +157,9 @@ buf_reserve(char **buf, size_t *cap, size_t need)
 	return true;
 }
 
+/* What the input buffer keeps after a submit; anything larger is returned. */
+#define INPUT_KEEP_BYTES 4096
+
 bool
 ui_input_reserve(struct ui *u, size_t need)
 {
@@ -3097,6 +3100,17 @@ submit_line(struct ui *u)
 
 	u->input_len = 0;
 	u->input_pos = 0;
+	/* A pasted line can be large, and the buffer only ever grows. Give
+	 * an oversized one back once the line is on its way. */
+	if (u->input_cap > INPUT_KEEP_BYTES) {
+		char *p = realloc(u->input, INPUT_KEEP_BYTES);
+
+		if (p != NULL) {
+			u->input = p;
+			u->input_cap = INPUT_KEEP_BYTES;
+			u->input[0] = '\0';
+		}
+	}
 	u->hist_pos = u->nhist; /* reset recall to the live line */
 	free(u->hist_saved);
 	u->hist_saved = NULL;
