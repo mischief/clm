@@ -1330,9 +1330,10 @@ clm_agent_compact(struct clm_agent *agent)
 	body_str = cJSON_PrintUnformatted(req);
 	if (body_str == NULL)
 		return -ENOMEM;
-	body = strdup(body_str);
-	if (body == NULL)
-		return -ENOMEM;
+	/* Take the printed body rather than copying it: at this point it
+	 * holds the whole conversation. */
+	body = body_str;
+	body_str = NULL;
 
 	/* curl borrows the POST body (CURLOPT_POSTFIELDS), so it must outlive
 	 * the request; stash it and free it when the request completes. */
@@ -2852,15 +2853,10 @@ clm_agent_start_turn(struct clm_agent *agent)
 		return;
 	}
 
-	body = strdup(body_str);
-	if (body == NULL) {
-		clm_agent_set_error(agent, "out of memory");
-		agent->state = CLM_STATE_ERROR;
-		if (agent->cb_on_state)
-			agent->cb_on_state(agent->state, agent->cb_user);
-		agent_turn_done(agent, -ENOMEM);
-		return;
-	}
+	/* Take the printed body rather than copying it: at this point it
+	 * holds the whole conversation. */
+	body = body_str;
+	body_str = NULL;
 
 	turn = calloc(1, sizeof(struct clm_async_turn));
 	if (turn == NULL) {
