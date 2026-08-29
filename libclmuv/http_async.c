@@ -360,6 +360,47 @@ http_timer_expired(uv_timer_t *handle)
 	http_reap_done(mux, 0);
 }
 
+/*
+ * libcurl's process-wide state. Left implicit, it is initialized by the first
+ * easy handle and never torn down, stranding the TLS library's provider and
+ * certificate state at exit. Refcounted: a process can hold several muxes,
+ * and the last one out does the cleanup.
+ */
+static uv_mutex_t curl_global_lock;
+static uv_once_t curl_global_once = UV_ONCE_INIT;
+static size_t curl_global_users;
+
+static void
+curl_global_lock_init(void)
+{
+	(void)uv_mutex_init(&curl_global_lock);
+}
+
+static int
+curl_global_ref(void)
+{
+	int rc = 0;
+
+	uv_once(&curl_global_once, curl_global_lock_init);
+	uv_mutex_lock(&curl_global_lock);
+	if (curl_global_users == 0 &&
+	    curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
+		rc = -EIO;
+	if (rc == 0)
+		curl_global_users++;
+	uv_mutex_unlock(&curl_global_lock);
+	return rc;
+}
+
+static void
+curl_global_unref(void)
+{
+	uv_mutex_lock(&curl_global_lock);
+	if (curl_global_users > 0 && --curl_global_users == 0)
+		curl_global_cleanup();
+	uv_mutex_unlock(&curl_global_lock);
+}
+
 struct clm_http_mux *
 clm_http_mux_new(uv_loop_t *loop)
 {
@@ -368,13 +409,19 @@ clm_http_mux_new(uv_loop_t *loop)
 	if (loop == NULL)
 		return NULL;
 
-	mux = calloc(1, sizeof(*mux));
-	if (mux == NULL)
+	if (curl_global_ref() < 0)
 		return NULL;
+
+	mux = calloc(1, sizeof(*mux));
+	if (mux == NULL) {
+		curl_global_unref();
+		return NULL;
+	}
 
 	mux->multi_handle = curl_multi_init();
 	if (mux->multi_handle == NULL) {
 		free(mux);
+		curl_global_unref();
 		return NULL;
 	}
 
@@ -398,6 +445,7 @@ mux_free_now(uv_handle_t *handle)
 	assert(mux->live_requests == 0);
 	curl_multi_cleanup(mux->multi_handle);
 	free(mux);
+	curl_global_unref();
 }
 
 void
@@ -429,6 +477,7 @@ clm_http_mux_free(struct clm_http_mux *mux)
 	 * loop for this mux, free it immediately. */
 	curl_multi_cleanup(mux->multi_handle);
 	free(mux);
+	curl_global_unref();
 }
 
 int

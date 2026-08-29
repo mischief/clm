@@ -64,8 +64,8 @@ test_drain(void *arg)
 	CHECK(clm_host_uv_new(&loop, &host) == 0, "clm_host_uv_new");
 	CHECK(clm_agent_new(&cfg, host, NULL, NULL, &agent) == 0,
 	    "clm_agent_new");
-	CHECK(clm_peer_start(agent, &loop, "draintest", "t", "m", NULL, NULL,
-	          &peer) == 0,
+	CHECK(clm_peer_start(
+	          agent, &loop, "draintest", "t", "m", NULL, NULL, &peer) == 0,
 	    "clm_peer_start");
 
 	/* cat speaks no MCP, so the handshake never completes -- what matters
@@ -73,8 +73,8 @@ test_drain(void *arg)
 	mcp_cfg.name = "drain";
 	mcp_cfg.transport = CLM_MCP_STDIO;
 	mcp_cfg.argv = argv;
-	CHECK(clm_mcp_connect(agent, &loop, &mcp_cfg, NULL, NULL, NULL,
-	          &mcp) == 0,
+	CHECK(clm_mcp_connect(agent, &loop, &mcp_cfg, NULL, NULL, NULL, &mcp) ==
+	        0,
 	    "clm_mcp_connect");
 
 	for (i = 0; i < 10; i++)

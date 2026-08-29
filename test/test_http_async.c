@@ -53,9 +53,54 @@ test_inline_completion(void *arg)
 	return 0;
 }
 
+/*
+ * libcurl's global state is refcounted across muxes. Freeing one mux while
+ * another lives must not tear it down, and a mux created after the last one
+ * went away must find it initialized again.
+ */
+static int
+test_overlapping_muxes(void *arg)
+{
+	struct clm_http_mux *a, *b, *c;
+	uv_loop_t loop;
+
+	(void)arg;
+	callbacks = 0;
+	CHECK(uv_loop_init(&loop) == 0, "loop init");
+	a = clm_http_mux_new(&loop);
+	b = clm_http_mux_new(&loop);
+	CHECK(a != NULL && b != NULL, "two muxes");
+	if (a == NULL || b == NULL)
+		return 1;
+
+	clm_http_mux_free(a);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(clm_http_async_post(b, "://invalid", NULL, NULL, NULL, on_success,
+	          on_error, NULL, NULL, NULL, NULL) == 0,
+	    "the surviving mux still works");
+	uv_run(&loop, UV_RUN_DEFAULT);
+	clm_http_mux_free(b);
+	uv_run(&loop, UV_RUN_DEFAULT);
+
+	c = clm_http_mux_new(&loop);
+	CHECK(c != NULL, "a mux after the last one is freed");
+	if (c != NULL) {
+		CHECK(clm_http_async_post(c, "://invalid", NULL, NULL, NULL,
+		          on_success, on_error, NULL, NULL, NULL, NULL) == 0,
+		    "and it still works");
+		uv_run(&loop, UV_RUN_DEFAULT);
+		clm_http_mux_free(c);
+		uv_run(&loop, UV_RUN_DEFAULT);
+	}
+	CHECK(callbacks == 2, "both requests completed");
+	CHECK(uv_loop_close(&loop) == 0, "loop close");
+	return 0;
+}
+
 int
 main(void)
 {
 	TAP_ADD("inline completion", test_inline_completion, NULL);
+	TAP_ADD("overlapping muxes", test_overlapping_muxes, NULL);
 	return tap_run();
 }
