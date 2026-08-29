@@ -86,7 +86,9 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 			return;
 		memcpy(p + oldlen, text, addlen + 1);
 		u->segs[u->nsegs - 1].text = p;
-		if (has_nl)
+		/* A moved span leaves the rendered runs that borrow it
+		 * pointing at freed memory, so force a rebuild. */
+		if (has_nl || p != old)
 			u->gen++;
 		u->dirty = true;
 		return;
@@ -1515,22 +1517,32 @@ relayout(struct ui *u, bool force)
 	return true;
 }
 
+/* Make room for one more rendered run. Returns false when it cannot. */
+static bool
+rseg_reserve(struct ui *u)
+{
+	size_t ncap;
+	struct rseg *p;
+
+	if (u->nrsegs < u->cap_rsegs)
+		return true;
+	ncap = u->cap_rsegs ? u->cap_rsegs * 2 : 32;
+	p = realloc(u->rsegs, ncap * sizeof(*p));
+	if (p == NULL)
+		return false;
+	u->rsegs = p;
+	u->cap_rsegs = ncap;
+	return true;
+}
+
 /* Append a rendered run to the cache, copying len bytes of text. */
 static void
 rseg_push(struct ui *u, int attr, const char *text, size_t len)
 {
 	char *dup;
 
-	if (len == 0)
+	if (len == 0 || !rseg_reserve(u))
 		return;
-	if (u->nrsegs == u->cap_rsegs) {
-		size_t ncap = u->cap_rsegs ? u->cap_rsegs * 2 : 32;
-		struct rseg *p = realloc(u->rsegs, ncap * sizeof(*p));
-		if (p == NULL)
-			return;
-		u->rsegs = p;
-		u->cap_rsegs = ncap;
-	}
 	dup = malloc(len + 1);
 	if (dup == NULL)
 		return;
@@ -1538,6 +1550,23 @@ rseg_push(struct ui *u, int attr, const char *text, size_t len)
 	dup[len] = '\0';
 	u->rsegs[u->nrsegs].attr = attr;
 	u->rsegs[u->nrsegs].text = dup;
+	u->rsegs[u->nrsegs].owned = true;
+	u->nrsegs++;
+}
+
+/*
+ * Append a run that points straight at a source span, for text that renders
+ * verbatim. The span outlives the run: ui_push bumps gen whenever a span
+ * moves or goes away, which rebuilds the cache before the next draw.
+ */
+static void
+rseg_push_ref(struct ui *u, int attr, char *text)
+{
+	if (text == NULL || *text == '\0' || !rseg_reserve(u))
+		return;
+	u->rsegs[u->nrsegs].attr = attr;
+	u->rsegs[u->nrsegs].text = text;
+	u->rsegs[u->nrsegs].owned = false;
 	u->nrsegs++;
 }
 
@@ -1698,8 +1727,10 @@ rebuild_render(struct ui *u, int w)
 	int agg[4] = {0, 0, 0, 0};
 	bool aggregating = false;
 
-	for (size_t i = 0; i < u->nrsegs; i++)
-		free(u->rsegs[i].text);
+	for (size_t i = 0; i < u->nrsegs; i++) {
+		if (u->rsegs[i].owned)
+			free(u->rsegs[i].text);
+	}
 	u->nrsegs = 0;
 	u->wrap_valid = false; /* rsegs are about to change shape */
 
@@ -1775,8 +1806,7 @@ rebuild_render(struct ui *u, int w)
 		else if (g->style == ST_TOOL_OUT)
 			push_tool_output(u, g->text, i == last_tool_out);
 		else
-			rseg_push(
-			    u, seg_attr(u, g->style), g->text, strlen(g->text));
+			rseg_push_ref(u, seg_attr(u, g->style), g->text);
 	}
 	if (aggregating)
 		push_collapsed_summary(u, agg);
@@ -2017,8 +2047,10 @@ draw_transcript(struct ui *u)
 	/* Drop the transient queue tail appended above -- it must not survive
 	 * into the next frame's rsegs count (rebuild_render's free loop, or
 	 * this same overlay run again, would otherwise double up on it). */
-	for (size_t i = base; i < u->nrsegs; i++)
-		free(u->rsegs[i].text);
+	for (size_t i = base; i < u->nrsegs; i++) {
+		if (u->rsegs[i].owned)
+			free(u->rsegs[i].text);
+	}
 	u->nrsegs = base;
 }
 
@@ -4125,8 +4157,10 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		free(u->segs[i].text);
 	free(u->segs);
 	free(u->perm_queue);
-	for (size_t i = 0; i < u->nrsegs; i++)
-		free(u->rsegs[i].text);
+	for (size_t i = 0; i < u->nrsegs; i++) {
+		if (u->rsegs[i].owned)
+			free(u->rsegs[i].text);
+	}
 	free(u->rsegs);
 	free(u->wrap_row);
 	free(u->wrap_col);

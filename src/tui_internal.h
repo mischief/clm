@@ -59,6 +59,9 @@ struct seg {
 struct rseg {
 	int attr;
 	char *text;
+	/* False when text points into the source span it was built from,
+	 * which is the common case for anything rendered verbatim. */
+	bool owned;
 };
 
 struct ui {
