@@ -739,8 +739,10 @@ clm_tool_call_to_json(const struct clm_tool_call *tc)
 		    func, "name", cJSON_CreateString(tc->name));
 	}
 	if (tc->args) {
+		/* Borrowed, not copied: tool arguments can be large and the
+		 * tree never outlives the message it came from. */
 		cJSON_AddItemToObject(
-		    func, "arguments", cJSON_CreateString(tc->args));
+		    func, "arguments", cJSON_CreateStringReference(tc->args));
 	}
 	cJSON_AddItemToObject(tool_call, "function", func);
 
@@ -796,7 +798,12 @@ clm_message_to_json(
 			free_plain = true;
 		}
 
-		cJSON *jcontent = cJSON_CreateString(plain);
+		/* Content the message already holds plain is borrowed; a
+		 * decompressed copy has to be copied, since it goes away
+		 * with this scope. */
+		cJSON *jcontent = free_plain
+		    ? cJSON_CreateString(plain)
+		    : cJSON_CreateStringReference(plain);
 		if (free_plain)
 			free(plain);
 		if (jcontent == NULL) {

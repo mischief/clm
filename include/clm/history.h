@@ -182,6 +182,9 @@ CLM_API int clm_history_compact_within(struct clm_history *h,
  * "messages" field of a chat/completions request. Caller owns the returned
  * object (cJSON_Delete). Returns NULL on failure.
  *
+ * The tree borrows the history's own strings, so it must not outlive the
+ * history it came from, and nothing may modify the strings it points at.
+ *
  * cz, when non-NULL, must be the same compressor used to store any
  * compressed messages -- it decompresses content marked content_compressed
  * before serializing. Pass NULL if no compressor was ever installed.
