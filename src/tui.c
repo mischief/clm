@@ -1503,6 +1503,9 @@ relayout(struct ui *u, bool force)
 	delwin(u->in);
 	u->stat = newwin(1, w, txt_h, 0);
 	u->in = newwin(need, w, txt_h + 1, 0);
+	/* Rows change hands here, and curses' idea of the physical screen
+	 * no longer matches what the old windows left in the gutters. */
+	clearok(curscr, TRUE);
 	scrollok(u->in, TRUE);
 	keypad(u->in, TRUE);
 	nodelay(u->in, TRUE);
