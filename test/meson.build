@@ -10,8 +10,11 @@
 # Layered on top of clm_hardening_args so tests are subject to the same
 # -Werror + extra-warning set as production code; only -Wframe-larger-than
 # is relaxed.
+# Probe the "=" form: meson before 1.10 tests a -Wno-X flag by pairing it
+# with a bare -Wframe-larger-than, which GCC rejects, so the suppression is
+# silently dropped and the test targets keep the limit.
 test_cflags = []
-if cc.has_argument('-Wno-frame-larger-than')
+if cc.has_argument('-Wframe-larger-than=2048')
   test_cflags += ['-Wno-frame-larger-than']
 endif
 test_hardening_args = clm_hardening_args + test_cflags
