@@ -91,7 +91,7 @@ on_timeout(uv_timer_t *timer)
 static int
 server_main(void)
 {
-	static char line[4096];
+	char line[4096];
 
 	if (fgets(line, sizeof(line), stdin) == NULL)
 		return 1;
