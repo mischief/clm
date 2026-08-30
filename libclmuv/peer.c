@@ -288,7 +288,7 @@ send_line(const char *path, const char *line, char *err, size_t errlen)
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sun_family = AF_UNIX;
-	(void)snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", path);
+	memcpy(sa.sun_path, path, strlen(path) + 1);
 
 	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
 		if (errno != EINPROGRESS) {
@@ -372,7 +372,7 @@ peer_alive(const char *dir, const char *id)
 		return false;
 	memset(&sa, 0, sizeof(sa));
 	sa.sun_family = AF_UNIX;
-	(void)snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", sock);
+	memcpy(sa.sun_path, sock, strlen(sock) + 1);
 	ok = connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == 0;
 	(void)close(fd);
 	if (!ok) {
