@@ -1551,7 +1551,7 @@ test_compact_within_budget(void)
 {
 	struct clm_history h;
 	struct clm_message *m;
-	char big[4096];
+	static char big[4096];
 	int i, kept;
 	size_t before_bytes;
 
@@ -1561,7 +1561,7 @@ test_compact_within_budget(void)
 	clm_history_init(&h);
 	clm_history_add_system(&h, "sys", NULL);
 	for (i = 0; i < 6; i++) {
-		char answer[2048];
+		static char answer[2048];
 
 		memset(answer, 'a' + i, sizeof(answer) - 1);
 		answer[sizeof(answer) - 1] = '\0';

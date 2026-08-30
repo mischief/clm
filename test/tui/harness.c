@@ -217,7 +217,7 @@ l_read(lua_State *L)
 {
 	int fd = (int)luaL_checkinteger(L, 1);
 	int timeout = (int)luaL_checkinteger(L, 2);
-	char buf[READ_CHUNK];
+	static char buf[READ_CHUNK];
 	struct pollfd p;
 	ssize_t n;
 
@@ -477,7 +477,7 @@ l_run(lua_State *L)
 	(void)close(fds[1]);
 	luaL_buffinit(L, &out);
 	for (;;) {
-		char buf[4096];
+		static char buf[4096];
 		ssize_t n = read(fds[0], buf, sizeof(buf));
 
 		if (n <= 0)
