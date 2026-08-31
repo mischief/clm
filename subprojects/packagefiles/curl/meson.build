@@ -146,11 +146,21 @@ if host_machine.system() == 'sunos'
   sys_deps += cc.find_library('nsl', required: false)
 endif
 
+# Optional, not required: an SDK-less cross toolchain (zig cc targeting
+# macOS) has libSystem stubs but no frameworks. The only framework user
+# in this build is the SCDynamicStoreCopyProxies warm-up call in
+# lib/macos.c, and the overlay of that file compiles it out when the
+# SystemConfiguration header is absent. clm-local change, tracked in
+# subprojects/packagefiles/curl/ -- see subprojects/curl.wrap.
 if host_machine.system() == 'darwin'
-  sys_deps += dependency(
+  apple_frameworks_dep = dependency(
     'appleframeworks',
     modules: ['CoreFoundation', 'SystemConfiguration'],
+    required: false,
   )
+  if apple_frameworks_dep.found()
+    sys_deps += apple_frameworks_dep
+  endif
 endif
 
 threads_dep = dependency(

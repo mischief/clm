@@ -1,0 +1,45 @@
+# Cross file: macOS arm64 binary via zig cc.
+#
+# zig ships the macOS libc headers and libSystem .tbd stubs, so this needs
+# no Apple SDK -- only `zig` on PATH. No frameworks come with that, so
+# curl must build against the openssl wrap, not SecureTransport. Every
+# third-party dependency comes from the wraps in subprojects/, so pair
+# this with --force-fallback-for and -Dstatic=true:
+#
+#   meson setup build-macos --cross-file cross/aarch64-macos-zig \
+#     -Dstatic=true -Dtests=false --default-library=static --prefer-static \
+#     --force-fallback-for=curl,libuv,cjson,md4c,openssl
+#
+# Unlike the musl cross file there is no `-static` link arg: macOS has no
+# static libSystem, so the executable always links libSystem dynamically.
+# zig's lld applies an ad-hoc code signature, which arm64 macOS requires.
+#
+[binaries]
+c = ['zig', 'cc', '-target', 'aarch64-macos']
+cpp = ['zig', 'c++', '-target', 'aarch64-macos']
+ar = '@DIRNAME@/zig-ar'
+ranlib = ['zig', 'ranlib']
+# Mach-O; llvm-strip understands it, GNU strip does not.
+strip = '/usr/lib/llvm/21/bin/llvm-strip'
+# The build machine's own pkg-config, pointed at the target sysroot's .pc
+# files by pkg_config_libdir below.
+pkg-config = 'pkg-config'
+
+[properties]
+# ncursesw has no WrapDB wrap, so the TUI's one hard dependency must be
+# built for this target by hand into a sysroot. Adjust both paths below
+# for a different sysroot location. See "Static builds" in README.md.
+sys_root = '/home/mischief/aarch64-macos-sysroot'
+pkg_config_libdir = '/home/mischief/aarch64-macos-sysroot/lib/pkgconfig'
+
+[built-in options]
+# zig ships no CommonCrypto framework header, so openssl's Apple
+# CCRandomGenerateBytes seeding cannot build; this falls it back to
+# /dev/urandom, which macOS provides.
+c_args = ['-DOPENSSL_NO_APPLE_CRYPTO_RANDOM']
+
+[host_machine]
+system = 'darwin'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
