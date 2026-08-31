@@ -7,6 +7,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 
 #include <dirent.h>
@@ -518,12 +519,10 @@ static int
 open_sys(lua_State *L)
 {
 	luaL_newlib(L, sys_funcs);
-	/* Lets driver.lua pick a UTF-8 locale name the host actually has. */
-#ifdef __APPLE__
-	lua_pushliteral(L, "darwin");
-#else
-	lua_pushliteral(L, "other");
-#endif
+	/* uname sysname ("Linux", "Darwin", "OpenBSD", ...); lets
+	 * driver.lua pick a UTF-8 locale name the host actually has. */
+	struct utsname uts;
+	lua_pushstring(L, uname(&uts) == 0 ? uts.sysname : "unknown");
 	lua_setfield(L, -2, "os");
 	lua_pushinteger(L, SIGTERM);
 	lua_setfield(L, -2, "SIGTERM");
