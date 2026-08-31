@@ -1,0 +1,33 @@
+name: macos
+
+on:
+  push:
+    branches: [osx, osx-ci]
+  workflow_dispatch:
+
+jobs:
+  test:
+    # macos-14 and newer GitHub runners are Apple Silicon (arm64).
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: brew install meson ninja pkgconf libuv cjson md4c lua curl ncurses
+
+      - name: setup
+        # ncurses and curl are keg-only in Homebrew: their .pc files are
+        # not in the default pkg-config search path.
+        run: |
+          export PKG_CONFIG_PATH="$(brew --prefix ncurses)/lib/pkgconfig:$(brew --prefix curl)/lib/pkgconfig"
+          meson setup build
+
+      - name: compile
+        run: meson compile -C build
+
+      - name: test
+        run: meson test -C build
+
+      - name: logs
+        if: failure()
+        run: cat build/meson-logs/testlog.txt build/meson-logs/meson-log.txt
