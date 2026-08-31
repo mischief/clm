@@ -55,8 +55,8 @@ function M.new(binary, url, opts)
 		TERM = "xterm-256color",
 		-- The transcript draws box characters, so the tui needs a
 		-- utf-8 locale; a login shell that sets none would give it
-		-- the C locale and single-byte output.
-		LC_ALL = "C.UTF-8",
+		-- the C locale and single-byte output. macOS has no C.UTF-8.
+		LC_ALL = sys.os == "darwin" and "en_US.UTF-8" or "C.UTF-8",
 		-- The in-tree test config, so agent profiles resolve.
 		XDG_CONFIG_HOME = M.TEST_DIR .. "/config",
 		-- Session logs and scratch directories go to a per-run temp

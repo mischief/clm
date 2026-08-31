@@ -518,6 +518,13 @@ static int
 open_sys(lua_State *L)
 {
 	luaL_newlib(L, sys_funcs);
+	/* Lets driver.lua pick a UTF-8 locale name the host actually has. */
+#ifdef __APPLE__
+	lua_pushliteral(L, "darwin");
+#else
+	lua_pushliteral(L, "other");
+#endif
+	lua_setfield(L, -2, "os");
 	lua_pushinteger(L, SIGTERM);
 	lua_setfield(L, -2, "SIGTERM");
 	lua_pushinteger(L, SIGWINCH);
