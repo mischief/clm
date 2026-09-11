@@ -806,59 +806,104 @@ lua_clm_tool_register(lua_State *L)
  * continuation simply performs the operation it was going to perform, so
  * the authorized path and the unauthorized one run the same code.
  */
-struct cap_park {
+struct clm_lua_cap_park {
 	struct clm_lua_pending pending;
 	struct clm_lua_plugin *plugin;
 	lua_State *co;
 	lua_State *main_L;
 	struct clm_tool_invocation *inv;
-	enum clm_lua_cap cap;
 	const char *label;
-	char *path;    /* resolved */
-	char *content; /* write only, owned */
-	size_t len;
+
+	/* The caller's payload: whatever it needs to finish the call it was
+	 * making. Opaque here so the file bindings and the http bindings can
+	 * share one park without one of them knowing about the other. */
+	void *ud;
+	void (*ud_free)(void *);
+
 	bool allow;
 	bool orphaned; /* the plugin went away while we were parked */
 };
 
+/* What a file capability needs to remember across the prompt. */
+struct cap_file_call {
+	enum clm_lua_cap cap;
+	char *path;    /* resolved */
+	char *content; /* write only, owned */
+	size_t len;
+};
+
 static void
-cap_park_free(struct cap_park *pk)
+cap_file_call_free(void *p)
 {
-	free(pk->path);
-	free(pk->content);
+	struct cap_file_call *fc = p;
+
+	if (fc == NULL)
+		return;
+	free(fc->path);
+	free(fc->content);
+	free(fc);
+}
+
+void
+clm_lua_cap_park_free(struct clm_lua_cap_park *pk)
+{
+	if (pk == NULL)
+		return;
+	if (pk->ud_free != NULL)
+		pk->ud_free(pk->ud);
 	free(pk);
+}
+
+bool
+clm_lua_cap_park_allowed(const struct clm_lua_cap_park *pk)
+{
+	return pk != NULL && pk->allow;
+}
+
+void *
+clm_lua_cap_park_ud(const struct clm_lua_cap_park *pk)
+{
+	return pk != NULL ? pk->ud : NULL;
+}
+
+const char *
+clm_lua_cap_park_label(const struct clm_lua_cap_park *pk)
+{
+	return pk != NULL ? pk->label : "?";
 }
 
 static int do_read_file(lua_State *L, const char *allowed);
 static int do_write_file(lua_State *L, const char *allowed,
     const char *content, size_t len);
 
-/* Perform the call now that it is authorized. */
+/* Perform a file call now that it is authorized. */
 static int
-cap_perform(lua_State *L, struct cap_park *pk)
+cap_file_perform(lua_State *L, struct cap_file_call *fc)
 {
-	if (pk->cap == CLM_LUA_CAP_WRITE_FILE)
-		return do_write_file(L, pk->path, pk->content, pk->len);
-	return do_read_file(L, pk->path);
+	if (fc->cap == CLM_LUA_CAP_WRITE_FILE)
+		return do_write_file(L, fc->path, fc->content, fc->len);
+	return do_read_file(L, fc->path);
 }
 
-/* Resumed after the prompt was answered. */
+/* Resumed after a file prompt was answered. */
 static int
-cap_gate_k(lua_State *L, int status, lua_KContext ctx)
+cap_file_k(lua_State *L, int status, lua_KContext ctx)
 {
-	struct cap_park *pk = (struct cap_park *)ctx;
+	struct clm_lua_cap_park *pk = (struct clm_lua_cap_park *)ctx;
+	struct cap_file_call *fc = pk->ud;
 	int nres;
 
 	(void)status;
 	if (!pk->allow) {
 		char label[64];
 
+		/* Copy before freeing: the error message outlives the park. */
 		(void)snprintf(label, sizeof(label), "%s", pk->label);
-		cap_park_free(pk);
+		clm_lua_cap_park_free(pk);
 		return luaL_error(L, "%s: denied by user", label);
 	}
-	nres = cap_perform(L, pk);
-	cap_park_free(pk);
+	nres = cap_file_perform(L, fc);
+	clm_lua_cap_park_free(pk);
 	return nres;
 }
 
@@ -866,7 +911,7 @@ cap_gate_k(lua_State *L, int status, lua_KContext ctx)
 static void
 cap_perm_done(bool allow, void *user)
 {
-	struct cap_park *pk = user;
+	struct clm_lua_cap_park *pk = user;
 	struct clm_lua_plugin *plugin;
 	lua_State *co, *main_L;
 	int rc, nres = 0;
@@ -874,7 +919,7 @@ cap_perm_done(bool allow, void *user)
 	if (pk->orphaned) {
 		/* Nothing left to resume into: the plugin was torn down while
 		 * this prompt was on screen. */
-		cap_park_free(pk);
+		clm_lua_cap_park_free(pk);
 		return;
 	}
 
@@ -884,13 +929,13 @@ cap_perm_done(bool allow, void *user)
 	main_L = pk->main_L;
 
 	if (plugin == NULL || co == NULL || main_L == NULL) {
-		cap_park_free(pk);
+		clm_lua_cap_park_free(pk);
 		return;
 	}
 	if (lua_status(co) != LUA_YIELD) {
 		clm_debug("lua cap: coroutine not yielded (status=%d)",
 		    lua_status(co));
-		cap_park_free(pk);
+		clm_lua_cap_park_free(pk);
 		return;
 	}
 
@@ -919,7 +964,7 @@ cap_perm_done(bool allow, void *user)
 static void
 cap_park_teardown(struct clm_lua_pending *pending)
 {
-	struct cap_park *pk = (struct cap_park *)pending;
+	struct clm_lua_cap_park *pk = (struct clm_lua_cap_park *)pending;
 
 	/*
 	 * The permission request is owned by the core and may still be on
@@ -941,11 +986,109 @@ cap_park_teardown(struct clm_lua_pending *pending)
  * human could still authorize it.
  */
 /*
- * label is both the prompt's title and part of the remembered key, so it is
- * the Lua API name ("clm.write_file") rather than the bare capability. The
- * core ships a built-in tool called write_file; a prompt that said only
- * that would not tell the user whether the model called the tool or a
- * plugin reached for the file itself.
+ * Ask the frontend to authorize something this plugin is not allowed to do
+ * by policy.
+ *
+ * On 1 the answer was already known and the caller proceeds immediately.
+ * On 0 the call is parked: *park is set and the caller must return
+ * lua_yieldk(L, 0, (lua_KContext)*park, k), and k runs once the answer
+ * arrives. Negative means refused or failed, with *why set.
+ *
+ * label is both the prompt's title and part of the remembered key, so it
+ * is the Lua API name ("clm.write_file") rather than the bare capability.
+ * The core ships a built-in tool called write_file; a prompt that said
+ * only that would not tell the user whether the model called the tool or
+ * a plugin reached for the file itself.
+ */
+int
+clm_lua_cap_ask(lua_State *L, struct clm_lua_plugin *plugin, const char *label,
+    const char *detail, void *ud, void (*ud_free)(void *),
+    struct clm_lua_cap_park **park, const char **why)
+{
+	struct clm_lua_cap_park *pk;
+	struct clm_agent *agent;
+	char key[512];
+	bool allow = false;
+	int r;
+
+	*park = NULL;
+	*why = NULL;
+
+	/*
+	 * Prompting means yielding, and only an invocation coroutine may
+	 * yield -- a load-time call has no coroutine under it and nobody
+	 * watching to answer. The policy already refuses capabilities during
+	 * load; this catches the nested-coroutine case.
+	 */
+	if (!clm_lua_is_invocation_thread(L)) {
+		*why = "cannot ask for permission from here";
+		return -EPERM;
+	}
+	agent = plugin->agent;
+	if (agent == NULL) {
+		*why = "no agent context";
+		return -EPERM;
+	}
+
+	pk = calloc(1, sizeof(*pk));
+	if (pk == NULL) {
+		*why = "out of memory";
+		return -ENOMEM;
+	}
+	pk->plugin = plugin;
+	pk->co = L;
+	pk->label = label;
+	pk->ud = ud;
+	pk->ud_free = ud_free;
+
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_main_L");
+	pk->main_L = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_inv");
+	pk->inv = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	/*
+	 * Remember an _ALWAYS answer per plugin and capability, not per
+	 * target: "yes, this plugin may write files" is a decision a user can
+	 * hold in their head, where a path-by-path list is not.
+	 */
+	(void)snprintf(key, sizeof(key), "lua:%s:%s",
+	    plugin->path ? plugin->path : "?", label);
+
+	if (clm_lua_pending_add(plugin, &pk->pending, cap_park_teardown) < 0) {
+		free(pk);
+		*why = "plugin is shutting down";
+		return -ESHUTDOWN;
+	}
+
+	r = clm_permission_request(agent, label, detail, key, cap_perm_done, pk,
+	    &allow);
+	if (r < 0) {
+		(void)clm_lua_pending_remove(&pk->pending);
+		free(pk);
+		*why = strerror(-r);
+		return r;
+	}
+	if (r == 1) {
+		/* Answered without parking -- a remembered grant, or no
+		 * policy wired at all. Nothing to wait for. */
+		(void)clm_lua_pending_remove(&pk->pending);
+		free(pk);
+		if (!allow) {
+			*why = "denied";
+			return -EACCES;
+		}
+		return 1;
+	}
+
+	*park = pk;
+	return 0;
+}
+
+/*
+ * Run a path capability past the policy, prompting if the policy says a
+ * human could still authorize it.
  */
 static int
 cap_gate(lua_State *L, enum clm_lua_cap cap, const char *label,
@@ -954,10 +1097,8 @@ cap_gate(lua_State *L, enum clm_lua_cap cap, const char *label,
 	struct clm_lua_plugin *plugin = clm_lua_plugin_current(L);
 	char *allowed = NULL;
 	const char *why = NULL;
-	struct cap_park *pk;
-	struct clm_agent *agent;
-	char key[512];
-	bool allow = false;
+	struct cap_file_call *fc;
+	struct clm_lua_cap_park *pk = NULL;
 	int r;
 
 	if (plugin == NULL)
@@ -980,89 +1121,47 @@ cap_gate(lua_State *L, enum clm_lua_cap cap, const char *label,
 		break;
 	}
 
-	/*
-	 * Prompting means yielding, and only an invocation coroutine may
-	 * yield -- a load-time call has no coroutine under it and nobody
-	 * watching to answer. The policy already refuses capabilities during
-	 * load; this catches the nested-coroutine case.
-	 */
-	if (!clm_lua_is_invocation_thread(L)) {
-		free(allowed);
-		return luaL_error(L,
-		    "%s: %s: %s, and cannot ask from here", label, path, why);
-	}
-
-	agent = plugin->agent;
-	if (agent == NULL) {
-		free(allowed);
-		return luaL_error(L, "%s: %s: %s", label, path, why);
-	}
-
-	pk = calloc(1, sizeof(*pk));
-	if (pk == NULL) {
+	fc = calloc(1, sizeof(*fc));
+	if (fc == NULL) {
 		free(allowed);
 		return luaL_error(L, "%s: out of memory", label);
 	}
-	pk->plugin = plugin;
-	pk->co = L;
-	pk->cap = cap;
-	pk->label = label;
-	pk->path = allowed;
+	fc->cap = cap;
+	fc->path = allowed;
 	if (content != NULL) {
 		/* Copy: the Lua string backing it can be collected while the
 		 * prompt is up. */
-		pk->content = malloc(len ? len : 1);
-		if (pk->content == NULL) {
-			cap_park_free(pk);
+		fc->content = malloc(len ? len : 1);
+		if (fc->content == NULL) {
+			cap_file_call_free(fc);
 			return luaL_error(L, "%s: out of memory", label);
 		}
-		memcpy(pk->content, content, len);
-		pk->len = len;
+		memcpy(fc->content, content, len);
+		fc->len = len;
 	}
 
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_main_L");
-	pk->main_L = lua_touserdata(L, -1);
-	lua_pop(L, 1);
-	lua_getfield(L, LUA_REGISTRYINDEX, "_clm_inv");
-	pk->inv = lua_touserdata(L, -1);
-	lua_pop(L, 1);
-
-	/*
-	 * Remember an _ALWAYS answer per plugin and capability, not per path:
-	 * "yes, this plugin may write files" is a decision a user can hold in
-	 * their head, where a path-by-path list is not.
-	 */
-	(void)snprintf(key, sizeof(key), "lua:%s:%s",
-	    plugin->path ? plugin->path : "?", label);
-
-	if (clm_lua_pending_add(plugin, &pk->pending, cap_park_teardown) < 0) {
-		cap_park_free(pk);
-		return luaL_error(L, "%s: plugin is shutting down", label);
-	}
-
-	r = clm_permission_request(agent, label, pk->path, key, cap_perm_done,
-	    pk, &allow);
+	r = clm_lua_cap_ask(L, plugin, label, fc->path, fc, cap_file_call_free,
+	    &pk, &why);
 	if (r < 0) {
-		(void)clm_lua_pending_remove(&pk->pending);
-		cap_park_free(pk);
-		return luaL_error(L, "%s: %s", label, strerror(-r));
-	}
-	if (r == 1) {
-		/* Answered without parking -- a remembered grant, or no
-		 * policy wired at all. Nothing to wait for. */
-		(void)clm_lua_pending_remove(&pk->pending);
-		if (!allow) {
-			cap_park_free(pk);
+		int nres;
+
+		/* The park was never created, so the payload is still ours. */
+		if (r == -EACCES) {
+			cap_file_call_free(fc);
 			return luaL_error(L, "%s: %s: denied", label, path);
 		}
-		{
-			int nres = cap_perform(L, pk);
-			cap_park_free(pk);
-			return nres;
-		}
+		nres = luaL_error(L, "%s: %s: %s", label, path, why);
+		cap_file_call_free(fc);
+		return nres;
+	}
+	if (r == 1) {
+		int nres = cap_file_perform(L, fc);
+
+		cap_file_call_free(fc);
+		return nres;
 	}
 
-	return lua_yieldk(L, 0, (lua_KContext)pk, cap_gate_k);
+	return lua_yieldk(L, 0, (lua_KContext)pk, cap_file_k);
 }
 
 static int

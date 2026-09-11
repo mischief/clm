@@ -77,6 +77,34 @@ enum clm_lua_verdict clm_lua_policy_check_path(const struct clm_lua_policy *p,
 enum clm_lua_verdict clm_lua_policy_check_url(const struct clm_lua_policy *p,
     const char *url, const char **why);
 
+/*
+ * A capability call parked on a permission prompt. Opaque: the file
+ * bindings and the http bindings park the same way but finish differently,
+ * so the payload each one needs is its own business.
+ */
+struct clm_lua_cap_park;
+
+/*
+ * Ask the frontend to authorize something policy does not cover.
+ *
+ * Returns 1 if the answer was already known and the caller may proceed
+ * now; 0 if the call is parked, in which case *park is set and the caller
+ * must `return lua_yieldk(L, 0, (lua_KContext)*park, k)` so k runs when
+ * the answer arrives; or negative errno with *why set (-EACCES when the
+ * answer was a refusal). On 0 the park owns ud and frees it with ud_free;
+ * on anything else ud stays the caller's to free.
+ */
+int clm_lua_cap_ask(lua_State *L, struct clm_lua_plugin *plugin,
+    const char *label, const char *detail, void *ud, void (*ud_free)(void *),
+    struct clm_lua_cap_park **park, const char **why);
+
+/* In a continuation: what the answer was, the park's payload, and its
+ * label. The park is freed with clm_lua_cap_park_free. */
+bool clm_lua_cap_park_allowed(const struct clm_lua_cap_park *park);
+void *clm_lua_cap_park_ud(const struct clm_lua_cap_park *park);
+const char *clm_lua_cap_park_label(const struct clm_lua_cap_park *park);
+void clm_lua_cap_park_free(struct clm_lua_cap_park *park);
+
 /* The plugin whose coroutine is running, from the registry, or NULL. */
 struct clm_lua_plugin *clm_lua_plugin_current(lua_State *L);
 /* That plugin's policy. */

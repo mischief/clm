@@ -420,19 +420,9 @@ oom:
 }
 
 static int
-lua_ctx_http_get(lua_State *L)
+lua_ctx_http_get_start(lua_State *L)
 {
 	const char *url = luaL_checkstring(L, 1);
-	{
-		struct clm_lua_plugin *pl = clm_lua_plugin_current(L);
-		const char *why = NULL;
-
-		if (pl == NULL)
-			return luaL_error(L, "http_get: no plugin context");
-		if (clm_lua_policy_check_url(clm_lua_plugin_policy(pl), url,
-			&why) != CLM_LUA_ALLOW)
-			return luaL_error(L, "http_get: %s: %s", url, why);
-	}
 	struct lua_http_req *lr;
 	struct clm_lua_plugin *plugin;
 	int r;
@@ -556,19 +546,9 @@ lua_ctx_http_get(lua_State *L)
  * Yields. On resume returns: response_table or nil, err.
  */
 static int
-lua_ctx_http_post(lua_State *L)
+lua_ctx_http_post_start(lua_State *L)
 {
 	const char *url = luaL_checkstring(L, 1);
-	{
-		struct clm_lua_plugin *pl = clm_lua_plugin_current(L);
-		const char *why = NULL;
-
-		if (pl == NULL)
-			return luaL_error(L, "http_post: no plugin context");
-		if (clm_lua_policy_check_url(clm_lua_plugin_policy(pl), url,
-			&why) != CLM_LUA_ALLOW)
-			return luaL_error(L, "http_post: %s: %s", url, why);
-	}
 	const char *body = luaL_checkstring(L, 2);
 	struct lua_http_req *lr;
 	struct clm_lua_plugin *plugin;
@@ -679,6 +659,104 @@ lua_ctx_http_post(lua_State *L)
 		clm_tool_invocation_set_cancel(lr->inv, lua_http_cancel, lr);
 
 	return lua_yield(L, 0);
+}
+
+/* A function pointer cannot travel through a void *, so the park's payload
+ * is this. */
+struct http_gate_call {
+	lua_CFunction start;
+};
+
+static void
+http_gate_call_free(void *p)
+{
+	free(p);
+}
+
+/*
+ * Resumed once an egress prompt was answered. The park carries nothing:
+ * the coroutine's own stack frame still holds the arguments, so the
+ * request is started from them exactly as it would have been.
+ */
+static int
+http_gate_k(lua_State *L, int status, lua_KContext ctx)
+{
+	struct clm_lua_cap_park *pk = (struct clm_lua_cap_park *)ctx;
+	struct http_gate_call *gc = clm_lua_cap_park_ud(pk);
+	lua_CFunction start = gc->start;
+	bool allow = clm_lua_cap_park_allowed(pk);
+	char label[64];
+
+	(void)status;
+	(void)snprintf(label, sizeof(label), "%s", clm_lua_cap_park_label(pk));
+	clm_lua_cap_park_free(pk);
+	if (!allow)
+		return luaL_error(L, "%s: denied by user", label);
+	return start(L);
+}
+
+/*
+ * Gate an outbound request, then start it.
+ *
+ * Egress is parked the same way a file capability is, but what happens on
+ * allow is different: the request is started and the coroutine yields
+ * AGAIN, now waiting on the response. That second yield is why this hands
+ * back start's return value untouched -- it is already a yield.
+ */
+static int
+http_gate(lua_State *L, const char *label, lua_CFunction start)
+{
+	const char *url = luaL_checkstring(L, 1);
+	struct clm_lua_plugin *plugin = clm_lua_plugin_current(L);
+	struct clm_lua_cap_park *pk = NULL;
+	struct http_gate_call *gc;
+	const char *why = NULL;
+	int r;
+
+	if (plugin == NULL)
+		return luaL_error(L, "%s: no plugin context", label);
+
+	switch (clm_lua_policy_check_url(clm_lua_plugin_policy(plugin), url,
+	    &why)) {
+	case CLM_LUA_ALLOW:
+		return start(L);
+	case CLM_LUA_DENY:
+	default:
+		return luaL_error(L, "%s: %s: %s", label, url, why);
+	case CLM_LUA_ASK:
+		break;
+	}
+
+	gc = calloc(1, sizeof(*gc));
+	if (gc == NULL)
+		return luaL_error(L, "%s: out of memory", label);
+	gc->start = start;
+
+	r = clm_lua_cap_ask(L, plugin, label, url, gc, http_gate_call_free, &pk,
+	    &why);
+	if (r == 1) {
+		free(gc);
+		return start(L);
+	}
+	if (r < 0) {
+		free(gc);
+		if (r == -EACCES)
+			return luaL_error(L, "%s: %s: denied", label, url);
+		return luaL_error(L, "%s: %s: %s", label, url, why);
+	}
+	return lua_yieldk(L, 0, (lua_KContext)pk, http_gate_k);
+}
+
+static int
+lua_ctx_http_get(lua_State *L)
+{
+	return http_gate(L, "http.get", lua_ctx_http_get_start);
+}
+
+static int
+lua_ctx_http_post(lua_State *L)
+{
+	return http_gate(L, "http.post", lua_ctx_http_post_start);
 }
 
 /* ------------------------------------------------------------------ */

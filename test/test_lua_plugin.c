@@ -52,6 +52,8 @@ struct pending_host {
 	void *timer_arg;
 	int http_cancelled;
 	int timer_cancelled;
+	char last_url[256];
+	int posts;
 };
 
 static int
@@ -61,8 +63,10 @@ pending_http_post(void *ctx, const struct clm_http_req *req,
 {
 	struct pending_host *pending = ctx;
 
-	(void)req;
 	(void)data;
+	pending->posts++;
+	(void)snprintf(pending->last_url, sizeof(pending->last_url), "%s",
+	    req->url ? req->url : "");
 	pending->http_call.owner = pending;
 	pending->http_success = success;
 	pending->http_error = error;
@@ -383,6 +387,63 @@ test_cap_permission(void)
 		}
 	}
 	(void)remove(PERM_TARGET);
+	return 0;
+}
+
+/* Egress outside the allowlist prompts, and the request is only started
+ * once the prompt is allowed. */
+static int
+test_cap_http_permission(void)
+{
+	struct pending_host pending = {0};
+	struct clm_host host;
+	struct perm_state ps = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	int r;
+
+	ps.answer = CLM_PERM_ALLOW_ONCE;
+	r = perm_setup(&pending, &host, &ps, &agent, &env);
+	CHECK(r == 0, "http perm setup");
+	if (r < 0)
+		return 1;
+
+	r = start_pending_tool(agent, &pending, "perm_http");
+	CHECK(r == 0, "http perm dispatch");
+	CHECK(ps.prompts == 1, "out-of-policy egress prompts");
+	CHECK(strcmp(ps.name, "http.get") == 0, "prompt names the capability");
+	CHECK(strstr(ps.detail, "perm.invalid") != NULL,
+	    "prompt shows the url");
+	CHECK(strstr(pending.last_url, "perm.invalid") == NULL,
+	    "no request before the answer");
+	CHECK(ps.req != NULL, "egress request parked");
+	if (ps.req != NULL)
+		CHECK(clm_tool_permission_respond(agent, ps.req,
+			  CLM_PERM_ALLOW_ONCE) == 0,
+		    "answering the parked egress request");
+	CHECK(strstr(pending.last_url, "perm.invalid") != NULL,
+	    "request starts once allowed");
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+
+	/* Denied egress never reaches the transport. */
+	memset(&ps, 0, sizeof(ps));
+	memset(&pending, 0, sizeof(pending));
+	ps.answer = CLM_PERM_DENY_ONCE;
+	ps.answer_inline = true;
+	env = NULL;
+	agent = NULL;
+	r = perm_setup(&pending, &host, &ps, &agent, &env);
+	CHECK(r == 0, "http perm deny setup");
+	if (r == 0) {
+		r = start_pending_tool(agent, &pending, "perm_http");
+		CHECK(r == 0, "http perm deny dispatch");
+		CHECK(ps.prompts == 1, "denied egress still prompts");
+		CHECK(strstr(pending.last_url, "perm.invalid") == NULL,
+		    "denied egress never reaches the transport");
+		clm_lua_env_free(env);
+		clm_agent_free(agent);
+	}
 	return 0;
 }
 
@@ -1174,6 +1235,7 @@ test_lua_plugin_suite(void *arg)
 	test_nonexistent_dir();
 	test_sandbox_and_load_failures();
 	test_cap_permission();
+	test_cap_http_permission();
 	test_pending_http_teardown();
 	test_pending_sleep_teardown();
 	test_inline_http_completion();
