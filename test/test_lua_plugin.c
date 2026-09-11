@@ -152,6 +152,12 @@ pending_setup(struct pending_host *pending, struct clm_host *host,
 	r = clm_lua_env_new(*agent, env);
 	if (r < 0)
 		return r;
+	/* pending_http reaches the network, so the capability policy needs
+	 * the host granted the way a user's config would grant it. */
+	r = clm_lua_env_set_config(*env,
+	    "{\"pending\":{\"allow_http\":[\"pending.invalid\"]}}");
+	if (r < 0)
+		return r;
 	return clm_lua_load_plugins(*env, "test/plugins_teardown");
 }
 
@@ -508,6 +514,11 @@ test_inline_http_completion(void)
 	CHECK(r == 0, "inline agent creation");
 	r = clm_lua_env_new(agent, &env);
 	CHECK(r == 0, "inline lua env creation");
+	/* http_inline drives the test transport, so grant its exact URL
+	 * prefix the way a user's config would. */
+	r = clm_lua_env_set_config(env,
+	    "{\"http_inline\":{\"allow_http\":[\"test://inline/\"]}}");
+	CHECK(r == 0, "inline policy grant");
 	r = clm_lua_load_plugins(env, "test/plugins");
 	CHECK(r == 0, "inline plugin loading");
 
@@ -705,6 +716,8 @@ run_yield_timeout_case(const char *name, int use_http)
 		goto out;
 	if (clm_lua_env_new(agent, &env) != 0)
 		goto out;
+	(void)clm_lua_env_set_config(env,
+	    "{\"loop_after_yield\":{\"allow_http\":[\"test.invalid\"]}}");
 	if (clm_lua_load_plugins(env, "test/plugins_after_yield") != 0)
 		goto out;
 	if (start_timeout_tool(agent, &fake, name) != 0 || result.count != 0)

@@ -23,6 +23,7 @@
 #include "clm/lua_plugin.h"
 #include "clm/log.h"
 #include "lua_internal.h"
+#include "lua_policy.h"
 #include "useful.h"
 #include "banned.h"
 
@@ -92,6 +93,7 @@ struct clm_lua_plugin {
 	size_t tool_user_cap;
 	uint64_t deadline_ns; /* wall-clock deadline for current execution */
 	struct clm_lua_budget budget;
+	struct clm_lua_policy policy;
 	struct clm_lua_pending_list pending;
 	bool tearing_down;
 	/* Unprotected-call recovery: see lua_plugin_panic. */
@@ -795,11 +797,52 @@ lua_clm_tool_register(lua_State *L)
 /*
  * clm.read_file(path) -> string or nil, err
  */
+/*
+ * Run a path capability past the plugin's policy. Returns 0 with *allowed
+ * set to the resolved path on success, or -1 with *why set.
+ *
+ * ASK and DENY collapse to the same refusal here. They are still distinct
+ * in the policy because they mean different things to a frontend -- ASK is
+ * "a human could authorize this", DENY is "never" -- and telling them apart
+ * is what the permission work needs; there is just nothing yet to carry the
+ * question to a human from inside a running invocation.
+ */
+static int
+cap_check_path(lua_State *L, enum clm_lua_cap cap, const char *path,
+    char **allowed, const char **why)
+{
+	struct clm_lua_plugin *plugin = clm_lua_plugin_current(L);
+
+	if (plugin == NULL) {
+		*why = "no plugin context";
+		return -1;
+	}
+	switch (clm_lua_policy_check_path(&plugin->policy, cap, path, allowed,
+	    why)) {
+	case CLM_LUA_ALLOW:
+		return 0;
+	case CLM_LUA_ASK:
+	case CLM_LUA_DENY:
+	default:
+		return -1;
+	}
+}
+
 static int
 lua_clm_read_file(lua_State *L)
 {
 	const char *path = luaL_checkstring(L, 1);
-	FILE *fp = fopen(path, "re");
+	char *allowed = NULL;
+	const char *why = NULL;
+	FILE *fp;
+
+	if (cap_check_path(L, CLM_LUA_CAP_READ_FILE, path, &allowed, &why) != 0)
+		return luaL_error(L, "read_file: %s: %s", path, why);
+
+	/* Open the RESOLVED path: reopening the caller's string would walk
+	 * the symlinks again, and they may not land where they just did. */
+	fp = fopen(allowed, "re");
+	free(allowed);
 	if (fp == NULL) {
 		lua_pushnil(L);
 		lua_pushstring(L, strerror(errno));
@@ -828,7 +871,16 @@ lua_clm_write_file(lua_State *L)
 	const char *path = luaL_checkstring(L, 1);
 	size_t len;
 	const char *content = luaL_checklstring(L, 2, &len);
-	FILE *fp = fopen(path, "we");
+	char *allowed = NULL;
+	const char *why = NULL;
+	FILE *fp;
+
+	if (cap_check_path(L, CLM_LUA_CAP_WRITE_FILE, path, &allowed, &why) !=
+	    0)
+		return luaL_error(L, "write_file: %s: %s", path, why);
+
+	fp = fopen(allowed, "we");
+	free(allowed);
 	if (fp == NULL) {
 		lua_pushnil(L);
 		lua_pushstring(L, strerror(errno));
@@ -1076,6 +1128,64 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 /* Plugin loading                                                      */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Widen a plugin's capability policy from the user's config.
+ *
+ * This reads env->tool_config, which is parsed from ~/.config/clm -- the
+ * user's file. A plugin cannot reach it: clm.config is a copy pushed into
+ * the sandbox after this runs, and assigning to it changes nothing here.
+ * Grants are therefore always something the user wrote down, which is the
+ * only reason a default-deny policy means anything.
+ */
+static void
+policy_apply_config(struct clm_lua_policy *pol, const cJSON *pcfg,
+    const char *name)
+{
+	static const struct {
+		const char *key;
+		enum clm_lua_cap cap;
+	} keys[] = {
+		{ "allow_read", CLM_LUA_CAP_READ_FILE },
+		{ "allow_write", CLM_LUA_CAP_WRITE_FILE },
+		{ "allow_http", CLM_LUA_CAP_HTTP },
+	};
+
+	for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+		const cJSON *arr =
+		    cJSON_GetObjectItemCaseSensitive(pcfg, keys[k].key);
+		const cJSON *item;
+
+		if (arr == NULL)
+			continue;
+		if (!cJSON_IsArray(arr)) {
+			clm_debug("lua: %s: %s must be an array", name,
+			    keys[k].key);
+			continue;
+		}
+		cJSON_ArrayForEach(item, arr) {
+			int r;
+
+			if (!cJSON_IsString(item) ||
+			    item->valuestring == NULL) {
+				clm_debug("lua: %s: %s entries must be "
+					  "strings",
+				    name, keys[k].key);
+				continue;
+			}
+			r = clm_lua_policy_add(pol, keys[k].cap,
+			    item->valuestring);
+			if (r < 0) {
+				/* A grant that cannot be resolved is dropped
+				 * loudly rather than silently widened to
+				 * something else. */
+				clm_debug("lua: %s: %s: cannot grant %s: %s",
+				    name, keys[k].key, item->valuestring,
+				    strerror(-r));
+			}
+		}
+	}
+}
+
 static int
 load_one_plugin(struct clm_lua_env *env, const char *path)
 {
@@ -1095,6 +1205,28 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	if (plugin->path == NULL) {
 		free(plugin);
 		return -ENOMEM;
+	}
+
+	/*
+	 * Default-deny capability policy. The plugin's own directory is
+	 * readable because its data files live beside it; nothing is
+	 * writable and no host is reachable until the USER's config says
+	 * so. Note the asymmetry: the widening below is read out of
+	 * env->tool_config, which comes from ~/.config/clm, never from
+	 * anything the plugin itself can assign to.
+	 */
+	clm_lua_policy_init(&plugin->policy);
+	{
+		char *dir = strdup(path);
+		if (dir != NULL) {
+			char *slash = strrchr(dir, '/');
+			if (slash != NULL) {
+				*slash = '\0';
+				(void)clm_lua_policy_defaults(&plugin->policy,
+				    dir, NULL);
+			}
+			free(dir);
+		}
 	}
 
 	/* Create a state with a capped allocator. */
@@ -1132,6 +1264,7 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 		cJSON *pcfg =
 		    cJSON_GetObjectItemCaseSensitive(env->tool_config, name);
 		if (pcfg != NULL) {
+			policy_apply_config(&plugin->policy, pcfg, name);
 			lua_getglobal(L, "clm");
 			clm_lua_push_json_value(L, pcfg);
 			lua_setfield(L, -2, "config");
@@ -1155,6 +1288,7 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 		const char *err = lua_tostring(L, -1);
 		clm_debug("lua: failed to load %s: %s", path, err ? err : "?");
 		lua_close(L);
+		clm_lua_policy_free(&plugin->policy);
 		free(plugin->path);
 		free(plugin);
 		return -EINVAL;
@@ -1170,13 +1304,16 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	 */
 	plugin->deadline_ns = clock_ns() + CLM_LUA_LOAD_TIMEOUT_MS * 1000000ULL;
 	lua_sethook(L, lua_exec_hook, LUA_MASKCOUNT, CLM_LUA_HOOK_INTERVAL);
+	plugin->policy.loading = true;
 	int prc = lua_pcall(L, 0, 0, 0);
+	plugin->policy.loading = false;
 	plugin->deadline_ns = 0;
 	lua_sethook(L, NULL, 0, 0);
 	if (prc != LUA_OK) {
 		const char *err = lua_tostring(L, -1);
 		clm_debug("lua: error executing %s: %s", path, err ? err : "?");
 		lua_close(L);
+		clm_lua_policy_free(&plugin->policy);
 		free(plugin->path);
 		free(plugin);
 		return -EINVAL;
@@ -1334,6 +1471,7 @@ clm_lua_env_free(struct clm_lua_env *env)
 			free(p->tool_users[j]);
 		}
 		free(p->tool_users);
+		clm_lua_policy_free(&p->policy);
 		if (p->L != NULL && !p->dead)
 			lua_close(p->L);
 		free(p->path);
@@ -2157,4 +2295,25 @@ clm_lua_load_config(const char *path)
 	char *json = clm_lua_cfg_tools_json(cfg);
 	clm_lua_cfg_free(cfg);
 	return json;
+}
+
+struct clm_lua_plugin *
+clm_lua_plugin_current(lua_State *L)
+{
+	struct clm_lua_plugin *plugin;
+
+	if (lua_getfield(L, LUA_REGISTRYINDEX, "_clm_plugin") !=
+	    LUA_TLIGHTUSERDATA) {
+		lua_pop(L, 1);
+		return NULL;
+	}
+	plugin = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+	return plugin;
+}
+
+struct clm_lua_policy *
+clm_lua_plugin_policy(struct clm_lua_plugin *plugin)
+{
+	return plugin == NULL ? NULL : &plugin->policy;
 }

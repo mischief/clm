@@ -20,6 +20,7 @@
 #include "clm/http.h"
 #include "clm/log.h"
 #include "lua_internal.h"
+#include "lua_policy.h"
 #include "useful.h"
 #include "banned.h"
 
@@ -422,6 +423,16 @@ static int
 lua_ctx_http_get(lua_State *L)
 {
 	const char *url = luaL_checkstring(L, 1);
+	{
+		struct clm_lua_plugin *pl = clm_lua_plugin_current(L);
+		const char *why = NULL;
+
+		if (pl == NULL)
+			return luaL_error(L, "http_get: no plugin context");
+		if (clm_lua_policy_check_url(clm_lua_plugin_policy(pl), url,
+			&why) != CLM_LUA_ALLOW)
+			return luaL_error(L, "http_get: %s: %s", url, why);
+	}
 	struct lua_http_req *lr;
 	struct clm_lua_plugin *plugin;
 	int r;
@@ -548,6 +559,16 @@ static int
 lua_ctx_http_post(lua_State *L)
 {
 	const char *url = luaL_checkstring(L, 1);
+	{
+		struct clm_lua_plugin *pl = clm_lua_plugin_current(L);
+		const char *why = NULL;
+
+		if (pl == NULL)
+			return luaL_error(L, "http_post: no plugin context");
+		if (clm_lua_policy_check_url(clm_lua_plugin_policy(pl), url,
+			&why) != CLM_LUA_ALLOW)
+			return luaL_error(L, "http_post: %s: %s", url, why);
+	}
 	const char *body = luaL_checkstring(L, 2);
 	struct lua_http_req *lr;
 	struct clm_lua_plugin *plugin;
