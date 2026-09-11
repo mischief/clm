@@ -4,6 +4,7 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -827,8 +828,8 @@ struct clm_lua_cap_park {
 /* What a file capability needs to remember across the prompt. */
 struct cap_file_call {
 	enum clm_lua_cap cap;
-	char *path;    /* resolved */
-	char *content; /* write only, owned */
+	struct clm_lua_path *lp; /* pinned parent, held across the prompt */
+	char *content;           /* write only, owned */
 	size_t len;
 };
 
@@ -839,7 +840,7 @@ cap_file_call_free(void *p)
 
 	if (fc == NULL)
 		return;
-	free(fc->path);
+	clm_lua_path_free(fc->lp);
 	free(fc->content);
 	free(fc);
 }
@@ -872,8 +873,8 @@ clm_lua_cap_park_label(const struct clm_lua_cap_park *pk)
 	return pk != NULL ? pk->label : "?";
 }
 
-static int do_read_file(lua_State *L, const char *allowed);
-static int do_write_file(lua_State *L, const char *allowed,
+static int do_read_file(lua_State *L, const struct clm_lua_path *lp);
+static int do_write_file(lua_State *L, const struct clm_lua_path *lp,
     const char *content, size_t len);
 
 /* Perform a file call now that it is authorized. */
@@ -881,8 +882,8 @@ static int
 cap_file_perform(lua_State *L, struct cap_file_call *fc)
 {
 	if (fc->cap == CLM_LUA_CAP_WRITE_FILE)
-		return do_write_file(L, fc->path, fc->content, fc->len);
-	return do_read_file(L, fc->path);
+		return do_write_file(L, fc->lp, fc->content, fc->len);
+	return do_read_file(L, fc->lp);
 }
 
 /* Resumed after a file prompt was answered. */
@@ -1095,7 +1096,7 @@ cap_gate(lua_State *L, enum clm_lua_cap cap, const char *label,
     const char *path, const char *content, size_t len)
 {
 	struct clm_lua_plugin *plugin = clm_lua_plugin_current(L);
-	char *allowed = NULL;
+	struct clm_lua_path *lp = NULL;
 	const char *why = NULL;
 	struct cap_file_call *fc;
 	struct clm_lua_cap_park *pk = NULL;
@@ -1104,18 +1105,18 @@ cap_gate(lua_State *L, enum clm_lua_cap cap, const char *label,
 	if (plugin == NULL)
 		return luaL_error(L, "%s: no plugin context", label);
 
-	switch (clm_lua_policy_check_path(&plugin->policy, cap, path, &allowed,
+	switch (clm_lua_policy_check_path(&plugin->policy, cap, path, &lp,
 	    &why)) {
 	case CLM_LUA_ALLOW: {
 		int nres = (cap == CLM_LUA_CAP_WRITE_FILE)
-		    ? do_write_file(L, allowed, content, len)
-		    : do_read_file(L, allowed);
-		free(allowed);
+		    ? do_write_file(L, lp, content, len)
+		    : do_read_file(L, lp);
+		clm_lua_path_free(lp);
 		return nres;
 	}
 	case CLM_LUA_DENY:
 	default:
-		free(allowed);
+		clm_lua_path_free(lp);
 		return luaL_error(L, "%s: %s: %s", label, path, why);
 	case CLM_LUA_ASK:
 		break;
@@ -1123,11 +1124,11 @@ cap_gate(lua_State *L, enum clm_lua_cap cap, const char *label,
 
 	fc = calloc(1, sizeof(*fc));
 	if (fc == NULL) {
-		free(allowed);
+		clm_lua_path_free(lp);
 		return luaL_error(L, "%s: out of memory", label);
 	}
 	fc->cap = cap;
-	fc->path = allowed;
+	fc->lp = lp;
 	if (content != NULL) {
 		/* Copy: the Lua string backing it can be collected while the
 		 * prompt is up. */
@@ -1140,8 +1141,8 @@ cap_gate(lua_State *L, enum clm_lua_cap cap, const char *label,
 		fc->len = len;
 	}
 
-	r = clm_lua_cap_ask(L, plugin, label, fc->path, fc, cap_file_call_free,
-	    &pk, &why);
+	r = clm_lua_cap_ask(L, plugin, label, fc->lp->shown, fc,
+	    cap_file_call_free, &pk, &why);
 	if (r < 0) {
 		int nres;
 
@@ -1165,16 +1166,25 @@ cap_gate(lua_State *L, enum clm_lua_cap cap, const char *label,
 }
 
 static int
-do_read_file(lua_State *L, const char *allowed)
+do_read_file(lua_State *L, const struct clm_lua_path *lp)
 {
 	FILE *fp;
+	int fd;
 
-	/* Open the RESOLVED path: reopening the caller's string would walk
-	 * the symlinks again, and they may not land where they just did. */
-	fp = fopen(allowed, "re");
-	if (fp == NULL) {
+	/*
+	 * openat() against the pinned parent, and O_NOFOLLOW on the final
+	 * component: the path was fully resolved during the check, so its
+	 * last element is a real name, and anything that has become a
+	 * symlink since is something planted after the check said yes.
+	 */
+	fd = openat(lp->dirfd, lp->name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+	if (fd < 0 || (fp = fdopen(fd, "r")) == NULL) {
+		int saved = errno;
+
+		if (fd >= 0)
+			close(fd);
 		lua_pushnil(L);
-		lua_pushstring(L, strerror(errno));
+		lua_pushstring(L, strerror(saved));
 		return 2;
 	}
 
@@ -1202,14 +1212,21 @@ lua_clm_read_file(lua_State *L)
  * clm.write_file(path, content) -> true or nil, err
  */
 static int
-do_write_file(lua_State *L, const char *allowed, const char *content,
+do_write_file(lua_State *L, const struct clm_lua_path *lp, const char *content,
     size_t len)
 {
-	FILE *fp = fopen(allowed, "we");
+	FILE *fp;
+	int fd;
 
-	if (fp == NULL) {
+	fd = openat(lp->dirfd, lp->name,
+	    O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0666);
+	if (fd < 0 || (fp = fdopen(fd, "w")) == NULL) {
+		int saved = errno;
+
+		if (fd >= 0)
+			close(fd);
 		lua_pushnil(L);
-		lua_pushstring(L, strerror(errno));
+		lua_pushstring(L, strerror(saved));
 		return 2;
 	}
 	if (fwrite(content, 1, len, fp) != len) {

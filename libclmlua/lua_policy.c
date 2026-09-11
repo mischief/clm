@@ -10,11 +10,14 @@
  */
 
 #include <ctype.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <strings.h>
 
 #include <lauxlib.h>
@@ -118,6 +121,71 @@ clm_lua_policy_defaults(struct clm_lua_policy *p, const char *plugin_dir,
  * against a real, resolved prefix. Anything deeper than one missing
  * component is refused rather than guessed at.
  */
+/*
+ * Follow a final component that is itself a symlink.
+ *
+ * realpath(3) does this already for a link that points at something that
+ * exists. A DANGLING link is the awkward case: realpath fails, and
+ * resolving only the parent would leave the check looking at the link's own
+ * name rather than at where it points -- which is the whole question. So
+ * the link is read here and the answer re-resolved, bounded against a loop.
+ *
+ * Returns a malloc'd path, or NULL with errno set (including ENOENT for an
+ * ordinary not-yet-created file, which is not a link at all).
+ */
+static char *resolve(const char *path);
+
+static char *
+resolve_dangling_link(const char *path, int depth)
+{
+	struct stat st;
+	char *target, *joined, *slash, *out;
+	ssize_t n;
+
+	if (depth > 8) {
+		errno = ELOOP;
+		return NULL;
+	}
+	if (lstat(path, &st) != 0 || !S_ISLNK(st.st_mode)) {
+		errno = ENOENT;
+		return NULL;
+	}
+
+	target = malloc(PATH_MAX);
+	if (target == NULL)
+		return NULL;
+	n = readlink(path, target, PATH_MAX - 1);
+	if (n < 0) {
+		free(target);
+		return NULL;
+	}
+	target[n] = '\0';
+
+	if (target[0] == '/') {
+		out = resolve(target);
+		free(target);
+		return out;
+	}
+
+	/* Relative: resolve against the directory the link sits in. */
+	joined = malloc(PATH_MAX);
+	if (joined == NULL) {
+		free(target);
+		return NULL;
+	}
+	slash = strrchr(path, '/');
+	if (slash == NULL) {
+		(void)snprintf(joined, PATH_MAX, "%s", target);
+	} else {
+		(void)snprintf(joined, PATH_MAX, "%.*s/%s",
+		    (int)(slash - path), path, target);
+	}
+	free(target);
+	out = resolve(joined);
+	free(joined);
+	return out;
+}
+
 static char *
 resolve(const char *path)
 {
@@ -133,6 +201,14 @@ resolve(const char *path)
 		return buf;
 	if (errno != ENOENT)
 		goto fail;
+
+	/* A dangling symlink still says where it means to go. */
+	out = resolve_dangling_link(path, 0);
+	if (out != NULL) {
+		free(buf);
+		return out;
+	}
+	out = NULL;
 
 	copy = strdup(path);
 	if (copy == NULL)
@@ -203,13 +279,82 @@ under(const char *path, const char *root)
 	return path[len] == '/';
 }
 
+void
+clm_lua_path_free(struct clm_lua_path *lp)
+{
+	if (lp == NULL)
+		return;
+	if (lp->dirfd >= 0)
+		close(lp->dirfd);
+	free(lp->name);
+	free(lp->shown);
+	free(lp);
+}
+
+/*
+ * Open the parent of an already-resolved absolute path and confirm the
+ * descriptor refers to the directory the name resolved to.
+ *
+ * open() then stat() is deliberate, in that order: comparing the fd's
+ * identity against a stat taken AFTER it was opened proves the name still
+ * meant this directory at a moment when the descriptor already existed.
+ * From then on the descriptor is what gets used, so the name is free to
+ * change and nothing that follows is affected by it.
+ */
+static struct clm_lua_path *
+pin_parent(const char *abs)
+{
+	struct clm_lua_path *lp;
+	struct stat fst, pst;
+	const char *base;
+	char *dir;
+
+	base = strrchr(abs, '/');
+	if (base == NULL || base[1] == '\0')
+		return NULL; /* not a file path */
+
+	lp = calloc(1, sizeof(*lp));
+	if (lp == NULL)
+		return NULL;
+	lp->dirfd = -1;
+
+	if (base == abs) {
+		dir = strdup("/");
+	} else {
+		dir = strndup(abs, (size_t)(base - abs));
+	}
+	if (dir == NULL) {
+		clm_lua_path_free(lp);
+		return NULL;
+	}
+
+	lp->dirfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (lp->dirfd < 0 || fstat(lp->dirfd, &fst) != 0 ||
+	    stat(dir, &pst) != 0 || fst.st_dev != pst.st_dev ||
+	    fst.st_ino != pst.st_ino) {
+		free(dir);
+		clm_lua_path_free(lp);
+		return NULL;
+	}
+	free(dir);
+
+	lp->name = strdup(base + 1);
+	lp->shown = strdup(abs);
+	if (lp->name == NULL || lp->shown == NULL) {
+		clm_lua_path_free(lp);
+		return NULL;
+	}
+	return lp;
+}
+
 enum clm_lua_verdict
 clm_lua_policy_check_path(const struct clm_lua_policy *p, enum clm_lua_cap cap,
-    const char *path, char **resolved, const char **why)
+    const char *path, struct clm_lua_path **out, const char **why)
 {
+	struct clm_lua_path *lp;
 	char *abs;
 
-	*resolved = NULL;
+	*out = NULL;
 	*why = NULL;
 
 	if (p->loading) {
@@ -223,16 +368,27 @@ clm_lua_policy_check_path(const struct clm_lua_policy *p, enum clm_lua_cap cap,
 		return CLM_LUA_DENY;
 	}
 
+	lp = pin_parent(abs);
+	free(abs);
+	if (lp == NULL) {
+		*why = "path could not be opened";
+		return CLM_LUA_DENY;
+	}
+
 	for (size_t i = 0; i < p->nroots[cap]; i++) {
-		if (under(abs, p->roots[cap][i])) {
-			*resolved = abs;
+		if (under(lp->shown, p->roots[cap][i])) {
+			*out = lp;
 			return CLM_LUA_ALLOW;
 		}
 	}
 
-	/* Hand the resolved path back even here: a prompt has to show what
-	 * the path actually resolved to, not the string that was typed. */
-	*resolved = abs;
+	/*
+	 * Hand the pinned path back here too. A prompt has to show what the
+	 * path actually resolved to, and holding the directory open across
+	 * the prompt is the point: the answer authorizes this directory, not
+	 * whatever the name means by the time the user gets to it.
+	 */
+	*out = lp;
 	*why = "outside the paths this plugin may touch";
 	return CLM_LUA_ASK;
 }

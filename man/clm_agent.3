@@ -44,6 +44,22 @@
 .Ft int
 .Fn clm_agent_compact "struct clm_agent *agent"
 .Ft int
+.Fo clm_tool_permission_respond
+.Fa "struct clm_agent *agent"
+.Fa "const struct clm_permission_req *req"
+.Fa "enum clm_permission_decision decision"
+.Fc
+.Ft int
+.Fo clm_permission_request
+.Fa "struct clm_agent *agent"
+.Fa "const char *name"
+.Fa "const char *detail"
+.Fa "const char *remember_key"
+.Fa "clm_permission_done_fn done"
+.Fa "void *user"
+.Fa "bool *allow"
+.Fc
+.Ft int
 .Fn clm_agent_check_connection "struct clm_agent *agent"
 .Ft int
 .Fn clm_agent_set_provider "struct clm_agent *agent" "const struct clm_cfg *cfg"
@@ -363,6 +379,72 @@ changes it.
 It exists for persisting a rewrite the
 .Va on_message
 callback never sees, such as the fold a compaction performs.
+.Pp
+.Fn clm_tool_permission_respond
+answers a permission request delivered to the
+.Va on_permission
+callback.
+A request is one of two things.
+The usual kind gates a tool call: the invocation is parked before it
+runs, and answering it either runs the tool or completes it with a
+denial the model can see.
+The other kind gates a capability reached from inside something that is
+already running \(em a Lua plugin writing a file part-way through a tool
+call, say \(em where there is no invocation to park.
+A frontend does not need to tell them apart:
+.Fn clm_permission_req_name
+and
+.Fn clm_permission_req_args
+describe either, and answering works the same way.
+.Fn clm_permission_req_schema
+returns
+.Dv NULL
+for the second kind, and its
+.Fn clm_permission_req_args
+is a plain string rather than a JSON object, so a frontend that parses
+it should be prepared to show it verbatim.
+.Pp
+The request is freed once answered, so the pointer must not be used
+again \(em including by a frontend that queues requests and answers them
+later.
+The
+.Dv _ALWAYS
+decisions are remembered for the rest of the session and are not asked
+again.
+.Pp
+.Fn clm_permission_request
+raises a request of the second kind.
+.Fa name
+and
+.Fa detail
+are what the frontend displays;
+.Fa remember_key
+is what an
+.Dv _ALWAYS
+answer is remembered against, or
+.Dv NULL
+to make the request unrememberable.
+It returns 1 if the answer was already known, in which case
+.Fa allow
+has been set and
+.Fa done
+is never called; 0 if the request is parked and
+.Fa done
+will be called exactly once, later; or a negative
+.Xr errno 2
+value.
+.Pp
+The distinction matters: on 1 the caller must not wait for
+.Fa done ,
+which is what lets a caller suspend itself only when there is really a
+question outstanding.
+A frontend may also answer from inside its own
+.Va on_permission
+callback, and that is reported as 1 as well, so a synchronous policy
+never resumes a caller that never suspended.
+With no
+.Va on_permission
+callback registered at all the answer is a denial, not an allowance.
 .Sh RETURN VALUES
 .Fn clm_agent_new ,
 .Fn clm_agent_submit ,

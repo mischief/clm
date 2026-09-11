@@ -65,13 +65,33 @@ int clm_lua_policy_defaults(struct clm_lua_policy *p, const char *plugin_dir,
     const char *scratch_dir);
 
 /*
- * Resolve path and decide whether cap may touch it. On ALLOW, *resolved is
- * set to a malloc'd absolute path the caller should open INSTEAD of the one
- * it was handed -- reopening the original string would re-walk the symlinks
- * the check just resolved. *why gets a static reason string otherwise.
+ * An authorized path, held open.
+ *
+ * Not a string: a checked path that is re-opened by name is not the path
+ * that was checked. Between the two, the name can be made to point
+ * somewhere else -- and a prompt makes that window arbitrarily long, since
+ * it lasts as long as the user takes to answer. So the check keeps the
+ * parent directory open and the operation runs openat() against that
+ * descriptor, which pins the directory it verified no matter what happens
+ * to the name afterwards.
+ */
+struct clm_lua_path {
+	int dirfd;   /* the verified parent directory */
+	char *name;  /* final component, never "." or ".." */
+	char *shown; /* resolved path, for prompts and messages */
+};
+
+void clm_lua_path_free(struct clm_lua_path *lp);
+
+/*
+ * Resolve path and decide whether cap may touch it. On ALLOW and on ASK
+ * (where a frontend may yet authorize it) *out holds the opened parent;
+ * the caller owns it and frees it with clm_lua_path_free. *why gets a
+ * static reason string when the answer is no.
  */
 enum clm_lua_verdict clm_lua_policy_check_path(const struct clm_lua_policy *p,
-    enum clm_lua_cap cap, const char *path, char **resolved, const char **why);
+    enum clm_lua_cap cap, const char *path, struct clm_lua_path **out,
+    const char **why);
 
 /* Decide whether the plugin may reach url. */
 enum clm_lua_verdict clm_lua_policy_check_url(const struct clm_lua_policy *p,

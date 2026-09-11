@@ -198,6 +198,7 @@ deliver_tool_call(struct pending_host *pending, const char *name)
 /* ---------------------------------------------------------------- */
 
 #define PERM_TARGET "test/.perm_out.tmp"
+#define PERM_ESCAPE_TARGET ".perm_escaped.tmp"
 
 struct perm_state {
 	const struct clm_permission_req *req; /* parked, if deferred */
@@ -229,8 +230,9 @@ perm_on_permission(const struct clm_permission_req *req, void *user)
 }
 
 static int
-perm_setup(struct pending_host *pending, struct clm_host *host,
-    struct perm_state *ps, struct clm_agent **agent, struct clm_lua_env **env)
+perm_setup_full(struct pending_host *pending, struct clm_host *host,
+    struct perm_state *ps, struct clm_agent **agent, struct clm_lua_env **env,
+    const char *target, const char *grant_dir)
 {
 	struct clm_cfg cfg = {
 	    .api_key = "test-key",
@@ -253,11 +255,25 @@ perm_setup(struct pending_host *pending, struct clm_host *host,
 	r = clm_lua_env_new(*agent, env);
 	if (r < 0)
 		return r;
-	r = clm_lua_env_set_config(*env,
-	    "{\"perm_write\":{\"target\":\"" PERM_TARGET "\"}}");
-	if (r < 0)
-		return r;
+	{
+		char cfg_json[512];
+
+		(void)snprintf(cfg_json, sizeof(cfg_json),
+		    "{\"perm_write\":{\"target\":\"%s\"%s}}",
+		    target != NULL ? target : PERM_TARGET,
+		    grant_dir != NULL ? grant_dir : "");
+		r = clm_lua_env_set_config(*env, cfg_json);
+		if (r < 0)
+			return r;
+	}
 	return clm_lua_load_plugins(*env, "test/plugins_perm");
+}
+
+static int
+perm_setup(struct pending_host *pending, struct clm_host *host,
+    struct perm_state *ps, struct clm_agent **agent, struct clm_lua_env **env)
+{
+	return perm_setup_full(pending, host, ps, agent, env, NULL, NULL);
 }
 
 static bool
@@ -444,6 +460,68 @@ test_cap_http_permission(void)
 		clm_lua_env_free(env);
 		clm_agent_free(agent);
 	}
+	return 0;
+}
+
+/* A symlink inside a granted directory does not extend the grant to
+ * wherever it points: the path resolves before it is checked, so the
+ * write lands outside policy and has to be authorized like any other. */
+static int
+test_cap_symlink_escape(void)
+{
+	struct pending_host pending = {0};
+	struct clm_host host;
+	struct perm_state ps = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	int r;
+
+	(void)remove("test/.perm_link.tmp");
+	(void)remove(PERM_ESCAPE_TARGET);
+	if (symlink("../" PERM_ESCAPE_TARGET, "test/.perm_link.tmp") != 0) {
+		CHECK(0, "symlink setup");
+		return 1;
+	}
+
+	/* The plugin is granted "test/", and writes to a link inside it that
+	 * points out of it. Denying must leave the target alone. */
+	ps.answer = CLM_PERM_DENY_ONCE;
+	ps.answer_inline = true;
+	r = perm_setup_full(&pending, &host, &ps, &agent, &env,
+	    "test/.perm_link.tmp", ",\"allow_write\":[\"test\"]");
+	CHECK(r == 0, "symlink setup");
+	if (r == 0) {
+		r = start_pending_tool(agent, &pending, "perm_write");
+		CHECK(r == 0, "symlink dispatch");
+		CHECK(ps.prompts == 1,
+		    "a link out of a granted directory still prompts");
+		CHECK(access(PERM_ESCAPE_TARGET, F_OK) != 0,
+		    "denied write does not escape through the link");
+		clm_lua_env_free(env);
+		clm_agent_free(agent);
+	}
+
+	/* A write that stays inside the grant is not asked about at all. */
+	memset(&ps, 0, sizeof(ps));
+	memset(&pending, 0, sizeof(pending));
+	env = NULL;
+	agent = NULL;
+	(void)remove(PERM_TARGET);
+	r = perm_setup_full(&pending, &host, &ps, &agent, &env, PERM_TARGET,
+	    ",\"allow_write\":[\"test\"]");
+	CHECK(r == 0, "granted-write setup");
+	if (r == 0) {
+		r = start_pending_tool(agent, &pending, "perm_write");
+		CHECK(r == 0, "granted-write dispatch");
+		CHECK(ps.prompts == 0, "a granted write is not asked about");
+		CHECK(perm_target_written(), "a granted write happens");
+		clm_lua_env_free(env);
+		clm_agent_free(agent);
+	}
+
+	(void)remove("test/.perm_link.tmp");
+	(void)remove(PERM_ESCAPE_TARGET);
+	(void)remove(PERM_TARGET);
 	return 0;
 }
 
@@ -1236,6 +1314,7 @@ test_lua_plugin_suite(void *arg)
 	test_sandbox_and_load_failures();
 	test_cap_permission();
 	test_cap_http_permission();
+	test_cap_symlink_escape();
 	test_pending_http_teardown();
 	test_pending_sleep_teardown();
 	test_inline_http_completion();
