@@ -230,7 +230,9 @@ clm_lua_policy_check_path(const struct clm_lua_policy *p, enum clm_lua_cap cap,
 		}
 	}
 
-	free(abs);
+	/* Hand the resolved path back even here: a prompt has to show what
+	 * the path actually resolved to, not the string that was typed. */
+	*resolved = abs;
 	*why = "outside the paths this plugin may touch";
 	return CLM_LUA_ASK;
 }

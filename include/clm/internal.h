@@ -176,6 +176,15 @@ struct clm_agent {
 	 * all instead of repeating the same failing request every time. */
 	bool tools_unsupported;
 
+	/*
+	 * Session memory for standalone permission decisions (see
+	 * clm_permission_request). Per-agent, like a tool's remembered
+	 * answer: a grant is a statement about this session, and letting
+	 * one outlive the agent that earned it would authorize a later
+	 * conversation the user never approved.
+	 */
+	TAILQ_HEAD(clm_perm_grant_list, clm_perm_grant) perm_grants;
+
 	/* Event callbacks */
 	void (*cb_on_assistant_text)(const char *, void *);
 	void (*cb_on_reasoning)(const char *, void *);
@@ -196,6 +205,8 @@ struct clm_agent {
 	/* Derived from base_url: the /v1/models URL used for health probes. */
 	char *models_url;
 };
+
+struct clm_perm_grant;
 
 /* Set agent->last_error to a copy of msg (replacing any previous error). */
 void clm_agent_set_error(struct clm_agent *agent, const char *msg);

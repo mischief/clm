@@ -57,6 +57,9 @@ TAILQ_HEAD(clm_tool_list, clm_tool);
  * host with no subprocess support (e.g. the ESP32 port). */
 int clm_tools_register_builtins(struct clm_agent *agent);
 
+/* Free an agent's remembered standalone permission grants. */
+void clm_tools_free_perm_grants(struct clm_agent *agent);
+
 /* Free every node on a tool registry list (name/description/params_schema
  * strings, then the node itself). Used at agent teardown only -- by then no
  * invocation can be in flight, so removed-but-zombie nodes are freed too. */

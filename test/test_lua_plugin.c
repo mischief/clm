@@ -161,6 +161,231 @@ pending_setup(struct pending_host *pending, struct clm_host *host,
 	return clm_lua_load_plugins(*env, "test/plugins_teardown");
 }
 
+/* Hand the agent another tool call on the request it currently has in
+ * flight, without starting a new turn (submit would be refused mid-turn). */
+static int
+deliver_tool_call(struct pending_host *pending, const char *name)
+{
+	clm_http_success_cb completion;
+	struct clm_http_response response = {0};
+	char json[512];
+	void *completion_user;
+
+	if (pending->http_success == NULL)
+		return -EIO;
+	completion = pending->http_success;
+	completion_user = pending->http_user;
+	(void)snprintf(json, sizeof(json),
+	    "{\"choices\":[{\"message\":{\"role\":\"assistant\","
+	    "\"content\":null,\"tool_calls\":[{\"id\":\"pending-2\","
+	    "\"type\":\"function\",\"function\":{\"name\":\"%s\","
+	    "\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}",
+	    name);
+	response.status_code = 200;
+	response.body = strdup(json);
+	if (response.body == NULL)
+		return -ENOMEM;
+	completion(&response, completion_user);
+	return 0;
+}
+
+/* ---------------------------------------------------------------- */
+/* Capability permission prompts                                     */
+/* ---------------------------------------------------------------- */
+
+#define PERM_TARGET "test/.perm_out.tmp"
+
+struct perm_state {
+	const struct clm_permission_req *req; /* parked, if deferred */
+	int prompts;
+	char name[64];
+	char detail[512];
+	enum clm_permission_decision answer;
+	bool answer_inline;
+	struct clm_agent *agent;
+};
+
+static void
+perm_on_permission(const struct clm_permission_req *req, void *user)
+{
+	struct perm_state *ps = user;
+	const char *n = clm_permission_req_name(req);
+	const char *d = clm_permission_req_args(req);
+
+	ps->prompts++;
+	(void)snprintf(ps->name, sizeof(ps->name), "%s", n ? n : "");
+	(void)snprintf(ps->detail, sizeof(ps->detail), "%s", d ? d : "");
+	if (ps->answer_inline) {
+		/* Answer from inside the callback: the request is freed on
+		 * return, so it must not be stored. */
+		(void)clm_tool_permission_respond(ps->agent, req, ps->answer);
+		return;
+	}
+	ps->req = req;
+}
+
+static int
+perm_setup(struct pending_host *pending, struct clm_host *host,
+    struct perm_state *ps, struct clm_agent **agent, struct clm_lua_env **env)
+{
+	struct clm_cfg cfg = {
+	    .api_key = "test-key",
+	    .base_url = "http://127.0.0.1:1/v1/chat/completions",
+	    .model = "test-model",
+	};
+	struct clm_callbacks cb = { .on_permission = perm_on_permission };
+	int r;
+
+	memset(host, 0, sizeof(*host));
+	host->http_post = pending_http_post;
+	host->http_cancel = pending_http_cancel;
+	host->timer_set = pending_timer_set;
+	host->timer_cancel = pending_timer_cancel;
+	host->ctx = pending;
+	r = clm_agent_new(&cfg, host, &cb, ps, agent);
+	if (r < 0)
+		return r;
+	ps->agent = *agent;
+	r = clm_lua_env_new(*agent, env);
+	if (r < 0)
+		return r;
+	r = clm_lua_env_set_config(*env,
+	    "{\"perm_write\":{\"target\":\"" PERM_TARGET "\"}}");
+	if (r < 0)
+		return r;
+	return clm_lua_load_plugins(*env, "test/plugins_perm");
+}
+
+static bool
+perm_target_written(void)
+{
+	char buf[64];
+	FILE *fp = fopen(PERM_TARGET, "re");
+	size_t n;
+
+	if (fp == NULL)
+		return false;
+	n = fread(buf, 1, sizeof(buf) - 1, fp);
+	fclose(fp);
+	buf[n] = '\0';
+	return strcmp(buf, "authorized") == 0;
+}
+
+/* An out-of-policy write prompts, waits for the answer, and only then
+ * happens -- and is refused outright when nobody is listening. */
+static int
+test_cap_permission(void)
+{
+	struct pending_host pending = {0};
+	struct clm_host host;
+	struct perm_state ps = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	int r;
+
+	/* Deferred answer: the prompt parks, is answered later, and the
+	 * write happens on resume. */
+	(void)remove(PERM_TARGET);
+	ps.answer = CLM_PERM_ALLOW_ONCE;
+	r = perm_setup(&pending, &host, &ps, &agent, &env);
+	CHECK(r == 0, "perm setup");
+	if (r < 0)
+		return 1;
+	r = start_pending_tool(agent, &pending, "perm_write");
+	CHECK(r == 0, "perm tool dispatch");
+	CHECK(ps.prompts == 1, "out-of-policy write prompts");
+	CHECK(strcmp(ps.name, "clm.write_file") == 0,
+	    "prompt names the capability");
+	CHECK(strstr(ps.detail, ".perm_out.tmp") != NULL,
+	    "prompt shows the resolved path");
+	CHECK(!perm_target_written(), "no write before the answer");
+	CHECK(ps.req != NULL, "request parked for a later answer");
+	if (ps.req != NULL)
+		CHECK(clm_tool_permission_respond(agent, ps.req,
+			  CLM_PERM_ALLOW_ONCE) == 0,
+		    "answering the parked request");
+	CHECK(perm_target_written(), "write happens once allowed");
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+
+	/* Denial: the capability fails rather than silently doing nothing. */
+	(void)remove(PERM_TARGET);
+	memset(&ps, 0, sizeof(ps));
+	memset(&pending, 0, sizeof(pending));
+	ps.answer = CLM_PERM_DENY_ONCE;
+	ps.answer_inline = true;
+	env = NULL;
+	agent = NULL;
+	r = perm_setup(&pending, &host, &ps, &agent, &env);
+	CHECK(r == 0, "perm deny setup");
+	if (r == 0) {
+		r = start_pending_tool(agent, &pending, "perm_write");
+		CHECK(r == 0, "perm deny dispatch");
+		CHECK(ps.prompts == 1, "denied write still prompts");
+		CHECK(!perm_target_written(), "denied write does not happen");
+		clm_lua_env_free(env);
+		clm_agent_free(agent);
+	}
+
+	/* An _ALWAYS grant is remembered: a second call does not ask. */
+	(void)remove(PERM_TARGET);
+	memset(&ps, 0, sizeof(ps));
+	memset(&pending, 0, sizeof(pending));
+	ps.answer = CLM_PERM_ALLOW_ALWAYS;
+	ps.answer_inline = true;
+	env = NULL;
+	agent = NULL;
+	r = perm_setup(&pending, &host, &ps, &agent, &env);
+	CHECK(r == 0, "perm remember setup");
+	if (r == 0) {
+		r = start_pending_tool(agent, &pending, "perm_write");
+		CHECK(r == 0, "perm remember dispatch");
+		CHECK(perm_target_written(), "allowed-always write happens");
+		(void)remove(PERM_TARGET);
+		r = deliver_tool_call(&pending, "perm_write");
+		CHECK(r == 0, "perm remember second dispatch");
+		CHECK(ps.prompts == 1, "a remembered grant is not re-asked");
+		CHECK(perm_target_written(), "remembered grant still writes");
+		clm_lua_env_free(env);
+		clm_agent_free(agent);
+	}
+
+	/* With no permission callback at all the capability is denied
+	 * rather than allowed by default. */
+	(void)remove(PERM_TARGET);
+	{
+		struct clm_cfg cfg = {
+		    .api_key = "test-key",
+		    .base_url = "http://127.0.0.1:1/v1/chat/completions",
+		    .model = "test-model",
+		};
+		struct clm_agent *a2 = NULL;
+		struct clm_lua_env *e2 = NULL;
+
+		memset(&pending, 0, sizeof(pending));
+		memset(&host, 0, sizeof(host));
+		host.http_post = pending_http_post;
+		host.http_cancel = pending_http_cancel;
+		host.timer_set = pending_timer_set;
+		host.timer_cancel = pending_timer_cancel;
+		host.ctx = &pending;
+		if (clm_agent_new(&cfg, &host, NULL, NULL, &a2) == 0 &&
+		    clm_lua_env_new(a2, &e2) == 0) {
+			(void)clm_lua_env_set_config(e2,
+			    "{\"perm_write\":{\"target\":\"" PERM_TARGET
+			    "\"}}");
+			(void)clm_lua_load_plugins(e2, "test/plugins_perm");
+			(void)start_pending_tool(a2, &pending, "perm_write");
+			CHECK(!perm_target_written(),
+			    "no policy wired means denied, not allowed");
+			clm_lua_env_free(e2);
+			clm_agent_free(a2);
+		}
+	}
+	(void)remove(PERM_TARGET);
+	return 0;
+}
+
 static int
 test_pending_http_teardown(void)
 {
@@ -948,6 +1173,7 @@ test_lua_plugin_suite(void *arg)
 	test_plugin_loads();
 	test_nonexistent_dir();
 	test_sandbox_and_load_failures();
+	test_cap_permission();
 	test_pending_http_teardown();
 	test_pending_sleep_teardown();
 	test_inline_http_completion();

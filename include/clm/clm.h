@@ -634,6 +634,35 @@ CLM_API int clm_tool_permission_respond(struct clm_agent *agent,
     const struct clm_permission_req *req,
     enum clm_permission_decision decision);
 
+/* Called with the answer to a standalone permission request. */
+typedef void (*clm_permission_done_fn)(bool allow, void *user);
+
+/*
+ * Ask the frontend to authorize something that is not a tool dispatch.
+ *
+ * A tool call is gated before it runs, and the request that gates it is
+ * part of the parked invocation. A capability reached from *inside* a
+ * running invocation -- a plugin writing a file mid-call, say -- has no
+ * such invocation to park, so this builds a request that carries its own
+ * continuation instead: `done` is what resumes the caller, whatever the
+ * caller happens to be.
+ *
+ * name and detail are what the frontend shows ("write_file", and the path).
+ * remember_key is what an _ALWAYS decision is remembered against, so a
+ * plugin granted "write anywhere" once is not asked again; pass NULL to
+ * make the request unrememberable and always ask.
+ *
+ * Returns 1 if the answer was already known (from a remembered decision or
+ * because no policy is wired, which denies) and *allow has been set without
+ * done ever being called; 0 if the request is parked and done will be
+ * called later, exactly once; or negative errno. Note the asymmetry: on 1
+ * the caller must NOT wait, which is what lets a caller yield only when
+ * there is really something to wait for.
+ */
+CLM_API int clm_permission_request(struct clm_agent *agent, const char *name,
+    const char *detail, const char *remember_key, clm_permission_done_fn done,
+    void *user, bool *allow);
+
 /*
  * Register a tool. The agent copies def and its strings. The same name may
  * not be registered twice. Returns 0, or negative errno (-EEXIST on a

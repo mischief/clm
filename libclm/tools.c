@@ -33,9 +33,101 @@
 struct clm_tool_invocation;
 
 /* Opaque to the frontend; references the parked invocation it authorizes. */
+/*
+ * A permission request is one of two things, and the inv pointer is what
+ * says which.
+ *
+ * The original kind gates a tool dispatch: inv is the parked invocation,
+ * and answering it resumes that invocation. The second kind gates a
+ * capability used from inside something already running, where there is no
+ * invocation to park -- it carries its own continuation instead (done/user)
+ * and owns the strings a frontend displays. See clm_permission_request.
+ */
 struct clm_permission_req {
-	struct clm_tool_invocation *inv;
+	struct clm_tool_invocation *inv; /* NULL for a standalone request */
+
+	/* Standalone only. */
+	struct clm_agent *agent;
+	char *name;
+	char *detail;
+	char *remember_key;
+	clm_permission_done_fn done;
+	void *user;
+	bool pending;
+
+	/*
+	 * Points at the requester's stack while cb_on_permission runs, so a
+	 * frontend that answers synchronously can be detected. The respond
+	 * path fills it in BEFORE freeing the request, which is the only
+	 * reason it is safe to look at afterwards.
+	 */
+	struct clm_perm_inline *inl;
 };
+
+/* Set by the respond path when the answer arrives before the request has
+ * been handed back to its caller. */
+struct clm_perm_inline {
+	bool answered;
+	bool allow;
+};
+
+/*
+ * Session memory for standalone decisions. A tool remembers its _ALWAYS
+ * answer on its own registry node (clm_tool.remembered); a capability has
+ * no such node, so grants live here, keyed by whatever string the caller
+ * chose to be asked about.
+ */
+struct clm_perm_grant {
+	TAILQ_ENTRY(clm_perm_grant) entries;
+	char *key;
+	bool allow;
+};
+static struct clm_perm_grant *
+perm_grant_find(struct clm_agent *agent, const char *key)
+{
+	struct clm_perm_grant *g;
+
+	if (key == NULL)
+		return NULL;
+	TAILQ_FOREACH(g, &agent->perm_grants, entries) {
+		if (strcmp(g->key, key) == 0)
+			return g;
+	}
+	return NULL;
+}
+
+static void
+perm_grant_remember(struct clm_agent *agent, const char *key, bool allow)
+{
+	struct clm_perm_grant *g;
+
+	if (key == NULL)
+		return;
+	g = perm_grant_find(agent, key);
+	if (g != NULL) {
+		g->allow = allow;
+		return;
+	}
+	g = calloc(1, sizeof(*g));
+	if (g == NULL)
+		return; /* an unremembered grant just means asking again */
+	g->key = strdup(key);
+	if (g->key == NULL) {
+		free(g);
+		return;
+	}
+	g->allow = allow;
+	TAILQ_INSERT_TAIL(&agent->perm_grants, g, entries);
+}
+
+static void
+perm_req_free(struct clm_permission_req *req)
+{
+	free(req->name);
+	free(req->detail);
+	free(req->remember_key);
+	free(req);
+}
 
 static void run_invoke(struct clm_tool_invocation *inv);
 
@@ -402,13 +494,17 @@ clm_tool_invocation_loop(const struct clm_tool_invocation *inv)
 const char *
 clm_permission_req_name(const struct clm_permission_req *req)
 {
-	return (req && req->inv) ? req->inv->name : NULL;
+	if (req == NULL)
+		return NULL;
+	return req->inv ? req->inv->name : req->name;
 }
 
 const char *
 clm_permission_req_args(const struct clm_permission_req *req)
 {
-	return (req && req->inv) ? req->inv->args : NULL;
+	if (req == NULL)
+		return NULL;
+	return req->inv ? req->inv->args : req->detail;
 }
 
 const char *
@@ -440,7 +536,40 @@ clm_tool_permission_respond(struct clm_agent *agent,
 	bool allow;
 
 	ASSERT_RETURN(agent != NULL, -EINVAL);
-	ASSERT_RETURN(req != NULL && req->inv != NULL, -EINVAL);
+	ASSERT_RETURN(req != NULL, -EINVAL);
+
+	if (req->inv == NULL) {
+		/* Standalone: answer the caller's continuation instead of
+		 * resuming an invocation. The request is freed here, so a
+		 * frontend holding the pointer must not touch it after. */
+		struct clm_permission_req *sreq =
+		    (struct clm_permission_req *)req;
+
+		if (!sreq->pending)
+			return -EINVAL; /* already answered */
+		sreq->pending = false;
+
+		allow = (decision == CLM_PERM_ALLOW_ONCE ||
+		    decision == CLM_PERM_ALLOW_ALWAYS);
+		if (decision == CLM_PERM_ALLOW_ALWAYS ||
+		    decision == CLM_PERM_DENY_ALWAYS)
+			perm_grant_remember(agent, sreq->remember_key, allow);
+
+		if (sreq->inl != NULL) {
+			/* Answered from inside cb_on_permission: report it to
+			 * the requester rather than running the continuation,
+			 * which has not been set up to be called yet. */
+			sreq->inl->answered = true;
+			sreq->inl->allow = allow;
+			perm_req_free(sreq);
+			return 0;
+		}
+
+		if (sreq->done != NULL)
+			sreq->done(allow, sreq->user);
+		perm_req_free(sreq);
+		return 0;
+	}
 
 	inv = req->inv;
 	if (!inv->awaiting_perm)
@@ -1567,4 +1696,88 @@ clm_tools_register_builtins(struct clm_agent *agent)
 	if (r < 0)
 		return r;
 	return clm_tool_add(agent, &list_def);
+}
+
+CLM_API int
+clm_permission_request(struct clm_agent *agent, const char *name,
+    const char *detail, const char *remember_key, clm_permission_done_fn done,
+    void *user, bool *allow)
+{
+	struct clm_perm_grant *g;
+	struct clm_permission_req *req;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	ASSERT_RETURN(name != NULL, -EINVAL);
+	ASSERT_RETURN(done != NULL, -EINVAL);
+	ASSERT_RETURN(allow != NULL, -EINVAL);
+
+	/* A remembered answer needs nobody asked. */
+	g = perm_grant_find(agent, remember_key);
+	if (g != NULL) {
+		*allow = g->allow;
+		return 1;
+	}
+
+	/* Same default-deny as the dispatch gate: a frontend that wires no
+	 * policy authorizes nothing, rather than everything. */
+	if (agent->cb_on_permission == NULL) {
+		*allow = false;
+		return 1;
+	}
+
+	req = calloc(1, sizeof(*req));
+	if (req == NULL)
+		return -ENOMEM;
+	req->agent = agent;
+	req->done = done;
+	req->user = user;
+	req->pending = true;
+	req->name = strdup(name);
+	if (req->name == NULL) {
+		perm_req_free(req);
+		return -ENOMEM;
+	}
+	if (detail != NULL && (req->detail = strdup(detail)) == NULL) {
+		perm_req_free(req);
+		return -ENOMEM;
+	}
+	if (remember_key != NULL &&
+	    (req->remember_key = strdup(remember_key)) == NULL) {
+		perm_req_free(req);
+		return -ENOMEM;
+	}
+
+	/*
+	 * The frontend may answer from inside this callback. If it does, the
+	 * request is freed before control returns here, so the answer comes
+	 * back through this stack slot instead -- and the caller is told (1)
+	 * that nothing is parked, so it never waits for a continuation that
+	 * will not run.
+	 */
+	{
+		struct clm_perm_inline inl = { false, false };
+
+		req->inl = &inl;
+		agent->cb_on_permission(req, agent->cb_user);
+		if (inl.answered) {
+			*allow = inl.allow;
+			return 1;
+		}
+		/* Still parked: req is alive, and the stack slot is about to
+		 * stop being. */
+		req->inl = NULL;
+	}
+	return 0;
+}
+
+void
+clm_tools_free_perm_grants(struct clm_agent *agent)
+{
+	struct clm_perm_grant *g;
+
+	while ((g = TAILQ_FIRST(&agent->perm_grants)) != NULL) {
+		TAILQ_REMOVE(&agent->perm_grants, g, entries);
+		free(g->key);
+		free(g);
+	}
 }

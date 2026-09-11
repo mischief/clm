@@ -243,6 +243,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 	agent->backend = cfg->backend;
 	agent->max_iterations = cfg->max_iterations; /* 0 = unlimited */
 	clm_history_init(&agent->history);
+	TAILQ_INIT(&agent->perm_grants);
 	TAILQ_INIT(&agent->tools);
 
 	if (cb != NULL) {
@@ -364,6 +365,7 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->compact_body);
 	free(agent->pending_notify);
 	clm_tools_free_registry(&agent->tools);
+	clm_tools_free_perm_grants(agent);
 	clm_ratelimit_free(agent->tool_rl);
 	if (agent->llm_rl_timer != NULL && agent->host != NULL &&
 	    agent->host->timer_cancel != NULL)
