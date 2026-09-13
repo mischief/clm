@@ -426,7 +426,7 @@ source_agent_names(
 struct model_complete_req {
 	struct ui *u;
 	uint64_t generation;
-	size_t wstart, wlen;
+	size_t wstart, wlen, match_len;
 	char *provider_name; /* the provider this live catalog was probed
 	                      * against -- not necessarily u->provider_name,
 	                      * see source_model_names(). Owned by the req,
@@ -452,7 +452,7 @@ model_live_result(char **ids, void *user)
 	 * than reaching back into an input line that's moved on. */
 	if (u->complete_generation == req->generation) {
 		const char *prefix = u->input + req->wstart;
-		size_t typed = req->wlen;
+		size_t typed = req->match_len;
 		/* The server's ids are bare (no provider prefix); /model
 		 * expects "provider/model-id" (see src/model_spec.h), so
 		 * reprefix each with the provider this catalog was probed
@@ -471,13 +471,17 @@ model_live_result(char **ids, void *user)
 		if (prefixed != NULL && matches != NULL) {
 			for (size_t i = 0;
 			    ids[i] != NULL && nprefixed < MAX_CANDIDATES; i++) {
-				size_t need = strlen(req->provider_name) + 1 +
-				    strlen(ids[i]) + 1;
+				size_t need = memchr(prefix, '/', typed) != NULL
+				    ? strlen(req->provider_name) + 1 + strlen(ids[i]) + 1
+				    : strlen(ids[i]) + 1;
 				char *spec = malloc(need);
 				if (spec == NULL)
 					continue;
-				(void)snprintf(spec, need, "%s/%s",
-				    req->provider_name, ids[i]);
+				if (memchr(prefix, '/', typed) != NULL)
+					(void)snprintf(spec, need, "%s/%s",
+					    req->provider_name, ids[i]);
+				else
+					(void)snprintf(spec, need, "%s", ids[i]);
 				prefixed[nprefixed++] = spec;
 			}
 
@@ -554,9 +558,25 @@ source_model_names(
 		if (pn > 0) {
 			if (pn > 1)
 				list_plain(u, NULL, matches, pn);
-			apply_insert(
-			    u, wstart, wlen, 0, matches, pn, typed, '/');
+			apply_insert(u, wstart, wlen, 0, matches, pn, typed, '/');
 			clm_lua_cfg_free_str_list(names);
+		}
+		/* bare model ids use active connection catalog */
+		if (u->agent != NULL && u->provider_name != NULL) {
+			req = calloc(1, sizeof(*req));
+			if (req != NULL) {
+				req->u = u;
+				req->generation = generation;
+				req->wstart = wstart;
+				req->wlen = u->input_pos - wstart;
+				req->match_len = wlen;
+				req->provider_name = strdup(u->provider_name);
+				if (req->provider_name != NULL &&
+				    clm_agent_list_models(u->agent, model_live_result,
+				    model_live_error, req) == 0)
+					return;
+				model_complete_req_free(req);
+			}
 		}
 		return;
 	}
@@ -564,9 +584,10 @@ source_model_names(
 	size_t n = match_config_names(
 	    u->lcfg, "models", prefix, typed, matches, &names);
 	if (n > 0) {
+		/* live catalog owns completion insertion; avoid committing local
+		 * singleton before async response */
 		if (n > 1)
 			list_plain(u, "from config:", matches, n);
-		apply_insert(u, wstart, wlen, 0, matches, n, typed, '\0');
 		clm_lua_cfg_free_str_list(names);
 	}
 
@@ -607,6 +628,7 @@ source_model_names(
 		 * extends it, input_pos - wstart is the word's current length
 		 * either way -- with or without an insert. */
 		req->wlen = typed;
+		req->match_len = wlen;
 		req->provider_name = strdup(spec_provider);
 		if (req->provider_name == NULL) {
 			free(req);
@@ -617,7 +639,13 @@ source_model_names(
 		    ? clm_lua_cfg_provider_str(u->lcfg, spec_provider, "url")
 		    : NULL;
 
-		if (purl != NULL) {
+		if (purl != NULL && u->provider_name != NULL &&
+		    strcmp(spec_provider, u->provider_name) == 0) {
+			/* active connection already owns correct live endpoint */
+			if (clm_agent_list_models(u->agent, model_live_result,
+			    model_live_error, req) != 0)
+				model_complete_req_free(req);
+		} else if (purl != NULL) {
 			enum clm_provider provider =
 			    clm_provider_from_str(clm_lua_cfg_provider_str(
 			        u->lcfg, spec_provider, "kind"));
