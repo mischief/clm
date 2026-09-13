@@ -271,6 +271,48 @@ Each plugin sees only its own subtable, as
 (see
 [clm-tool(5)](clm-tool.md)).
 
+Three keys in a plugin's subtable are read by
+[clm(1)](clm.md)
+itself rather than passed through to the plugin, and widen what that
+plugin is allowed to reach:
+
+*allow\_read*
+
+A list of directories the plugin may read from with
+*clm.read\_file*.
+
+*allow\_write*
+
+A list of directories the plugin may write to with
+*clm.write\_file*.
+
+*allow\_http*
+
+A list of hosts the plugin may reach with
+*http.get*
+and
+*http.post*.
+A leading dot
+(".example.com")
+matches that host and any subdomain of it.
+An entry containing
+"://"
+is matched as a literal URL prefix instead, for transports
+[clm(1)](clm.md)
+does not parse as plain HTTP.
+
+A plugin starts able to read the directory it was loaded from and
+nothing else: it may not write anywhere, and may not reach any host.
+Reaching outside that asks the frontend for permission at the moment
+it happens
+(see *PLUGIN CAPABILITIES*),
+so these lists are for grants worth making standing, not a
+prerequisite for a plugin to work at all.
+
+They are read from this file, never from
+*clm.config*
+as the plugin sees it, so a plugin cannot widen its own policy.
+
 *volatile\_tools*
 
 A list of
@@ -375,6 +417,59 @@ warns, via
 `CLM_DEBUG_LOG`,
 if this file is readable by group or other.
 
+# PLUGIN CAPABILITIES
+
+A Lua plugin runs in a restricted interpreter: no
+*os*,
+no
+*io*,
+no
+*require*
+(see
+[clm-tool(5)](clm-tool.md)).
+What it gets instead are the bindings
+[clm(1)](clm.md)
+installs &#8212;
+*clm.read\_file*,
+*clm.write\_file*,
+*http.get*
+and
+*http.post*
+&#8212; and those are the only ways out of the interpreter, so each one is
+checked against the calling plugin's policy before it acts.
+
+The policy is default-deny.
+A plugin may read the directory it was loaded from, because its own
+data files live beside it; it may not write anywhere, and it may not
+reach any host.
+
+A call outside that policy is not simply refused.
+If the frontend has a permission handler wired (the TUI does), the
+call is suspended and the user is asked, the same way a gated tool
+call is
+([clm(1)](clm.md)):
+
+	allow tool clm.write_file:
+	/home/you/notes/scratch.txt
+	(y) once  (n) deny  (a) always  (d) never
+
+Answering
+"always"
+grants that plugin that capability for the rest of the session, per
+plugin and per capability rather than per path.
+A frontend with no permission handler denies instead of allowing: a
+plugin cannot reach further by being run somewhere nobody is watching.
+
+Two details matter if you write plugins.
+A path is resolved before it is checked, and the directory holding it
+is then held open for as long as the question is outstanding, so the
+file written is the one that was authorized even if the name is made
+to mean something else in the meantime.
+And capabilities are refused outright while a plugin's top-level chunk
+runs: registering tools needs neither the filesystem nor the network,
+and load-time code has no invocation behind it to attribute a request
+to.
+
 # EXAMPLES
 
 A minimal single-provider, single-model configuration:
@@ -389,7 +484,10 @@ A minimal single-provider, single-model configuration:
 	        },
 	    },
 	    tools = {
-	        web_search = { api_key = clm.secrets.tavily },
+	        web_search = {
+	            api_key = clm.secrets.tavily,
+	            allow_http = { ".tavily.com" },
+	        },
 	        weather = { units = "metric" },
 	    },
 	    volatile_tools = { "local_map", "character_status" },

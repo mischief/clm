@@ -241,7 +241,7 @@ Each plugin sees only its own subtable, as
 .Xr clm-tool 5 ) .
 .Pp
 Three keys in a plugin's subtable are read by
-.Nm
+.Xr clm 1
 itself rather than passed through to the plugin, and widen what that
 plugin is allowed to reach:
 .Bl -tag -width Ds
@@ -262,7 +262,7 @@ matches that host and any subdomain of it.
 An entry containing
 .Qq ://
 is matched as a literal URL prefix instead, for transports
-.Nm
+.Xr clm 1
 does not parse as plain HTTP.
 .El
 .Pp
@@ -376,7 +376,7 @@ no
 (see
 .Xr clm-tool 5 ) .
 What it gets instead are the bindings
-.Nm
+.Xr clm 1
 installs \(em
 .Va clm.read_file ,
 .Va clm.write_file ,

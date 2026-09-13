@@ -49,6 +49,20 @@ CLM\_AGENT(3) - Library Functions Manual
 **clm\_agent\_compact**(*struct clm\_agent \*agent*);
 
 *int*  
+**clm\_tool\_permission\_respond**(*struct clm\_agent \*agent*,
+*const struct clm\_permission\_req \*req*,
+*enum clm\_permission\_decision decision*);
+
+*int*  
+**clm\_permission\_request**(*struct clm\_agent \*agent*,
+*const char \*name*,
+*const char \*detail*,
+*const char \*remember\_key*,
+*clm\_permission\_done\_fn done*,
+*void \*user*,
+*bool \*allow*);
+
+*int*  
 **clm\_agent\_check\_connection**(*struct clm\_agent \*agent*);
 
 *int*  
@@ -375,6 +389,72 @@ changes it.
 It exists for persisting a rewrite the
 *on\_message*
 callback never sees, such as the fold a compaction performs.
+
+**clm\_tool\_permission\_respond**()
+answers a permission request delivered to the
+*on\_permission*
+callback.
+A request is one of two things.
+The usual kind gates a tool call: the invocation is parked before it
+runs, and answering it either runs the tool or completes it with a
+denial the model can see.
+The other kind gates a capability reached from inside something that is
+already running &#8212; a Lua plugin writing a file part-way through a tool
+call, say &#8212; where there is no invocation to park.
+A frontend does not need to tell them apart:
+**clm\_permission\_req\_name**()
+and
+**clm\_permission\_req\_args**()
+describe either, and answering works the same way.
+**clm\_permission\_req\_schema**()
+returns
+`NULL`
+for the second kind, and its
+**clm\_permission\_req\_args**()
+is a plain string rather than a JSON object, so a frontend that parses
+it should be prepared to show it verbatim.
+
+The request is freed once answered, so the pointer must not be used
+again &#8212; including by a frontend that queues requests and answers them
+later.
+The
+`_ALWAYS`
+decisions are remembered for the rest of the session and are not asked
+again.
+
+**clm\_permission\_request**()
+raises a request of the second kind.
+*name*
+and
+*detail*
+are what the frontend displays;
+*remember\_key*
+is what an
+`_ALWAYS`
+answer is remembered against, or
+`NULL`
+to make the request unrememberable.
+It returns 1 if the answer was already known, in which case
+*allow*
+has been set and
+*done*
+is never called; 0 if the request is parked and
+*done*
+will be called exactly once, later; or a negative
+errno(2)
+value.
+
+The distinction matters: on 1 the caller must not wait for
+*done*,
+which is what lets a caller suspend itself only when there is really a
+question outstanding.
+A frontend may also answer from inside its own
+*on\_permission*
+callback, and that is reported as 1 as well, so a synchronous policy
+never resumes a caller that never suspended.
+With no
+*on\_permission*
+callback registered at all the answer is a denial, not an allowance.
 
 # RETURN VALUES
 
