@@ -2585,6 +2585,7 @@ cmd_agent(struct ui *u, const char *arg)
 				apply_effort(u, prov, spec_model);
 				clm_tools_register_shell(u->agent);
 				clm_tools_register_bg(u->agent);
+				clm_tools_register_monitor(u->agent);
 				/* Reload plugins. */
 				if (clm_lua_env_new(u->agent, &u->lua_env) ==
 				    0) {
@@ -3954,6 +3955,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	 * portable core). */
 	clm_tools_register_shell(u->agent);
 	clm_tools_register_bg(u->agent);
+	clm_tools_register_monitor(u->agent);
 
 	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
 		if (lcfg != NULL)

@@ -1026,6 +1026,7 @@ main(int argc, char *argv[])
 	 * portable core). */
 	clm_tools_register_shell(state->agent);
 	clm_tools_register_bg(state->agent);
+	clm_tools_register_monitor(state->agent);
 
 	if (clm_lua_env_new(state->agent, &state->lua_env) == 0) {
 		if (lcfg != NULL)

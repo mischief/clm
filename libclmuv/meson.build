@@ -11,6 +11,7 @@ clmuv_src = files(
   'host_uv.c',
   'tool_shell.c',
   'tool_bg.c',
+  'tool_monitor.c',
   'mcp_client.c',
   'peer.c',
 )

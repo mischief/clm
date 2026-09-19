@@ -228,6 +228,7 @@ make_agent(struct tstate *st, int port)
 		    "clm_agent_set_effort");
 	CHECK(clm_tools_register_shell(agent) == 0, "register shell");
 	CHECK(clm_tools_register_bg(agent) == 0, "register bg");
+	CHECK(clm_tools_register_monitor(agent) == 0, "register monitor");
 	return agent;
 }
 
@@ -1036,6 +1037,113 @@ test_file_tools(uv_loop_t *loop)
 	teardown(&st, srv);
 	(void)unlink(path);
 	(void)rmdir(dir);
+}
+
+/*
+ * (b4) monitor_start: the model watches a command that prints lines and
+ * exits. Its lines must arrive as automatic follow-up turns via
+ * clm_agent_notify, the same chain bg_exec uses, except that a monitor
+ * delivers while its command is still running rather than once at the end.
+ * Lines printed together arrive as one message, not one message per line.
+ */
+static void
+test_monitor_start(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_tool_call(srv, "monitor_start",
+	    "{\"command\":\"printf 'monline1\\nmonline2\\n'\","
+	    "\"description\":\"probe\"}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"watching"
+	    "\"}}]}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"lines "
+	    "seen\"}}]}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"monitor "
+	    "done\"}}]}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+
+	CHECK(clm_agent_submit(st.agent, "watch something") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "turn 1 ok");
+	CHECK(st.tool_results == 1, "monitor_start completed once");
+	CHECK(strstr(st.tool_content, "started monitor") != NULL,
+	    "monitor_start's immediate result is a start acknowledgement");
+	CHECK(canned_request_count(srv) == 2,
+	    "two requests for turn 1 (call + start ack)");
+
+	/* Turn 2: the lines the command printed, delivered on their own. */
+	st.turn_done = 0;
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "turn 2 (automatic) ok");
+	CHECK(canned_last_request(srv) != NULL &&
+	        strstr(canned_last_request(srv), "monline1") != NULL &&
+	        strstr(canned_last_request(srv), "monline2") != NULL,
+	    "both lines reached the model in one automatic turn");
+	CHECK(canned_last_request(srv) != NULL &&
+	        strstr(canned_last_request(srv), "probe") != NULL,
+	    "the monitor's description reached the model");
+
+	/* Turn 3: the closing notice, once the source ends. */
+	st.turn_done = 0;
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "turn 3 (automatic) ok");
+	CHECK(canned_last_request(srv) != NULL &&
+	        strstr(canned_last_request(srv), "stopped") != NULL,
+	    "the monitor reported that it stopped");
+	CHECK(canned_request_count(srv) == 4,
+	    "the lines and the stop notice were two separate turns");
+
+	teardown(&st, srv);
+}
+
+/*
+ * A monitor is an event source for one agent, so freeing that agent must
+ * stop it rather than leave it running with nowhere to deliver. The command
+ * here never exits on its own, so nothing but the detach hook can end it.
+ */
+static void
+test_agent_free_during_monitor(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_tool_call(srv, "monitor_start",
+	    "{\"command\":\"sleep 30\",\"description\":\"forever\"}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"watching"
+	    "\"}}]}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+
+	CHECK(clm_agent_submit(st.agent, "watch forever") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.tool_results == 1, "monitor_start completed once");
+
+	/* teardown frees the agent and then drains the loop: the monitor's
+	 * handles must all close there, or this hangs. */
+	teardown(&st, srv);
+	CHECK(1, "agent freed while a monitor was running");
 }
 
 /* (d) Real shell_exec builtin via uv_spawn. */
@@ -3020,6 +3128,8 @@ test_agent_suite(void *arg)
 	test_compact_http_error_detail(&loop);
 	test_tools_unsupported_retry(&loop);
 	test_file_tools(&loop);
+	test_monitor_start(&loop);
+	test_agent_free_during_monitor(&loop);
 	test_shell_exec(&loop);
 	test_agent_free_during_shell_exec(&loop);
 	test_shell_exec_cancel_backgrounded_job(&loop);

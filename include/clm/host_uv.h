@@ -39,4 +39,13 @@ CLM_API int clm_tools_register_shell(struct clm_agent *agent);
  */
 CLM_API int clm_tools_register_bg(struct clm_agent *agent);
 
+/*
+ * Register the monitor_start, monitor_stop and monitor_list builtins. A
+ * monitor spawns a long-running command and delivers each line it prints as
+ * a fresh turn via clm_agent_notify(), for as long as it runs -- where
+ * bg_exec delivers once, when its command exits. Independent of the other
+ * two register calls. Returns 0 or a negative errno.
+ */
+CLM_API int clm_tools_register_monitor(struct clm_agent *agent);
+
 #endif /* CLM_HOST_UV_H */
