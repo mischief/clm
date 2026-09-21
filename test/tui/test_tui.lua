@@ -1011,6 +1011,66 @@ tests.allow_all = function(url)
 	t:close()
 end
 
+tests.mcp_spawn_fail = function(url)
+	-- A stdio MCP server whose command does not exist: uv_spawn fails
+	-- after libuv has already put the client's pipe and process handles
+	-- on the loop, so the client cannot simply be freed. Getting that
+	-- wrong leaves the loop walking freed memory and the exit path dies
+	-- in uv_loop_close, long after the failed connect.
+	local cfgdir = STATE_HOME .. "/badmcp"
+
+	sys.mkdir(cfgdir .. "/clm")
+	local f = io.open(cfgdir .. "/clm/config.lua", "w")
+	must(f ~= nil, "mcp_spawn_fail: cannot write the test config")
+	f:write([[
+return {
+    model = "mock/mock-model",
+    providers = {
+        mock = {
+            kind = "openai",
+            url = "http://127.0.0.1:0/v1",
+            context_size = 100000,
+            models = { ["mock-model"] = {} },
+        },
+    },
+    tools = {},
+    mcp_servers = {
+        {
+            name = "nosuch",
+            transport = "stdio",
+            command = { "/nonexistent/clm-test-mcp-server" },
+        },
+    },
+}
+]])
+	f:close()
+
+	local t = driver.new(BIN, url,
+	    { rows = 12, cols = 60, env = { XDG_CONFIG_HOME = cfgdir } })
+
+	check(t:wait_for("nosuch: failed to start", 10),
+	    "mcp_spawn_fail: the unstartable server is reported, not fatal")
+
+	-- Exit the way a user does, and insist the process got there itself.
+	t:send("/quit\r")
+	local pid = t.pid
+	local deadline = sys.now() + 10.0
+	local got, code = 0, nil
+	while sys.now() < deadline do
+		got, code = sys.wait(pid, true)
+		if got == pid then
+			break
+		end
+		t:drain(0.05, 0.01)
+	end
+	check(got == pid and code == 0,
+	    "mcp_spawn_fail: exits cleanly with a handle-less MCP client")
+	if got == pid then
+		t.pid = nil
+	end
+	t:close()
+end
+
 tests.peers = function(url)
 	-- Two clm instances discover each other over their sockets, and a
 	-- message from one lands in the other's transcript between turns.
@@ -1168,7 +1228,8 @@ local ORDER = { "connection", "offline", "agent", "markdown", "scrollback",
 	"scroll_stable", "end_key", "resize", "margin", "editing", "history",
 	"commands", "effort", "queueing", "permission", "cancel",
 	"cancel_tools", "tool_escapes", "paste", "session", "resume_collapse",
-	"session_compact", "clear_gauge", "scratch", "peers", "allow_all" }
+	"session_compact", "clear_gauge", "scratch", "peers", "allow_all",
+	"mcp_spawn_fail" }
 
 local selected = {}
 for i = 1, #arg do

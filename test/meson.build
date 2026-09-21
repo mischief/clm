@@ -178,7 +178,7 @@ if have_lua
     'tui_interaction': ['commands', 'effort', 'queueing', 'permission',
       'allow_all', 'cancel', 'cancel_tools', 'tool_escapes', 'clear_gauge'],
     'tui_session': ['session', 'session_compact', 'resume_collapse',
-      'scratch', 'peers'],
+      'scratch', 'peers', 'mcp_spawn_fail'],
   }
   foreach name, cases : tui_groups
     test(name,

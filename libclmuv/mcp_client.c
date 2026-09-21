@@ -925,8 +925,31 @@ mcp_spawn(struct clm_mcp_client *client, char *const *argv)
 
 	client->proc.data = client;
 	r = uv_spawn(client->loop, &client->proc, &opt);
-	if (r < 0)
+	if (r < 0) {
+		/*
+		 * A failed spawn still leaves handles on the loop: in/out
+		 * were initialized above, and uv_spawn runs uv__handle_init
+		 * on proc before anything that can fail, without undoing it
+		 * on its error path. They have to come down through uv_close
+		 * -- freeing the client outright leaves the loop's handle
+		 * queue pointing into freed memory, which resurfaces much
+		 * later as a crash the far side of uv_loop_close. proc never
+		 * started here and its exit_cb can never fire, so this is the
+		 * one place it is closed outside mcp_on_exit.
+		 *
+		 * Left as MCP_CLOSE_THEN_IDLE for the respawn path, whose
+		 * client stays alive; clm_mcp_connect upgrades it to
+		 * MCP_CLOSE_THEN_FREE for a connect that never got off the
+		 * ground.
+		 */
+		client->closing = true;
+		client->close_intent = MCP_CLOSE_THEN_IDLE;
+		client->close_remaining = 3; /* in, out, proc */
+		uv_close((uv_handle_t *)&client->in, mcp_handle_closed);
+		uv_close((uv_handle_t *)&client->out, mcp_handle_closed);
+		uv_close((uv_handle_t *)&client->proc, mcp_handle_closed);
 		return r;
+	}
 
 	client->proc_spawned = true;
 	uv_read_start(
@@ -1215,11 +1238,18 @@ clm_mcp_connect(struct clm_agent *agent, struct uv_loop_s *loop,
 		}
 		r = mcp_spawn(client, client->argv_copy);
 		if (r != 0) {
-			mcp_free_argv(client->argv_copy);
-			free(client->name);
-			free(client->url);
-			free(client->api_key);
-			free(client);
+			/*
+			 * mcp_spawn may have left handles closing on the loop,
+			 * in which case the struct belongs to their close
+			 * callbacks, not to us; mcp_begin_close frees it now
+			 * only when nothing was ever opened. The caller owns
+			 * `user` on an error return and frees its own context,
+			 * so drop our reference to it first.
+			 */
+			client->user = NULL;
+			client->free_user = NULL;
+			client->on_ready = NULL;
+			mcp_begin_close(client, MCP_CLOSE_THEN_FREE);
 			return r;
 		}
 	}
