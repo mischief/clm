@@ -2525,7 +2525,9 @@ cmd_agent(struct ui *u, const char *arg)
 
 			/* Rebuild cfg. */
 			int r;
-			struct clm_cfg newcfg = {0};
+			struct clm_cfg newcfg = {
+			    .disable_parallel_tool_calls = true,
+			};
 			char url_buf[512];
 			if (purl != NULL) {
 				size_t ulen = strlen(purl);
@@ -2566,7 +2568,7 @@ cmd_agent(struct ui *u, const char *arg)
 				    u->lcfg, prov, "rate_burst", 0);
 				newcfg.disable_parallel_tool_calls =
 				    clm_lua_cfg_provider_int(u->lcfg, prov,
-				        "disable_parallel_tool_calls", 0) != 0;
+				        "disable_parallel_tool_calls", 1) != 0;
 			}
 			/* Volatile-tool policy from the new agent profile.
 			 * Not freed on the next switch (borrowed by the
@@ -2717,7 +2719,9 @@ cmd_model(struct ui *u, const char *arg)
 				}
 			}
 		} else {
-			struct clm_cfg newcfg = {0};
+			struct clm_cfg newcfg = {
+			    .disable_parallel_tool_calls = true,
+			};
 			char url_buf[512];
 			enum clm_provider provider =
 			    clm_provider_from_str(clm_lua_cfg_provider_str(
@@ -2742,6 +2746,9 @@ cmd_model(struct ui *u, const char *arg)
 			    u->lcfg, spec_provider, "rate_tokens_per_sec", 0);
 			newcfg.rate_burst = clm_lua_cfg_provider_int(
 			    u->lcfg, spec_provider, "rate_burst", 0);
+			newcfg.disable_parallel_tool_calls =
+			    clm_lua_cfg_provider_int(u->lcfg, spec_provider,
+			        "disable_parallel_tool_calls", 1) != 0;
 
 			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {
@@ -2784,7 +2791,9 @@ cmd_provider(struct ui *u, const char *arg)
 			    "\nprovider '%s' not found\n", arg);
 			ui_push(u, ST_ERROR, msg);
 		} else {
-			struct clm_cfg newcfg = {0};
+			struct clm_cfg newcfg = {
+			    .disable_parallel_tool_calls = true,
+			};
 			char url_buf[512];
 			size_t ulen = strlen(purl);
 			while (ulen > 0 && purl[ulen - 1] == '/')
@@ -2803,6 +2812,9 @@ cmd_provider(struct ui *u, const char *arg)
 			    u->lcfg, arg, "rate_tokens_per_sec", 0);
 			newcfg.rate_burst = clm_lua_cfg_provider_int(
 			    u->lcfg, arg, "rate_burst", 0);
+			newcfg.disable_parallel_tool_calls =
+			    clm_lua_cfg_provider_int(u->lcfg, arg,
+			        "disable_parallel_tool_calls", 1) != 0;
 
 			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {

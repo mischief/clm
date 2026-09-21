@@ -658,7 +658,10 @@ main(int argc, char *argv[])
 	char *forever_prompt = NULL;
 	int stream = 1;
 	int headless = 0;
-	struct clm_cfg cfg = {0};
+	/* Serial tool dispatch by default: a model that batches two calls of
+	 * one tool races itself. A provider entry can ask for batching back
+	 * with disable_parallel_tool_calls = 0. */
+	struct clm_cfg cfg = {.disable_parallel_tool_calls = true};
 	struct cli_state *state;
 	uv_loop_t *loop;
 	char endpoint[256];
@@ -804,7 +807,7 @@ main(int argc, char *argv[])
 			    lcfg, prov_name, "rate_burst", 0);
 			cfg.disable_parallel_tool_calls =
 			    clm_lua_cfg_provider_int(lcfg, prov_name,
-			        "disable_parallel_tool_calls", 0) != 0;
+			        "disable_parallel_tool_calls", 1) != 0;
 		}
 		clm_cfg_apply_tuning(lcfg,
 		    spec_provider != NULL ? spec_provider : prov_name,

@@ -275,12 +275,12 @@ struct clm_cfg {
 	/*
 	 * Ask the model to make at most one tool call per turn instead of
 	 * however many it likes at once. clm dispatches a multi-call batch
-	 * concurrently (see clm_tools_dispatch), which is fine for
-	 * independent tools but deadlocks a tool host that can only advance
-	 * one action at a time (e.g. a game bridge advancing one action per
-	 * game turn). False (the default, and clm's zero-value default) lets
-	 * the model batch tool calls as it likes -- set true only for hosts
-	 * that need serialized dispatch.
+	 * concurrently (see clm_tools_dispatch), so two calls of one tool in
+	 * the same batch race each other, and a tool host that can only
+	 * advance one action at a time (e.g. a game bridge advancing one
+	 * action per game turn) deadlocks. clm(1) asks for serial dispatch
+	 * unless a provider's disable_parallel_tool_calls is 0; libclm's own
+	 * zero-value default is false.
 	 */
 	bool disable_parallel_tool_calls;
 };

@@ -165,13 +165,13 @@ typically).
 
 Ask the model to make at most one tool call per turn instead of
 however many it likes at once
-(*0* or unset means false, the default).
-clm dispatches a multi-call batch concurrently, which is fine for
-independent tools but deadlocks a tool host that can only advance one
-action at a time (e.g. a game bridge advancing one action per game
-turn); set to
-*1*
-only for hosts that need serialized dispatch.
+(unset means *1*, the default).
+clm dispatches a multi-call batch concurrently, so two calls of one
+tool in the same batch race each other, and a tool host that can only
+advance one action at a time (e.g. a game bridge advancing one action
+per game turn) deadlocks; set to
+*0*
+to let the model batch tool calls as it likes.
 
 *effort*
 
