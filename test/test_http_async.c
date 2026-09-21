@@ -97,10 +97,49 @@ test_overlapping_muxes(void *arg)
 	return 0;
 }
 
+/*
+ * A mux that armed curl's timer comes down through that handle's uv_close
+ * callback, so it outlives the clm_http_mux_free that started the teardown.
+ * A second free arriving before the callback runs must not take the immediate
+ * path: that would release the struct out from under the pending close, and
+ * then release it a second time when the close lands.
+ */
+static int
+test_double_free_while_closing(void *arg)
+{
+	struct clm_http_mux *mux;
+	uv_loop_t loop;
+
+	(void)arg;
+	callbacks = 0;
+	CHECK(uv_loop_init(&loop) == 0, "loop init");
+	mux = clm_http_mux_new(&loop);
+	CHECK(mux != NULL, "mux init");
+	if (mux == NULL)
+		return 1;
+
+	/* A request is what arms the timer, and so what makes the teardown
+	 * asynchronous in the first place. */
+	CHECK(clm_http_async_post(mux, "://invalid", NULL, NULL, NULL,
+	          on_success, on_error, NULL, NULL, NULL, NULL) == 0,
+	    "a request to arm curl's timer");
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(callbacks == 1, "the request completed");
+
+	clm_http_mux_free(mux);
+	clm_http_mux_free(mux); /* before the close callback has run */
+	uv_run(&loop, UV_RUN_DEFAULT);
+
+	CHECK(uv_loop_close(&loop) == 0, "the mux left no handle behind");
+	return 0;
+}
+
 int
 main(void)
 {
 	TAP_ADD("inline completion", test_inline_completion, NULL);
 	TAP_ADD("overlapping muxes", test_overlapping_muxes, NULL);
+	TAP_ADD("a second free while the timer is closing",
+	    test_double_free_while_closing, NULL);
 	return tap_run();
 }

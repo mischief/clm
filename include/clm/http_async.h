@@ -50,6 +50,11 @@ struct clm_http_mux *clm_http_mux_new(uv_loop_t *loop);
  * only happens if the caller freed it too early), so it is checked with
  * assert() rather than failing quietly -- continuing would corrupt memory
  * silently instead. Safe to call with NULL.
+ *
+ * The mux may outlive this call: a mux that armed curl's timer comes down
+ * through that handle's uv_close callback, so the loop has to turn at least
+ * once more before the memory is actually released. Calls after the first
+ * are no-ops rather than a second free.
  */
 void clm_http_mux_free(struct clm_http_mux *mux);
 

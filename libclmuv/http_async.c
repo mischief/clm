@@ -485,15 +485,24 @@ clm_http_mux_free(struct clm_http_mux *mux)
 	 */
 	assert(mux->live_requests == 0);
 
-	if (mux->timer_initialized && !mux->timer_closing) {
-		mux->timer_closing = true;
-		uv_close((uv_handle_t *)&mux->timer_handle, mux_free_now);
+	if (mux->timer_initialized) {
+		/*
+		 * The timer is on the loop, so the struct belongs to
+		 * mux_free_now. A second call arriving while that close is
+		 * still in flight must fall out here rather than reach the
+		 * immediate path below, which would free the mux out from
+		 * under the pending callback -- and then free it again.
+		 */
+		if (!mux->timer_closing) {
+			mux->timer_closing = true;
+			uv_close(
+			    (uv_handle_t *)&mux->timer_handle, mux_free_now);
+		}
 		return;
 	}
 
-	/* No timer handle was ever created (never had a request), or it was
-	 * already stopped/never started closing: nothing pending on the
-	 * loop for this mux, free it immediately. */
+	/* No timer handle was ever created (never had a request): nothing
+	 * pending on the loop for this mux, free it immediately. */
 	curl_multi_cleanup(mux->multi_handle);
 	free(mux);
 	curl_global_unref();
