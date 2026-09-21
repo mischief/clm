@@ -287,13 +287,32 @@ http_socket_callback(
 	}
 
 	if (ctx == NULL) {
+		int r;
+
 		ctx = calloc(1, sizeof(*ctx));
 		if (ctx == NULL)
 			return 0;
 		ctx->sockfd = s;
 		ctx->mux = mux;
 		ctx->poll.data = ctx;
-		uv_poll_init_socket(mux->uv, &ctx->poll, s);
+		/*
+		 * uv_poll_init returns before uv__handle_init on failure --
+		 * the opposite of uv_spawn -- so a failed init leaves poll
+		 * zeroed rather than on the loop. Drop ctx here and never
+		 * publish it to curl: uv_poll_start below would run against
+		 * a NULL loop, and the uv_close on CURL_POLL_REMOVE would
+		 * walk a NULL queue. Curl is told nothing (as for the
+		 * allocation failure above), so the transfer sits unwatched
+		 * until curl's own timeout retires it -- a stall, where
+		 * returning -1 would abort every transfer on the multi.
+		 */
+		r = uv_poll_init_socket(mux->uv, &ctx->poll, s);
+		if (r != 0) {
+			clm_debug("uv_poll_init_socket failed: %s",
+			    uv_strerror(r));
+			free(ctx);
+			return 0;
+		}
 		curl_multi_assign(mux->multi_handle, s, ctx);
 		clm_debug("uv_poll_init_socket success, sockfd=%d", s);
 	}
