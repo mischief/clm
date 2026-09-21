@@ -142,10 +142,65 @@ test_settle(void *arg)
 	return 0;
 }
 
+/*
+ * uv_spawn runs uv__handle_init on the uv_process_t before anything that can
+ * fail and does not undo it on its error path, and the stdio pipes are on the
+ * loop before that. A connect that fails to exec must still get all three off
+ * the loop -- freeing the client outright left the handle queue pointing into
+ * freed memory, which only surfaced at uv_loop_close.
+ */
+static int
+test_mcp_spawn_failure(void *arg)
+{
+	struct clm_cfg cfg = {0};
+	struct clm_host *host = NULL;
+	struct clm_agent *agent = NULL;
+	struct clm_mcp_client *mcp = (struct clm_mcp_client *)1;
+	struct clm_mcp_server_cfg mcp_cfg = {0};
+	char *const argv[] = {(char *)"/nonexistent/clm-test-mcp-server", NULL};
+	uv_loop_t loop;
+	int before, i;
+
+	(void)arg;
+	CHECK(uv_loop_init(&loop) == 0, "loop init");
+	cfg.api_key = "test";
+	cfg.base_url = "http://127.0.0.1:1/v1/chat/completions";
+	cfg.provider = CLM_PROVIDER_OPENAI;
+	cfg.model = "test-model";
+	CHECK(clm_host_uv_new(&loop, &host) == 0, "clm_host_uv_new");
+	CHECK(clm_agent_new(&cfg, host, NULL, NULL, &agent) == 0,
+	    "clm_agent_new");
+
+	for (i = 0; i < 10; i++)
+		uv_run(&loop, UV_RUN_NOWAIT);
+	before = live_handles(&loop);
+
+	mcp_cfg.name = "nosuch";
+	mcp_cfg.transport = CLM_MCP_STDIO;
+	mcp_cfg.argv = argv;
+	CHECK(clm_mcp_connect(agent, &loop, &mcp_cfg, NULL, NULL, NULL, &mcp) !=
+	        0,
+	    "connecting to a missing binary fails");
+	CHECK(mcp == NULL, "and hands back no client");
+
+	/* The closes it started land on the next turns of the loop. */
+	for (i = 0; i < 10; i++)
+		uv_run(&loop, UV_RUN_NOWAIT);
+	CHECK(live_handles(&loop) == before,
+	    "the failed spawn leaves nothing extra on the loop");
+
+	clm_agent_free(agent);
+	clm_host_uv_free(host);
+	CHECK(clm_drain_loop(&loop) == 0, "the drain leaves no handle behind");
+	return 0;
+}
+
 int
 main(void)
 {
 	TAP_ADD("teardown settles every uv handle", test_drain, NULL);
 	TAP_ADD("teardown settles a turn in flight", test_settle, NULL);
+	TAP_ADD("a failed MCP spawn leaves no handle behind",
+	    test_mcp_spawn_failure, NULL);
 	return tap_run();
 }
