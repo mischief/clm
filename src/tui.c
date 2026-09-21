@@ -3882,6 +3882,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 {
 	struct ui *u;
 	uv_loop_t *loop;
+	bool drained;
 	int r;
 
 	setlocale(LC_ALL, "");
@@ -4171,7 +4172,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	clm_agent_free(u->agent);
 	clm_host_uv_free(u->host);
 	close_own_handles(u);
-	(void)clm_drain_loop(loop);
+	drained = clm_drain_loop(loop) == 0;
 	for (size_t i = 0; i < u->nsegs; i++)
 		free(u->segs[i].text);
 	free(u->segs);
@@ -4195,7 +4196,15 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	free(u->model);
 	free(u->agent_name);
 	free(u->provider_name);
-	free(u);
+	/*
+	 * A drain that timed out left a handle of ours still closing, and
+	 * libuv holds a pointer to it inside `u`. Freeing the struct now is
+	 * exactly the use-after-free the drain exists to prevent, so strand
+	 * the shell of it instead -- this is the last statement before
+	 * returning to main, and exit(2) reclaims it either way.
+	 */
+	if (drained)
+		free(u);
 
 	return 0;
 }

@@ -1111,8 +1111,15 @@ main(int argc, char *argv[])
 	clm_peer_free(state->peer);
 	clm_agent_free(state->agent);
 	clm_host_uv_free(state->host);
-	(void)clm_drain_loop(loop);
-	free(state);
+	/*
+	 * stdin_pipe lives in `state`, so a drain that timed out may have
+	 * left libuv holding a pointer into it: strand the struct rather than
+	 * free it, the same call the tui makes. The earlier exit paths above
+	 * free it unconditionally because they never reach the branch that
+	 * initializes stdin_pipe -- nothing of theirs is ever on the loop.
+	 */
+	if (clm_drain_loop(loop) == 0)
+		free(state);
 	if (scratch != NULL)
 		(void)rmdir(scratch); /* only if nothing was left */
 	clm_lua_cfg_free_str_list(volatile_tools);

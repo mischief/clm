@@ -195,6 +195,38 @@ test_mcp_spawn_failure(void *arg)
 	return 0;
 }
 
+/*
+ * The drain's return value is what the frontends read before freeing the
+ * struct their handles live in, so a handle it could not settle has to come
+ * back as UV_EBUSY rather than success.
+ */
+static void
+tick(uv_timer_t *t)
+{
+	(void)t;
+}
+
+static int
+test_drain_reports_busy(void *arg)
+{
+	uv_loop_t loop;
+	uv_timer_t stuck;
+
+	(void)arg;
+	CHECK(uv_loop_init(&loop) == 0, "loop init");
+	/* Never closed, and repeating, so the loop is never out of work. */
+	CHECK(uv_timer_init(&loop, &stuck) == 0, "timer init");
+	CHECK(uv_timer_start(&stuck, tick, 10, 10) == 0, "timer start");
+
+	CHECK(clm_drain_loop(&loop) == UV_EBUSY,
+	    "a handle the drain cannot settle is reported, not ignored");
+
+	uv_close((uv_handle_t *)&stuck, NULL);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(uv_loop_close(&loop) == 0, "loop close");
+	return 0;
+}
+
 int
 main(void)
 {
@@ -202,5 +234,7 @@ main(void)
 	TAP_ADD("teardown settles a turn in flight", test_settle, NULL);
 	TAP_ADD("a failed MCP spawn leaves no handle behind",
 	    test_mcp_spawn_failure, NULL);
+	TAP_ADD("the drain reports a handle it could not settle",
+	    test_drain_reports_busy, NULL);
 	return tap_run();
 }
