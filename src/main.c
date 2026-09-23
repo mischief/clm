@@ -128,6 +128,7 @@ struct cli_state {
 	size_t prompt_len;
 	int oneshot;
 	int batch;
+	int mid_reply; /* "assistant> " already printed for this reply */
 	int turn_done;
 	int turn_status;
 };
@@ -143,10 +144,11 @@ static void
 cb_assistant_text(const char *text, void *user)
 {
 	struct cli_state *state = (struct cli_state *)user;
-	if (state->oneshot)
-		printf("%s", text);
-	else
-		printf("assistant> %s", text);
+	/* Streaming delivers a reply in many pieces: prefix only the first. */
+	if (!state->oneshot && !state->mid_reply)
+		printf("assistant> ");
+	state->mid_reply = 1;
+	printf("%s", text);
 	fflush(stdout);
 }
 
@@ -173,7 +175,7 @@ cb_finish_reason(enum clm_finish_reason reason, void *user)
 static void
 cb_usage(const struct clm_usage *usage, void *user)
 {
-	(void)user;
+	((struct cli_state *)user)->mid_reply = 0;
 	printf("%s[%d+%d tok", esc_dim, usage->prompt_tokens,
 	    usage->completion_tokens);
 	if (usage->cache_read_tokens > 0)
@@ -187,7 +189,7 @@ cb_usage(const struct clm_usage *usage, void *user)
 static void
 cb_tool_begin(const char *name, const char *args, void *user)
 {
-	(void)user;
+	((struct cli_state *)user)->mid_reply = 0;
 	printf("[tool: %s %s]\n", name, args ? args : "");
 	fflush(stdout);
 }
@@ -237,6 +239,7 @@ static void
 cb_turn_done(int status, void *user)
 {
 	struct cli_state *state = (struct cli_state *)user;
+	state->mid_reply = 0;
 	if (status != 0) {
 		fprintf(stderr, "error: %s\n",
 		    clm_agent_get_last_error(state->agent));
