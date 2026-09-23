@@ -10,6 +10,7 @@
 .Cm setup
 .Nm
 .Op Fl H | Fl -headless
+.Op Fl D Ar prompt | Fl -daemon Ar prompt
 .Op Fl S | Fl -no-stream
 .Op Fl V | Fl -version
 .Op Fl a Ar name | Fl -agent Ar name
@@ -77,6 +78,19 @@ Submit
 immediately, then automatically resubmit it every time a turn
 completes with nothing else queued, so the agent keeps going without
 a human re-prompting it each turn.
+.It Fl D Ar prompt , Fl -daemon Ar prompt
+Run
+.Ar prompt
+headlessly, then keep running without reading standard input.
+Each event from a monitor
+.Pq the Ic monitor_start No tool
+starts a new turn.
+The process stops on
+.Dv SIGINT
+or
+.Dv SIGTERM .
+Incompatible with
+.Fl -oneshot .
 .It Fl H , Fl -headless
 Force the plain stdio REPL even when standard input and standard
 output are both a terminal.
@@ -181,9 +195,10 @@ The
 .Ic /clear
 command starts a fresh session file, leaving the old one resumable.
 Incompatible with
-.Fl -oneshot
+.Fl -oneshot ,
+.Fl -headless
 and
-.Fl -headless .
+.Fl -daemon .
 .It Fl -allow-all-tools
 Run every tool call without asking.
 The permission gate exists because a model can be talked into running
@@ -192,9 +207,10 @@ watching, in a directory whose contents you can afford to lose.
 The status bar carries
 .Sy [allow-all]
 for as long as the session runs this way.
-.Fl -oneshot
-and
+.Fl -oneshot ,
 .Fl -headless
+and
+.Fl -daemon
 runs already allow every call, with or without this flag.
 .It Fl S , Fl -no-stream
 Request non-streamed responses instead of the default

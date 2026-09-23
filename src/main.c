@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +39,7 @@ usage(const char *prog)
 	fprintf(stderr,
 	    "usage: %s setup\n"
 	    "       %s [-o|--oneshot PROMPT] [-f|--forever PROMPT] "
-	    "[-H|--headless] [-u|--url BASE] "
+	    "[-H|--headless] [-D|--daemon PROMPT] [-u|--url BASE] "
 	    "[-m|--model PROVIDER/MODEL-ID] [--provider NAME] "
 	    "[-p|--plugins DIR] [-S|--no-stream] [--allow-all-tools] "
 	    "[-r|--resume [ID]] "
@@ -55,6 +56,9 @@ usage(const char *prog)
 	    "                        so the agent keeps going without a human "
 	    "re-prompting it\n"
 	    "  -H, --headless        force the plain stdio REPL\n"
+	    "  -D, --daemon PROMPT   run PROMPT headless, then keep running "
+	    "on\n"
+	    "                        monitor events until SIGINT or SIGTERM\n"
 	    "  -u, --url BASE        base API endpoint "
 	    "(default http://127.0.0.1:8081/v1);\n"
 	    "                        \"/messages\" is appended for an "
@@ -124,11 +128,14 @@ struct cli_state {
 	struct clm_mcp_client **mcp_clients;
 	size_t mcp_client_count;
 	uv_pipe_t stdin_pipe;
+	uv_signal_t sigint, sigterm;
 	char prompt_line[1024];
 	size_t prompt_len;
 	int oneshot;
+	int daemon;
 	int batch;
 	int mid_reply; /* "assistant> " already printed for this reply */
+	int stopping;  /* a stop signal arrived; the cancel is not an error */
 	int turn_done;
 	int turn_status;
 };
@@ -240,7 +247,7 @@ cb_turn_done(int status, void *user)
 {
 	struct cli_state *state = (struct cli_state *)user;
 	state->mid_reply = 0;
-	if (status != 0) {
+	if (status != 0 && !state->stopping) {
 		fprintf(stderr, "error: %s\n",
 		    clm_agent_get_last_error(state->agent));
 	}
@@ -250,6 +257,11 @@ cb_turn_done(int status, void *user)
 	}
 	if (state->oneshot)
 		return;
+	if (state->daemon) {
+		printf("\n");
+		fflush(stdout);
+		return;
+	}
 	printf("\nuser> ");
 	fflush(stdout);
 }
@@ -333,6 +345,16 @@ run_stdin_batch(struct cli_state *state, uv_loop_t *loop)
 
 	printf("\n");
 	fflush(stdout);
+}
+
+static void
+on_stop_signal(uv_signal_t *handle, int signum)
+{
+	struct cli_state *state = (struct cli_state *)handle->data;
+
+	fprintf(stderr, "clm: signal %d, stopping\n", signum);
+	state->stopping = 1;
+	uv_stop(state->loop);
 }
 
 static void
@@ -659,6 +681,7 @@ main(int argc, char *argv[])
 	const char *agent_name = NULL;
 	char *oneshot = NULL;
 	char *forever_prompt = NULL;
+	char *daemon_prompt = NULL;
 	int stream = 1;
 	int headless = 0;
 	/* Serial tool dispatch by default: a model that batches two calls of
@@ -691,6 +714,7 @@ main(int argc, char *argv[])
 	    {"agent", required_argument, NULL, 'a'},
 	    {"resume", optional_argument, NULL, 'r'},
 	    {"headless", no_argument, NULL, 'H'},
+	    {"daemon", required_argument, NULL, 'D'},
 	    {"no-stream", no_argument, NULL, 'S'},
 	    {"allow-all-tools", no_argument, NULL, OPT_ALLOW_ALL},
 	    {"version", no_argument, NULL, 'V'},
@@ -699,7 +723,7 @@ main(int argc, char *argv[])
 	};
 
 	while ((opt = getopt_long(
-	            argc, argv, "a:o:f:u:m:p:r::HSVh", opts, NULL)) != -1) {
+	            argc, argv, "a:o:f:u:m:p:r::HD:SVh", opts, NULL)) != -1) {
 		switch (opt) {
 		case OPT_ALLOW_ALL:
 			allow_all = true;
@@ -735,6 +759,10 @@ main(int argc, char *argv[])
 			plugin_dir = optarg;
 			break;
 		case 'H':
+			headless = 1;
+			break;
+		case 'D':
+			daemon_prompt = optarg;
 			headless = 1;
 			break;
 		case 'V':
@@ -877,10 +905,14 @@ main(int argc, char *argv[])
 	 * forced headless, and stdin+stdout are both a terminal. Otherwise fall
 	 * through to the plain stdio path (works for pipes and --oneshot).
 	 */
+	if (oneshot != NULL && daemon_prompt != NULL) {
+		fprintf(stderr, "error: --oneshot and --daemon conflict\n");
+		return 1;
+	}
 	if (resume && (oneshot != NULL || headless)) {
 		fprintf(stderr,
 		    "error: --resume needs the interactive TUI "
-		    "(not --oneshot/--headless)\n");
+		    "(not --oneshot/--headless/--daemon)\n");
 		return 1;
 	}
 
@@ -990,6 +1022,7 @@ main(int argc, char *argv[])
 	state->loop = loop;
 
 	state->oneshot = (oneshot != NULL);
+	state->daemon = (daemon_prompt != NULL);
 
 	/* No session here to name the directory, so key it by pid; the empty
 	 * ones are removed on the way out and the sweep takes the rest. */
@@ -1088,14 +1121,39 @@ main(int argc, char *argv[])
 		return r == 0 ? 0 : 1;
 	}
 
-	printf("clm agent. api: %s\n", endpoint);
-	printf("type 'quit' or 'exit' to stop.\n\n");
-	printf("user> ");
-	fflush(stdout);
+	if (daemon_prompt != NULL) {
+		/* No stdin: monitor events drive every turn after the first.
+		 * The signal handles keep the loop alive while none run. */
+		printf("clm daemon. api: %s\n", endpoint);
+		fflush(stdout);
+		uv_signal_init(loop, &state->sigint);
+		uv_signal_init(loop, &state->sigterm);
+		state->sigint.data = state;
+		state->sigterm.data = state;
+		uv_signal_start(&state->sigint, on_stop_signal, SIGINT);
+		uv_signal_start(&state->sigterm, on_stop_signal, SIGTERM);
 
-	if (uv_guess_handle(fileno(stdin)) == UV_FILE) {
+		if (clm_agent_submit(state->agent, daemon_prompt) < 0)
+			fprintf(stderr, "error: %s\n",
+			    clm_agent_get_last_error(state->agent));
+		else
+			uv_run(loop, UV_RUN_DEFAULT);
+
+		clm_settle_turn(state->agent, loop);
+		uv_close((uv_handle_t *)&state->sigint, NULL);
+		uv_close((uv_handle_t *)&state->sigterm, NULL);
+	} else if (uv_guess_handle(fileno(stdin)) == UV_FILE) {
+		printf("clm agent. api: %s\n", endpoint);
+		printf("type 'quit' or 'exit' to stop.\n\n");
+		printf("user> ");
+		fflush(stdout);
+		run_stdin_batch(state, loop);
 		run_stdin_batch(state, loop);
 	} else {
+		printf("clm agent. api: %s\n", endpoint);
+		printf("type 'quit' or 'exit' to stop.\n\n");
+		printf("user> ");
+		fflush(stdout);
 		uv_pipe_init(loop, &state->stdin_pipe, 0);
 		uv_pipe_open(&state->stdin_pipe, fileno(stdin));
 		state->stdin_pipe.data = (uv_handle_t *)state;
@@ -1118,11 +1176,12 @@ main(int argc, char *argv[])
 	clm_agent_free(state->agent);
 	clm_host_uv_free(state->host);
 	/*
-	 * stdin_pipe lives in `state`, so a drain that timed out may have
-	 * left libuv holding a pointer into it: strand the struct rather than
-	 * free it, the same call the tui makes. The earlier exit paths above
-	 * free it unconditionally because they never reach the branch that
-	 * initializes stdin_pipe -- nothing of theirs is ever on the loop.
+	 * stdin_pipe and the signal handles live in `state`, so a drain that
+	 * timed out may have left libuv holding a pointer into it: strand the
+	 * struct rather than free it, the same call the tui makes. The earlier
+	 * exit paths above free it unconditionally because they never reach
+	 * the branches that initialize those handles -- nothing of theirs is
+	 * ever on the loop.
 	 */
 	if (clm_drain_loop(loop) == 0)
 		free(state);
