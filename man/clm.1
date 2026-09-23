@@ -89,6 +89,17 @@ The process stops on
 .Dv SIGINT
 or
 .Dv SIGTERM .
+A daemon compacts its context at the end of a turn that leaves it over
+the autocompact threshold.
+With
+.Fl r Ar id ,
+the daemon keeps one session log under the exact
+.Ar id
+across restarts: it replays that session if it exists, and creates it
+if not.
+Without
+.Fl r ,
+nothing is logged.
 Incompatible with
 .Fl -oneshot .
 .It Fl H , Fl -headless
@@ -195,10 +206,12 @@ The
 .Ic /clear
 command starts a fresh session file, leaving the old one resumable.
 Incompatible with
-.Fl -oneshot ,
-.Fl -headless
+.Fl -oneshot
 and
-.Fl -daemon .
+.Fl -headless ;
+see
+.Fl -daemon
+for its use there.
 .It Fl -allow-all-tools
 Run every tool call without asking.
 The permission gate exists because a model can be talked into running

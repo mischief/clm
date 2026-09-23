@@ -125,6 +125,7 @@ struct cli_state {
 	struct clm_lua_env *lua_env;
 	struct clm_lua_cfg *lua_cfg;
 	struct clm_peer *peer;
+	struct clm_session *session; /* daemon -r ID only; NULL otherwise */
 	struct clm_mcp_client **mcp_clients;
 	size_t mcp_client_count;
 	uv_pipe_t stdin_pipe;
@@ -134,8 +135,9 @@ struct cli_state {
 	int oneshot;
 	int daemon;
 	int batch;
-	int mid_reply; /* "assistant> " already printed for this reply */
-	int stopping;  /* a stop signal arrived; the cancel is not an error */
+	int mid_reply;  /* "assistant> " already printed for this reply */
+	int stopping;   /* a stop signal arrived; the cancel is not an error */
+	int compacting; /* daemon: a turn-end autocompact is running */
 	int turn_done;
 	int turn_status;
 };
@@ -230,9 +232,49 @@ cb_tool_batch(size_t completed, size_t total, void *user)
 	fflush(stdout);
 }
 
+/*
+ * Mirror appended history into the daemon's session log. System messages
+ * are rebuilt from config on every start, so they are not logged.
+ */
 static void
-cb_state(enum clm_agent_state state, void *user)
+cb_message(const struct clm_message *msg, void *user)
 {
+	struct cli_state *state = (struct cli_state *)user;
+
+	if (state->session == NULL || msg->role == CLM_ROLE_SYSTEM)
+		return;
+	if (clm_session_append(state->session, msg, NULL) < 0) {
+		fprintf(stderr, "warning: session logging failed; disabled\n");
+		clm_session_free(state->session);
+		state->session = NULL;
+	}
+}
+
+/* A compaction rewrites history, which on_message does not report. */
+static void
+session_after_compact(struct cli_state *state)
+{
+	const struct clm_history *h;
+
+	if (state->session == NULL)
+		return;
+	h = clm_agent_get_history(state->agent);
+	if (h != NULL && clm_session_rewrite(state->session, h, NULL) < 0) {
+		fprintf(stderr, "warning: session rewrite failed; disabled\n");
+		clm_session_free(state->session);
+		state->session = NULL;
+	}
+}
+
+static void
+cb_state(enum clm_agent_state st, void *user)
+{
+	struct cli_state *state = (struct cli_state *)user;
+
+	(void)st;
+	if (state->daemon &&
+	    clm_agent_take_mid_chain_compact_succeeded(state->agent))
+		session_after_compact(state);
 }
 
 static void
@@ -258,6 +300,18 @@ cb_turn_done(int status, void *user)
 	if (state->oneshot)
 		return;
 	if (state->daemon) {
+		/* A daemon has no human to run /compact, so compact here
+		 * once a turn leaves the context over the threshold. */
+		if (state->compacting) {
+			state->compacting = 0;
+			if (status == 0)
+				session_after_compact(state);
+		} else if ((status == 0 || status == -ECANCELED) &&
+		    !state->stopping &&
+		    clm_agent_over_autocompact_threshold(state->agent) &&
+		    clm_agent_compact(state->agent) == 0) {
+			state->compacting = 1;
+		}
 		printf("\n");
 		fflush(stdout);
 		return;
@@ -290,6 +344,7 @@ static const struct clm_callbacks cli_callbacks = {
     .on_state = cb_state,
     .on_turn_done = cb_turn_done,
     .on_notice = cb_notice,
+    .on_message = cb_message,
 };
 
 static void
@@ -682,6 +737,9 @@ main(int argc, char *argv[])
 	char *oneshot = NULL;
 	char *forever_prompt = NULL;
 	char *daemon_prompt = NULL;
+	struct clm_session *dsess = NULL; /* daemon -r ID */
+	struct clm_history drestore;      /* its log, replayed at start */
+	int drepaired = 0;
 	int stream = 1;
 	int headless = 0;
 	/* Serial tool dispatch by default: a model that batches two calls of
@@ -909,10 +967,15 @@ main(int argc, char *argv[])
 		fprintf(stderr, "error: --oneshot and --daemon conflict\n");
 		return 1;
 	}
-	if (resume && (oneshot != NULL || headless)) {
+	if (resume &&
+	    (oneshot != NULL || (headless && daemon_prompt == NULL))) {
 		fprintf(stderr,
-		    "error: --resume needs the interactive TUI "
-		    "(not --oneshot/--headless/--daemon)\n");
+		    "error: --resume needs the interactive TUI or "
+		    "--daemon (not --oneshot/--headless)\n");
+		return 1;
+	}
+	if (resume && daemon_prompt != NULL && resume_id == NULL) {
+		fprintf(stderr, "error: --daemon --resume needs an id\n");
 		return 1;
 	}
 
@@ -1010,13 +1073,39 @@ main(int argc, char *argv[])
 		return rc;
 	}
 
+	/*
+	 * A daemon with -r keeps one session under a fixed id across
+	 * restarts: resume it if it exists, create it if not.
+	 */
+	clm_history_init(&drestore);
+	if (daemon_prompt != NULL && resume_id != NULL) {
+		r = clm_session_load(NULL, resume_id, &drestore, NULL);
+		if (r == 0) {
+			drepaired =
+			    clm_history_repair_dangling_tool_calls(&drestore);
+			r = clm_session_open(NULL, resume_id, &dsess);
+		} else if (r == -ENOENT) {
+			r = clm_session_create_id(NULL, resume_id, model_name,
+			    cfg.provider_name, agent_name, &dsess);
+		}
+		if (r < 0) {
+			fprintf(stderr, "error: session %s: %s\n", resume_id,
+			    strerror(-r));
+			clm_history_free(&drestore);
+			return 1;
+		}
+	}
+
 	/* Heap-allocated so the 1 KB input buffer stays off main's stack frame.
 	 */
 	state = calloc(1, sizeof(*state));
 	if (state == NULL) {
 		fprintf(stderr, "error: out of memory\n");
+		clm_session_free(dsess);
+		clm_history_free(&drestore);
 		return 1;
 	}
+	state->session = dsess;
 
 	loop = uv_default_loop();
 	state->loop = loop;
@@ -1054,6 +1143,19 @@ main(int argc, char *argv[])
 	if (effort != NULL && clm_agent_set_effort(state->agent, effort) < 0)
 		fprintf(
 		    stderr, "warning: could not set effort \"%s\"\n", effort);
+	if (!TAILQ_EMPTY(&drestore)) {
+		if (clm_agent_restore_history(state->agent, &drestore) < 0)
+			fprintf(stderr,
+			    "warning: could not restore session %s; "
+			    "starting fresh\n",
+			    resume_id);
+		else
+			fprintf(stderr,
+			    "resumed session %s (%d dangling tool calls "
+			    "repaired)\n",
+			    resume_id, drepaired);
+	}
+	clm_history_free(&drestore);
 	/* Client-only peer messaging: a headless run can find and message the
 	 * agents that are running, but does not advertise itself -- it exits
 	 * as soon as its turn does. */
@@ -1174,6 +1276,7 @@ main(int argc, char *argv[])
 	clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
 	clm_peer_free(state->peer);
 	clm_agent_free(state->agent);
+	clm_session_free(state->session);
 	clm_host_uv_free(state->host);
 	/*
 	 * stdin_pipe and the signal handles live in `state`, so a drain that
