@@ -1817,6 +1817,63 @@ rebuild_render(struct ui *u, int w)
 	u->built_reasoning = u->show_reasoning;
 }
 
+static bool
+wrap_is_space(wchar_t wc)
+{
+	return wc == L' ' || wc == L'\t' || wc == L'\n';
+}
+
+/* True if the text before rsegs[i] ends in whitespace, or nothing precedes
+ * it. Lets a resumed walk know whether rsegs[i] starts a new word. */
+static bool
+wrap_space_before(const struct ui *u, size_t i)
+{
+	while (i > 0) {
+		const char *s = u->rsegs[--i].text;
+		size_t len = strlen(s);
+
+		if (len > 0)
+			return s[len - 1] == ' ' || s[len - 1] == '\t' ||
+			    s[len - 1] == '\n';
+	}
+	return true;
+}
+
+/* Display width of the word that starts at byte j of rsegs[i]. The word
+ * can span later rsegs. The scan stops at whitespace or once the width
+ * exceeds cap. */
+static int
+wrap_word_width(const struct ui *u, size_t i, size_t j, int cap)
+{
+	int width = 0;
+
+	for (; i < u->nrsegs; i++, j = 0) {
+		const char *s = u->rsegs[i].text;
+		size_t len = strlen(s);
+		mbstate_t ps;
+
+		memset(&ps, 0, sizeof(ps));
+		while (j < len) {
+			wchar_t wc;
+			size_t k = mbrtowc(&wc, s + j, len - j, &ps);
+			int cw;
+
+			if (k == (size_t)-1 || k == (size_t)-2 || k == 0) {
+				k = 1;
+				wc = 0;
+			}
+			if (wrap_is_space(wc))
+				return width;
+			cw = wcwidth(wc);
+			width += cw < 0 ? 1 : cw;
+			if (width > cap)
+				return width;
+			j += k;
+		}
+	}
+	return width;
+}
+
 /*
  * Soft-wrap rsegs[i0, iN) to width w, starting at cursor (*row, *col), and
  * advance *row and *col past the last character walked. If ckpt_row and
@@ -1827,11 +1884,17 @@ rebuild_render(struct ui *u, int w)
  * u->txt at row (index - start). Both the checkpoint-building pass and the
  * paint pass call this same core loop, so they can never disagree about
  * where lines wrap.
+ *
+ * A word that does not fit on the current row moves to the next row whole.
+ * A word wider than w breaks at the right edge. A space that overflows the
+ * row is dropped, so a wrapped row does not start with it.
  */
 static void
 wrap_span(struct ui *u, size_t i0, size_t iN, int *row, int *col, int w, int h,
     int start, bool draw, int *ckpt_row, int *ckpt_col)
 {
+	bool space_before = wrap_space_before(u, i0);
+
 	for (size_t i = i0; i < iN; i++) {
 		const char *s = u->rsegs[i].text;
 		size_t len = strlen(s);
@@ -1858,12 +1921,29 @@ wrap_span(struct ui *u, size_t i0, size_t iN, int *row, int *col, int w, int h,
 			if (wc == L'\n') {
 				(*row)++;
 				*col = 0;
+				space_before = true;
 				j += k;
 				continue;
 			}
 			cw = wcwidth(wc);
 			if (cw < 0)
 				cw = 1;
+			if (wrap_is_space(wc) && *col + cw > w) {
+				(*row)++;
+				*col = 0;
+				space_before = true;
+				j += k;
+				continue;
+			}
+			if (space_before && *col > 0) {
+				int ww = wrap_word_width(u, i, j, w);
+
+				if (*col + ww > w && ww <= w) {
+					(*row)++;
+					*col = 0;
+				}
+			}
+			space_before = wrap_is_space(wc);
 			if (cw > 0 && *col + cw > w) {
 				(*row)++;
 				*col = 0;
