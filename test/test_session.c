@@ -401,6 +401,28 @@ test_id_validation(const char *dir)
 }
 
 static void
+test_create_fixed_id(const char *dir)
+{
+	struct clm_session *s = NULL;
+
+	CHECK(clm_session_create_id(dir, "fixed-id", "m", NULL, NULL, &s) == 0,
+	    "create under a chosen id");
+	CHECK(s != NULL && strcmp(clm_session_id(s), "fixed-id") == 0,
+	    "chosen id kept");
+	clm_session_free(s);
+
+	s = NULL;
+	CHECK(clm_session_create_id(dir, "fixed-id", "m", NULL, NULL, &s) ==
+	        -EEXIST,
+	    "second create of the same id is EEXIST");
+	CHECK(clm_session_create_id(dir, "../evil", NULL, NULL, NULL, &s) ==
+	        -EINVAL,
+	    "path traversal id rejected on create");
+	CHECK(clm_session_open(dir, "fixed-id", &s) == 0, "fixed id reopens");
+	CHECK(clm_session_discard(s) == 0, "discard fixed-id session");
+}
+
+static void
 test_listing(const char *dir)
 {
 	struct clm_session_info *infos = NULL;
@@ -524,6 +546,7 @@ test_session_suite(void *arg)
 	test_crash_tolerance(dir);
 	test_dangling_tool_call_repair(dir);
 	test_id_validation(dir);
+	test_create_fixed_id(dir);
 	test_listing(dir);
 	test_gc(dir);
 	remove_dir(dir);

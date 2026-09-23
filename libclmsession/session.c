@@ -213,23 +213,17 @@ session_alloc(int fd, const char *id, const char *path)
 	return s;
 }
 
-int
-clm_session_create(const char *dir, const char *model,
+/* Create <dir>/<id>.jsonl and write its meta line. id is already valid. */
+static int
+session_create_at(const char *dir, const char *id, const char *model,
     const char *provider_name, const char *agent_name, struct clm_session **out)
 {
-	char id[SESSION_ID_MAX];
 	autofree char *path = NULL;
 	json_cleanup cJSON *meta = NULL;
 	autoclose int fd = -1;
 	struct clm_session *s;
 	int r;
 
-	ASSERT_RETURN(out != NULL, -EINVAL);
-	*out = NULL;
-
-	r = generate_id(id, sizeof(id));
-	if (r < 0)
-		return r;
 	r = session_path(dir, id, &path);
 	if (r < 0)
 		return r;
@@ -273,6 +267,36 @@ fail_nomem:
 fail:
 	(void)unlink(path);
 	return r;
+}
+
+int
+clm_session_create(const char *dir, const char *model,
+    const char *provider_name, const char *agent_name, struct clm_session **out)
+{
+	char id[SESSION_ID_MAX];
+	int r;
+
+	ASSERT_RETURN(out != NULL, -EINVAL);
+	*out = NULL;
+
+	r = generate_id(id, sizeof(id));
+	if (r < 0)
+		return r;
+	return session_create_at(
+	    dir, id, model, provider_name, agent_name, out);
+}
+
+int
+clm_session_create_id(const char *dir, const char *id, const char *model,
+    const char *provider_name, const char *agent_name, struct clm_session **out)
+{
+	ASSERT_RETURN(out != NULL, -EINVAL);
+	*out = NULL;
+
+	if (!id_valid(id) || strlen(id) >= SESSION_ID_MAX)
+		return -EINVAL;
+	return session_create_at(
+	    dir, id, model, provider_name, agent_name, out);
 }
 
 int

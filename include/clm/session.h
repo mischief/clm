@@ -54,6 +54,15 @@ CLM_API int clm_session_create(const char *dir, const char *model,
     struct clm_session **out);
 
 /*
+ * Create a new session under a caller-chosen id, for a frontend that keeps
+ * one fixed session across restarts. -EEXIST if that session exists,
+ * -EINVAL if id is not valid (see clm_session_open).
+ */
+CLM_API int clm_session_create_id(const char *dir, const char *id,
+    const char *model, const char *provider_name, const char *agent_name,
+    struct clm_session **out);
+
+/*
  * Open an existing session for appending. -ENOENT if no such session,
  * -EINVAL if id is not a valid session id (ids are [0-9A-Za-z-] only;
  * anything else is rejected before touching the filesystem).
