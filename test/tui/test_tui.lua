@@ -845,7 +845,8 @@ tests.session_compact = function(url)
 	local t = driver.new(BIN, url, { rows = 24, cols = 70 })
 
 	t:wait_for("online", 8)
-	for _ = 1, 3 do
+	-- Enough turns that the leading context update is not half the log.
+	for _ = 1, 6 do
 		t:send("show me fruit\r")
 		must(t:wait_for("Yellow", 15), "no reply to log")
 		t:pump(0.3)
@@ -867,7 +868,7 @@ tests.session_compact = function(url)
 		if trim(ln) ~= "" then
 			local rec = json.decode(ln)
 			kinds[#kinds + 1] = rec.type
-			if #kinds > 1 then
+			if rec.type == "msg" then
 				msgs[#msgs + 1] = rec
 			end
 		end
@@ -875,9 +876,12 @@ tests.session_compact = function(url)
 	check(kinds[1] == "meta", "compact: rewritten log keeps its meta line")
 	local all_msg = true
 	local no_system = true
+	local prompts = 0
 	local users = {}
 	for i = 2, #kinds do
-		if kinds[i] ~= "msg" then
+		if kinds[i] == "prompt" then
+			prompts = prompts + 1
+		elseif kinds[i] ~= "msg" then
 			all_msg = false
 		end
 	end
@@ -885,11 +889,13 @@ tests.session_compact = function(url)
 		if m.role == "system" then
 			no_system = false
 		end
-		if m.role == "user" then
-			users[#users + 1] = m.content or ""
+		local c = m.content or ""
+		if m.role == "user" and c:sub(1, 16) ~= "[context update]" then
+			users[#users + 1] = c
 		end
 	end
-	check(all_msg, "compact: every later line is a message")
+	check(all_msg, "compact: every later line is a message or the prompt")
+	check(prompts == 1, "compact: the rewrite keeps one prompt record")
 	check(no_system,
 	    "compact: the rebuilt-on-resume system prologue stays out")
 	-- The mock answers the summarize call with its usual reply, so the
@@ -901,7 +907,13 @@ tests.session_compact = function(url)
 		end
 	end
 	check(summarized, "compact: the summary replaced the folded turns")
-	check(#users < 4, "compact: fewer prompts remain than were typed")
+	local typed = 0
+	for _, c in ipairs(users) do
+		if c == "show me fruit" then
+			typed = typed + 1
+		end
+	end
+	check(typed < 6, "compact: fewer prompts remain than were typed")
 	check(not exists(path .. ".tmp"),
 	    "compact: no temporary file left behind")
 
@@ -963,19 +975,19 @@ tests.scratch = function(url)
 	t:close()
 	mock.request_log(nil)
 
-	-- The system prompt names the session, so an agent can tell another
-	-- one where to reach it. Read it off the wire: the session log leaves
-	-- the prologue out on purpose.
-	local prologue = ""
+	-- The first context update names the session, so an agent can tell
+	-- another one where to reach it. Read it off the wire.
+	local facts = ""
 	for ln in (read_file(reqlog) or ""):gmatch("[^\n]+") do
 		for _, m in ipairs(json.decode(ln).messages or {}) do
-			if m.role == "system" then
-				prologue = m.content or ""
+			local c = m.content or ""
+			if m.role == "user" and c:sub(1, 16) == "[context update]" then
+				facts = facts .. c
 			end
 		end
 	end
-	check(sid ~= nil and has(prologue, "this session's id: " .. sid),
-	    "scratch: the prompt names this session's id")
+	check(sid ~= nil and has(facts, "this session's id: " .. sid),
+	    "scratch: the context update names this session's id")
 
 	local root = cache .. "/clm/scratch"
 	local st = sys.stat(root)

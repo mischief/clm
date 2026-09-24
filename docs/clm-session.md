@@ -89,9 +89,32 @@ The optional fields are recorded for the session listing only.
 Nothing reads them back into the conversation, so resuming a session
 under a different model or provider works.
 
+## The prompt record
+
+A prompt record keeps the system prompt as it was sent, for reference.
+It is written when a session starts or is compacted, but only when the
+prompt differs from the last prompt record in the file, so a daemon that
+restarts with the same configuration adds nothing.
+It is never loaded back into a resumed session.
+
+*type*
+
+Always
+"prompt".
+
+*hash*
+
+A 64-bit FNV-1a hash of
+*content*,
+as 16 hex digits.
+
+*content*
+
+The system prompt.
+
 ## The message record
 
-Every later line is one message, in the order it happened.
+Every other line is one message, in the order it happened.
 
 *type*
 
@@ -145,9 +168,13 @@ Present on
 "tool"
 messages.
 
-The system prompt is not written to the log.
+The system prompt is not written as a message.
 It is rebuilt from the configuration when the session resumes, so a
 change to the prompt or to the tool set takes effect on the next run.
+It holds no time and no host facts, which arrive in a
+"\[context update]"
+user message instead, so an unchanged configuration sends an identical
+system prompt on every start.
 
 Superseded tool results are not represented either.
 The log keeps each result at full size, and a resumed session replays

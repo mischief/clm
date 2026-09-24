@@ -238,15 +238,16 @@ cb_tool_batch(size_t completed, size_t total, void *user)
 }
 
 /*
- * Mirror appended history into the daemon's session log. System messages
- * are rebuilt from config on every start, so they are not logged.
+ * Mirror appended history into the daemon's session log. A system message
+ * becomes a prompt record: it is rebuilt from config on every start and
+ * never replayed.
  */
 static void
 cb_message(const struct clm_message *msg, void *user)
 {
 	struct cli_state *state = (struct cli_state *)user;
 
-	if (state->session == NULL || msg->role == CLM_ROLE_SYSTEM)
+	if (state->session == NULL)
 		return;
 	if (clm_session_append(state->session, msg, NULL) < 0) {
 		fprintf(stderr, "warning: session logging failed; disabled\n");

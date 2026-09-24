@@ -999,9 +999,9 @@ cb_notice(const char *text, void *user)
 }
 
 /*
- * Mirror every appended history message into the session log. System
- * messages are skipped: the prologue is rebuilt from config on every start,
- * so persisting it would only resurrect a stale prompt on resume.
+ * Mirror every appended history message into the session log. A system
+ * message becomes a prompt record, kept for reference: the prologue is
+ * rebuilt from config on every start and never replayed.
  */
 static void
 cb_message(const struct clm_message *msg, void *user)
@@ -1009,7 +1009,7 @@ cb_message(const struct clm_message *msg, void *user)
 	struct ui *u = user;
 	int r;
 
-	if (u->session == NULL || msg->role == CLM_ROLE_SYSTEM)
+	if (u->session == NULL)
 		return;
 
 	r = clm_session_append(u->session, msg, NULL);

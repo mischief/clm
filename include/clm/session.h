@@ -21,6 +21,11 @@
  *   line 1:  {"type":"meta","v":1,"id":"...","created":<unix>,
  *             "model":"...","provider":"...","agent":"..."}
  *   line 2+: {"type":"msg", ...clm_message_to_json_full() shape...}
+ *            {"type":"prompt","hash":"...","content":"..."}
+ *
+ * clm_session_append() turns a system message into a prompt record, and
+ * writes it only when its hash differs from the last one. Prompt records
+ * are for reference; clm_session_load() skips them.
  *
  * Each message is appended as a single O_APPEND write, so a crash never
  * corrupts prior lines; the loader ignores a truncated or unparsable

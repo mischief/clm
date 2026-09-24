@@ -529,6 +529,76 @@ test_gc(const char *dir)
 	    "gc: zero days keeps everything");
 }
 
+/* Count the lines of a session file that start with prefix. */
+static int
+count_lines(const char *dir, const char *id, const char *prefix)
+{
+	char path[512], line[4096];
+	FILE *f;
+	int n = 0;
+
+	(void)snprintf(path, sizeof(path), "%s/%s.jsonl", dir, id);
+	f = fopen(path, "r");
+	if (f == NULL)
+		return -1;
+	while (fgets(line, sizeof(line), f) != NULL)
+		if (strncmp(line, prefix, strlen(prefix)) == 0)
+			n++;
+	fclose(f);
+	return n;
+}
+
+/* The system message is kept as a prompt record, written only on change,
+ * and never loaded back as a message. */
+static void
+test_prompt_records(const char *dir)
+{
+	struct clm_session *s = NULL;
+	struct clm_history h, out;
+	const char *rec = "{\"type\":\"prompt\"";
+	char id[128];
+
+	clm_history_init(&h);
+	clm_history_init(&out);
+	clm_history_add_system(&h, "prompt one", NULL);
+	clm_history_add_system(&h, "prompt two", NULL);
+	clm_history_add_user(&h, "hi", NULL);
+
+	CHECK(clm_session_create(dir, NULL, NULL, NULL, &s) == 0,
+	    "prompt: create");
+	(void)snprintf(id, sizeof(id), "%s", clm_session_id(s));
+	CHECK(clm_session_append(s, TAILQ_FIRST(&h), NULL) == 0,
+	    "prompt: append system");
+	CHECK(clm_session_append(s, TAILQ_FIRST(&h), NULL) == 0,
+	    "prompt: append the same system again");
+	CHECK(count_lines(dir, id, rec) == 1, "prompt: the same prompt once");
+	clm_session_free(s);
+
+	s = NULL;
+	CHECK(clm_session_open(dir, id, &s) == 0, "prompt: reopen");
+	CHECK(clm_session_append(s, TAILQ_FIRST(&h), NULL) == 0,
+	    "prompt: append after reopen");
+	CHECK(count_lines(dir, id, rec) == 1,
+	    "prompt: reopen remembers the last prompt");
+	CHECK(clm_session_append(
+	          s, TAILQ_NEXT(TAILQ_FIRST(&h), entries), NULL) == 0,
+	    "prompt: append a changed system");
+	CHECK(count_lines(dir, id, rec) == 2, "prompt: a change adds a record");
+	CHECK(clm_session_append(s, TAILQ_LAST(&h, clm_history), NULL) == 0,
+	    "prompt: append user");
+	CHECK(clm_session_rewrite(s, &h, NULL) == 0, "prompt: rewrite");
+	CHECK(count_lines(dir, id, rec) == 2,
+	    "prompt: rewrite keeps one record per system message");
+	clm_session_free(s);
+
+	CHECK(clm_session_load(dir, id, &out, NULL) == 0, "prompt: load");
+	CHECK(
+	    history_len(&out) == 1 && TAILQ_FIRST(&out)->role == CLM_ROLE_USER,
+	    "prompt: records are not loaded as messages");
+	clm_history_free(&h);
+	clm_history_free(&out);
+}
+
 static int
 test_session_suite(void *arg)
 {
@@ -549,6 +619,7 @@ test_session_suite(void *arg)
 	test_create_fixed_id(dir);
 	test_listing(dir);
 	test_gc(dir);
+	test_prompt_records(dir);
 	remove_dir(dir);
 
 	return 0;

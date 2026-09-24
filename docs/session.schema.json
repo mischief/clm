@@ -8,9 +8,10 @@
   "oneOf": [
     { "$ref": "#/$defs/meta" },
     { "$ref": "#/$defs/msg" },
+    { "$ref": "#/$defs/prompt" },
     {
       "description": "Forward compatibility: a record type written by a newer clm.",
-      "not": { "properties": { "type": { "enum": ["meta", "msg"] } } }
+      "not": { "properties": { "type": { "enum": ["meta", "msg", "prompt"] } } }
     }
   ],
   "$defs": {
@@ -45,9 +46,27 @@
         }
       }
     },
+    "prompt": {
+      "title": "prompt record",
+      "description": "The system prompt as sent, for reference; never loaded on resume. Written at start and after a compaction, only when it differs from the last prompt record.",
+      "type": "object",
+      "required": ["type", "hash", "content"],
+      "properties": {
+        "type": { "const": "prompt" },
+        "hash": {
+          "description": "64-bit FNV-1a of content, as 16 hex digits.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "content": {
+          "description": "The system prompt.",
+          "type": "string"
+        }
+      }
+    },
     "msg": {
       "title": "message record",
-      "description": "One conversation message, in the order it happened. The system prompt is never written: it is rebuilt from the configuration on resume.",
+      "description": "One conversation message, in the order it happened. The system prompt is never written as a message: it is rebuilt from the configuration on resume.",
       "type": "object",
       "required": ["type", "role"],
       "properties": {

@@ -49,11 +49,13 @@ struct clm_agent {
 	 * (cfg->system_prompt), or NULL meaning "use the built-in
 	 * default_system_prompt". Retained (owned, strdup'd) purely so
 	 * clm_agent_clear_history() can rebuild the same system message a fresh
-	 * clm_agent_new() would produce -- current-time stamp included --
-	 * without the caller having to supply it again. */
+	 * clm_agent_new() would produce without the caller having to supply it
+	 * again. */
 	char *system_prompt_base;
-	/* cfg->system_prompt_suffix, owned; appended to every prompt build. */
+	/* cfg->system_prompt_suffix, owned. Host facts, sent with the next
+	 * time context update while facts_pending is set. */
 	char *system_prompt_suffix;
+	bool facts_pending;
 
 	/*
 	 * Responses API chain: the last response's id and how many history

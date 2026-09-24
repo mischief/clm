@@ -245,9 +245,10 @@ struct clm_cfg {
 	size_t max_iterations;
 	bool stream;               /* request streamed (SSE) responses */
 	const char *system_prompt; /* system message; NULL uses a default */
-	/* Appended verbatim to the end of every system message the agent
-	 * builds, including rebuilds after an agent-profile switch. For host
-	 * facts the model cannot see (OS, userland, hardware). */
+	/* Host facts the model cannot see (OS, userland, hardware). Sent in
+	 * the first turn's context update, and again after a compaction or
+	 * clear, not in the system message, so that message stays the same
+	 * across restarts and a resumed session keeps the server's cache. */
 	const char *system_prompt_suffix;
 
 	/* Provider-specific overrides (0 = use defaults) */

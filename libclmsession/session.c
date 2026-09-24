@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: ISC
 #include "clm/session.h"
 #include "clm/cleanup.h"
+#include "clm/log.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,8 +26,11 @@ struct clm_session {
 	int fd;
 	char *id;
 	char *path;
-	bool has_msgs; /* a user/assistant message exists, ever */
+	bool has_msgs;        /* a user/assistant message exists, ever */
+	uint64_t prompt_hash; /* of the last prompt record; 0 if none */
 };
+
+static uint64_t last_prompt_hash(const char *path);
 
 /*
  * Session ids embed straight into filenames, so reject anything outside
@@ -327,8 +332,89 @@ clm_session_open(const char *dir, const char *id, struct clm_session **out)
 	/* A session worth resuming has messages; treat it as non-empty so
 	 * an exit right after resume never deletes the file. */
 	s->has_msgs = true;
+	s->prompt_hash = last_prompt_hash(path);
 	*out = s;
 	return 0;
+}
+
+/* FNV-1a: only tells one prompt from the next, not a security hash. */
+static uint64_t
+prompt_hash(const char *s)
+{
+	uint64_t h = 14695981039346656037ULL;
+
+	for (; *s != '\0'; s++) {
+		h ^= (unsigned char)*s;
+		h *= 1099511628211ULL;
+	}
+	return h != 0 ? h : 1;
+}
+
+/* A prompt record: the system message as sent, kept for reference and never
+ * replayed. Written only when it differs from the last one. */
+static int
+write_prompt(struct clm_session *s, int fd, const char *content)
+{
+	json_cleanup cJSON *obj = cJSON_CreateObject();
+	uint64_t h = prompt_hash(content);
+	char hex[17];
+	int r;
+
+	if (h == s->prompt_hash)
+		return 0;
+	if (s->prompt_hash != 0)
+		clm_debug("session %s: system prompt changed since the last "
+		          "record",
+		    s->id);
+	(void)snprintf(hex, sizeof(hex), "%016" PRIx64, h);
+	if (obj == NULL ||
+	    cJSON_AddStringToObject(obj, "type", "prompt") == NULL ||
+	    cJSON_AddStringToObject(obj, "hash", hex) == NULL ||
+	    cJSON_AddStringToObject(obj, "content", content) == NULL)
+		return -ENOMEM;
+	r = write_line(fd, obj);
+	if (r == 0)
+		s->prompt_hash = h;
+	return r;
+}
+
+/* The plain text of a system message, malloc'd, or NULL. */
+static char *
+system_text(const struct clm_message *m, const struct clm_compressor *cz)
+{
+	json_cleanup cJSON *obj = clm_message_to_json_full(m, cz);
+	const char *c = cJSON_GetStringValue(
+	    cJSON_GetObjectItemCaseSensitive(obj, "content"));
+
+	return strdup(c != NULL ? c : "");
+}
+
+/* The hash of the last prompt record in the file at path, or 0. */
+static uint64_t
+last_prompt_hash(const char *path)
+{
+	autoclosefile FILE *f = fopen(path, "re");
+	autofree char *line = NULL;
+	size_t cap = 0;
+	uint64_t h = 0;
+
+	if (f == NULL)
+		return 0;
+	while (getline(&line, &cap, f) >= 0) {
+		json_cleanup cJSON *obj = NULL;
+		const char *hex;
+
+		static const char pre[] = "{\"type\":\"prompt\"";
+
+		if (strncmp(line, pre, sizeof(pre) - 1) != 0)
+			continue;
+		obj = cJSON_Parse(line);
+		hex = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(obj, "hash"));
+		if (hex != NULL)
+			h = strtoull(hex, NULL, 16);
+	}
+	return h;
 }
 
 int
@@ -339,6 +425,14 @@ clm_session_append(struct clm_session *s, const struct clm_message *m,
 	int r;
 
 	ASSERT_RETURN(s != NULL && m != NULL, -EINVAL);
+
+	if (m->role == CLM_ROLE_SYSTEM) {
+		autofree char *text = system_text(m, cz);
+
+		if (text == NULL)
+			return -ENOMEM;
+		return write_prompt(s, s->fd, text);
+	}
 
 	obj = clm_message_to_json_full(m, cz);
 	if (obj == NULL)
@@ -407,10 +501,17 @@ clm_session_rewrite(struct clm_session *s, const struct clm_history *h,
 	{
 		json_cleanup cJSON *obj = NULL;
 
-		/* The system prologue is rebuilt from config on resume, and
-		 * the append path leaves it out for that reason. */
-		if (m->role == CLM_ROLE_SYSTEM)
+		/* The system prologue is rebuilt from config on resume; it
+		 * is kept only as a prompt record. */
+		if (m->role == CLM_ROLE_SYSTEM) {
+			autofree char *text = system_text(m, cz);
+
+			s->prompt_hash = 0;
+			r = text != NULL ? write_prompt(s, fd, text) : -ENOMEM;
+			if (r < 0)
+				goto fail;
 			continue;
+		}
 		obj = clm_message_to_json_full(m, cz);
 
 		if (obj == NULL ||

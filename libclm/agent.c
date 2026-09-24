@@ -44,7 +44,8 @@ static const char *default_system_prompt =
 static const char *time_context_note =
     "\n\nYou may periodically receive a line beginning with \"[context "
     "update]\" "
-    "carrying the current date and time. Treat it as silent ambient context, "
+    "carrying the current date and time, and sometimes facts about the "
+    "host. Treat it as silent ambient context, "
     "not "
     "as a message from the user. Never announce, repeat, or comment on the "
     "time "
@@ -65,27 +66,23 @@ fmt_rfc2822(char *buf, size_t len)
 }
 
 /*
- * Build the system prompt: the base prompt, the note explaining time
- * updates, and the caller's host-facts suffix. It holds no time, so it stays
- * the same across restarts and a resumed session still matches the server's
- * prompt cache; the first turn gets the time as a context update instead.
- * Returns a malloc'd string the caller must free, or NULL on OOM.
+ * Build the system prompt: the base prompt and the note explaining context
+ * updates. It holds no time and no host facts, so it stays the same across
+ * restarts and a resumed session still matches the server's prompt cache;
+ * both arrive in context updates instead. Returns a malloc'd string the
+ * caller must free, or NULL on OOM.
  */
 static char *
-build_system_prompt(const char *base, const char *suffix)
+build_system_prompt(const char *base)
 {
 	autofree char *out = NULL;
 	size_t len;
 
-	if (suffix == NULL)
-		suffix = "";
-
-	len = strlen(base) + strlen(time_context_note) + strlen(suffix) + 8;
+	len = strlen(base) + strlen(time_context_note) + 1;
 	out = malloc(len);
 	if (out == NULL)
 		return NULL;
-	snprintf(out, len, "%s%s%s%s", base, time_context_note,
-	    suffix[0] != '\0' ? "\n\n" : "", suffix);
+	snprintf(out, len, "%s%s", base, time_context_note);
 
 	char *ret = out;
 	out = NULL;
@@ -290,8 +287,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 		const char *base = agent->system_prompt_base
 		    ? agent->system_prompt_base
 		    : default_system_prompt;
-		autofree char *sys =
-		    build_system_prompt(base, agent->system_prompt_suffix);
+		autofree char *sys = build_system_prompt(base);
 		struct clm_message *m;
 
 		if (sys == NULL ||
@@ -302,7 +298,9 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 		}
 		clm_agent_emit_message(agent, m);
 	}
-	agent->last_time_stamp = 0; /* the first turn carries the time */
+	/* The first turn carries the time and the host facts. */
+	agent->last_time_stamp = 0;
+	agent->facts_pending = true;
 
 	if (clm_tools_register_builtins(agent) < 0) {
 		clm_agent_free(agent);
@@ -527,18 +525,27 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 	{
 		time_t now = time(NULL);
 
-		if (now - agent->last_time_stamp >= CLM_TIME_STAMP_INTERVAL) {
+		const char *facts =
+		    agent->facts_pending && agent->system_prompt_suffix != NULL
+		    ? agent->system_prompt_suffix
+		    : "";
+
+		if (now - agent->last_time_stamp >= CLM_TIME_STAMP_INTERVAL ||
+		    facts[0] != '\0') {
 			char stamp[64];
 			autofree char *msg = NULL;
+			size_t mlen;
 
 			fmt_rfc2822(stamp, sizeof(stamp));
-			msg = malloc(strlen(stamp) + 100);
+			mlen = strlen(stamp) + strlen(facts) + 100;
+			msg = malloc(mlen);
 			if (msg != NULL) {
-				snprintf(msg, strlen(stamp) + 100,
-				    "[context update] current time: %s\n"
+				snprintf(msg, mlen,
+				    "[context update] current time: %s\n%s%s"
 				    "(automatic context, not user input; do "
 				    "not acknowledge)",
-				    stamp);
+				    stamp, facts, facts[0] != '\0' ? "\n" : "");
+				agent->facts_pending = false;
 				clm_agent_emit_message(agent,
 				    clm_history_add_user(&agent->history, msg,
 				        agent->compressor));
@@ -1152,9 +1159,12 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 		    clm_history_compact_within(&agent->history, summary,
 		        keep_bytes, CLM_COMPACT_KEEP_MIN, agent->compressor);
 
-		/* The server's stored copy still holds what was folded. */
-		if (folded > 0)
+		/* The server's stored copy still holds what was folded, and the
+		 * host facts may have been folded into the summary. */
+		if (folded > 0) {
 			clm_agent_chain_reset(agent);
+			agent->facts_pending = true;
+		}
 		/* folded == 0 is failure here, not success: the history had no
 		 * valid cut point, so nothing shrank and the summary we just
 		 * paid a full-history LLM call for was discarded. Reporting it
@@ -2466,7 +2476,7 @@ clm_agent_clear_history(struct clm_agent *agent)
 
 	base = agent->system_prompt_base ? agent->system_prompt_base
 	                                 : default_system_prompt;
-	sys = build_system_prompt(base, agent->system_prompt_suffix);
+	sys = build_system_prompt(base);
 	if (sys == NULL)
 		return -ENOMEM;
 
@@ -2481,7 +2491,9 @@ clm_agent_clear_history(struct clm_agent *agent)
 		clm_agent_emit_message(agent, m);
 	}
 
-	agent->last_time_stamp = 0; /* the first turn carries the time */
+	/* The first turn carries the time and the host facts. */
+	agent->last_time_stamp = 0;
+	agent->facts_pending = true;
 	return 0;
 }
 
