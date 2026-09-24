@@ -1406,6 +1406,13 @@ input_walk(struct ui *u, int w, size_t upto, int *cy, int *cx)
 		}
 		col += cw;
 		i += k;
+		/* Filling the last column moves the curses cursor to the next
+		 * row at once, so the text needs that row too. */
+		if (col >= w) {
+			rows++;
+			row++;
+			col = 0;
+		}
 	}
 	if (upto >= u->input_len && cy != NULL) {
 		*cy = row;
@@ -1425,7 +1432,7 @@ draw_input(struct ui *u)
 {
 	int w = getmaxx(u->in);
 	int h = getmaxy(u->in);
-	int cy, cx;
+	int cy, cx, rows;
 
 	werase(u->in);
 	wmove(u->in, 0, 0);
@@ -1433,10 +1440,14 @@ draw_input(struct ui *u)
 	/* Let curses wrap the text across the box's rows. */
 	waddnstr(u->in, u->input, (int)u->input_len);
 
-	input_walk(u, w, u->input_pos, &cy, &cx);
-	if (cy > h - 1) { /* box capped and scrolled: pin cursor to last row */
-		cy = h - 1;
-		cx = w - 1;
+	rows = input_walk(u, w, u->input_pos, &cy, &cx);
+	/* A capped box scrolled its first rows away: move the cursor up with
+	 * the text. A cursor inside the lost rows sits at the top. */
+	if (rows > h)
+		cy -= rows - h;
+	if (cy < 0) {
+		cy = 0;
+		cx = 0;
 	}
 	wmove(u->in, cy, cx);
 	wnoutrefresh(u->in);

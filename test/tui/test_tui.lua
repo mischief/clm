@@ -415,6 +415,38 @@ tests.editing = function(url)
 	t:close()
 end
 
+-- Input that exactly fills a row, and input taller than the capped box: the
+-- text stays drawn and the caret sits right after the last character.
+tests.input_wrap = function(url)
+	local t = driver.new(BIN, url, { rows = 12, cols = 40 })
+	local function find(needle)
+		for i, ln in ipairs(t:lines()) do
+			local at = ln:find(needle, 1, true)
+			if at then
+				return i - 1, at - 1
+			end
+		end
+	end
+
+	t:pump(0.3)
+	t:send(("a"):rep(37) .. "Z") -- "> " plus 38 fills 40 columns
+	t:pump(0.3)
+	local zy, zx = find("Z")
+	local cy, cx = t:cursor()
+	check(zy ~= nil and zx == 39, "wrap: a full row keeps its text")
+	check(zy ~= nil and cy == zy + 1 and cx == 0,
+	    "wrap: after a full row the caret starts the next row")
+
+	t:send(driver.CTRL_U)
+	t:send(("a"):rep(259) .. "Z") -- more rows than the box holds
+	t:pump(0.3)
+	zy, zx = find("Z")
+	cy, cx = t:cursor()
+	check(zy ~= nil and cy == zy and cx == zx + 1,
+	    "wrap: in a capped box the caret follows the text")
+	t:close()
+end
+
 tests.history = function(url)
 	local t = driver.new(BIN, url, { rows = 12, cols = 60 })
 

@@ -173,7 +173,7 @@ if have_lua
   tui_script = files('tui/test_tui.lua')
   tui_groups = {
     'tui_basic': ['connection', 'offline', 'agent', 'markdown', 'resize',
-      'margin', 'editing', 'history', 'paste'],
+      'margin', 'editing', 'input_wrap', 'history', 'paste'],
     'tui_scrollback': ['scrollback', 'scroll_stable', 'end_key'],
     'tui_interaction': ['commands', 'effort', 'queueing', 'permission',
       'allow_all', 'cancel', 'cancel_tools', 'tool_escapes', 'clear_gauge'],
