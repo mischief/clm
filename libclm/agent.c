@@ -65,28 +65,27 @@ fmt_rfc2822(char *buf, size_t len)
 }
 
 /*
- * Build the session-start system prompt: the base prompt, a current-time
- * stamp, the note explaining future time updates, and the caller's host-facts
- * suffix. Returns a malloc'd string the caller must free, or NULL on OOM.
+ * Build the system prompt: the base prompt, the note explaining time
+ * updates, and the caller's host-facts suffix. It holds no time, so it stays
+ * the same across restarts and a resumed session still matches the server's
+ * prompt cache; the first turn gets the time as a context update instead.
+ * Returns a malloc'd string the caller must free, or NULL on OOM.
  */
 static char *
 build_system_prompt(const char *base, const char *suffix)
 {
-	char stamp[64];
 	autofree char *out = NULL;
 	size_t len;
 
-	fmt_rfc2822(stamp, sizeof(stamp));
 	if (suffix == NULL)
 		suffix = "";
 
-	len = strlen(base) + strlen(stamp) + strlen(time_context_note) +
-	    strlen(suffix) + 24;
+	len = strlen(base) + strlen(time_context_note) + strlen(suffix) + 8;
 	out = malloc(len);
 	if (out == NULL)
 		return NULL;
-	snprintf(out, len, "%s\n\ncurrent time: %s%s%s%s", base, stamp,
-	    time_context_note, suffix[0] != '\0' ? "\n\n" : "", suffix);
+	snprintf(out, len, "%s%s%s%s", base, time_context_note,
+	    suffix[0] != '\0' ? "\n\n" : "", suffix);
 
 	char *ret = out;
 	out = NULL;
@@ -303,7 +302,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 		}
 		clm_agent_emit_message(agent, m);
 	}
-	agent->last_time_stamp = time(NULL);
+	agent->last_time_stamp = 0; /* the first turn carries the time */
 
 	if (clm_tools_register_builtins(agent) < 0) {
 		clm_agent_free(agent);
@@ -2482,7 +2481,7 @@ clm_agent_clear_history(struct clm_agent *agent)
 		clm_agent_emit_message(agent, m);
 	}
 
-	agent->last_time_stamp = time(NULL);
+	agent->last_time_stamp = 0; /* the first turn carries the time */
 	return 0;
 }
 
