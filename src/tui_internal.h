@@ -69,8 +69,9 @@ struct ui {
 	struct clm_host *host;
 	struct clm_agent *agent;
 	struct clm_lua_env *lua_env;
-	struct clm_lua_cfg *lcfg; /* kept alive for /agent switching */
-	const char *plugin_dir;   /* NULL = use XDG default */
+	struct clm_lua_cfg *lcfg;       /* kept alive for /agent switching */
+	const char *plugin_dir;         /* NULL = use XDG default */
+	const char *const *opt_plugins; /* -P names, NULL-terminated */
 	struct clm_mcp_client **mcp_clients;
 	size_t mcp_client_count;
 	struct clm_session *session; /* NULL = session logging disabled */

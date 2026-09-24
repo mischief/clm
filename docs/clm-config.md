@@ -270,6 +270,15 @@ Each plugin sees only its own subtable, as
 *clm.config*
 (see
 [clm-tool(5)](clm-tool.md)).
+An agent file's entry for a plugin replaces the top-level entry.
+
+*plugins*
+
+A list of opt-in plugin names to load from the
+*opt/*
+subdirectory of the plugin directory, in addition to
+**-P**.
+An agent file's list replaces the top-level list.
 
 *volatile\_tools*
 

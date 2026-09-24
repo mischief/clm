@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <curl/curl.h>
 #include <uv.h>
@@ -240,6 +241,240 @@ host_uv_timer_cancel(struct clm_timer *tm)
 }
 
 /* ------------------------------------------------------------------ */
+/* Processes                                                           */
+/* ------------------------------------------------------------------ */
+
+/* Grace after the SIGTERM of proc_detach before SIGKILL. */
+#define HOST_UV_KILL_GRACE_MS 5000
+
+struct clm_proc {
+	uv_process_t proc;
+	uv_pipe_t in, out, err;
+	uv_timer_t grace;
+	uv_write_t wreq;
+	char *stdin_buf;
+	clm_proc_data_cb data;
+	clm_proc_exit_cb exit;
+	void *user;
+	int64_t status;
+	int signal;
+	int handles;    /* open uv handles; the struct is freed at 0 */
+	int open_pipes; /* stdout and stderr not yet at end of file */
+	bool exited;
+	bool detached;
+	bool settled;
+};
+
+static void
+host_uv_proc_close_cb(uv_handle_t *h)
+{
+	struct clm_proc *p = h->data;
+
+	if (--p->handles == 0) {
+		free(p->stdin_buf);
+		free(p);
+	}
+}
+
+static void
+host_uv_proc_close(uv_handle_t *h)
+{
+	if (!uv_is_closing(h))
+		uv_close(h, host_uv_proc_close_cb);
+}
+
+/* Run the exit callback once the child is gone and its output is drained,
+ * then release every handle. */
+static void
+host_uv_proc_settle(struct clm_proc *p)
+{
+	if (p->settled || !p->exited || p->open_pipes > 0)
+		return;
+	p->settled = true;
+	if (!p->detached && p->exit != NULL)
+		p->exit(p->status, p->signal, p->user);
+	uv_timer_stop(&p->grace);
+	host_uv_proc_close((uv_handle_t *)&p->proc);
+	host_uv_proc_close((uv_handle_t *)&p->in);
+	host_uv_proc_close((uv_handle_t *)&p->out);
+	host_uv_proc_close((uv_handle_t *)&p->err);
+	host_uv_proc_close((uv_handle_t *)&p->grace);
+}
+
+static void
+host_uv_proc_alloc(uv_handle_t *h, size_t suggested, uv_buf_t *buf)
+{
+	(void)h;
+	buf->base = malloc(suggested);
+	buf->len = buf->base != NULL ? suggested : 0;
+}
+
+static void
+host_uv_proc_read(uv_stream_t *s, ssize_t n, const uv_buf_t *buf)
+{
+	struct clm_proc *p = s->data;
+	int fd = s == (uv_stream_t *)&p->out ? 1 : 2;
+
+	if (n > 0 && !p->detached && p->data != NULL)
+		p->data(fd, buf->base, (size_t)n, p->user);
+	else if (n < 0) {
+		uv_read_stop(s);
+		p->open_pipes--;
+		host_uv_proc_settle(p);
+	}
+	free(buf->base);
+}
+
+static void
+host_uv_proc_on_exit(uv_process_t *proc, int64_t status, int sig)
+{
+	struct clm_proc *p = proc->data;
+
+	p->exited = true;
+	p->status = sig != 0 ? -1 : status;
+	p->signal = sig;
+	host_uv_proc_settle(p);
+}
+
+static void
+host_uv_proc_wrote(uv_write_t *w, int status)
+{
+	struct clm_proc *p = w->data;
+
+	(void)status;
+	host_uv_proc_close((uv_handle_t *)&p->in);
+}
+
+static int
+host_uv_proc_spawn(void *ctx, const struct clm_proc_req *req,
+    clm_proc_data_cb data, clm_proc_exit_cb exit, void *user,
+    struct clm_proc **out)
+{
+	struct host_uv_ctx *hctx = ctx;
+	uv_stdio_container_t stdio[3];
+	uv_process_options_t opt;
+	struct clm_proc *p;
+	int r;
+
+	if (out != NULL)
+		*out = NULL;
+	if (req == NULL || req->argv == NULL || req->argv[0] == NULL)
+		return -EINVAL;
+	p = calloc(1, sizeof(*p));
+	if (p == NULL)
+		return -ENOMEM;
+	if (req->stdin_data != NULL && req->stdin_len > 0) {
+		p->stdin_buf = malloc(req->stdin_len);
+		if (p->stdin_buf == NULL) {
+			free(p);
+			return -ENOMEM;
+		}
+		memcpy(p->stdin_buf, req->stdin_data, req->stdin_len);
+	}
+	p->data = data;
+	p->exit = exit;
+	p->user = user;
+
+	p->proc.data = p;
+	uv_pipe_init(hctx->loop, &p->in, 0);
+	p->in.data = p;
+	uv_pipe_init(hctx->loop, &p->out, 0);
+	p->out.data = p;
+	uv_pipe_init(hctx->loop, &p->err, 0);
+	p->err.data = p;
+	uv_timer_init(hctx->loop, &p->grace);
+	p->grace.data = p;
+	p->handles = 5;
+
+	memset(&opt, 0, sizeof(opt));
+	opt.file = req->argv[0];
+	opt.args = (char **)req->argv;
+	opt.exit_cb = host_uv_proc_on_exit;
+	/* Own session and process group, so proc_kill reaches anything the
+	 * child starts in the background too. */
+	opt.flags = UV_PROCESS_DETACHED;
+	if (p->stdin_buf != NULL) {
+		stdio[0].flags = UV_CREATE_PIPE | UV_READABLE_PIPE;
+		stdio[0].data.stream = (uv_stream_t *)&p->in;
+	} else {
+		stdio[0].flags = UV_IGNORE;
+	}
+	stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
+	stdio[1].data.stream = (uv_stream_t *)&p->out;
+	stdio[2].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
+	stdio[2].data.stream = (uv_stream_t *)&p->err;
+	opt.stdio = stdio;
+	opt.stdio_count = 3;
+
+	r = uv_spawn(hctx->loop, &p->proc, &opt);
+	if (r < 0) {
+		/* libuv still wants the failed process handle closed. */
+		p->settled = true;
+		host_uv_proc_close((uv_handle_t *)&p->proc);
+		host_uv_proc_close((uv_handle_t *)&p->in);
+		host_uv_proc_close((uv_handle_t *)&p->out);
+		host_uv_proc_close((uv_handle_t *)&p->err);
+		host_uv_proc_close((uv_handle_t *)&p->grace);
+		return r;
+	}
+
+	p->open_pipes = 2;
+	uv_read_start(
+	    (uv_stream_t *)&p->out, host_uv_proc_alloc, host_uv_proc_read);
+	uv_read_start(
+	    (uv_stream_t *)&p->err, host_uv_proc_alloc, host_uv_proc_read);
+
+	if (p->stdin_buf != NULL) {
+		uv_buf_t b =
+		    uv_buf_init(p->stdin_buf, (unsigned)req->stdin_len);
+
+		p->wreq.data = p;
+		if (uv_write(&p->wreq, (uv_stream_t *)&p->in, &b, 1,
+		        host_uv_proc_wrote) < 0)
+			host_uv_proc_close((uv_handle_t *)&p->in);
+	} else {
+		host_uv_proc_close((uv_handle_t *)&p->in);
+	}
+
+	if (out != NULL)
+		*out = p;
+	return 0;
+}
+
+static void
+host_uv_proc_kill(struct clm_proc *p, int sig)
+{
+	if (p == NULL || p->exited)
+		return;
+	(void)uv_kill(-uv_process_get_pid(&p->proc), sig);
+}
+
+static void
+host_uv_proc_grace(uv_timer_t *t)
+{
+	host_uv_proc_kill(t->data, SIGKILL);
+}
+
+static void
+host_uv_proc_detach(struct clm_proc *p)
+{
+	if (p == NULL || p->detached)
+		return;
+	p->detached = true;
+	/* Stop reading now: a background grandchild may hold the pipes open
+	 * long after the child itself is gone. */
+	host_uv_proc_close((uv_handle_t *)&p->out);
+	host_uv_proc_close((uv_handle_t *)&p->err);
+	p->open_pipes = 0;
+	if (!p->exited) {
+		host_uv_proc_kill(p, SIGTERM);
+		uv_timer_start(
+		    &p->grace, host_uv_proc_grace, HOST_UV_KILL_GRACE_MS, 0);
+	}
+	host_uv_proc_settle(p);
+}
+
+/* ------------------------------------------------------------------ */
 /* Construction                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -285,6 +520,9 @@ clm_host_uv_new(uv_loop_t *loop, struct clm_host **out)
 	h->http_cancel = host_uv_http_cancel;
 	h->timer_set = host_uv_timer_set;
 	h->timer_cancel = host_uv_timer_cancel;
+	h->proc_spawn = host_uv_proc_spawn;
+	h->proc_kill = host_uv_proc_kill;
+	h->proc_detach = host_uv_proc_detach;
 	h->ctx = hctx;
 	/* clm_tool_invocation_loop() consumers (tool_shell/tool_bg's uv_spawn)
 	 * cast this back to uv_loop_t* -- it must stay the loop itself, not

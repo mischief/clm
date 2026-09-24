@@ -5,6 +5,7 @@
  * see the clmlua split in lib/meson.build.
  */
 #include <errno.h>
+#include <stdbool.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -926,6 +927,307 @@ test_cfg_tuning(void)
 	free(err);
 }
 
+/* Host for the process tests: the uv host for timers and children, and an
+ * http_post that records each request body and answers 400. */
+struct proc_host {
+	struct clm_host host;
+	struct clm_host *uv_host;
+	char bodies[65536];
+	size_t len;
+};
+
+static int
+proc_http_post(void *ctx, const struct clm_http_req *req,
+    clm_http_success_cb success, clm_http_error_cb error, clm_http_data_cb data,
+    void *user, struct clm_http_call **out)
+{
+	struct proc_host *ph = ctx;
+	struct clm_http_response resp = {.status_code = 400};
+	size_t n = req->body != NULL ? strlen(req->body) : 0;
+
+	(void)error;
+	(void)data;
+	*out = NULL;
+	if (n > sizeof(ph->bodies) - ph->len - 1)
+		n = sizeof(ph->bodies) - ph->len - 1;
+	memcpy(ph->bodies + ph->len, req->body, n);
+	ph->len += n;
+	ph->bodies[ph->len] = '\0';
+	resp.body = strdup("{}");
+	success(&resp, user);
+	return 0;
+}
+
+static int
+proc_timer_set(
+    void *ctx, uint64_t ms, clm_timer_cb cb, void *arg, struct clm_timer **out)
+{
+	struct proc_host *ph = ctx;
+
+	return ph->uv_host->timer_set(ph->uv_host->ctx, ms, cb, arg, out);
+}
+
+static int
+proc_spawn(void *ctx, const struct clm_proc_req *req, clm_proc_data_cb data,
+    clm_proc_exit_cb exit, void *user, struct clm_proc **out)
+{
+	struct proc_host *ph = ctx;
+
+	return ph->uv_host->proc_spawn(
+	    ph->uv_host->ctx, req, data, exit, user, out);
+}
+
+static void
+proc_guard(uv_timer_t *t)
+{
+	(void)t;
+}
+
+static bool
+proc_seen_all(struct proc_host *ph)
+{
+	static const char *const want[] = {
+	    "spawn:a,b,c:3:0:err\\n",
+	    "killed:nil:9",
+	    "after:false",
+	    "env:yes missing:true",
+	};
+
+	for (size_t i = 0; i < sizeof(want) / sizeof(want[0]); i++)
+		if (strstr(ph->bodies, want[i]) == NULL)
+			return false;
+	return true;
+}
+
+static int
+test_proc_plugin(void)
+{
+	uv_loop_t loop;
+	uv_timer_t guard;
+	struct proc_host ph = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	struct clm_cfg cfg = {
+	    .api_key = "test",
+	    .base_url = "http://proc.invalid/v1/chat/completions",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 1,
+	};
+	uint64_t start;
+
+	(void)setenv("CLM_TEST_ENV", "yes", 1);
+	CHECK(uv_loop_init(&loop) == 0, "proc loop init");
+	CHECK(clm_host_uv_new(&loop, &ph.uv_host) == 0, "proc uv host");
+	ph.host.http_post = proc_http_post;
+	ph.host.http_cancel = ph.uv_host->http_cancel;
+	ph.host.timer_set = proc_timer_set;
+	ph.host.timer_cancel = ph.uv_host->timer_cancel;
+	ph.host.proc_spawn = proc_spawn;
+	ph.host.proc_kill = ph.uv_host->proc_kill;
+	ph.host.proc_detach = ph.uv_host->proc_detach;
+	ph.host.ctx = &ph;
+
+	CHECK(clm_agent_new(&cfg, &ph.host, NULL, NULL, &agent) == 0,
+	    "proc agent creation");
+	CHECK(clm_lua_env_new(agent, &env) == 0, "proc lua env");
+	CHECK(clm_lua_load_plugins(env, "test/plugins_proc") == 0,
+	    "proc plugin loading");
+
+	uv_timer_init(&loop, &guard);
+	uv_timer_start(&guard, proc_guard, 100, 100);
+	start = uv_now(&loop);
+	while (!proc_seen_all(&ph) && uv_now(&loop) - start < 10000)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(strstr(ph.bodies, "spawn:a,b,c:3:0:err\\n") != NULL,
+	    "spawn delivers lines, exit code and stderr");
+	CHECK(strstr(ph.bodies, "killed:nil:9") != NULL,
+	    "kill reports the signal");
+	CHECK(strstr(ph.bodies, "after:false") != NULL, "after fires");
+	CHECK(strstr(ph.bodies, "env:yes missing:true") != NULL,
+	    "getenv and spawn failure");
+	CHECK(strstr(ph.bodies, "cancelled timer fired") == NULL,
+	    "cancelled timer stays quiet");
+
+	uv_close((uv_handle_t *)&guard, NULL);
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	clm_host_uv_free(ph.uv_host);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(uv_loop_close(&loop) == 0, "proc loop close");
+	return 0;
+}
+
+/* A plugin that holds a child when the env is freed must stop it. */
+static int
+test_proc_teardown(void)
+{
+	uv_loop_t loop;
+	struct clm_host *uv_host = NULL;
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	struct clm_cfg cfg = {
+	    .api_key = "test",
+	    .base_url = "http://proc.invalid/v1/chat/completions",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 1,
+	};
+
+	CHECK(uv_loop_init(&loop) == 0, "teardown loop init");
+	CHECK(clm_host_uv_new(&loop, &uv_host) == 0, "teardown uv host");
+	CHECK(clm_agent_new(&cfg, uv_host, NULL, NULL, &agent) == 0,
+	    "teardown agent");
+	CHECK(clm_lua_env_new(agent, &env) == 0, "teardown lua env");
+	CHECK(clm_lua_load_plugins(env, "test/plugins_proc") == 0,
+	    "teardown plugin loading");
+	/* Free with the sleep and the timers still pending. */
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	clm_host_uv_free(uv_host);
+	CHECK(uv_loop_close(&loop) == 0, "teardown leaves no handles");
+	return 0;
+}
+
+struct exec_state {
+	int done;
+	char content[256];
+};
+
+static void
+exec_on_tool_result(const char *name, const char *content,
+    enum clm_tool_outcome outcome, void *user)
+{
+	struct exec_state *st = user;
+
+	(void)name;
+	(void)outcome;
+	(void)snprintf(st->content, sizeof(st->content), "%s",
+	    content != NULL ? content : "");
+}
+
+static void
+exec_on_turn_done(int status, void *user)
+{
+	struct exec_state *st = user;
+
+	(void)status;
+	st->done = 1;
+}
+
+static int
+test_exec_and_opt_plugins(void)
+{
+	uv_loop_t loop;
+	struct canned_server *srv;
+	struct clm_host *uv_host = NULL;
+	struct exec_state st = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	struct clm_callbacks callbacks = {
+	    .on_tool_result = exec_on_tool_result,
+	    .on_turn_done = exec_on_turn_done,
+	};
+	struct clm_cfg cfg = {
+	    .api_key = "test",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 2,
+	};
+	char url[128];
+
+	CHECK(uv_loop_init(&loop) == 0, "exec loop init");
+	srv = canned_start(&loop);
+	CHECK(srv != NULL, "exec canned server");
+	if (srv == NULL)
+		return 1;
+	(void)snprintf(url, sizeof(url),
+	    "http://127.0.0.1:%d/v1/chat/completions", canned_port(srv));
+	cfg.base_url = url;
+	CHECK(clm_host_uv_new(&loop, &uv_host) == 0, "exec uv host");
+	CHECK(clm_agent_new(&cfg, uv_host, &callbacks, &st, &agent) == 0,
+	    "exec agent");
+	CHECK(clm_lua_env_new(agent, &env) == 0, "exec lua env");
+	CHECK(clm_lua_env_set_config(
+	          env, "{\"extra\":{\"greeting\":\"hi\"}}") == 0,
+	    "exec plugin config");
+	CHECK(clm_lua_load_plugins(env, "test/plugins_exec") == 0,
+	    "exec plugin loading");
+
+	CHECK(!tool_registered(agent, "opt_extra"),
+	    "opt plugin skipped by the directory load");
+	CHECK(
+	    clm_lua_load_plugin(env, "test/plugins_exec", "../exec") == -EINVAL,
+	    "opt plugin name must not be a path");
+	CHECK(
+	    clm_lua_load_plugin(env, "test/plugins_exec", "missing") == -ENOENT,
+	    "missing opt plugin");
+	CHECK(clm_lua_load_plugin(env, "test/plugins_exec", "extra") == 0,
+	    "opt plugin loads by name");
+	CHECK(tool_registered(agent, "opt_extra"), "opt plugin tool");
+
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"exec_tool\","
+	    "\"arguments\":\"{}\"}}]}}]}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"done\"}}]}");
+	CHECK(clm_agent_submit(agent, "run exec") == 0, "exec submit");
+	while (!st.done)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(strcmp(st.content, "5|in\nout2\n|e\n") == 0,
+	    "exec returns code, stdout and stderr");
+
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	clm_host_uv_free(uv_host);
+	canned_stop(srv);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(uv_loop_close(&loop) == 0, "exec loop close");
+	return 0;
+}
+
+/* An agent's tools entry replaces the top-level entry of the same name. */
+static void
+test_tools_config_merge(void)
+{
+	char path[] = "/tmp/clm-tools-XXXXXX.lua";
+	const char *src =
+	    "return { tools = { a = { x = 1 }, b = { y = 2 } },\n"
+	    "  agents = { t = { tools = { b = { z = 3 } } } } }\n";
+	struct clm_lua_cfg *lcfg;
+	cJSON *obj;
+	char *json;
+	int fd;
+
+	fd = mkstemps(path, 4);
+	CHECK(fd >= 0, "merge temp config");
+	if (fd < 0)
+		return;
+	CHECK(write(fd, src, strlen(src)) == (ssize_t)strlen(src),
+	    "merge write config");
+	close(fd);
+	lcfg = clm_lua_cfg_load(path, NULL);
+	CHECK(lcfg != NULL, "merge config load");
+	CHECK(clm_lua_cfg_load_agent(lcfg, NULL, "t") == 0, "merge agent");
+	json = clm_lua_cfg_tools_json(lcfg);
+	obj = json != NULL ? cJSON_Parse(json) : NULL;
+	CHECK(obj != NULL, "merge tools json");
+	CHECK(cJSON_GetObjectItem(cJSON_GetObjectItem(obj, "a"), "x") != NULL,
+	    "merge keeps top-level entry");
+	CHECK(cJSON_GetObjectItem(cJSON_GetObjectItem(obj, "b"), "z") != NULL &&
+	        cJSON_GetObjectItem(cJSON_GetObjectItem(obj, "b"), "y") == NULL,
+	    "merge agent entry replaces top-level");
+	cJSON_Delete(obj);
+	free(json);
+	clm_lua_cfg_free(lcfg);
+	unlink(path);
+}
+
 static int
 test_lua_plugin_suite(void *arg)
 {
@@ -941,6 +1243,10 @@ test_lua_plugin_suite(void *arg)
 	test_deadline_rearmed_after_yield();
 	test_oom_does_not_abort();
 	test_cfg_tuning();
+	test_proc_plugin();
+	test_proc_teardown();
+	test_exec_and_opt_plugins();
+	test_tools_config_merge();
 
 	return 0;
 }

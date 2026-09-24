@@ -16,6 +16,16 @@ file in
 or an agent-specific
 *~/.config/clm/agents/*&zwnj;*agent*&zwnj;*/*
 directory) as a plugin.
+Files in the
+*opt/*
+subdirectory are opt-in plugins: one loads only when its name, without
+*.lua*,
+appears in the
+*plugins*
+list of
+[clm-config(5)](clm-config.md)
+or is given with
+**-P**.
 The seeded copies of the builtin plugins are the ones that run.
 [clm(1)](clm.md)'s
 setup step copies them once and never touches them again, so a later
@@ -45,9 +55,11 @@ are removed from
 *\_G*
 after loading the safe libraries.
 There is no filesystem or process access except through
-*clm.read\_file*
+*clm.read\_file*,
+*clm.write\_file*,
+*clm.spawn*
 and
-*clm.write\_file*
+*clm.exec*
 (below), no dynamic code loading, and no way to reach any other
 plugin's state.
 
@@ -227,6 +239,112 @@ Same coroutine restriction as
 *HTTP requests*
 above.
 
+**clm.spawn**(*argv*, *opts*)
+
+Start the program
+*argv\[1]*
+with the arguments in the table
+*argv*,
+and return a handle.
+Callable at any point, also at load time.
+The child gets the environment of
+**clm**
+and its own process group.
+*opts*
+is an optional table:
+
+*stdin*
+
+a string written to the standard input of the child, which is then
+closed.
+Without it the child reads end of file.
+
+*on\_line*
+
+called with each line of standard output, without the newline.
+
+*on\_stderr*
+
+the same for standard error.
+
+*on\_exit*
+
+called once, after the child exits, with
+*code*,
+*signal*
+and
+*stderr*.
+*code*
+is
+`nil`
+when a signal killed the child.
+*stderr*
+holds the first 64 KiB of standard error when there is no
+*on\_stderr*.
+
+Callbacks run from the event loop with a 2 s deadline each.
+**handle:kill**(*sig*)
+sends
+*sig*
+(a number, or
+"TERM",
+"KILL",
+"INT",
+"HUP";
+default
+"TERM")
+to the process group of the child.
+**handle:running**()
+is true until the child exits.
+When the plugin is unloaded, running children get SIGTERM, then SIGKILL
+after 5 s.
+
+**clm.exec**(*argv*, *opts*)
+
+Run
+*argv*
+like
+**clm.spawn**(),
+wait for it to exit, and return a table with
+*code*,
+*signal*,
+*stdout*,
+*stderr*
+and
+*truncated*.
+Each output stream keeps its first 1 MiB.
+*opts*
+takes only
+*stdin*.
+Same coroutine restriction as
+**clm.sleep**().
+Cancelling the tool call stops the child.
+
+**clm.after**(*ms*, *fn*)
+
+Call
+*fn*
+once, after
+*ms*
+milliseconds, and return a handle.
+**handle:cancel**()
+stops a timer that has not fired.
+
+**clm.notify**(*text*)
+
+Deliver
+*text*
+to the agent as a new message.
+It starts a turn when the agent is idle, or joins the running turn.
+Delivery happens later, from the event loop.
+
+**clm.getenv**(*name*)
+
+The value of environment variable
+*name*,
+or
+`nil`.
+
 ## The json module
 
 	local text = json.encode(value)
@@ -254,6 +372,9 @@ in
 [clm-config(5)](clm-config.md)),
 that subtable is available inside the plugin as
 *clm.config*.
+An agent file can have its own
+*tools*
+table; its entry for a plugin replaces the top-level entry.
 A plugin with no matching
 *tools*
 entry sees

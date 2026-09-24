@@ -16,6 +16,16 @@ file in
 or an agent-specific
 .Pa ~/.config/clm/agents/ Ns Ar agent Ns Pa /
 directory) as a plugin.
+Files in the
+.Pa opt/
+subdirectory are opt-in plugins: one loads only when its name, without
+.Pa .lua ,
+appears in the
+.Va plugins
+list of
+.Xr clm-config 5
+or is given with
+.Fl P .
 The seeded copies of the builtin plugins are the ones that run.
 .Xr clm 1 Ns 's
 setup step copies them once and never touches them again, so a later
@@ -43,9 +53,11 @@ are removed from
 .Va _G
 after loading the safe libraries.
 There is no filesystem or process access except through
-.Va clm.read_file
+.Va clm.read_file ,
+.Va clm.write_file ,
+.Va clm.spawn
 and
-.Va clm.write_file
+.Va clm.exec
 (below), no dynamic code loading, and no way to reach any other
 plugin's state.
 .Pp
@@ -209,6 +221,96 @@ milliseconds without blocking the event loop.
 Same coroutine restriction as
 .Sx HTTP requests
 above.
+.It Fn clm.spawn argv opts
+Start the program
+.Va argv[1]
+with the arguments in the table
+.Va argv ,
+and return a handle.
+Callable at any point, also at load time.
+The child gets the environment of
+.Nm clm
+and its own process group.
+.Va opts
+is an optional table:
+.Bl -tag -width on_stderr
+.It Va stdin
+a string written to the standard input of the child, which is then
+closed.
+Without it the child reads end of file.
+.It Va on_line
+called with each line of standard output, without the newline.
+.It Va on_stderr
+the same for standard error.
+.It Va on_exit
+called once, after the child exits, with
+.Va code ,
+.Va signal
+and
+.Va stderr .
+.Va code
+is
+.Dv nil
+when a signal killed the child.
+.Va stderr
+holds the first 64 KiB of standard error when there is no
+.Va on_stderr .
+.El
+.Pp
+Callbacks run from the event loop with a 2 s deadline each.
+.Fn handle:kill sig
+sends
+.Va sig
+(a number, or
+.Qq TERM ,
+.Qq KILL ,
+.Qq INT ,
+.Qq HUP ;
+default
+.Qq TERM )
+to the process group of the child.
+.Fn handle:running
+is true until the child exits.
+When the plugin is unloaded, running children get SIGTERM, then SIGKILL
+after 5 s.
+.It Fn clm.exec argv opts
+Run
+.Va argv
+like
+.Fn clm.spawn ,
+wait for it to exit, and return a table with
+.Va code ,
+.Va signal ,
+.Va stdout ,
+.Va stderr
+and
+.Va truncated .
+Each output stream keeps its first 1 MiB.
+.Va opts
+takes only
+.Va stdin .
+Same coroutine restriction as
+.Fn clm.sleep .
+Cancelling the tool call stops the child.
+.It Fn clm.after ms fn
+Call
+.Va fn
+once, after
+.Va ms
+milliseconds, and return a handle.
+.Fn handle:cancel
+stops a timer that has not fired.
+.It Fn clm.notify text
+Deliver
+.Va text
+to the agent as a new message.
+It starts a turn when the agent is idle, or joins the running turn.
+Delivery happens later, from the event loop.
+.It Fn clm.getenv name
+The value of environment variable
+.Va name ,
+or
+.Dv nil .
 .El
 .Ss The json module
 .Bd -literal -offset indent
@@ -236,6 +338,9 @@ in
 .Xr clm-config 5 ) ,
 that subtable is available inside the plugin as
 .Va clm.config .
+An agent file can have its own
+.Va tools
+table; its entry for a plugin replaces the top-level entry.
 A plugin with no matching
 .Va tools
 entry sees

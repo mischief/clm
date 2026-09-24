@@ -14,7 +14,7 @@
  *
  * This is deliberately NOT a general event-loop abstraction: the agent makes
  * one request at a time and never multiplexes file descriptors, so the surface
- * is just "make a request" and "run a timer", nothing more.
+ * is just "make a request", "run a timer" and, optionally, "run a process".
  */
 
 #include <stddef.h>
@@ -25,6 +25,7 @@
 /* Opaque handles owned by the host implementation. */
 struct clm_http_call; /* one in-flight HTTP request */
 struct clm_timer;     /* one scheduled one-shot timer */
+struct clm_proc;      /* one child process */
 
 /*
  * A portable HTTP request description — no transport types leak in here.
@@ -42,6 +43,29 @@ struct clm_http_req {
 
 /* One-shot timer callback. */
 typedef void (*clm_timer_cb)(void *arg);
+
+/*
+ * A child process to start. argv[0] is looked up in PATH. The child inherits
+ * the environment and working directory, and runs in its own session and
+ * process group. stdin_data, when non-NULL, is written to its standard input,
+ * which is then closed; when NULL the child reads end of file.
+ */
+struct clm_proc_req {
+	const char *const *argv; /* NULL-terminated */
+	const char *stdin_data;
+	size_t stdin_len;
+};
+
+/* Output from the child: fd is 1 (stdout) or 2 (stderr). */
+typedef void (*clm_proc_data_cb)(
+    int fd, const char *data, size_t len, void *user);
+
+/*
+ * Called once, after the child exits and both output pipes reach end of
+ * file. status is the exit status, or -1 when signal (nonzero) killed it.
+ * The handle is freed when this returns.
+ */
+typedef void (*clm_proc_exit_cb)(int64_t status, int signal, void *user);
 
 struct clm_host {
 	/*
@@ -89,6 +113,26 @@ struct clm_host {
 	 * adapter's private ctx layout.
 	 */
 	void *native_loop;
+
+	/*
+	 * Optional: start a child process. NULL when the host cannot. A
+	 * negative return means it did not start and no callback runs.
+	 * Otherwise exit runs exactly once, later, never before this
+	 * returns. data may be NULL to discard output.
+	 */
+	int (*proc_spawn)(void *ctx, const struct clm_proc_req *req,
+	    clm_proc_data_cb data, clm_proc_exit_cb exit, void *user,
+	    struct clm_proc **out);
+
+	/* Send signal to the child's process group. Valid until exit runs. */
+	void (*proc_kill)(struct clm_proc *proc, int signal);
+
+	/*
+	 * Give the handle back before exit runs: no more callbacks. The host
+	 * stops the child (SIGTERM, then SIGKILL after a grace period) and
+	 * frees the handle itself.
+	 */
+	void (*proc_detach)(struct clm_proc *proc);
 };
 
 #endif /* CLM_HOST_H */

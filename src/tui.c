@@ -38,6 +38,7 @@
 #include "frontend.h"
 #include "md_render.h"
 #include "mcp_setup.h"
+#include "plugin_setup.h"
 #include "cfg_tuning.h"
 #include "loop_drain.h"
 #include "model_spec.h"
@@ -2673,18 +2674,17 @@ cmd_agent(struct ui *u, const char *arg)
 				    0) {
 					clm_lua_env_set_config_from(
 					    u->lua_env, u->lcfg);
-					if (u->plugin_dir != NULL) {
-						clm_lua_load_plugins(
-						    u->lua_env, u->plugin_dir);
-					} else {
-						char *pp = xdg_config_path(
-						    "clm/plugins");
-						if (pp != NULL) {
-							clm_lua_load_plugins(
-							    u->lua_env, pp);
-							free(pp);
-						}
-					}
+					char *pp = u->plugin_dir == NULL
+					    ? xdg_config_path("clm/plugins")
+					    : NULL;
+
+					clm_cli_load_plugins(u->lua_env,
+					    u->plugin_dir != NULL
+					        ? u->plugin_dir
+					        : pp,
+					    u->lcfg, u->opt_plugins,
+					    cb_mcp_status, u);
+					free(pp);
 					/* Load agent-specific plugins. */
 					char *apdir =
 					    xdg_config_path("clm/agents");
@@ -3968,9 +3968,10 @@ close_own_handles(struct ui *u)
 
 int
 tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
-    struct clm_lua_cfg *lcfg, const char *config_load_err,
-    const char *forever_prompt, struct clm_session *session,
-    const struct clm_history *restore, int repaired_tool_calls, bool allow_all)
+    const char *const *opt_plugins, struct clm_lua_cfg *lcfg,
+    const char *config_load_err, const char *forever_prompt,
+    struct clm_session *session, const struct clm_history *restore,
+    int repaired_tool_calls, bool allow_all)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -4005,6 +4006,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	}
 	u->lcfg = lcfg;
 	u->plugin_dir = plugin_dir;
+	u->opt_plugins = opt_plugins;
 	u->session = session;
 	set_session_short(u);
 	u->state = CLM_STATE_IDLE;
@@ -4053,15 +4055,13 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
 		if (lcfg != NULL)
 			clm_lua_env_set_config_from(u->lua_env, lcfg);
-		if (plugin_dir != NULL) {
-			clm_lua_load_plugins(u->lua_env, plugin_dir);
-		} else {
-			char *ppath = xdg_config_path("clm/plugins");
-			if (ppath != NULL) {
-				clm_lua_load_plugins(u->lua_env, ppath);
-				free(ppath);
-			}
-		}
+		autofree char *ppath = NULL;
+
+		if (plugin_dir == NULL)
+			ppath = xdg_config_path("clm/plugins");
+		clm_cli_load_plugins(u->lua_env,
+		    plugin_dir != NULL ? plugin_dir : ppath, lcfg, opt_plugins,
+		    cb_mcp_status, u);
 	}
 	u->mcp_clients = clm_cli_connect_mcp_servers(
 	    u->agent, loop, lcfg, cb_mcp_status, u, &u->mcp_client_count);

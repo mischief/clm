@@ -43,6 +43,7 @@ void clm_lua_clear_invocation_registry(lua_State *L);
 #define CLM_LUA_MEM_LIMIT (8 * 1024 * 1024) /* 8 MiB per plugin */
 #define CLM_LUA_EXEC_TIMEOUT_MS 30000u      /* default: 30s CPU timeout */
 #define CLM_LUA_LOAD_TIMEOUT_MS 500u        /* plugin load must be quick */
+#define CLM_LUA_CALLBACK_TIMEOUT_MS 2000u   /* one event callback */
 #define CLM_LUA_HOOK_INTERVAL 10000 /* check deadline every N instructions */
 
 /* How far the heap may grow past what is live before the next cycle. Lua's
@@ -396,6 +397,72 @@ clm_lua_resume_with_deadline(struct clm_lua_plugin *plugin, lua_State *co,
 	plugin->deadline_ns = 0;
 	lua_sethook(co, NULL, 0, 0);
 	return rc;
+}
+
+struct clm_agent *
+clm_lua_plugin_agent(const struct clm_lua_plugin *plugin)
+{
+	return plugin->agent;
+}
+
+lua_State *
+clm_lua_plugin_state(const struct clm_lua_plugin *plugin)
+{
+	return plugin->L;
+}
+
+int
+clm_lua_plugin_alive(const struct clm_lua_plugin *plugin)
+{
+	return !plugin->dead;
+}
+
+struct lua_callback_call {
+	int (*push)(lua_State *L, void *arg);
+	void *arg;
+};
+
+static int
+lua_callback_trampoline(lua_State *L)
+{
+	struct lua_callback_call *c = lua_touserdata(L, 1);
+	int nargs;
+
+	lua_settop(L, 0);
+	nargs = c->push(L, c->arg);
+	lua_call(L, nargs, 0);
+	return 0;
+}
+
+int
+clm_lua_plugin_callback(struct clm_lua_plugin *plugin,
+    int (*push)(lua_State *L, void *arg), void *arg)
+{
+	struct lua_callback_call c = {push, arg};
+	lua_State *L = plugin->L;
+	int rc;
+
+	if (plugin->dead || plugin->tearing_down)
+		return -ECANCELED;
+	/* A light C function and a light userdata allocate nothing, so these
+	 * two pushes cannot raise outside the protected call. */
+	lua_pushcfunction(L, lua_callback_trampoline);
+	lua_pushlightuserdata(L, &c);
+	plugin->deadline_ns =
+	    clock_ns() + CLM_LUA_CALLBACK_TIMEOUT_MS * 1000000ULL;
+	lua_sethook(L, lua_exec_hook, LUA_MASKCOUNT, CLM_LUA_HOOK_INTERVAL);
+	rc = lua_pcall(L, 1, 0, 0);
+	plugin->deadline_ns = 0;
+	lua_sethook(L, NULL, 0, 0);
+	if (rc != LUA_OK) {
+		const char *err = lua_tostring(L, -1);
+
+		clm_debug("lua callback [%s]: %s", plugin->path,
+		    err != NULL ? err : "(unknown)");
+		lua_pop(L, 1);
+		return -EIO;
+	}
+	return 0;
 }
 
 /*
@@ -1052,6 +1119,7 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 	lua_setfield(L, -2, "write_file");
 	lua_pushcfunction(L, lua_clm_sleep);
 	lua_setfield(L, -2, "sleep");
+	clm_lua_proc_open(L, plugin);
 	lua_setglobal(L, "clm");
 
 	/* Register ctx metatable. */
@@ -1311,6 +1379,30 @@ clm_lua_load_plugins(struct clm_lua_env *env, const char *dir)
 
 	clm_debug("lua: loaded %d plugin(s) from %s", loaded, dir);
 	return 0;
+}
+
+CLM_API int
+clm_lua_load_plugin(struct clm_lua_env *env, const char *dir, const char *name)
+{
+	autofree char *path = NULL;
+	struct stat st;
+
+	ASSERT_RETURN(env != NULL, -EINVAL);
+	ASSERT_RETURN(dir != NULL, -EINVAL);
+	ASSERT_RETURN(name != NULL, -EINVAL);
+
+	/* A name, not a path. */
+	if (name[0] == '\0' || name[0] == '.' || strchr(name, '/') != NULL)
+		return -EINVAL;
+	if (asprintf(&path, "%s/opt/%s.lua", dir, name) < 0) {
+		path = NULL;
+		return -ENOMEM;
+	}
+	if (stat(path, &st) != 0)
+		return -errno;
+	if (!S_ISREG(st.st_mode))
+		return -EINVAL;
+	return load_one_plugin(env, path);
 }
 
 CLM_API void
@@ -2080,16 +2172,30 @@ CLM_API char *
 clm_lua_cfg_tools_json(struct clm_lua_cfg *cfg)
 {
 	lua_State *L = cfg->L;
+	int refs[2] = {cfg->cfg_ref, cfg->agent_ref};
+	bool any = false;
 	char *out;
 
-	lua_rawgeti(L, LUA_REGISTRYINDEX, cfg->cfg_ref);
-	lua_getfield(L, -1, "tools");
-	if (!lua_istable(L, -1)) {
+	/* One entry per plugin: the agent's replaces the top-level one. */
+	lua_newtable(L);
+	for (size_t i = 0; i < 2; i++) {
+		if (refs[i] == LUA_NOREF)
+			continue;
+		lua_rawgeti(L, LUA_REGISTRYINDEX, refs[i]);
+		lua_getfield(L, -1, "tools");
+		if (lua_istable(L, -1)) {
+			any = true;
+			lua_pushnil(L);
+			while (lua_next(L, -2) != 0) {
+				lua_pushvalue(L, -2);
+				lua_insert(L, -2);
+				lua_settable(L, -6);
+			}
+		}
 		lua_pop(L, 2);
-		return NULL;
 	}
-	out = lua_table_to_json(L, -1);
-	lua_pop(L, 2);
+	out = any ? lua_table_to_json(L, -1) : NULL;
+	lua_pop(L, 1);
 	return out;
 }
 

@@ -17,6 +17,7 @@
 #include "frontend.h"
 #include "version.h"
 #include "clm/lua_plugin.h"
+#include "plugin_setup.h"
 #include "seed_plugins.h"
 #include "clm/cleanup.h"
 #include "clm/session.h"
@@ -41,7 +42,8 @@ usage(const char *prog)
 	    "       %s [-o|--oneshot PROMPT] [-f|--forever PROMPT] "
 	    "[-H|--headless] [-D|--daemon PROMPT] [-u|--url BASE] "
 	    "[-m|--model PROVIDER/MODEL-ID] [--provider NAME] "
-	    "[-p|--plugins DIR] [-S|--no-stream] [--allow-all-tools] "
+	    "[-p|--plugins DIR] [-P|--plugin NAME] [-S|--no-stream] "
+	    "[--allow-all-tools] "
 	    "[-r|--resume [ID]] "
 	    "[-V|--version] [-h|--help]\n",
 	    prog, prog);
@@ -78,6 +80,9 @@ usage(const char *prog)
 	    "provider half names\n"
 	    "  -p, --plugins DIR     plugin directory "
 	    "(default $XDG_CONFIG_HOME/clm/plugins)\n"
+	    "  -P, --plugin NAME     also load opt-in plugin "
+	    "DIR/opt/NAME.lua;\n"
+	    "                        repeatable\n"
 	    "  -S, --no-stream       disable streamed (SSE) responses\n"
 	    "      --allow-all-tools run every tool call without asking; for\n"
 	    "                        an agent nobody is watching, in a\n"
@@ -733,6 +738,9 @@ main(int argc, char *argv[])
 	 * on the way out rather than at any block scope. */
 	char *spec_provider = NULL;
 	const char *plugin_dir = NULL;
+	autofree const char **opt_plugins =
+	    NULL; /* -P names, NULL-terminated */
+	size_t nopt_plugins = 0;
 	const char *agent_name = NULL;
 	char *oneshot = NULL;
 	char *forever_prompt = NULL;
@@ -769,6 +777,7 @@ main(int argc, char *argv[])
 	    {"model", required_argument, NULL, 'm'},
 	    {"provider", required_argument, NULL, OPT_PROVIDER},
 	    {"plugins", required_argument, NULL, 'p'},
+	    {"plugin", required_argument, NULL, 'P'},
 	    {"agent", required_argument, NULL, 'a'},
 	    {"resume", optional_argument, NULL, 'r'},
 	    {"headless", no_argument, NULL, 'H'},
@@ -781,7 +790,7 @@ main(int argc, char *argv[])
 	};
 
 	while ((opt = getopt_long(
-	            argc, argv, "a:o:f:u:m:p:r::HD:SVh", opts, NULL)) != -1) {
+	            argc, argv, "a:o:f:u:m:p:P:r::HD:SVh", opts, NULL)) != -1) {
 		switch (opt) {
 		case OPT_ALLOW_ALL:
 			allow_all = true;
@@ -816,6 +825,19 @@ main(int argc, char *argv[])
 		case 'p':
 			plugin_dir = optarg;
 			break;
+		case 'P': {
+			const char **np = realloc(
+			    opt_plugins, (nopt_plugins + 2) * sizeof(*np));
+
+			if (np == NULL) {
+				fprintf(stderr, "error: out of memory\n");
+				return 1;
+			}
+			opt_plugins = np;
+			opt_plugins[nopt_plugins++] = optarg;
+			opt_plugins[nopt_plugins] = NULL;
+			break;
+		}
 		case 'H':
 			headless = 1;
 			break;
@@ -1063,9 +1085,9 @@ main(int argc, char *argv[])
 				cfg.system_prompt_suffix = host_block;
 		}
 
-		rc = tui_run(&cfg, plugin_dir, lcfg, config_load_err,
-		    forever_prompt, sess, restorep, repaired_tool_calls,
-		    allow_all);
+		rc = tui_run(&cfg, plugin_dir, opt_plugins, lcfg,
+		    config_load_err, forever_prompt, sess, restorep,
+		    repaired_tool_calls, allow_all);
 		clm_history_free(&restore);
 		clm_lua_cfg_free_str_list(volatile_tools);
 		clm_lua_cfg_free(lcfg);
@@ -1172,15 +1194,16 @@ main(int argc, char *argv[])
 	if (clm_lua_env_new(state->agent, &state->lua_env) == 0) {
 		if (lcfg != NULL)
 			clm_lua_env_set_config_from(state->lua_env, lcfg);
-		if (plugin_dir != NULL) {
-			clm_lua_load_plugins(state->lua_env, plugin_dir);
-		} else {
-			autofree char *ppath = xdg_config_path("clm/plugins");
-			if (ppath != NULL) {
+		autofree char *ppath = NULL;
+
+		if (plugin_dir == NULL) {
+			ppath = xdg_config_path("clm/plugins");
+			if (ppath != NULL)
 				clm_seed_default_plugins(ppath);
-				clm_lua_load_plugins(state->lua_env, ppath);
-			}
 		}
+		clm_cli_load_plugins(state->lua_env,
+		    plugin_dir != NULL ? plugin_dir : ppath, lcfg, opt_plugins,
+		    cb_mcp_status, NULL);
 	}
 	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop,
 	    lcfg, cb_mcp_status, state, &state->mcp_client_count);

@@ -19,6 +19,7 @@
 .Op Fl -provider Ar name
 .Op Fl o Ar prompt | Fl -oneshot Ar prompt
 .Op Fl p Ar dir | Fl -plugins Ar dir
+.Op Fl P Ar name | Fl -plugin Ar name
 .Op Fl r Op Ar id | Fl -resume Op Ar id
 .Op Fl u Ar base | Fl -url Ar base
 .Sh DESCRIPTION
@@ -154,6 +155,13 @@ Load Lua plugins from
 .Ar dir
 instead of the default
 .Ev XDG_CONFIG_HOME Ns Pa /clm/plugins .
+.It Fl P Ar name , Fl -plugin Ar name
+Also load the opt-in plugin
+.Pa opt/ Ns Ar name Ns Pa .lua
+from the plugin directory.
+Can be given more than once.
+See
+.Xr clm-tool 5 .
 .It Fl r Op Ar id , Fl -resume Op Ar id
 Resume the saved session
 .Ar id

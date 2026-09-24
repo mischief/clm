@@ -16,6 +16,7 @@ struct clm_lua_cfg; /* opaque; NULL if no config.lua was found or loading it
  * Run the interactive ncurses frontend on a fresh default loop. Blocks until
  * the user quits. Returns 0 on success, non-zero on setup failure.
  * plugin_dir may be NULL (uses XDG default).
+ * opt_plugins names opt-in plugins to load (NULL-terminated, may be NULL).
  * lcfg may be NULL (no config file found, or it failed to load).
  * config_load_err may be NULL (no config.lua, or the caller isn't
  * distinguishing that from a load failure); when non-NULL, lcfg is also
@@ -45,8 +46,9 @@ struct clm_lua_cfg; /* opaque; NULL if no config.lua was found or loading it
  * crash-recovered resume is visible, not silent.
  */
 int tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
-    struct clm_lua_cfg *lcfg, const char *config_load_err,
-    const char *forever_prompt, struct clm_session *session,
-    const struct clm_history *restore, int repaired_tool_calls, bool allow_all);
+    const char *const *opt_plugins, struct clm_lua_cfg *lcfg,
+    const char *config_load_err, const char *forever_prompt,
+    struct clm_session *session, const struct clm_history *restore,
+    int repaired_tool_calls, bool allow_all);
 
 #endif /* CLM_FRONTEND_H */

@@ -239,6 +239,13 @@ Each plugin sees only its own subtable, as
 .Va clm.config
 (see
 .Xr clm-tool 5 ) .
+An agent file's entry for a plugin replaces the top-level entry.
+.It Va plugins
+A list of opt-in plugin names to load from the
+.Pa opt/
+subdirectory of the plugin directory, in addition to
+.Fl P .
+An agent file's list replaces the top-level list.
 .It Va volatile_tools
 A list of
 .Xr fnmatch 3

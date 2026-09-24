@@ -38,6 +38,14 @@ CLM_API int clm_lua_env_set_config(
 CLM_API int clm_lua_load_plugins(struct clm_lua_env *env, const char *dir);
 
 /*
+ * Load one opt-in plugin, <dir>/opt/<name>.lua. clm_lua_load_plugins skips
+ * the opt directory, so these load only when named. Returns 0, -ENOENT when
+ * the file is missing, or another negative errno.
+ */
+CLM_API int clm_lua_load_plugin(
+    struct clm_lua_env *env, const char *dir, const char *name);
+
+/*
  * Free all Lua states and the environment. Safe to call with NULL.
  */
 CLM_API void clm_lua_env_free(struct clm_lua_env *env);

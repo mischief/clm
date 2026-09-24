@@ -120,7 +120,7 @@ if have_lua
     sysinfo_src = files('sysinfo.c', 'sysinfo_generic.c')
   endif
 
-  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c', 'xdg.c') + sysinfo_src + seed_src + [version_h, templates_data],
+  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c', 'plugin_setup.c', 'xdg.c') + sysinfo_src + seed_src + [version_h, templates_data],
     link_with: [md_render_lib],
     dependencies: [clmuv_dep, clmlua_dep, clmsession_dep, curses_dep, cjson_dep, emoji_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],

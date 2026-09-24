@@ -10,6 +10,7 @@ CLM(1) - General Commands Manual
 **setup**  
 **clm**
 \[**-H**&nbsp;|&nbsp;**--headless**]
+\[**-D**&nbsp;*prompt*&nbsp;|&nbsp;**--daemon**&nbsp;*prompt*]
 \[**-S**&nbsp;|&nbsp;**--no-stream**]
 \[**-V**&nbsp;|&nbsp;**--version**]
 \[**-a**&nbsp;*name*&nbsp;|&nbsp;**--agent**&nbsp;*name*]
@@ -18,6 +19,7 @@ CLM(1) - General Commands Manual
 \[**--provider**&nbsp;*name*]
 \[**-o**&nbsp;*prompt*&nbsp;|&nbsp;**--oneshot**&nbsp;*prompt*]
 \[**-p**&nbsp;*dir*&nbsp;|&nbsp;**--plugins**&nbsp;*dir*]
+\[**-P**&nbsp;*name*&nbsp;|&nbsp;**--plugin**&nbsp;*name*]
 \[**-r**&nbsp;\[*id*&nbsp;|&nbsp;**--resume**&nbsp;\[*id*]]]
 \[**-u**&nbsp;*base*&nbsp;|&nbsp;**--url**&nbsp;*base*]
 
@@ -82,6 +84,32 @@ immediately, then automatically resubmit it every time a turn
 completes with nothing else queued, so the agent keeps going without
 a human re-prompting it each turn.
 
+**-D** *prompt*, **--daemon** *prompt*
+
+Run
+*prompt*
+headlessly, then keep running without reading standard input.
+Each event from a monitor
+(the **monitor\_start** tool)
+starts a new turn.
+The process stops on
+`SIGINT`
+or
+`SIGTERM`.
+A daemon compacts its context at the end of a turn that leaves it over
+the autocompact threshold.
+With
+**-r** *id*,
+the daemon keeps one session log under the exact
+*id*
+across restarts: it replays that session if it exists, and creates it
+if not.
+Without
+**-r**,
+nothing is logged.
+Incompatible with
+**--oneshot**.
+
 **-H**, **--headless**
 
 Force the plain stdio REPL even when standard input and standard
@@ -144,6 +172,15 @@ Load Lua plugins from
 instead of the default
 `XDG_CONFIG_HOME`*/clm/plugins*.
 
+**-P** *name*, **--plugin** *name*
+
+Also load the opt-in plugin
+*opt/*&zwnj;*name*&zwnj;*.lua*
+from the plugin directory.
+Can be given more than once.
+See
+[clm-tool(5)](clm-tool.md).
+
 **-r** \[*id*, **--resume** \[*id*]]
 
 Resume the saved session
@@ -199,7 +236,10 @@ command starts a fresh session file, leaving the old one resumable.
 Incompatible with
 **--oneshot**
 and
-**--headless**.
+**--headless**;
+see
+**--daemon**
+for its use there.
 
 **--allow-all-tools**
 
@@ -210,9 +250,10 @@ watching, in a directory whose contents you can afford to lose.
 The status bar carries
 **\[allow-all]**
 for as long as the session runs this way.
-**--oneshot**
-and
+**--oneshot**,
 **--headless**
+and
+**--daemon**
 runs already allow every call, with or without this flag.
 
 **-S**, **--no-stream**
