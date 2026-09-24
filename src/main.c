@@ -1135,9 +1135,16 @@ main(int argc, char *argv[])
 	state->oneshot = (oneshot != NULL);
 	state->daemon = (daemon_prompt != NULL);
 
-	/* No session here to name the directory, so key it by pid; the empty
-	 * ones are removed on the way out and the sweep takes the rest. */
-	{
+	/* A daemon with a session keys the directory by the session id, so the
+	 * system prompt stays the same across restarts and the server's
+	 * prompt cache still matches. Otherwise key it by pid; the empty ones
+	 * are removed on the way out and the sweep takes the rest. */
+	if (dsess != NULL) {
+		host_block = attach_scratch(
+		    clm_session_id(dsess), sysinfo, true, &scratch);
+		if (host_block != NULL)
+			cfg.system_prompt_suffix = host_block;
+	} else {
 		char key[32];
 
 		(void)snprintf(key, sizeof(key), "run-%ld", (long)getpid());
