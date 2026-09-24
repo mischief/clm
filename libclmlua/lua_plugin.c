@@ -344,6 +344,8 @@ register_ctx_meta(lua_State *L)
 struct lua_tool_user {
 	struct clm_lua_plugin *plugin;
 	int invoke_ref; /* LUA_REGISTRYINDEX reference to the invoke fn */
+	char *name;     /* for clm.tool_remove */
+	bool removed;
 };
 
 /* ------------------------------------------------------------------ */
@@ -812,6 +814,14 @@ lua_clm_tool_register(lua_State *L)
 	}
 	tu->plugin = plugin;
 	tu->invoke_ref = invoke_ref;
+	tu->removed = false;
+	tu->name = strdup(name);
+	if (tu->name == NULL) {
+		free(tu);
+		free(schema_json);
+		luaL_unref(L, LUA_REGISTRYINDEX, invoke_ref);
+		return luaL_error(L, "out of memory");
+	}
 
 	/* Register with the agent. */
 	memset(&def, 0, sizeof(def));
@@ -826,6 +836,7 @@ lua_clm_tool_register(lua_State *L)
 	r = clm_tool_add(plugin->agent, &def);
 	free(schema_json);
 	if (r < 0) {
+		free(tu->name);
 		free(tu);
 		luaL_unref(L, LUA_REGISTRYINDEX, invoke_ref);
 		return luaL_error(
@@ -849,6 +860,30 @@ lua_clm_tool_register(lua_State *L)
 		plugin->tool_users[plugin->tool_user_count++] = tu;
 
 	return 0;
+}
+
+/*
+ * Lua: clm.tool_remove(name) -> true, or false if this plugin has no such
+ * tool. Only tools the calling plugin registered can be removed. Safe from
+ * inside the tool's own invoke.
+ */
+static int
+lua_clm_tool_remove(lua_State *L)
+{
+	struct clm_lua_plugin *plugin = lua_touserdata(L, lua_upvalueindex(1));
+	const char *name = luaL_checkstring(L, 1);
+
+	for (size_t i = 0; i < plugin->tool_user_count; i++) {
+		struct lua_tool_user *tu = plugin->tool_users[i];
+
+		if (tu->removed || strcmp(tu->name, name) != 0)
+			continue;
+		tu->removed = true;
+		lua_pushboolean(L, clm_tool_remove(plugin->agent, name) == 0);
+		return 1;
+	}
+	lua_pushboolean(L, 0);
+	return 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1113,6 +1148,9 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 	lua_pushlightuserdata(L, plugin);
 	lua_pushcclosure(L, lua_clm_tool_register, 1);
 	lua_setfield(L, -2, "tool_register");
+	lua_pushlightuserdata(L, plugin);
+	lua_pushcclosure(L, lua_clm_tool_remove, 1);
+	lua_setfield(L, -2, "tool_remove");
 	lua_pushcfunction(L, lua_clm_read_file);
 	lua_setfield(L, -2, "read_file");
 	lua_pushcfunction(L, lua_clm_write_file);
@@ -1423,6 +1461,7 @@ clm_lua_env_free(struct clm_lua_env *env)
 			if (!p->dead)
 				luaL_unref(p->L, LUA_REGISTRYINDEX,
 				    p->tool_users[j]->invoke_ref);
+			free(p->tool_users[j]->name);
 			free(p->tool_users[j]);
 		}
 		free(p->tool_users);

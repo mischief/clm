@@ -1157,6 +1157,11 @@ test_exec_and_opt_plugins(void)
 
 	CHECK(!tool_registered(agent, "opt_extra"),
 	    "opt plugin skipped by the directory load");
+	CHECK(tool_registered(agent, "remove_ok"),
+	    "tool_remove plugin loaded and its asserts passed");
+	CHECK(!tool_registered(agent, "gone"), "tool_remove removes own tool");
+	CHECK(tool_registered(agent, "exec_tool"),
+	    "tool_remove leaves another plugin's tool");
 	CHECK(
 	    clm_lua_load_plugin(env, "test/plugins_exec", "../exec") == -EINVAL,
 	    "opt plugin name must not be a path");

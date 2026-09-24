@@ -127,6 +127,15 @@ omits the tool from the schema advertised to the model entirely, for
 a tool meant to be invoked only by other plugin code, not by the
 model itself.
 
+**clm.tool\_remove**(*name*)
+removes a tool the same plugin registered, and returns true, or false
+when the plugin has no such tool.
+It is safe to call from inside that tool's own
+*invoke*,
+for example to offer a one-time setup tool only until it has run.
+Removing a tool changes the tool list sent with each request, so the
+server's prompt cache misses once.
+
 ## The ctx object
 
 **ctx:complete**(*result*)
