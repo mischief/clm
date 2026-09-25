@@ -5,7 +5,7 @@ subprojects/
 core.*
 fuzz/out_*
 vgcore.*
-*.txt
+/*.txt
 __pycache__/
 *.chat
 *.md
