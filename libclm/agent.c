@@ -2872,7 +2872,15 @@ clm_agent_start_turn(struct clm_agent *agent)
 
 		if (sent > 0 && (int)sent <= total) {
 			autofree char *full = cJSON_PrintUnformatted(messages);
+			cJSON *reply = cJSON_GetArrayItem(messages, (int)sent);
+			const char *role = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(reply, "role"));
 			size_t i;
+
+			/* The assistant message after the sent prefix is the
+			 * reply to that request. It is on the server too. */
+			if (role != NULL && strcmp(role, "assistant") == 0)
+				sent++;
 
 			turn_ctx_bytes = full != NULL ? strlen(full) : 0;
 			for (i = 0; i < sent; i++)

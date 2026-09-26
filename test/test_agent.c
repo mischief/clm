@@ -518,6 +518,19 @@ test_read_image_responses(uv_loop_t *loop)
 	                  cJSON_GetArrayItem(out, 1), "image_url")),
 	          "data:image/png;base64,", 22) == 0,
 	    "read_image responses: input_image with the data URL");
+	CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
+	                 body, "previous_response_id")),
+	          "r1") == 0,
+	    "read_image responses: the result continues the call's response");
+	cJSON_ArrayForEach(item, input)
+	{
+		const char *type = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(item, "type"));
+
+		CHECK(type == NULL || strcmp(type, "function_call") != 0,
+		    "read_image responses: the server's own call is not "
+		    "resent");
+	}
 	cJSON_Delete(body);
 	teardown(&st, srv);
 	unlink(img);
@@ -2118,7 +2131,7 @@ test_responses_chain(uv_loop_t *loop)
 	static const char *reply =
 	    "{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":"
 	    "[{\"type\":\"message\",\"content\":[{\"type\":"
-	    "\"output_text\",\"text\":\"ok\"}]}]}";
+	    "\"output_text\",\"text\":\"firstreply\"}]}]}";
 	static const char *reply2 =
 	    "{\"id\":\"resp_2\",\"status\":\"completed\",\"output\":"
 	    "[{\"type\":\"message\",\"content\":[{\"type\":"
@@ -2151,6 +2164,8 @@ test_responses_chain(uv_loop_t *loop)
 	    "chain: the follow-up continues from the first response");
 	CHECK(req != NULL && strstr(req, "openingturn") == NULL,
 	    "chain: the follow-up leaves the sent history out");
+	CHECK(req != NULL && strstr(req, "firstreply") == NULL,
+	    "chain: the follow-up leaves the server's own reply out");
 	CHECK(req != NULL && strstr(req, "secondturn") != NULL,
 	    "chain: the follow-up carries the new turn");
 
