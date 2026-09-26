@@ -902,6 +902,24 @@ response_error_message(cJSON *parsed)
 	return cJSON_IsString(msg) ? cJSON_GetStringValue(msg) : NULL;
 }
 
+/*
+ * The message of a stream error event, before any provider normalizes it:
+ * {"error":{"message"}} on chat and Anthropic, and also a top-level
+ * "message" on a Responses {"type":"error"} event.
+ */
+static const char *
+stream_error_message(cJSON *raw)
+{
+	const char *msg = response_error_message(raw);
+	const char *type =
+	    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(raw, "type"));
+
+	if (msg == NULL && type != NULL && strcmp(type, "error") == 0)
+		msg = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(raw, "message"));
+	return msg;
+}
+
 /* Return choices[0].finish_reason from a canonical completion response. */
 static const char *
 response_finish_reason(cJSON *parsed)
@@ -1887,6 +1905,25 @@ stream_merge_tool_calls(struct clm_async_turn *turn, cJSON *deltas)
 	}
 }
 
+/*
+ * Keep what the server said about a failed stream: the event carrying it is
+ * gone by the time the turn ends. A stream that ends on an error is a failed
+ * turn, not an empty answer.
+ */
+static void
+stream_note_error(struct clm_async_turn *turn, const char *emsg)
+{
+	if (emsg == NULL)
+		return;
+	clm_agent_set_error(turn->agent, emsg);
+	if (is_rate_limit_message(emsg)) {
+		free(turn->rl_advice);
+		turn->rl_advice = strdup(emsg);
+	}
+	if (turn->finish_reason == NULL)
+		turn->finish_reason = strdup("error");
+}
+
 /* Process one complete SSE line (NUL-terminated, no newline). */
 static void
 stream_handle_line(struct clm_async_turn *turn)
@@ -1921,6 +1958,10 @@ stream_handle_line(struct clm_async_turn *turn)
 	if (obj == NULL)
 		return;
 
+	/* An error event carries no choices, and the providers drop it when
+	 * they normalize, so read it from the raw event. */
+	stream_note_error(turn, stream_error_message(obj));
+
 	{
 		const struct clm_provider_ops *ops =
 		    clm_provider_ops_get(agent->llm->provider);
@@ -1950,23 +1991,13 @@ stream_handle_line(struct clm_async_turn *turn)
 	{
 		cJSON *jfinish =
 		    cJSON_GetObjectItemCaseSensitive(choice, "finish_reason");
-		const char *emsg;
 
 		if (jfinish != NULL && cJSON_IsString(jfinish)) {
 			free(turn->finish_reason);
 			turn->finish_reason =
 			    strdup(cJSON_GetStringValue(jfinish));
 		}
-		/* Keep what the server said about a failed response: the
-		 * chunk carrying it is gone by the time the turn ends. */
-		emsg = response_error_message(obj);
-		if (emsg != NULL) {
-			clm_agent_set_error(turn->agent, emsg);
-			if (is_rate_limit_message(emsg)) {
-				free(turn->rl_advice);
-				turn->rl_advice = strdup(emsg);
-			}
-		}
+		stream_note_error(turn, response_error_message(obj));
 		chain_note_response(turn->agent, obj, turn->history_msgs);
 	}
 

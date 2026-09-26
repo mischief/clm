@@ -3435,6 +3435,56 @@ test_hidden_tool(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/*
+ * A stream error event has no choices, and the Responses and Anthropic
+ * normalizers drop it. The turn must still fail with the server's words,
+ * not finish as an empty answer.
+ */
+static void
+test_stream_error_event(uv_loop_t *loop)
+{
+	static const struct {
+		enum clm_provider provider;
+		const char *body;
+	} cases[] = {
+	    {CLM_PROVIDER_OPENAI,
+	        "data: {\"error\":{\"message\":\"chat went wrong\"}}\n\n"
+	        "data: [DONE]\n\n"},
+	    {CLM_PROVIDER_OPENAI_RESPONSES,
+	        "data: {\"type\":\"error\",\"code\":\"server_error\","
+	        "\"message\":\"responses went wrong\"}\n\n"},
+	    {CLM_PROVIDER_ANTHROPIC,
+	        "event: error\n"
+	        "data: {\"type\":\"error\",\"error\":{\"type\":"
+	        "\"overloaded_error\",\"message\":\"anthropic went "
+	        "wrong\"}}\n\n"},
+	};
+	static const char *const want[] = {
+	    "chat went wrong", "responses went wrong", "anthropic went wrong"};
+
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		struct tstate st = {0};
+		struct canned_server *srv;
+		const char *err;
+
+		st.loop = loop;
+		st.stream = 1;
+		st.provider = cases[i].provider;
+		srv = canned_start(loop);
+		CHECK(srv != NULL, "canned_start");
+		canned_reply(srv, cases[i].body);
+		st.agent = make_agent(&st, canned_port(srv));
+		CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+		run_until_done(&st);
+
+		err = clm_agent_get_last_error(st.agent);
+		CHECK(st.turn_status < 0, "stream error event fails the turn");
+		CHECK(err != NULL && strstr(err, want[i]) != NULL,
+		    "stream error event keeps the server's message");
+		teardown(&st, srv);
+	}
+}
+
 static int
 test_agent_suite(void *arg)
 {
@@ -3473,6 +3523,7 @@ test_agent_suite(void *arg)
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
 	test_responses_stream(&loop);
+	test_stream_error_event(&loop);
 	test_rate_limit_retry(&loop);
 	test_rate_limit_delay_forms(&loop);
 	test_rate_limit_backoff_grows();
