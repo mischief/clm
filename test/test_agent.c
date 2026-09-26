@@ -1021,9 +1021,10 @@ test_cancel_during_rate_limit_wait(uv_loop_t *loop)
 	st.agent = make_agent(&st, canned_port(srv));
 	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
 
-	/* Run until the wait is parked: one request out, turn not done. */
+	/* Run until the wait is parked: one request out, turn not done. Block
+	 * per pass; a count of spins is too few on a slow host. */
 	for (i = 0; i < 200 && canned_request_count(srv) < 1; i++)
-		uv_run(loop, UV_RUN_NOWAIT);
+		uv_run(loop, UV_RUN_ONCE);
 	CHECK(canned_request_count(srv) == 1, "the rate-limited request went");
 	CHECK(!st.turn_done, "the turn is waiting, not finished");
 
