@@ -80,6 +80,7 @@ struct clm_agent {
 		void *user;
 	} *turn_hooks;
 	size_t n_turn_hooks;
+	unsigned gate_denials; /* hook denials this turn */
 	struct clm_tool_list tools;
 	size_t tool_count; /* live (non-removed) tools; diagnostics only */
 	size_t max_iterations;

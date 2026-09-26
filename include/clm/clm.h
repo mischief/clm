@@ -709,6 +709,8 @@ CLM_API int clm_agent_add_pre_tool_hook(
     struct clm_agent *agent, clm_pre_tool_hook fn, void *user);
 CLM_API int clm_agent_remove_pre_tool_hook(
     struct clm_agent *agent, clm_pre_tool_hook fn, void *user);
+/* How many pre_tool hooks the agent has. */
+CLM_API size_t clm_agent_pre_tool_hook_count(const struct clm_agent *agent);
 CLM_API int clm_agent_add_turn_hook(
     struct clm_agent *agent, clm_turn_hook fn, void *user);
 CLM_API int clm_agent_remove_turn_hook(

@@ -24,6 +24,7 @@
 .Nm clm_agent_take_mid_chain_compact_error ,
 .Nm clm_agent_add_pre_tool_hook ,
 .Nm clm_agent_remove_pre_tool_hook ,
+.Nm clm_agent_pre_tool_hook_count ,
 .Nm clm_agent_add_turn_hook ,
 .Nm clm_agent_remove_turn_hook ,
 .Nm clm_tool_gate_name ,
@@ -105,6 +106,8 @@
 .Fa "clm_pre_tool_hook fn"
 .Fa "void *user"
 .Fc
+.Ft size_t
+.Fn clm_agent_pre_tool_hook_count "const struct clm_agent *agent"
 .Ft int
 .Fo clm_agent_add_turn_hook
 .Fa "struct clm_agent *agent"
@@ -451,6 +454,10 @@ replaces the arguments the tool gets.
 The history keeps the arguments the model sent.
 When the turn is cancelled or the agent is freed before the answer, the
 answer only frees the gate.
+After hooks deny 3 calls in one turn, the turn ends with
+.Er EPERM .
+.Fn clm_agent_pre_tool_hook_count
+returns how many pre_tool hooks the agent has.
 .Pp
 A turn hook gets a
 .Vt struct clm_turn_info .

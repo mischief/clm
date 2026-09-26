@@ -478,6 +478,7 @@ clm_tool_gate_respond(struct clm_tool_gate *gate, enum clm_gate_verdict verdict,
 
 		(void)snprintf(msg, sizeof(msg), "denied by hook: %s",
 		    reason != NULL ? reason : "no reason given");
+		inv->batch->agent->gate_denials++;
 		clm_tool_fail(inv, msg);
 		return 0;
 	}

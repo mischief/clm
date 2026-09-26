@@ -33,6 +33,7 @@ static const char *default_system_prompt =
 
 /* Minimum spacing between injected "current time" context updates. */
 #define CLM_TIME_STAMP_INTERVAL 600 /* seconds (10 minutes) */
+#define CLM_GATE_DENY_LIMIT 3       /* hook denials that end a turn */
 
 /*
  * Explains the automatic time-context injections to the model. Appended to the
@@ -280,6 +281,12 @@ clm_agent_remove_pre_tool_hook(
 		return 0;
 	}
 	return -ENOENT;
+}
+
+size_t
+clm_agent_pre_tool_hook_count(const struct clm_agent *agent)
+{
+	return agent != NULL ? agent->n_pre_tool_hooks : 0;
 }
 
 int
@@ -765,6 +772,7 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 
 	agent->state = CLM_STATE_THINKING;
 	agent->iteration = 0;
+	agent->gate_denials = 0;
 	agent->cancelling = false; /* fresh turn: clear any prior cancel */
 
 	if (agent->cb_on_state)
@@ -3228,6 +3236,21 @@ clm_agent_tools_done(struct clm_agent *agent, int status)
 		if (agent->cb_on_state)
 			agent->cb_on_state(agent->state, agent->cb_user);
 		agent_turn_done(agent, status);
+		return;
+	}
+
+	/* A model that keeps trying calls a hook blocks needs a person. */
+	if (agent->gate_denials >= CLM_GATE_DENY_LIMIT) {
+		char msg[96];
+
+		(void)snprintf(msg, sizeof(msg),
+		    "stopped: a hook blocked %u tool calls in this turn",
+		    agent->gate_denials);
+		clm_agent_set_error(agent, msg);
+		agent->state = CLM_STATE_ERROR;
+		if (agent->cb_on_state)
+			agent->cb_on_state(agent->state, agent->cb_user);
+		agent_turn_done(agent, -EPERM);
 		return;
 	}
 

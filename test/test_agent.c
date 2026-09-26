@@ -3571,7 +3571,8 @@ struct hook_state {
 	enum clm_gate_verdict verdict;
 	const char *reason;
 	const char *args;
-	int park; /* keep the gate for a later answer */
+	int park;        /* keep the gate for a later answer */
+	int extra_calls; /* tool calls the model makes after the first */
 	int calls;
 	char seen[64]; /* tool name the hook saw */
 	struct clm_tool_gate *gate;
@@ -3637,7 +3638,8 @@ run_hooked_call(uv_loop_t *loop, struct tstate *st, struct hook_state *hs,
 	st->loop = loop;
 	st->perm_decision = CLM_PERM_DENY_ONCE;
 	*srvp = canned_start(loop);
-	canned_tool_call(*srvp, "echo_args", "{\"x\":1}");
+	for (int i = 0; i <= hs->extra_calls; i++)
+		canned_tool_call(*srvp, "echo_args", "{\"x\":1}");
 	canned_reply(*srvp, final_reply);
 	st->agent = make_agent(st, canned_port(*srvp));
 	def.name = "echo_args";
@@ -3673,6 +3675,23 @@ test_pre_tool_hooks(uv_loop_t *loop)
 		    "hook: deny fails the call with the reason");
 		CHECK(strcmp(hs.turn_log, "start[go]end[done]") == 0,
 		    "hook: turn hooks see the prompt and the final text");
+		teardown(&st, srv);
+	}
+
+	/* A model that keeps trying blocked calls is stopped. */
+	{
+		struct tstate st = {0};
+		struct hook_state hs = {.verdict = CLM_GATE_DENY,
+		    .reason = "still no",
+		    .extra_calls = 2};
+
+		run_hooked_call(loop, &st, &hs, &srv);
+		run_until_done(&st);
+		CHECK(hs.calls == 3 && st.turn_status == -EPERM,
+		    "hook: three denials in a turn stop it");
+		CHECK(strstr(clm_agent_get_last_error(st.agent), "blocked 3") !=
+		        NULL,
+		    "hook: the stop says why");
 		teardown(&st, srv);
 	}
 
