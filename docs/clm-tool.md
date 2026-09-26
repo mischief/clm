@@ -354,6 +354,100 @@ The value of environment variable
 or
 `nil`.
 
+**clm.on**(*event*, *fn*)
+
+Call
+*fn*
+on an agent event.
+See
+*Hooks*.
+
+## Hooks
+
+	clm.on("pre_tool", function(call)
+	    if call.name == "shell_exec" and call.args.command:find("rm ") then
+	        return { deny = "no rm" }
+	    end
+	end)
+	clm.on("turn_end", function(t) clm.notify("done: " .. (t.text or "")) end)
+
+Hooks run in the order the plugins added them.
+The events are:
+
+*pre\_tool*
+
+Called for each tool call, before the permission prompt.
+*call*
+has
+*name*
+and
+*args*,
+the decoded arguments.
+The hook runs in its own coroutine, so it can use
+*HTTP requests*,
+**clm.sleep**()
+and
+**clm.exec**().
+It returns one of:
+
+`nil`
+
+Let the call go on.
+
+{deny = why}
+
+Fail the call.
+The model sees
+*why*.
+
+{ask = why}
+
+Show the permission prompt, also for a
+*no\_prompt*
+tool and after an
+"always"
+answer.
+The terminal UI shows the prompt, also with
+**--allow-all-tools**.
+The headless modes
+(**-o**, **-D**, **-H**)
+have no person to answer, so they deny the call.
+
+{args = t}
+
+Run the call with the arguments
+*t*,
+a table or a JSON string.
+The history keeps the arguments the model sent.
+
+*args*
+can go with
+*deny*
+or
+*ask*.
+An error in the hook lets the call go on.
+To stop calls when the hook fails, catch the error with
+**pcall**()
+and return
+*deny*.
+When the plugin unloads while its hook runs, the call is denied.
+
+*turn\_start*
+
+Called when a prompt is submitted, with
+*prompt*.
+
+*turn\_end*
+
+Called when a turn is over, before the frontend hears of it, with
+*status*
+(0, or a negative errno) and
+*text*,
+the final reply of the model, or
+`nil`.
+
+The turn hooks are callbacks with a 2 s deadline, and cannot yield.
+
 ## The json module
 
 	local text = json.encode(value)

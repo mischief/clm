@@ -2,6 +2,7 @@
 #ifndef CLMLUA_INTERNAL_H
 #define CLMLUA_INTERNAL_H
 
+#include <stdint.h>
 #include <sys/queue.h>
 
 struct clm_lua_pending;
@@ -39,5 +40,23 @@ int clm_lua_plugin_callback(struct clm_lua_plugin *plugin,
 /* Add clm.spawn, clm.exec, clm.after, clm.notify and clm.getenv to the
  * clm table at the top of the stack. */
 void clm_lua_proc_open(struct lua_State *L, struct clm_lua_plugin *plugin);
+
+/* Hooks a plugin added with clm.on (lua_hook.c). */
+struct lua_hook;
+TAILQ_HEAD(clm_lua_hook_list, lua_hook);
+struct clm_lua_hook_list *clm_lua_plugin_hooks(struct clm_lua_plugin *plugin);
+
+/* Add clm.on to the clm table at the top of the stack. */
+void clm_lua_hook_open(struct lua_State *L, struct clm_lua_plugin *plugin);
+
+/* Take the plugin's hooks off its agent. Call before the state closes. */
+void clm_lua_hook_drop_all(struct clm_lua_plugin *plugin);
+
+int clm_lua_resume_with_deadline(struct clm_lua_plugin *plugin,
+    struct lua_State *co, struct lua_State *from, int nargs, int *nresults,
+    uint64_t timeout_ms);
+void clm_lua_mark_invocation_thread(
+    struct lua_State *L, struct lua_State *co, int on);
+void clm_lua_clear_invocation_registry(struct lua_State *L);
 
 #endif /* CLMLUA_INTERNAL_H */

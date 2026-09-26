@@ -1196,6 +1196,140 @@ test_exec_and_opt_plugins(void)
 	return 0;
 }
 
+/* Read a small file into buf, or an empty string. */
+static void
+slurp(const char *path, char *buf, size_t len)
+{
+	FILE *f = fopen(path, "r");
+	size_t n = 0;
+
+	if (f != NULL) {
+		n = fread(buf, 1, len - 1, f);
+		fclose(f);
+	}
+	buf[n] = '\0';
+}
+
+/* One turn that calls hook_echo with cmd, through the plugin's hooks. */
+static void
+hook_turn(uv_loop_t *loop, struct canned_server *srv, struct clm_agent *agent,
+    struct exec_state *st, const char *cmd, const char *verdict)
+{
+	char call[512];
+
+	(void)snprintf(call, sizeof(call),
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"hook_echo\","
+	    "\"arguments\":\"{\\\"cmd\\\":\\\"%s\\\"}\"}}]}}]}",
+	    cmd);
+	canned_reply(srv, call);
+	canned_reply(srv, verdict);
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"done\"}}]}");
+	st->done = 0;
+	CHECK(clm_agent_submit(agent, cmd) == 0, "hook submit");
+	while (!st->done)
+		uv_run(loop, UV_RUN_ONCE);
+}
+
+static void
+test_hook_plugin(void)
+{
+	uv_loop_t loop;
+	struct canned_server *srv;
+	struct clm_host *uv_host = NULL;
+	struct exec_state st = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	struct clm_callbacks callbacks = {
+	    .on_tool_result = exec_on_tool_result,
+	    .on_turn_done = exec_on_turn_done,
+	};
+	struct clm_cfg cfg = {
+	    .api_key = "test",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 2,
+	};
+	char url[128], tcfg[512], log[4096];
+	char logpath[] = "/tmp/clm-hook-log-XXXXXX";
+	int fd = mkstemp(logpath);
+
+	CHECK(fd >= 0, "hook log file");
+	if (fd >= 0)
+		close(fd);
+	CHECK(uv_loop_init(&loop) == 0, "hook loop init");
+	srv = canned_start(&loop);
+	CHECK(srv != NULL, "hook canned server");
+	if (srv == NULL)
+		return;
+	(void)snprintf(url, sizeof(url),
+	    "http://127.0.0.1:%d/v1/chat/completions", canned_port(srv));
+	cfg.base_url = url;
+	(void)snprintf(tcfg, sizeof(tcfg),
+	    "{\"hook\":{\"url\":\"http://127.0.0.1:%d/judge\","
+	    "\"log\":\"%s\"}}",
+	    canned_port(srv), logpath);
+	CHECK(clm_host_uv_new(&loop, &uv_host) == 0, "hook uv host");
+	CHECK(clm_agent_new(&cfg, uv_host, &callbacks, &st, &agent) == 0,
+	    "hook agent");
+	CHECK(clm_lua_env_new(agent, &env) == 0, "hook lua env");
+	CHECK(clm_lua_env_set_config(env, tcfg) == 0, "hook plugin config");
+	CHECK(clm_lua_load_plugins(env, "test/plugins_hook") == 0,
+	    "hook plugin loading");
+
+	hook_turn(&loop, srv, agent, &st, "ls", "{\"say\":\"allow\"}");
+	CHECK(strcmp(st.content, "ls!") == 0,
+	    "pre_tool hook rewrites the arguments after an http call");
+	slurp(logpath, log, sizeof(log));
+	CHECK(strcmp(log, "start:ls\nend:0:done\n") == 0,
+	    "turn hooks see the prompt and the final text");
+
+	hook_turn(&loop, srv, agent, &st, "rm", "{\"say\":\"deny\"}");
+	CHECK(strstr(st.content, "server said no to rm") != NULL,
+	    "pre_tool hook denies with its reason");
+
+	/* Unload the plugins while the hook waits on its server. */
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"hook_echo\","
+	    "\"arguments\":\"{\\\"cmd\\\":\\\"cat\\\"}\"}}]}}]}");
+	canned_reply(srv, "{\"say\":\"allow\"}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"done\"}}]}");
+	st.done = 0;
+	CHECK(clm_agent_submit(agent, "cat") == 0, "hook submit");
+	{
+		size_t base = canned_request_count(srv);
+
+		while (canned_request_count(srv) < base + 1)
+			uv_run(&loop, UV_RUN_ONCE);
+		canned_pause_next(srv);
+		while (canned_request_count(srv) < base + 2)
+			uv_run(&loop, UV_RUN_ONCE);
+	}
+	clm_lua_env_free(env);
+	env = NULL;
+	while (!st.done)
+		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(strstr(st.content, "hook plugin unloaded") != NULL,
+	    "unloading a waiting hook denies the call");
+
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	clm_host_uv_free(uv_host);
+	canned_stop(srv);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(uv_loop_close(&loop) == 0, "hook loop close");
+	unlink(logpath);
+}
+
 /* An agent's tools entry replaces the top-level entry of the same name. */
 static void
 test_tools_config_merge(void)
@@ -1251,6 +1385,7 @@ test_lua_plugin_suite(void *arg)
 	test_proc_plugin();
 	test_proc_teardown();
 	test_exec_and_opt_plugins();
+	test_hook_plugin();
 	test_tools_config_merge();
 
 	return 0;

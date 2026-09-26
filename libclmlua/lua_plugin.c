@@ -94,6 +94,7 @@ struct clm_lua_plugin {
 	uint64_t deadline_ns; /* wall-clock deadline for current execution */
 	struct clm_lua_budget budget;
 	struct clm_lua_pending_list pending;
+	struct clm_lua_hook_list hooks;
 	bool tearing_down;
 	/* Unprotected-call recovery: see lua_plugin_panic. */
 	jmp_buf panic_jmp;
@@ -417,6 +418,12 @@ int
 clm_lua_plugin_alive(const struct clm_lua_plugin *plugin)
 {
 	return !plugin->dead;
+}
+
+struct clm_lua_hook_list *
+clm_lua_plugin_hooks(struct clm_lua_plugin *plugin)
+{
+	return &plugin->hooks;
 }
 
 struct lua_callback_call {
@@ -1158,6 +1165,7 @@ sandbox_state(lua_State *L, struct clm_lua_plugin *plugin)
 	lua_pushcfunction(L, lua_clm_sleep);
 	lua_setfield(L, -2, "sleep");
 	clm_lua_proc_open(L, plugin);
+	clm_lua_hook_open(L, plugin);
 	lua_setglobal(L, "clm");
 
 	/* Register ctx metatable. */
@@ -1197,6 +1205,7 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	plugin->budget.http_max_per_call = env->http_max_per_call;
 	plugin->budget.json_decode_max = env->json_decode_max;
 	TAILQ_INIT(&plugin->pending);
+	TAILQ_INIT(&plugin->hooks);
 	plugin->path = strdup(path);
 	if (plugin->path == NULL) {
 		free(plugin);
@@ -1282,6 +1291,7 @@ load_one_plugin(struct clm_lua_env *env, const char *path)
 	if (prc != LUA_OK) {
 		const char *err = lua_tostring(L, -1);
 		clm_debug("lua: error executing %s: %s", path, err ? err : "?");
+		clm_lua_hook_drop_all(plugin);
 		lua_close(L);
 		free(plugin->path);
 		free(plugin);
@@ -1453,6 +1463,7 @@ clm_lua_env_free(struct clm_lua_env *env)
 	p = TAILQ_FIRST(&env->plugins);
 	while (p != NULL) {
 		tmp = TAILQ_NEXT(p, entry);
+		clm_lua_hook_drop_all(p);
 		clm_lua_pending_teardown_all(p);
 		/* Free tool user structs and unref invoke functions. A dead
 		 * state is left alone: its heap is bounded by mem_limit, and

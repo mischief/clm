@@ -320,7 +320,89 @@ The value of environment variable
 .Va name ,
 or
 .Dv nil .
+.It Fn clm.on event fn
+Call
+.Va fn
+on an agent event.
+See
+.Sx Hooks .
 .El
+.Ss Hooks
+.Bd -literal -offset indent
+clm.on("pre_tool", function(call)
+    if call.name == "shell_exec" and call.args.command:find("rm ") then
+        return { deny = "no rm" }
+    end
+end)
+clm.on("turn_end", function(t) clm.notify("done: " .. (t.text or "")) end)
+.Ed
+.Pp
+Hooks run in the order the plugins added them.
+The events are:
+.Bl -tag -width turn_start
+.It Va pre_tool
+Called for each tool call, before the permission prompt.
+.Va call
+has
+.Va name
+and
+.Va args ,
+the decoded arguments.
+The hook runs in its own coroutine, so it can use
+.Sx HTTP requests ,
+.Fn clm.sleep
+and
+.Fn clm.exec .
+It returns one of:
+.Bl -tag -width "{ask = why}"
+.It Dv nil
+Let the call go on.
+.It Brq deny = why
+Fail the call.
+The model sees
+.Va why .
+.It Brq ask = why
+Show the permission prompt, also for a
+.Va no_prompt
+tool and after an
+.Qq always
+answer.
+The terminal UI shows the prompt, also with
+.Fl -allow-all-tools .
+The headless modes
+.Pq Fl o , Fl D , Fl H
+have no person to answer, so they deny the call.
+.It Brq args = t
+Run the call with the arguments
+.Va t ,
+a table or a JSON string.
+The history keeps the arguments the model sent.
+.El
+.Pp
+.Va args
+can go with
+.Va deny
+or
+.Va ask .
+An error in the hook lets the call go on.
+To stop calls when the hook fails, catch the error with
+.Fn pcall
+and return
+.Va deny .
+When the plugin unloads while its hook runs, the call is denied.
+.It Va turn_start
+Called when a prompt is submitted, with
+.Va prompt .
+.It Va turn_end
+Called when a turn is over, before the frontend hears of it, with
+.Va status
+(0, or a negative errno) and
+.Va text ,
+the final reply of the model, or
+.Dv nil .
+.El
+.Pp
+The turn hooks are callbacks with a 2 s deadline, and cannot yield.
 .Ss The json module
 .Bd -literal -offset indent
 local text = json.encode(value)
