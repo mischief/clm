@@ -94,6 +94,70 @@ tool_call_to_function_call_item(const cJSON *tc)
  *                             the original response already delivered it)
  * tool    -> {type:"function_call_output", call_id, output}
  */
+/*
+ * A chat-completions parts array in responses spelling: "text" becomes
+ * "input_text" and an "image_url" part becomes "input_image" with the
+ * data URL. Used both for message content and for a function_call_output
+ * output, which the Responses API also takes as a parts list.
+ */
+static cJSON *
+convert_parts(const cJSON *parts)
+{
+	cJSON *out = cJSON_CreateArray();
+	const cJSON *p;
+
+	if (out == NULL)
+		return NULL;
+	cJSON_ArrayForEach(p, parts)
+	{
+		const char *type = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(p, "type"));
+		cJSON *item = cJSON_CreateObject();
+		const char *val = NULL, *key = NULL, *ntype = NULL;
+
+		if (item == NULL) {
+			cJSON_Delete(out);
+			return NULL;
+		}
+		if (type != NULL && strcmp(type, "text") == 0) {
+			ntype = "input_text";
+			key = "text";
+			val = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(p, "text"));
+		} else if (type != NULL && strcmp(type, "image_url") == 0) {
+			ntype = "input_image";
+			key = "image_url";
+			val = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(
+			        cJSON_GetObjectItemCaseSensitive(
+			            p, "image_url"),
+			        "url"));
+		}
+		if (ntype == NULL || val == NULL) {
+			cJSON_Delete(item);
+			continue;
+		}
+		if (cJSON_AddStringToObject(item, "type", ntype) == NULL ||
+		    cJSON_AddStringToObject(item, key, val) == NULL) {
+			cJSON_Delete(item);
+			cJSON_Delete(out);
+			return NULL;
+		}
+		cJSON_AddItemToArray(out, item);
+	}
+	return out;
+}
+
+/* content, whether a string or a parts array, in responses spelling. */
+static cJSON *
+convert_content(const cJSON *content)
+{
+	if (cJSON_IsArray(content))
+		return convert_parts(content);
+	return cJSON_CreateString(
+	    cJSON_IsString(content) ? content->valuestring : "");
+}
+
 static cJSON *
 convert_messages(cJSON *messages)
 {
@@ -114,8 +178,6 @@ convert_messages(cJSON *messages)
 		    m ? cJSON_GetObjectItemCaseSensitive(m, "content") : NULL;
 		const char *role =
 		    cJSON_IsString(jrole) ? jrole->valuestring : "";
-		const char *content =
-		    cJSON_IsString(jcontent) ? jcontent->valuestring : NULL;
 
 		if (strcmp(role, "tool") == 0) {
 			cJSON *jtid =
@@ -131,8 +193,8 @@ convert_messages(cJSON *messages)
 			cJSON_AddItemToObject(item, "call_id",
 			    cJSON_CreateString(
 			        cJSON_IsString(jtid) ? jtid->valuestring : ""));
-			cJSON_AddItemToObject(item, "output",
-			    cJSON_CreateString(content ? content : ""));
+			cJSON_AddItemToObject(
+			    item, "output", convert_content(jcontent));
 			cJSON_AddItemToArray(out, item);
 			continue;
 		}
@@ -170,8 +232,8 @@ convert_messages(cJSON *messages)
 				}
 				cJSON_AddItemToObject(
 				    item, "role", cJSON_CreateString(role));
-				cJSON_AddItemToObject(item, "content",
-				    cJSON_CreateString(content ? content : ""));
+				cJSON_AddItemToObject(
+				    item, "content", convert_content(jcontent));
 				cJSON_AddItemToArray(out, item);
 			}
 		}

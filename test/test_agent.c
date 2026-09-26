@@ -415,6 +415,78 @@ test_read_image(uv_loop_t *loop)
 	unlink(img);
 }
 
+/* The request body of a raw HTTP request, parsed. */
+static cJSON *
+request_json(const char *req)
+{
+	const char *jb = req != NULL ? strstr(req, "\r\n\r\n") : NULL;
+
+	return jb != NULL ? cJSON_Parse(jb + 4) : NULL;
+}
+
+/* (b1r) read_image over the Responses API: the image goes into the
+ * function_call_output as an input_image part. */
+static void
+test_read_image_responses(uv_loop_t *loop)
+{
+	static const uint8_t png[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a,
+	    '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R', 0, 0, 0, 8, 0, 0, 0, 8, 8, 2,
+	    0, 0, 0};
+	char img[] = "/tmp/clm-test-image-XXXXXX";
+	char reply[512];
+	struct tstate st = {0};
+	struct canned_server *srv;
+	cJSON *body, *input, *item, *out = NULL;
+	int fd;
+
+	fd = mkstemp(img);
+	CHECK(fd >= 0 && write(fd, png, sizeof(png)) == (ssize_t)sizeof(png),
+	    "read_image responses: temp png");
+	if (fd >= 0)
+		close(fd);
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	(void)snprintf(reply, sizeof(reply),
+	    "{\"id\":\"r1\",\"status\":\"completed\",\"output\":[{\"type\":"
+	    "\"function_call\",\"call_id\":\"c1\",\"name\":\"read_image\","
+	    "\"arguments\":\"{\\\"path\\\":\\\"%s\\\"}\"}]}",
+	    img);
+	canned_reply(srv, reply);
+	canned_reply(srv,
+	    "{\"id\":\"r2\",\"status\":\"completed\",\"output\":[{\"type\":"
+	    "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
+	    "\"done\"}]}]}");
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+	run_until_done(&st);
+
+	body = request_json(canned_last_request(srv));
+	input = cJSON_GetObjectItemCaseSensitive(body, "input");
+	cJSON_ArrayForEach(item, input)
+	{
+		const char *type = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(item, "type"));
+
+		if (type != NULL && strcmp(type, "function_call_output") == 0)
+			out = cJSON_GetObjectItemCaseSensitive(item, "output");
+	}
+	CHECK(cJSON_IsArray(out) && cJSON_GetArraySize(out) == 2,
+	    "read_image responses: output is a parts list");
+	CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
+	                 cJSON_GetArrayItem(out, 0), "type")),
+	          "input_text") == 0,
+	    "read_image responses: text part first");
+	CHECK(strncmp(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
+	                  cJSON_GetArrayItem(out, 1), "image_url")),
+	          "data:image/png;base64,", 22) == 0,
+	    "read_image responses: input_image with the data URL");
+	cJSON_Delete(body);
+	teardown(&st, srv);
+	unlink(img);
+}
+
 /*
  * (b2) A tool that reports raw binary output via clm_tool_complete_buf: the
  * history/request-building path must never emit invalid-UTF-8 bytes into the
@@ -3205,6 +3277,7 @@ test_agent_suite(void *arg)
 	test_text_reply(&loop);
 	test_tool_call(&loop);
 	test_read_image(&loop);
+	test_read_image_responses(&loop);
 	test_binary_tool_output(&loop);
 	test_bg_exec(&loop);
 	test_agent_free_during_bg_exec(&loop);
