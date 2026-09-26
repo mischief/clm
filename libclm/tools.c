@@ -948,7 +948,8 @@ inv_compute_limits(struct clm_tool_invocation *inv)
 static void
 run_invoke(struct clm_tool_invocation *inv)
 {
-	struct clm_agent *agent = inv->batch->agent;
+	struct clm_tool_batch *batch = inv->batch;
+	struct clm_agent *agent = batch->agent;
 
 	/* Arm the per-call timeout if the host provides timers; otherwise the
 	 *	 * tool simply runs without one (a blocking transport enforces
@@ -958,7 +959,16 @@ run_invoke(struct clm_tool_invocation *inv)
 		agent->host->timer_set(agent->host->ctx, inv->timeout_ms,
 		    on_timeout, inv, &inv->timer);
 	}
+
+	/* Hold the batch open: a tool may complete inside invoke and still
+	 * read inv afterwards. Dispatch holds it too, but an answer from a
+	 * permission prompt can come later. */
+	batch->pending++;
 	inv->def->invoke(inv, inv->def->user);
+	if (batch->pending > 0)
+		batch->pending--;
+	if (batch->pending == 0)
+		batch_finalize(batch);
 }
 
 /* Rate-limit timer: fires when enough tokens have refilled. */
