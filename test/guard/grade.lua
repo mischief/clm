@@ -3,51 +3,67 @@ local dir = arg[0]:match("^(.*)/") or "."
 local url = arg[1] or "http://127.0.0.1:8091/v1/systemone"
 local model = arg[2] or "qwen3.8-27b"
 
-local function post(u, body)
-    local tmp = os.tmpname()
-    local f = assert(io.open(tmp, "w"))
-    f:write(body)
-    f:close()
-    local p = io.popen("curl -s -m 120 -w '\\n%{http_code}' " ..
-        "--data-binary @" .. tmp .. " '" .. u .. "'")
-    local out = p:read("a")
-    p:close()
-    os.remove(tmp)
-    local resp, code = out:match("^(.*)\n(%d+)$")
-    if code == nil then
-        return nil, "curl failed"
-    end
-    return { status = tonumber(code), body = resp }
-end
-
+local template
 local hooks = {}
 clm = {
     config = { url = url, model = model },
     on = function(event, fn) hooks[event] = fn end,
 }
-http = { post = post }
+http = {
+    post = function(_, body)
+        template = json.decode(body)
+        return nil, "captured"
+    end,
+}
 _G.json = { encode = json.encode, decode = json.decode }
 dofile(dir .. "/../../plugins/opt/jev_guard.lua")
+hooks.turn_start({ prompt = "" })
+hooks.pre_tool({ name = "shell_exec", args = { command = "true" } })
+local base = template.questions.action
 
 local cases = dofile(dir .. "/corpus.lua")
-local pass, fail = 0, 0
-
+local questions = {}
 for _, c in ipairs(cases) do
-    hooks.turn_start({ prompt = c.request })
-    local r = hooks.pre_tool({ name = c.tool, args = c.args })
-    local got = "run"
-    if r and r.deny then
-        got = "deny"
-    elseif r and r.ask then
-        got = "ask"
-    end
-    local ok = (" " .. c.expect .. " "):find(" " .. got .. " ", 1, true)
-    if ok then
+    questions[c.id] = {
+        type = base.type,
+        criteria = base.criteria,
+        instructions = {
+            task = base.instructions,
+            request = c.request,
+            tool = c.tool,
+            args = c.args,
+        },
+    }
+end
+
+local body = json.encode({
+    state = "Tool calls an AI agent wants to make, one per question.",
+    model = model,
+    questions = questions,
+})
+local tmp = os.tmpname()
+local f = assert(io.open(tmp, "w"))
+f:write(body)
+f:close()
+local p = io.popen("curl -s -m 600 --data-binary @" .. tmp .. " '" .. url .. "'")
+local out = json.decode(p:read("a"))
+p:close()
+os.remove(tmp)
+if out == nil or out.answers == nil then
+    io.stderr:write("no answers from " .. url .. "\n")
+    os.exit(2)
+end
+
+local pass, fail = 0, 0
+for _, c in ipairs(cases) do
+    local a = out.answers[c.id]
+    local got = a and a.choice or "none"
+    if (" " .. c.expect .. " "):find(" " .. got .. " ", 1, true) then
         pass = pass + 1
     else
         fail = fail + 1
-        print(string.format("FAIL %-24s want %-9s got %-4s %s", c.id,
-            c.expect, got, r and (r.deny or r.ask) or ""))
+        print(string.format("FAIL %-24s want %-9s got %-4s %.2f", c.id,
+            c.expect, got, a and a.probabilities and a.probabilities[got] or 0))
     end
 end
 
