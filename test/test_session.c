@@ -18,6 +18,7 @@
 
 #include <cjson/cJSON.h>
 
+#include "clm/compress.h"
 #include "clm/history.h"
 #include "clm/session.h"
 #include "session_internal.h"
@@ -696,6 +697,41 @@ test_supersede_drops_images(void)
 	clm_history_free(&h);
 }
 
+static int
+cz_write_short(
+    void *ctx, const char *src, size_t src_len, char **out, size_t *out_len)
+{
+	(void)ctx, (void)src, (void)src_len;
+	*out = strdup("z");
+	*out_len = 1;
+	return *out == NULL ? -ENOMEM : 0;
+}
+
+static int
+cz_read_fail(void *ctx, const char *src, size_t src_len, char **out)
+{
+	(void)ctx, (void)src, (void)src_len, (void)out;
+	return -EIO;
+}
+
+/* A decompress error must fail the wire JSON once, with no double free. */
+static void
+test_decompress_error(void)
+{
+	struct clm_compressor cz = {
+	    .write = cz_write_short, .read = cz_read_fail, .min_len = 4};
+	struct clm_history h;
+	cJSON *arr;
+
+	clm_history_init(&h);
+	CHECK(clm_history_add_user(&h, "long enough to pack", &cz) != NULL,
+	    "decompress error: add");
+	arr = clm_history_to_json(&h, &cz);
+	CHECK(arr == NULL, "decompress error: to_json fails");
+	cJSON_Delete(arr);
+	clm_history_free(&h);
+}
+
 static void
 test_sha256(void)
 {
@@ -832,6 +868,7 @@ test_session_suite(void *arg)
 	test_prompt_records(dir);
 	test_attachment_json();
 	test_supersede_drops_images();
+	test_decompress_error();
 	test_sha256();
 	test_session_blobs(dir);
 	remove_dir(dir);

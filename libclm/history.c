@@ -884,10 +884,8 @@ clm_message_to_json(
 	}
 
 	cJSON *jrole = cJSON_CreateString(role_str);
-	if (jrole == NULL) {
-		cJSON_Delete(msg);
+	if (jrole == NULL)
 		return NULL;
-	}
 	cJSON_AddItemToObject(msg, "role", jrole);
 
 	if (m->content) {
@@ -900,10 +898,8 @@ clm_message_to_json(
 			 * mismatch, not recoverable here. */
 			ASSERT_RETURN(cz != NULL && cz->read != NULL, NULL);
 			if (cz->read(cz->ctx, m->content, m->content_len,
-			        &plain) < 0) {
-				cJSON_Delete(msg);
+			        &plain) < 0)
 				return NULL;
-			}
 			free_plain = true;
 		}
 
@@ -915,35 +911,29 @@ clm_message_to_json(
 		    : cJSON_CreateStringReference(plain);
 		if (free_plain)
 			free(plain);
-		if (jcontent == NULL) {
-			cJSON_Delete(msg);
+		if (jcontent == NULL)
 			return NULL;
-		}
 		cJSON_AddItemToObject(msg, "content", jcontent);
 	} else if (m->role == CLM_ROLE_ASSISTANT) {
 		cJSON_AddItemToObject(msg, "content", cJSON_CreateNull());
 	}
 
 	if (m->n_attachments > 0 && content_to_parts(msg, m) < 0)
-		return NULL; /* json_cleanup frees msg */
+		return NULL;
 
 	if (m->role == CLM_ROLE_TOOL) {
 		if (m->tool_call_id) {
 			cJSON *jtid = cJSON_CreateString(m->tool_call_id);
-			if (jtid == NULL) {
-				cJSON_Delete(msg);
+			if (jtid == NULL)
 				return NULL;
-			}
 			cJSON_AddItemToObject(msg, "tool_call_id", jtid);
 		}
 	}
 
 	if (m->role == CLM_ROLE_ASSISTANT && !TAILQ_EMPTY(&m->tool_calls)) {
 		cJSON *tool_calls_arr = cJSON_CreateArray();
-		if (tool_calls_arr == NULL) {
-			cJSON_Delete(msg);
+		if (tool_calls_arr == NULL)
 			return NULL;
-		}
 
 		struct clm_tool_call *tc;
 		TAILQ_FOREACH(tc, &m->tool_calls, entries)
@@ -951,7 +941,6 @@ clm_message_to_json(
 			cJSON *tc_json = clm_tool_call_to_json(tc);
 			if (tc_json == NULL) {
 				cJSON_Delete(tool_calls_arr);
-				cJSON_Delete(msg);
 				return NULL;
 			}
 			cJSON_AddItemToArray(tool_calls_arr, tc_json);
