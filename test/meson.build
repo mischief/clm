@@ -40,6 +40,13 @@ test_agent = executable('test_agent',
 )
 test('agent', test_agent, protocol: 'tap')
 
+test_image = executable('test_image',
+  files('test_image.c', '../libclm/image.c') + tap_src,
+  include_directories: [tap_inc, clm_inc, include_directories('../include')],
+  c_args: test_hardening_args,
+)
+test('image', test_image, protocol: 'tap')
+
 # Peer socket delivery uses the uv host and a plain client socket.
 test_peer = executable('test_peer',
   files('test_peer.c') + tap_src,

@@ -229,6 +229,19 @@ void clm_agent_chain_reset(struct clm_agent *agent);
  */
 size_t clm_clean_text(uint8_t *data, size_t len);
 
+/* Base64 (RFC 4648, padded). out needs clm_base64_len(n) + 1 bytes; the
+ * result is NUL-terminated. */
+size_t clm_base64_len(size_t n);
+void clm_base64_encode(const uint8_t *in, size_t n, char *out);
+
+/*
+ * Recognize a PNG, JPEG, GIF or WebP image by its first bytes and read its
+ * width and height from the header. Returns 0 and sets the out values
+ * (each may be NULL), or -EINVAL for anything else. *media_type is static.
+ */
+int clm_image_sniff(const uint8_t *data, size_t len, const char **media_type,
+    uint32_t *width, uint32_t *height);
+
 int clm_parse_props(const char *body, int64_t *ctx_out);
 int clm_parse_model_ctx(const char *body, int64_t *ctx_out);
 
