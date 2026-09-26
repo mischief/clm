@@ -1977,8 +1977,10 @@ stream_handle_line(struct clm_async_turn *turn)
 	}
 
 	/* Usage/timings arrive in a trailing chunk with an empty choices array
-	 * (when stream_options.include_usage is set), so check it first. */
-	if (!turn->have_usage && extract_usage(obj, &turn->usage))
+	 * (when stream_options.include_usage is set), so check it first. Some
+	 * servers also send a running count on earlier chunks, so the last
+	 * one wins. */
+	if (extract_usage(obj, &turn->usage))
 		turn->have_usage = true;
 
 	choices = cJSON_GetObjectItemCaseSensitive(obj, "choices");

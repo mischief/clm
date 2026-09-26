@@ -3485,6 +3485,36 @@ test_stream_error_event(uv_loop_t *loop)
 	}
 }
 
+/* Some chat servers send a running usage count on every chunk; the final
+ * chunk holds the totals. */
+static void
+test_stream_usage_last(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	st.stream = 1;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+	canned_reply(srv,
+	    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}],"
+	    "\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":1}}\n\n"
+	    "data: {\"choices\":[{\"index\":0,\"delta\":{},"
+	    "\"finish_reason\":\"stop\"}],\"usage\":null}\n\n"
+	    "data: {\"choices\":[],"
+	    "\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":9}}\n\n"
+	    "data: [DONE]\n\n");
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hello") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "usage stream ok");
+	CHECK(st.got_usage && st.usage.completion_tokens == 9,
+	    "the final usage chunk wins over a running count");
+	teardown(&st, srv);
+}
+
 static int
 test_agent_suite(void *arg)
 {
@@ -3524,6 +3554,7 @@ test_agent_suite(void *arg)
 	test_stream_meta(&loop);
 	test_responses_stream(&loop);
 	test_stream_error_event(&loop);
+	test_stream_usage_last(&loop);
 	test_rate_limit_retry(&loop);
 	test_rate_limit_delay_forms(&loop);
 	test_rate_limit_backoff_grows();
