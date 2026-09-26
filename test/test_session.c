@@ -5,11 +5,13 @@
  * session dir stands in for $XDG_STATE_HOME.
  */
 #include <dirent.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include <utime.h>
@@ -18,6 +20,7 @@
 
 #include "clm/history.h"
 #include "clm/session.h"
+#include "session_internal.h"
 #include "tap.h"
 
 #define CHECK(cond, msg) TAP_CHECK(cond, msg)
@@ -513,6 +516,19 @@ test_gc(const char *dir)
 		(void)utime(path, &tb);
 	}
 
+	{
+		/* A blob directory whose log is gone goes with the gc. */
+		char bd[512], bf[640];
+		FILE *f;
+
+		(void)snprintf(
+		    bd, sizeof(bd), "%s/20000101-000000-deadbeef.blobs", dir);
+		(void)snprintf(bf, sizeof(bf), "%s/x.png", bd);
+		CHECK(mkdir(bd, 0700) == 0, "gc: orphan blob dir");
+		f = fopen(bf, "w");
+		if (f != NULL)
+			fclose(f);
+	}
 	CHECK(clm_session_gc(dir, 90, &removed) == 0, "gc: runs");
 	CHECK(removed == 2 + 1, "gc: removed the old log, its .bak, stale tmp");
 
@@ -525,6 +541,14 @@ test_gc(const char *dir)
 		CHECK(there == files[i].survives, files[i].name);
 	}
 
+	{
+		char bd[512];
+
+		(void)snprintf(
+		    bd, sizeof(bd), "%s/20000101-000000-deadbeef.blobs", dir);
+		CHECK(access(bd, F_OK) != 0,
+		    "gc: blob dir without its log is removed");
+	}
 	CHECK(clm_session_gc(dir, 0, &removed) == 0 && removed == 0,
 	    "gc: zero days keeps everything");
 }
@@ -644,6 +668,119 @@ test_attachment_json(void)
 	clm_history_free(&h);
 }
 
+static void
+test_sha256(void)
+{
+	char out[65];
+
+	session_sha256_hex((const uint8_t *)"", 0, out);
+	CHECK(strcmp(out,
+	          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934c"
+	          "a495991b7852b855") == 0,
+	    "sha256: empty");
+	session_sha256_hex((const uint8_t *)"abc", 3, out);
+	CHECK(strcmp(out,
+	          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9c"
+	          "b410ff61f20015ad") == 0,
+	    "sha256: abc");
+	session_sha256_hex((const uint8_t *)"abcdbcdecdefdefgefghfghighijhijki"
+	                                    "jkljklmklmnlmnomnopnopq",
+	    56, out);
+	CHECK(strcmp(out,
+	          "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167"
+	          "f6ecedd419db06c1") == 0,
+	    "sha256: two-block vector");
+}
+
+static bool
+file_exists(const char *path)
+{
+	return access(path, F_OK) == 0;
+}
+
+/* Images go to <id>.blobs before the log line, come back on load, and
+ * leave with the session. */
+static void
+test_session_blobs(const char *dir)
+{
+	struct clm_session *s = NULL;
+	struct clm_history h, out;
+	struct clm_message *m;
+	char id[128], bdir[512], blob[1024], orphan[1024], sha[65];
+	const uint8_t img[] = "fake image bytes";
+
+	clm_history_init(&h);
+	clm_history_init(&out);
+	clm_history_add_user(&h, "look", NULL);
+	m = clm_history_add_tool_result(
+	    &h, "c1", "read_image", "an image", 8, NULL);
+	clm_message_add_attachment(m, "image/png", img, sizeof(img) - 1);
+
+	CHECK(clm_session_create(dir, NULL, NULL, NULL, &s) == 0,
+	    "blobs: create");
+	(void)snprintf(id, sizeof(id), "%s", clm_session_id(s));
+	session_sha256_hex(img, sizeof(img) - 1, sha);
+	(void)snprintf(bdir, sizeof(bdir), "%s/%s.blobs", dir, id);
+	(void)snprintf(blob, sizeof(blob), "%s/%s.png", bdir, sha);
+	TAILQ_FOREACH(m, &h, entries)
+	{
+		CHECK(clm_session_append(s, m, NULL) == 0, "blobs: append");
+	}
+	CHECK(file_exists(blob), "blobs: image file named by its hash");
+	CHECK(count_lines(dir, id, "{\"role\":\"tool\"") == 1,
+	    "blobs: one tool record");
+	clm_session_free(s);
+
+	CHECK(clm_session_load(dir, id, &out, NULL) == 0, "blobs: load");
+	m = TAILQ_LAST(&out, clm_history);
+	CHECK(m != NULL && m->n_attachments == 1 &&
+	        m->attachments[0].len == sizeof(img) - 1 &&
+	        memcmp(m->attachments[0].data, img, sizeof(img) - 1) == 0 &&
+	        strcmp(m->attachments[0].media_type, "image/png") == 0,
+	    "blobs: load brings the image back");
+	clm_history_free(&out);
+
+	/* An orphan (a write that died before its log line) goes on open. */
+	(void)snprintf(orphan, sizeof(orphan), "%s/%064d.png", bdir, 0);
+	{
+		FILE *f = fopen(orphan, "w");
+
+		if (f != NULL)
+			fclose(f);
+	}
+	s = NULL;
+	CHECK(clm_session_open(dir, id, &s) == 0, "blobs: reopen");
+	CHECK(!file_exists(orphan) && file_exists(blob),
+	    "blobs: open removes orphans, keeps named images");
+
+	/* Compaction: the .bak still names the image after one rewrite; the
+	 * next rewrite replaces the .bak and the image goes. */
+	clm_history_init(&out);
+	clm_history_add_user(&out, "summary", NULL);
+	CHECK(clm_session_rewrite(s, &out, NULL) == 0, "blobs: rewrite 1");
+	CHECK(file_exists(blob), "blobs: kept while the .bak names it");
+	CHECK(clm_session_rewrite(s, &out, NULL) == 0, "blobs: rewrite 2");
+	CHECK(!file_exists(blob), "blobs: removed once nothing names it");
+	clm_history_free(&out);
+
+	/* A missing image becomes a note, not a failure. */
+	CHECK(clm_session_rewrite(s, &h, NULL) == 0, "blobs: rewrite 3");
+	CHECK(unlink(blob) == 0, "blobs: remove the image by hand");
+	clm_history_init(&out);
+	CHECK(clm_session_load(dir, id, &out, NULL) == 0, "blobs: load again");
+	m = TAILQ_LAST(&out, clm_history);
+	CHECK(m != NULL && m->n_attachments == 0 && m->content != NULL &&
+	        strstr(m->content, "image missing") != NULL,
+	    "blobs: a missing image becomes a note");
+	clm_history_free(&out);
+
+	CHECK(clm_session_append(s, TAILQ_LAST(&h, clm_history), NULL) == 0,
+	    "blobs: append again");
+	CHECK(clm_session_discard(s) == 0, "blobs: discard");
+	CHECK(!file_exists(bdir), "blobs: discard removes the image directory");
+	clm_history_free(&h);
+}
+
 static int
 test_session_suite(void *arg)
 {
@@ -666,6 +803,8 @@ test_session_suite(void *arg)
 	test_gc(dir);
 	test_prompt_records(dir);
 	test_attachment_json();
+	test_sha256();
+	test_session_blobs(dir);
 	remove_dir(dir);
 
 	return 0;

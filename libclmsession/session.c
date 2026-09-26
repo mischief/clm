@@ -31,6 +31,8 @@ struct clm_session {
 };
 
 static uint64_t last_prompt_hash(const char *path);
+static bool has_suffix(const char *name, const char *suffix);
+static void blob_gc(const char *log_path);
 
 /*
  * Session ids embed straight into filenames, so reject anything outside
@@ -333,8 +335,263 @@ clm_session_open(const char *dir, const char *id, struct clm_session **out)
 	 * an exit right after resume never deletes the file. */
 	s->has_msgs = true;
 	s->prompt_hash = last_prompt_hash(path);
+	/* Images left by a write that died before its log line. */
+	blob_gc(path);
 	*out = s;
 	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Images: one file per image in <id>.blobs, named by its SHA-256.     */
+/* ------------------------------------------------------------------ */
+
+#define SESSION_BLOB_MAX (32 * 1024 * 1024) /* sanity cap on load */
+
+/* "<dir>/<id>.jsonl" -> "<dir>/<id>.blobs" */
+static char *
+blob_dir_of(const char *log_path)
+{
+	size_t n = strlen(log_path);
+	char *out;
+
+	if (n > 6 && strcmp(log_path + n - 6, ".jsonl") == 0)
+		n -= 6;
+	if (asprintf(&out, "%.*s.blobs", (int)n, log_path) < 0)
+		return NULL;
+	return out;
+}
+
+static const char *
+blob_ext(const char *media_type)
+{
+	if (strcmp(media_type, "image/png") == 0)
+		return "png";
+	if (strcmp(media_type, "image/jpeg") == 0)
+		return "jpg";
+	if (strcmp(media_type, "image/gif") == 0)
+		return "gif";
+	if (strcmp(media_type, "image/webp") == 0)
+		return "webp";
+	return "bin";
+}
+
+static bool
+sha_valid(const char *sha)
+{
+	if (sha == NULL || strlen(sha) != 64)
+		return false;
+	for (size_t i = 0; i < 64; i++)
+		if (!((sha[i] >= '0' && sha[i] <= '9') ||
+		        (sha[i] >= 'a' && sha[i] <= 'f')))
+			return false;
+	return true;
+}
+
+/* Write data to path unless it is there: temp name, fsync, rename. */
+static int
+blob_write(const char *path, const uint8_t *data, size_t len)
+{
+	autofree char *tmp = NULL;
+	int fd, r = 0;
+
+	if (access(path, F_OK) == 0)
+		return 0;
+	if (asprintf(&tmp, "%s.tmp", path) < 0)
+		return -ENOMEM;
+	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (fd < 0)
+		return -errno;
+	while (len > 0) {
+		ssize_t w = write(fd, data, len);
+
+		if (w < 0 && errno == EINTR)
+			continue;
+		if (w <= 0) {
+			r = w < 0 ? -errno : -EIO;
+			break;
+		}
+		data += w;
+		len -= (size_t)w;
+	}
+	if (r == 0 && fsync(fd) != 0)
+		r = -errno;
+	(void)close(fd);
+	if (r == 0 && rename(tmp, path) != 0)
+		r = -errno;
+	if (r < 0)
+		(void)unlink(tmp);
+	return r;
+}
+
+/*
+ * Store each image of m in the blob directory and add the references to
+ * obj as "attachments". The files are on disk before the caller writes
+ * the line that names them.
+ */
+static int
+store_attachments(const char *log_path, const struct clm_message *m, cJSON *obj)
+{
+	autofree char *bdir = NULL;
+	cJSON *arr;
+
+	if (m->n_attachments == 0)
+		return 0;
+	bdir = blob_dir_of(log_path);
+	if (bdir == NULL)
+		return -ENOMEM;
+	if (mkdir(bdir, 0700) != 0 && errno != EEXIST)
+		return -errno;
+	arr = cJSON_AddArrayToObject(obj, "attachments");
+	if (arr == NULL)
+		return -ENOMEM;
+	for (size_t i = 0; i < m->n_attachments; i++) {
+		const struct clm_attachment *a = &m->attachments[i];
+		autofree char *path = NULL;
+		cJSON *e = cJSON_CreateObject();
+		char sha[65];
+		int r;
+
+		if (e == NULL)
+			return -ENOMEM;
+		cJSON_AddItemToArray(arr, e);
+		session_sha256_hex(a->data, a->len, sha);
+		if (asprintf(&path, "%s/%s.%s", bdir, sha,
+		        blob_ext(a->media_type)) < 0)
+			return -ENOMEM;
+		r = blob_write(path, a->data, a->len);
+		if (r < 0)
+			return r;
+		if (cJSON_AddStringToObject(e, "type", "image") == NULL ||
+		    cJSON_AddStringToObject(e, "media_type", a->media_type) ==
+		        NULL ||
+		    cJSON_AddStringToObject(e, "sha256", sha) == NULL ||
+		    cJSON_AddNumberToObject(e, "bytes", (double)a->len) == NULL)
+			return -ENOMEM;
+	}
+	return 0;
+}
+
+/* Read a blob file whole. NULL when it is missing or unreadable. */
+static uint8_t *
+blob_read(const char *path, size_t *len)
+{
+	autoclosefile FILE *f = fopen(path, "re");
+	uint8_t *buf;
+	struct stat st;
+
+	if (f == NULL || fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode) ||
+	    st.st_size <= 0 || st.st_size > SESSION_BLOB_MAX)
+		return NULL;
+	buf = malloc((size_t)st.st_size);
+	if (buf == NULL)
+		return NULL;
+	if (fread(buf, 1, (size_t)st.st_size, f) != (size_t)st.st_size) {
+		free(buf);
+		return NULL;
+	}
+	*len = (size_t)st.st_size;
+	return buf;
+}
+
+/* Append every image hash a log file names to refs (a JSON array of
+ * strings used as a set). A missing file names none. */
+static void
+blob_refs_from(const char *path, cJSON *refs)
+{
+	autoclosefile FILE *f = fopen(path, "re");
+	autofree char *line = NULL;
+	size_t cap = 0;
+	static const char key[] = "\"sha256\":\"";
+
+	if (f == NULL)
+		return;
+	while (getline(&line, &cap, f) >= 0) {
+		const char *p = line;
+
+		while ((p = strstr(p, key)) != NULL) {
+			char sha[65];
+
+			p += sizeof(key) - 1;
+			if (strlen(p) < 64)
+				break;
+			memcpy(sha, p, 64);
+			sha[64] = '\0';
+			if (sha_valid(sha))
+				cJSON_AddItemToArray(
+				    refs, cJSON_CreateString(sha));
+			p += 64;
+		}
+	}
+}
+
+static bool
+refs_have(const cJSON *refs, const char *name)
+{
+	const cJSON *r;
+
+	cJSON_ArrayForEach(r, refs)
+	{
+		if (strncmp(r->valuestring, name, 64) == 0)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * Remove the images that neither the log nor its .bak names, and any
+ * temp file a write left behind. Runs only after a log is safely in
+ * place, so a failed compaction never costs an image.
+ */
+static void
+blob_gc(const char *log_path)
+{
+	autofree char *bdir = blob_dir_of(log_path);
+	autofree char *bak = NULL;
+	json_cleanup cJSON *refs = cJSON_CreateArray();
+	autoclosedir DIR *dp = NULL;
+	struct dirent *de;
+
+	if (bdir == NULL || refs == NULL ||
+	    asprintf(&bak, "%s.bak", log_path) < 0)
+		return;
+	dp = opendir(bdir);
+	if (dp == NULL)
+		return;
+	blob_refs_from(log_path, refs);
+	blob_refs_from(bak, refs);
+	while ((de = readdir(dp)) != NULL) {
+		autofree char *path = NULL;
+
+		if (de->d_name[0] == '.')
+			continue;
+		if (!has_suffix(de->d_name, ".tmp") &&
+		    refs_have(refs, de->d_name))
+			continue;
+		if (asprintf(&path, "%s/%s", bdir, de->d_name) >= 0)
+			(void)unlink(path);
+	}
+	(void)rmdir(bdir); /* only succeeds when empty */
+}
+
+/* Delete a blob directory and everything in it. */
+static void
+blob_dir_remove(const char *bdir)
+{
+	autoclosedir DIR *dp = opendir(bdir);
+	struct dirent *de;
+
+	if (dp == NULL)
+		return;
+	while ((de = readdir(dp)) != NULL) {
+		autofree char *path = NULL;
+
+		if (strcmp(de->d_name, ".") == 0 ||
+		    strcmp(de->d_name, "..") == 0)
+			continue;
+		if (asprintf(&path, "%s/%s", bdir, de->d_name) >= 0)
+			(void)unlink(path);
+	}
+	(void)rmdir(bdir);
 }
 
 /* FNV-1a: only tells one prompt from the next, not a security hash. */
@@ -439,6 +696,9 @@ clm_session_append(struct clm_session *s, const struct clm_message *m,
 		return -ENOMEM;
 	if (cJSON_AddStringToObject(obj, "type", "msg") == NULL)
 		return -ENOMEM;
+	r = store_attachments(s->path, m, obj);
+	if (r < 0)
+		return r;
 
 	r = write_line(s->fd, obj);
 	if (r < 0)
@@ -519,6 +779,9 @@ clm_session_rewrite(struct clm_session *s, const struct clm_history *h,
 			r = -ENOMEM;
 			goto fail;
 		}
+		r = store_attachments(s->path, m, obj);
+		if (r < 0)
+			goto fail;
 		r = write_line(fd, obj);
 		if (r < 0)
 			goto fail;
@@ -557,6 +820,7 @@ clm_session_rewrite(struct clm_session *s, const struct clm_history *h,
 	(void)close(s->fd);
 	s->fd = fd;
 	s->has_msgs = msgs;
+	blob_gc(s->path);
 	if (lseek(s->fd, 0, SEEK_END) < 0)
 		return -errno;
 	return 0;
@@ -589,9 +853,12 @@ clm_session_discard(struct clm_session *s)
 		r = -errno;
 	{
 		autofree char *bak = NULL;
+		autofree char *bdir = blob_dir_of(s->path);
 
 		if (asprintf(&bak, "%s.bak", s->path) >= 0)
 			(void)unlink(bak);
+		if (bdir != NULL)
+			blob_dir_remove(bdir);
 	}
 	clm_session_free(s);
 	return r;
@@ -616,9 +883,58 @@ clm_session_free(struct clm_session *s)
  * written by a newer clm. A meta line is validated for version and, when
  * out_meta is non-NULL and still empty, handed to the caller.
  */
+/*
+ * Read the images a message record names from bdir. A missing one adds a
+ * note to the record's content instead, so the model is told. Returns
+ * the number read into imgs (at most max).
+ */
+static size_t
+load_attachments(
+    cJSON *obj, const char *bdir, struct clm_attachment *imgs, size_t max)
+{
+	const cJSON *e;
+	size_t n = 0;
+
+	cJSON_ArrayForEach(
+	    e, cJSON_GetObjectItemCaseSensitive(obj, "attachments"))
+	{
+		const char *mt = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(e, "media_type"));
+		const char *sha = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(e, "sha256"));
+		autofree char *path = NULL;
+		uint8_t *data = NULL;
+		size_t len = 0;
+
+		if (mt == NULL || !sha_valid(sha) || n >= max)
+			continue;
+		if (bdir != NULL &&
+		    asprintf(&path, "%s/%s.%s", bdir, sha, blob_ext(mt)) >= 0)
+			data = blob_read(path, &len);
+		if (data == NULL) {
+			const char *c = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(obj, "content"));
+			autofree char *note = NULL;
+
+			if (asprintf(&note,
+			        "%s\n[image missing from the session "
+			        "log: %s]",
+			        c != NULL ? c : "", mt) >= 0)
+				cJSON_ReplaceItemInObjectCaseSensitive(
+				    obj, "content", cJSON_CreateString(note));
+			continue;
+		}
+		imgs[n].media_type = (char *)mt;
+		imgs[n].data = data;
+		imgs[n].len = len;
+		n++;
+	}
+	return n;
+}
+
 int
-session_parse_line(
-    struct clm_history *hist, const char *line, size_t len, cJSON **out_meta)
+session_parse_line(struct clm_history *hist, const char *line, size_t len,
+    cJSON **out_meta, const char *blob_dir)
 {
 	json_cleanup cJSON *obj = NULL;
 	const char *type;
@@ -644,7 +960,19 @@ session_parse_line(
 	}
 
 	if (strcmp(type, "msg") == 0) {
+		struct clm_attachment imgs[16];
+		struct clm_message *before = TAILQ_LAST(hist, clm_history);
+		size_t n = load_attachments(obj, blob_dir, imgs, 16);
 		int r = clm_message_from_json(hist, obj, NULL);
+		struct clm_message *m = TAILQ_LAST(hist, clm_history);
+
+		for (size_t i = 0; i < n; i++) {
+			if (r == 0 && m != NULL && m != before &&
+			    clm_message_add_attachment(m, imgs[i].media_type,
+			        imgs[i].data, imgs[i].len) < 0)
+				r = -ENOMEM;
+			free(imgs[i].data);
+		}
 		/* A malformed message line is skipped like any other bad
 		 * line; only allocation failure is fatal. */
 		return r == -ENOMEM ? -ENOMEM : 0;
@@ -658,6 +986,7 @@ clm_session_load(
     const char *dir, const char *id, struct clm_history *hist, cJSON **out_meta)
 {
 	autofree char *path = NULL;
+	autofree char *bdir = NULL;
 	autoclosefile FILE *f = NULL;
 	autofree char *line = NULL;
 	size_t cap = 0;
@@ -678,8 +1007,9 @@ clm_session_load(
 	if (f == NULL)
 		return -errno;
 
+	bdir = blob_dir_of(path);
 	while ((n = getline(&line, &cap, f)) >= 0) {
-		r = session_parse_line(hist, line, (size_t)n, out_meta);
+		r = session_parse_line(hist, line, (size_t)n, out_meta, bdir);
 		if (r < 0)
 			return r;
 	}
@@ -903,6 +1233,23 @@ clm_session_gc(const char *dir, unsigned max_age_days, size_t *removed)
 			continue;
 		if (unlink(path) == 0)
 			n++;
+	}
+
+	/* A blob directory goes with its log. */
+	rewinddir(dp);
+	while ((de = readdir(dp)) != NULL) {
+		autofree char *bdir = NULL;
+		autofree char *log = NULL;
+		size_t nl = strlen(de->d_name);
+
+		if (!has_suffix(de->d_name, ".blobs"))
+			continue;
+		if (asprintf(&bdir, "%s/%s", d, de->d_name) < 0 ||
+		    asprintf(&log, "%s/%.*s.jsonl", d, (int)(nl - 6),
+		        de->d_name) < 0)
+			return -ENOMEM;
+		if (access(log, F_OK) != 0)
+			blob_dir_remove(bdir);
 	}
 
 	if (removed != NULL)

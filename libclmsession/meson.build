@@ -3,7 +3,7 @@
 # libclmuv -- libclm itself stays IO-free (no filesystem paths, no XDG
 # policy); frontends that want persistent sessions link this archive, an
 # embedder that doesn't just doesn't.
-clmsession_src = files('session.c')
+clmsession_src = files('session.c', 'sha256.c')
 
 clm_session_lib = static_library('clmsession', clmsession_src,
   c_args: ['-DCLM_BUILDING'] + clm_hardening_args,

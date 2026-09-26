@@ -152,6 +152,18 @@ where
 is the raw JSON arguments object as a string, for example
 "{&#92;"command&#92;": &#92;"exit 1&#92;"}".
 
+*attachments*
+
+Images that go with the message, as an array of references: each is an
+object of
+*type*
+(always "image"),
+*media\_type*,
+*sha256*
+and
+*bytes*.
+The image itself is a companion file, never base64 in the log.
+
 *tool\_call\_id*
 
 The
@@ -213,6 +225,22 @@ A
 *.tmp*
 file left behind belongs to a rewrite that died and is deleted once it
 is a day old.
+
+The images of a session live in the directory
+*id*&zwnj;*.blobs*,
+one file per image, named by the SHA-256 of its bytes and a suffix for
+its type, such as
+*3f9a...c2.png*.
+An image file is written, synced and renamed into place before the
+line that names it, so the log never refers to an image that is not on
+disk.
+After a compaction, and when a session is opened, images that neither
+the log nor its
+*.bak*
+names are removed, together with temporary files.
+Deleting a session, by hand or by age, removes its image directory.
+An image missing on resume is not an error: the message gets a note
+instead.
 
 A user message that begins with
 "`[context update]`"

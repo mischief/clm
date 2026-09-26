@@ -49,7 +49,7 @@ endif
 # files are read back from disk and must never crash the loader).
 fuzz_session_exe = executable(
   'fuzz_session',
-  files('fuzz_session.c', '../libclm/history.c', '../libclm/image.c', '../libclmsession/session.c'),
+  files('fuzz_session.c', '../libclm/history.c', '../libclm/image.c', '../libclmsession/session.c', '../libclmsession/sha256.c', '../libclm/log.c'),
   include_directories: [fuzz_inc, clm_inc, include_directories('../include'),
     include_directories('../libclmsession')],
   dependencies: [cjson_dep],

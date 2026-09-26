@@ -122,6 +122,16 @@ where
 .Va args
 is the raw JSON arguments object as a string, for example
 .Qq {\e"command\e": \e"exit 1\e"} .
+.It Va attachments
+Images that go with the message, as an array of references: each is an
+object of
+.Va type
+.Pq always Qq image ,
+.Va media_type ,
+.Va sha256
+and
+.Va bytes .
+The image itself is a companion file, never base64 in the log.
 .It Va tool_call_id
 The
 .Va id
@@ -179,6 +189,22 @@ A
 .Pa .tmp
 file left behind belongs to a rewrite that died and is deleted once it
 is a day old.
+.Pp
+The images of a session live in the directory
+.Ar id Ns Pa .blobs ,
+one file per image, named by the SHA-256 of its bytes and a suffix for
+its type, such as
+.Pa 3f9a...c2.png .
+An image file is written, synced and renamed into place before the
+line that names it, so the log never refers to an image that is not on
+disk.
+After a compaction, and when a session is opened, images that neither
+the log nor its
+.Pa .bak
+names are removed, together with temporary files.
+Deleting a session, by hand or by age, removes its image directory.
+An image missing on resume is not an error: the message gets a note
+instead.
 .Pp
 A user message that begins with
 .Qq Li [context update]

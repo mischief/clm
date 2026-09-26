@@ -120,7 +120,7 @@ test('http_response_buffer', test_http_response_buffer, protocol: 'tap')
 # and session.c directly, same pattern as test_agent, so internals are
 # reachable without going through the shared library's export list.
 test_session = executable('test_session',
-  files('test_session.c', '../libclm/history.c', '../libclm/image.c', '../libclm/log.c', '../libclmsession/session.c') + tap_src,
+  files('test_session.c', '../libclm/history.c', '../libclm/image.c', '../libclm/log.c', '../libclmsession/session.c', '../libclmsession/sha256.c') + tap_src,
   dependencies: [cjson_dep],
   include_directories: [tap_inc, include_directories('.'), clm_inc,
     include_directories('../include'), include_directories('../libclmsession')],

@@ -24,14 +24,14 @@ fuzz_one(const uint8_t *data, size_t size)
 	cJSON *meta = NULL;
 
 	clm_history_init(&h);
-	(void)session_parse_line(&h, (const char *)data, size, &meta);
+	(void)session_parse_line(&h, (const char *)data, size, &meta, NULL);
 
 	/* Split on newlines like the real loader. */
 	const char *p = (const char *)data, *end = p + size;
 	while (p < end) {
 		const char *nl = memchr(p, '\n', (size_t)(end - p));
 		size_t len = nl != NULL ? (size_t)(nl - p) : (size_t)(end - p);
-		(void)session_parse_line(&h, p, len, &meta);
+		(void)session_parse_line(&h, p, len, &meta, NULL);
 		p += len + 1;
 	}
 

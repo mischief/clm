@@ -76,6 +76,20 @@
           "description": "Message text, always plain. Absent for an assistant message that only requests tool calls. A stored message is capped at 65535 bytes.",
           "type": "string"
         },
+        "attachments": {
+          "description": "Images that go with the message. Each file is <id>.blobs/<sha256>.<ext> next to the log; the log holds references only.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "media_type", "sha256", "bytes"],
+            "properties": {
+              "type": { "const": "image" },
+              "media_type": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "bytes": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
         "tool_calls": {
           "description": "Tool calls the assistant requested. Assistant messages only.",
           "type": "array",
