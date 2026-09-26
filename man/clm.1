@@ -233,6 +233,24 @@ for as long as the session runs this way.
 and
 .Fl -daemon
 runs already allow every call, with or without this flag.
+.It Fl -auto
+Run tool calls without asking, but let a plugin with a
+.Va pre_tool
+hook, such as
+.Pa jev_guard ,
+block a call or ask about it
+.Pq see Xr clm-tool 5 .
+.Nm
+refuses auto mode when no such hook is loaded.
+The status bar shows
+.Sy [auto] .
+In the terminal UI,
+.Ic /auto
+turns the mode on and off.
+The config key
+.Va permissions No = Qq auto
+does the same as this flag
+.Pq see Xr clm-config 5 .
 .It Fl S , Fl -no-stream
 Request non-streamed responses instead of the default
 server-sent-events streaming.

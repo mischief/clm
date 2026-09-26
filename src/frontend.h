@@ -49,6 +49,6 @@ int tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     const char *const *opt_plugins, struct clm_lua_cfg *lcfg,
     const char *config_load_err, const char *forever_prompt,
     struct clm_session *session, const struct clm_history *restore,
-    int repaired_tool_calls, bool allow_all);
+    int repaired_tool_calls, bool allow_all, bool auto_mode);
 
 #endif /* CLM_FRONTEND_H */

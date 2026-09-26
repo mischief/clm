@@ -302,6 +302,16 @@ subdirectory of the plugin directory, in addition to
 **-P**.
 An agent file's list replaces the top-level list.
 
+*permissions*
+
+"auto"
+starts in auto mode, as
+**--auto**
+does
+(see [clm(1)](clm.md)).
+Load a guard plugin with it, for example
+`plugins = { "jev_guard" }`.
+
 *volatile\_tools*
 
 A list of

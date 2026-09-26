@@ -266,6 +266,14 @@ A list of opt-in plugin names to load from the
 subdirectory of the plugin directory, in addition to
 .Fl P .
 An agent file's list replaces the top-level list.
+.It Va permissions
+.Qq auto
+starts in auto mode, as
+.Fl -auto
+does
+.Pq see Xr clm 1 .
+Load a guard plugin with it, for example
+.Li plugins = { \&"jev_guard\&" } .
 .It Va volatile_tools
 A list of
 .Xr fnmatch 3

@@ -173,6 +173,9 @@ struct ui {
 	/* Run every tool call without asking (--allow-all-tools). For an
 	 * agent nobody is watching; the status bar says so. */
 	bool allow_all;
+	/* Run tool calls without asking, but a pre_tool hook may still block
+	 * a call or ask (--auto, /auto). Needs a hook to be on. */
+	bool auto_mode;
 	/* A compaction is in flight (auto or /compact): its completion has to
 	 * rewrite the session log, which on_message cannot see. */
 	bool compacting;

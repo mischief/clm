@@ -256,6 +256,26 @@ and
 **--daemon**
 runs already allow every call, with or without this flag.
 
+**--auto**
+
+Run tool calls without asking, but let a plugin with a
+*pre\_tool*
+hook, such as
+*jev\_guard*,
+block a call or ask about it
+(see [clm-tool(5)](clm-tool.md)).
+**clm**
+refuses auto mode when no such hook is loaded.
+The status bar shows
+**\[auto]**.
+In the terminal UI,
+**/auto**
+turns the mode on and off.
+The config key
+*permissions* = "auto"
+does the same as this flag
+(see [clm-config(5)](clm-config.md)).
+
 **-S**, **--no-stream**
 
 Request non-streamed responses instead of the default

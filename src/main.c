@@ -43,7 +43,7 @@ usage(const char *prog)
 	    "[-H|--headless] [-D|--daemon PROMPT] [-u|--url BASE] "
 	    "[-m|--model PROVIDER/MODEL-ID] [--provider NAME] "
 	    "[-p|--plugins DIR] [-P|--plugin NAME] [-S|--no-stream] "
-	    "[--allow-all-tools] "
+	    "[--allow-all-tools] [--auto] "
 	    "[-r|--resume [ID]] "
 	    "[-V|--version] [-h|--help]\n",
 	    prog, prog);
@@ -87,6 +87,9 @@ usage(const char *prog)
 	    "      --allow-all-tools run every tool call without asking; for\n"
 	    "                        an agent nobody is watching, in a\n"
 	    "                        directory you can afford to lose\n"
+	    "      --auto            run tool calls without asking, but let a\n"
+	    "                        pre_tool hook plugin (jev_guard) block\n"
+	    "                        them or ask\n"
 	    "  -r, --resume [ID]     resume a saved session in the TUI; with "
 	    "no ID,\n"
 	    "                        pick from a list of saved sessions\n"
@@ -734,6 +737,7 @@ main(int argc, char *argv[])
 	                                  spec, or a literal wire id */
 	const char *effort = NULL;
 	bool allow_all = false;
+	bool auto_mode = false;
 	char **volatile_tools = NULL;
 	const char *provider_name =
 	    NULL; /* --provider: a config providers[] name override */
@@ -774,7 +778,7 @@ main(int argc, char *argv[])
 	int resume = 0;
 	const char *resume_id = NULL;
 
-	enum { OPT_PROVIDER = 256, OPT_ALLOW_ALL };
+	enum { OPT_PROVIDER = 256, OPT_ALLOW_ALL, OPT_AUTO };
 	const struct option opts[] = {
 	    {"oneshot", required_argument, NULL, 'o'},
 	    {"forever", required_argument, NULL, 'f'},
@@ -789,6 +793,7 @@ main(int argc, char *argv[])
 	    {"daemon", required_argument, NULL, 'D'},
 	    {"no-stream", no_argument, NULL, 'S'},
 	    {"allow-all-tools", no_argument, NULL, OPT_ALLOW_ALL},
+	    {"auto", no_argument, NULL, OPT_AUTO},
 	    {"version", no_argument, NULL, 'V'},
 	    {"help", no_argument, NULL, 'h'},
 	    {NULL, 0, NULL, 0},
@@ -799,6 +804,9 @@ main(int argc, char *argv[])
 		switch (opt) {
 		case OPT_ALLOW_ALL:
 			allow_all = true;
+			break;
+		case OPT_AUTO:
+			auto_mode = true;
 			break;
 		case 'a':
 			agent_name = optarg;
@@ -887,7 +895,12 @@ main(int argc, char *argv[])
 		    esc_err, config_load_err, esc_reset);
 	if (lcfg != NULL) {
 		autofree char *adir = xdg_config_path("clm/agents");
+		const char *perm;
+
 		clm_lua_cfg_load_agent(lcfg, adir, agent_name);
+		perm = clm_lua_cfg_get_str(lcfg, "permissions");
+		if (perm != NULL && strcmp(perm, "auto") == 0)
+			auto_mode = true;
 
 		/* Resolve the model (agent profile, or top-level default,
 		 * unless -m gave one directly) -- a "provider/model-id" spec,
@@ -1092,7 +1105,7 @@ main(int argc, char *argv[])
 
 		rc = tui_run(&cfg, plugin_dir, opt_plugins, lcfg,
 		    config_load_err, forever_prompt, sess, restorep,
-		    repaired_tool_calls, allow_all);
+		    repaired_tool_calls, allow_all, auto_mode);
 		clm_history_free(&restore);
 		clm_lua_cfg_free_str_list(volatile_tools);
 		clm_lua_cfg_free(lcfg);
@@ -1216,6 +1229,24 @@ main(int argc, char *argv[])
 		clm_cli_load_plugins(state->lua_env,
 		    plugin_dir != NULL ? plugin_dir : ppath, lcfg, opt_plugins,
 		    cb_mcp_status, NULL);
+	}
+	/* Auto mode without a hook would be plain allow-all. */
+	if (auto_mode && clm_agent_pre_tool_hook_count(state->agent) == 0) {
+		fprintf(stderr,
+		    "error: auto mode needs a plugin with a pre_tool "
+		    "hook, such as jev_guard\n");
+		clm_lua_env_free(state->lua_env);
+		clm_peer_free(state->peer);
+		clm_agent_free(state->agent);
+		clm_host_uv_free(state->host);
+		(void)clm_drain_loop(loop);
+		free(state);
+		if (scratch != NULL)
+			(void)rmdir(scratch);
+		clm_lua_cfg_free_str_list(volatile_tools);
+		clm_lua_cfg_free(lcfg);
+		free(spec_provider);
+		return 1;
 	}
 	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop,
 	    lcfg, cb_mcp_status, state, &state->mcp_client_count);

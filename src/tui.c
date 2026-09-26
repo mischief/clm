@@ -969,7 +969,8 @@ cb_permission(const struct clm_permission_req *req, void *user)
 	/* Nobody is watching this one: answer for them. The status bar says
 	 * the session is running this way, so it cannot pass for a normal
 	 * one. */
-	if (u->allow_all && clm_permission_req_reason(req) == NULL) {
+	if ((u->allow_all || u->auto_mode) &&
+	    clm_permission_req_reason(req) == NULL) {
 		clm_tool_permission_respond(u->agent, req, CLM_PERM_ALLOW_ONCE);
 		return;
 	}
@@ -1264,6 +1265,8 @@ draw_status(struct ui *u)
 		wprintw(u->stat, " %s", u->session_short);
 	if (u->allow_all)
 		wprintw(u->stat, " [allow-all]");
+	else if (u->auto_mode)
+		wprintw(u->stat, " [auto]");
 	/* One combined "[provider/model:agent]" tag rather than three separate
 	 * bracketed fields -- picking a provider/model without changing agent
 	 * profile is the common case (see /model, /provider), so keeping them
@@ -2528,6 +2531,36 @@ cmd_session(struct ui *u)
 	ui_push(u, ST_META, line);
 }
 
+/* Auto mode without a pre_tool hook would be plain allow-all. */
+static void
+auto_check_hooks(struct ui *u)
+{
+	if (!u->auto_mode || clm_agent_pre_tool_hook_count(u->agent) > 0)
+		return;
+	u->auto_mode = false;
+	ui_push(u, ST_ERROR,
+	    "\n[auto mode off: no plugin with a pre_tool hook, such as "
+	    "jev_guard]\n");
+}
+
+static void
+cmd_auto(struct ui *u, const char *arg)
+{
+	if (arg == NULL)
+		arg = "";
+	if (strcmp(arg, "off") == 0 || (arg[0] == '\0' && u->auto_mode)) {
+		u->auto_mode = false;
+		ui_push(u, ST_META, "\n[auto mode off: tool calls ask]\n");
+		return;
+	}
+	u->auto_mode = true;
+	auto_check_hooks(u);
+	if (u->auto_mode)
+		ui_push(u, ST_META,
+		    "\n[auto mode on: tool calls run unless a hook blocks "
+		    "or asks]\n");
+}
+
 static void
 cmd_effort(struct ui *u, const char *arg)
 {
@@ -2713,6 +2746,7 @@ cmd_agent(struct ui *u, const char *arg)
 						free(apdir);
 					}
 				}
+				auto_check_hooks(u);
 				u->mcp_clients = clm_cli_connect_mcp_servers(
 				    u->agent, u->loop, u->lcfg, cb_mcp_status,
 				    u, &u->mcp_client_count);
@@ -3039,6 +3073,8 @@ run_command(struct ui *u, const char *line)
 		    "  /effort [level]    reasoning effort for this session: "
 		    "low, medium, high, xhigh, max, or default; no arg "
 		    "shows the current one\n"
+		    "  /auto [on|off]     run tool calls without asking, "
+		    "unless a pre_tool hook blocks or asks\n"
 		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
 		    "  /output [full|short] tool output detail (^O)\n"
 		    "  /compact           summarize old turns to reclaim "
@@ -3125,6 +3161,8 @@ run_command(struct ui *u, const char *line)
 		cmd_model(u, arg);
 	} else if (CMD("effort")) {
 		cmd_effort(u, arg);
+	} else if (CMD("auto")) {
+		cmd_auto(u, arg);
 	} else if (CMD("session")) {
 		cmd_session(u);
 	} else if (CMD("provider")) {
@@ -3986,7 +4024,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     const char *const *opt_plugins, struct clm_lua_cfg *lcfg,
     const char *config_load_err, const char *forever_prompt,
     struct clm_session *session, const struct clm_history *restore,
-    int repaired_tool_calls, bool allow_all)
+    int repaired_tool_calls, bool allow_all, bool auto_mode)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -4002,6 +4040,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	}
 	u->last_total = -1; /* draw_transcript hasn't painted yet */
 	u->allow_all = allow_all;
+	u->auto_mode = auto_mode;
 	if (!ui_input_reserve(u, 1024)) {
 		fprintf(stderr, "error: out of memory\n");
 		free(u);
@@ -4078,6 +4117,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		    plugin_dir != NULL ? plugin_dir : ppath, lcfg, opt_plugins,
 		    cb_mcp_status, u);
 	}
+	auto_check_hooks(u);
 	u->mcp_clients = clm_cli_connect_mcp_servers(
 	    u->agent, loop, lcfg, cb_mcp_status, u, &u->mcp_client_count);
 	clm_cli_wait_mcp_ready(loop, CLM_MCP_READY_WAIT_MS);
