@@ -3698,8 +3698,10 @@ test_pre_tool_hooks(uv_loop_t *loop)
 	/* A later answer that rewrites the arguments. */
 	{
 		struct tstate st = {0};
-		struct hook_state hs = {
-		    .verdict = CLM_GATE_PASS, .args = "{\"x\":2}", .park = 1};
+		struct hook_state hs = {.verdict = CLM_GATE_PASS,
+		    .reason = "looks fine",
+		    .args = "{\"x\":2}",
+		    .park = 1};
 		uv_timer_t t;
 
 		run_hooked_call(loop, &st, &hs, &srv);
@@ -3713,6 +3715,8 @@ test_pre_tool_hooks(uv_loop_t *loop)
 		        strcmp(st.tool_content, "{\"x\":2}") == 0,
 		    "hook: a late pass runs the call with the new arguments");
 		CHECK(st.perm_prompts == 0, "hook: pass keeps NO_PROMPT");
+		CHECK(strcmp(st.notice, "allowed by hook: looks fine") == 0,
+		    "hook: a pass reason reaches on_notice");
 		teardown(&st, srv);
 	}
 

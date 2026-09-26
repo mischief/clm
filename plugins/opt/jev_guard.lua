@@ -55,7 +55,7 @@ local function verdict(choice, p)
     elseif choice == "ask" then
         return { ask = why }
     end
-    return nil
+    return { allow = why }
 end
 
 clm.on("pre_tool", function(call)

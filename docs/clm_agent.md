@@ -446,6 +446,12 @@ is one of:
 `CLM_GATE_PASS`
 
 Go on to the next hook, then to the permission prompt.
+A non-NULL
+*reason*
+goes to
+*on\_notice*
+as
+"allowed by hook: reason".
 
 `CLM_GATE_DENY`
 

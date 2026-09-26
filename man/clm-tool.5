@@ -357,6 +357,10 @@ It returns one of:
 .Bl -tag -width "{ask = why}"
 .It Dv nil
 Let the call go on.
+.It Brq allow = why
+Let the call go on, and show
+.Va why
+to the user.
 .It Brq deny = why
 Fail the call.
 The model sees

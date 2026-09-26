@@ -2,7 +2,7 @@
 /*
  * clm.on(event, fn): plugin hooks on agent events. A pre_tool hook runs in
  * its own coroutine, so it may use http.get/post and clm.exec, and returns
- * nil, {deny = why}, {ask = why} or {args = t}. turn_start and turn_end
+ * nil, {allow, deny or ask = why} or {args = t}. turn_start and turn_end
  * hooks run as event callbacks and may not yield. See clm-tool(5).
  */
 #include <errno.h>
@@ -167,6 +167,11 @@ lua_hook_finish(lua_State *L)
 				run->reason = strdup(lua_tostring(L, -1));
 		}
 		lua_pop(L, 2);
+		lua_getfield(L, 3, "allow");
+		if (run->verdict == CLM_GATE_PASS &&
+		    lua_type(L, -1) == LUA_TSTRING)
+			run->reason = strdup(lua_tostring(L, -1));
+		lua_pop(L, 1);
 		lua_getfield(L, 3, "args");
 		run->args = args_to_json(L, -1);
 		lua_pop(L, 1);

@@ -394,6 +394,12 @@ It returns one of:
 
 Let the call go on.
 
+{allow = why}
+
+Let the call go on, and show
+*why*
+to the user.
+
 {deny = why}
 
 Fail the call.

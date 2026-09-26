@@ -128,9 +128,9 @@ CLM_API const char *clm_permission_req_reason(
 
 /*
  * A pre_tool hook's answer. PASS lets the call go on to the next hook and
- * then to the permission gate. DENY fails the call with the reason, and the
- * model sees it. ASK sends the call to the permission gate even when the
- * tool or an earlier answer would skip it.
+ * then to the permission gate; a reason goes to on_notice. DENY fails the call
+ * with the reason, and the model sees it. ASK sends the call to the permission
+ * gate even when the tool or an earlier answer would skip it.
  */
 enum clm_gate_verdict {
 	CLM_GATE_PASS,
@@ -148,7 +148,7 @@ CLM_API const char *clm_tool_gate_name(const struct clm_tool_gate *gate);
 CLM_API const char *clm_tool_gate_args(const struct clm_tool_gate *gate);
 
 /*
- * Answer a gate. reason is for DENY and ASK and may be NULL. args, when
+ * Answer a gate. reason may be NULL. args, when
  * not NULL, replaces the call's JSON arguments. After the agent is freed
  * or the turn is cancelled, the answer only frees the gate. Returns 0, or
  * negative errno.

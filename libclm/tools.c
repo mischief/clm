@@ -487,8 +487,16 @@ clm_tool_gate_respond(struct clm_tool_gate *gate, enum clm_gate_verdict verdict,
 		if (reason != NULL && inv->ask_reason == NULL)
 			inv->ask_reason = strdup(reason);
 		break;
-	case CLM_GATE_PASS:
+	case CLM_GATE_PASS: {
+		struct clm_agent *agent = inv->batch->agent;
+		char msg[512];
+
+		if (reason == NULL || agent->cb_on_notice == NULL)
+			break;
+		(void)snprintf(msg, sizeof(msg), "allowed by hook: %s", reason);
+		agent->cb_on_notice(msg, agent->cb_user);
 		break;
+	}
 	}
 	gate_run(inv);
 	return 0;
