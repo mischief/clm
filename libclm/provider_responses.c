@@ -22,14 +22,8 @@
  * a "tool" role message -- both translated at build_request() the same way
  * provider_anthropic.c translates its own structural differences.
  *
- * TODO: this still resends the full canonical history every turn (matching
- * clm's existing stateless architecture -- see clm_history_to_json), rather
- * than using the Responses API's native server-side conversation state
- * (previous_response_id). Wiring that up would let clm send only the new
- * turn's input items and skip re-transmitting history the server already
- * has, but needs agent.c to track a per-turn response id and support a
- * stateful path alongside the stateless one every other provider uses --
- * a separate, more invasive change than this file.
+ * When llm->prev_response_id is set, the agent has already removed the
+ * messages the server holds, and the request continues that response.
  */
 #include <stdlib.h>
 #include <string.h>
