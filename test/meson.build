@@ -42,6 +42,7 @@ test('agent', test_agent, protocol: 'tap')
 
 test_image = executable('test_image',
   files('test_image.c', '../libclm/image.c') + tap_src,
+  dependencies: [cjson_dep],
   include_directories: [tap_inc, clm_inc, include_directories('../include')],
   c_args: test_hardening_args,
 )
