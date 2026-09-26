@@ -5,9 +5,11 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "clm/internal.h"
 #include "useful.h"
 
 void
@@ -44,6 +46,11 @@ clm_message_free(struct clm_message *m)
 		free(m->content);
 		free(m->tool_call_id);
 		free(m->tool_name);
+		for (size_t i = 0; i < m->n_attachments; i++) {
+			free(m->attachments[i].media_type);
+			free(m->attachments[i].data);
+		}
+		free(m->attachments);
 		struct clm_tool_call *tc, *tc_next;
 		for (tc = TAILQ_FIRST(&m->tool_calls); tc != NULL;
 		    tc = tc_next) {
@@ -64,6 +71,98 @@ clm_history_free(struct clm_history *h)
 		TAILQ_REMOVE(h, m, entries);
 		clm_message_free(m);
 	}
+}
+
+int
+clm_message_add_attachment(struct clm_message *m, const char *media_type,
+    const uint8_t *data, size_t len)
+{
+	struct clm_attachment *na, *a;
+
+	ASSERT_RETURN(m != NULL && media_type != NULL, -EINVAL);
+	ASSERT_RETURN(data != NULL || len == 0, -EINVAL);
+	na = realloc(m->attachments, (m->n_attachments + 1) * sizeof(*na));
+	if (na == NULL)
+		return -ENOMEM;
+	m->attachments = na;
+	a = &na[m->n_attachments];
+	a->media_type = strdup(media_type);
+	a->data = malloc(len > 0 ? len : 1);
+	if (a->media_type == NULL || a->data == NULL) {
+		free(a->media_type);
+		free(a->data);
+		return -ENOMEM;
+	}
+	if (len > 0)
+		memcpy(a->data, data, len);
+	a->len = len;
+	m->n_attachments++;
+	return 0;
+}
+
+/* {"type":"image_url","image_url":{"url":"data:<type>;base64,<data>"}} */
+static cJSON *
+attachment_part(const struct clm_attachment *a)
+{
+	cJSON *part = cJSON_CreateObject();
+	cJSON *iu = cJSON_CreateObject();
+	size_t pre = strlen("data:;base64,") + strlen(a->media_type);
+	char *url = malloc(pre + clm_base64_len(a->len) + 1);
+
+	if (part == NULL || iu == NULL || url == NULL)
+		goto fail;
+	(void)snprintf(url, pre + 1, "data:%s;base64,", a->media_type);
+	clm_base64_encode(a->data, a->len, url + pre);
+	if (cJSON_AddStringToObject(iu, "url", url) == NULL)
+		goto fail;
+	free(url);
+	url = NULL;
+	if (cJSON_AddStringToObject(part, "type", "image_url") == NULL)
+		goto fail;
+	cJSON_AddItemToObject(part, "image_url", iu);
+	return part;
+fail:
+	free(url);
+	cJSON_Delete(iu);
+	cJSON_Delete(part);
+	return NULL;
+}
+
+/* Turn msg's string content into a parts array: the text, then one
+ * image_url part per attachment. */
+static int
+content_to_parts(cJSON *msg, const struct clm_message *m)
+{
+	cJSON *parts = cJSON_CreateArray();
+	const char *text = cJSON_GetStringValue(
+	    cJSON_GetObjectItemCaseSensitive(msg, "content"));
+
+	if (parts == NULL)
+		return -ENOMEM;
+	if (text != NULL && text[0] != '\0') {
+		cJSON *tp = cJSON_CreateObject();
+
+		if (tp == NULL ||
+		    cJSON_AddStringToObject(tp, "type", "text") == NULL ||
+		    cJSON_AddStringToObject(tp, "text", text) == NULL) {
+			cJSON_Delete(tp);
+			cJSON_Delete(parts);
+			return -ENOMEM;
+		}
+		cJSON_AddItemToArray(parts, tp);
+	}
+	for (size_t i = 0; i < m->n_attachments; i++) {
+		cJSON *ip = attachment_part(&m->attachments[i]);
+
+		if (ip == NULL) {
+			cJSON_Delete(parts);
+			return -ENOMEM;
+		}
+		cJSON_AddItemToArray(parts, ip);
+	}
+	cJSON_DeleteItemFromObjectCaseSensitive(msg, "content");
+	cJSON_AddItemToObject(msg, "content", parts);
+	return 0;
 }
 
 static struct clm_message *
@@ -814,6 +913,9 @@ clm_message_to_json(
 	} else if (m->role == CLM_ROLE_ASSISTANT) {
 		cJSON_AddItemToObject(msg, "content", cJSON_CreateNull());
 	}
+
+	if (m->n_attachments > 0 && content_to_parts(msg, m) < 0)
+		return NULL; /* json_cleanup frees msg */
 
 	if (m->role == CLM_ROLE_TOOL) {
 		if (m->tool_call_id) {

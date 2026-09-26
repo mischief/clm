@@ -599,6 +599,51 @@ test_prompt_records(const char *dir)
 	clm_history_free(&out);
 }
 
+/* A message with an image goes out as a parts array: the text, then an
+ * image_url part with a data URL. */
+static void
+test_attachment_json(void)
+{
+	struct clm_history h;
+	struct clm_message *m;
+	cJSON *arr, *msg, *content, *part;
+	const char *url;
+
+	clm_history_init(&h);
+	m = clm_history_add_tool_result(
+	    &h, "call_1", "read_image", "image x.png", 11, NULL);
+	CHECK(m != NULL, "attach: tool result");
+	CHECK(clm_message_add_attachment(
+	          m, "image/png", (const uint8_t *)"foo", 3) == 0,
+	    "attach: add");
+	clm_history_add_user(&h, "plain", NULL);
+
+	arr = clm_history_to_json(&h, NULL);
+	msg = cJSON_GetArrayItem(arr, 0);
+	content = cJSON_GetObjectItemCaseSensitive(msg, "content");
+	CHECK(cJSON_IsArray(content) && cJSON_GetArraySize(content) == 2,
+	    "attach: content becomes text plus image parts");
+	part = cJSON_GetArrayItem(content, 0);
+	CHECK(strcmp(cJSON_GetStringValue(
+	                 cJSON_GetObjectItemCaseSensitive(part, "text")),
+	          "image x.png") == 0,
+	    "attach: text part first");
+	part = cJSON_GetArrayItem(content, 1);
+	url = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
+	    cJSON_GetObjectItemCaseSensitive(part, "image_url"), "url"));
+	CHECK(url != NULL && strcmp(url, "data:image/png;base64,Zm9v") == 0,
+	    "attach: image_url data URL");
+	CHECK(strcmp(cJSON_GetStringValue(
+	                 cJSON_GetObjectItemCaseSensitive(msg, "tool_call_id")),
+	          "call_1") == 0,
+	    "attach: tool_call_id kept");
+	CHECK(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(
+	          cJSON_GetArrayItem(arr, 1), "content")),
+	    "attach: a message without images keeps string content");
+	cJSON_Delete(arr);
+	clm_history_free(&h);
+}
+
 static int
 test_session_suite(void *arg)
 {
@@ -620,6 +665,7 @@ test_session_suite(void *arg)
 	test_listing(dir);
 	test_gc(dir);
 	test_prompt_records(dir);
+	test_attachment_json();
 	remove_dir(dir);
 
 	return 0;

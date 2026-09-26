@@ -69,6 +69,14 @@ CLM_API void clm_tool_result_free(struct clm_tool_result *r);
  * rather than plain text (see clm/compress.h); always false unless an
  * embedder installed a compressor via clm_agent_set_compressor().
  */
+/* An image that goes with a message. data holds the raw file bytes, not
+ * base64. */
+struct clm_attachment {
+	char *media_type; /* e.g. "image/png" */
+	uint8_t *data;
+	size_t len;
+};
+
 struct clm_message {
 	enum clm_role role;
 	char *content;
@@ -77,6 +85,8 @@ struct clm_message {
 	char *tool_call_id;
 	char *tool_name;
 	struct clm_tool_call_list tool_calls;
+	struct clm_attachment *attachments;
+	size_t n_attachments;
 	TAILQ_ENTRY(clm_message) entries;
 };
 
@@ -110,6 +120,14 @@ CLM_API struct clm_message *clm_history_add_assistant_text(
  */
 CLM_API struct clm_message *clm_history_add_assistant_tool_calls(
     struct clm_history *h);
+
+/*
+ * Attach a copy of an image to a message. The request JSON sends it after
+ * the text as an OpenAI "image_url" part with a data URL; each provider
+ * converts that part. Returns 0 or -ENOMEM.
+ */
+CLM_API int clm_message_add_attachment(struct clm_message *m,
+    const char *media_type, const uint8_t *data, size_t len);
 
 /*
  * Append a tool result, linked to a prior call by tool_call_id. tool_name

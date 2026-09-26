@@ -33,7 +33,7 @@ test('tap', test_tap, protocol: 'tap')
 
 # Uses the uv host (clm_host_uv) + shell_exec, so it links the uv layer.
 test_agent = executable('test_agent',
-  files('test_agent.c', 'canned.c', '../libclm/props.c', '../libclm/history.c', '../libclm/models_list.c', '../libclm/text_clean.c') + tap_src,
+  files('test_agent.c', 'canned.c', '../libclm/props.c', '../libclm/history.c', '../libclm/image.c', '../libclm/models_list.c', '../libclm/text_clean.c') + tap_src,
   dependencies: [clmuv_dep],
   include_directories: [tap_inc, include_directories('.'), clm_inc, include_directories('../include')],
   c_args: test_hardening_args,
@@ -120,7 +120,7 @@ test('http_response_buffer', test_http_response_buffer, protocol: 'tap')
 # and session.c directly, same pattern as test_agent, so internals are
 # reachable without going through the shared library's export list.
 test_session = executable('test_session',
-  files('test_session.c', '../libclm/history.c', '../libclm/log.c', '../libclmsession/session.c') + tap_src,
+  files('test_session.c', '../libclm/history.c', '../libclm/image.c', '../libclm/log.c', '../libclmsession/session.c') + tap_src,
   dependencies: [cjson_dep],
   include_directories: [tap_inc, include_directories('.'), clm_inc,
     include_directories('../include'), include_directories('../libclmsession')],

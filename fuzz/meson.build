@@ -13,7 +13,7 @@ fuzz_lib_src = files(
   '../libclm/http.c', '../libclm/props.c', '../libclm/provider.c',
   '../libclm/provider_anthropic.c', '../libclm/provider_openai.c',
   '../libclm/provider_responses.c', '../libclm/models_list.c',
-  '../libclm/text_clean.c',
+  '../libclm/text_clean.c', '../libclm/image.c',
 )
 
 # fuzz_tool_dispatch: fuzz clm_tools_dispatch() with adversarial JSON tool-calls.
@@ -49,7 +49,7 @@ endif
 # files are read back from disk and must never crash the loader).
 fuzz_session_exe = executable(
   'fuzz_session',
-  files('fuzz_session.c', '../libclm/history.c', '../libclmsession/session.c'),
+  files('fuzz_session.c', '../libclm/history.c', '../libclm/image.c', '../libclmsession/session.c'),
   include_directories: [fuzz_inc, clm_inc, include_directories('../include'),
     include_directories('../libclmsession')],
   dependencies: [cjson_dep],
