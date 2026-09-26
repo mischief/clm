@@ -333,6 +333,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 	/* Apply provider overrides from config */
 	if (cfg->context_size > 0)
 		agent->ctx_max = cfg->context_size;
+	agent->vision = agent->vision_cfg = cfg->vision;
 	if (cfg->autocompact_pct > 0)
 		agent->autocompact_pct = cfg->autocompact_pct;
 	agent->autocompact_tokens = cfg->autocompact_tokens;
@@ -1596,6 +1597,19 @@ stream_finalize(struct clm_async_turn *turn)
 	clm_async_turn_free(turn);
 }
 
+static bool
+history_has_images(const struct clm_history *h)
+{
+	const struct clm_message *m;
+
+	TAILQ_FOREACH(m, h, entries)
+	{
+		if (m->n_attachments > 0)
+			return true;
+	}
+	return false;
+}
+
 static void
 clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 {
@@ -1703,6 +1717,16 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 			    resp->body);
 		else
 			(void)snprintf(buf, sizeof(buf), "HTTP %d", status);
+		/* Servers reject images in vague words. When nothing said the
+		 * model takes them, name the likely cause and the fix. */
+		if (status >= 400 && status < 500 && agent->vision == 0 &&
+		    history_has_images(&agent->history)) {
+			size_t bl = strlen(buf);
+
+			(void)snprintf(buf + bl, sizeof(buf) - bl,
+			    " (the model may not take images; set vision = "
+			    "false for it in config.lua)");
+		}
 
 		if (resp)
 			clm_http_response_free(resp);
@@ -2030,6 +2054,14 @@ clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 
 static void clm_agent_fetch_model_meta(struct clm_agent *agent);
 
+/* Take what a server says about image input, unless config said it. */
+static void
+agent_learn_vision(struct clm_agent *agent, int vision)
+{
+	if (agent->vision_cfg == 0 && vision != 0)
+		agent->vision = vision;
+}
+
 /* GET /props completed: parse llama.cpp context info; ignore failures (the
  * feature is best-effort and only meaningful for llama.cpp backends). */
 static void
@@ -2043,6 +2075,7 @@ props_success_cb(struct clm_http_response *resp, void *user)
 	    clm_parse_props(resp->body, &ctx) == 0) {
 		agent->backend = CLM_BACKEND_LLAMACPP; /* /props => llama.cpp */
 		agent->ctx_max = ctx;
+		agent_learn_vision(agent, clm_parse_props_vision(resp->body));
 	} else {
 		/* Not llama.cpp: ask the backend about the model instead. */
 		clm_agent_fetch_model_meta(agent);
@@ -2094,9 +2127,11 @@ model_meta_success_cb(struct clm_http_response *resp, void *user)
 	int64_t ctx = 0;
 
 	if (resp != NULL && resp->status_code >= 200 &&
-	    resp->status_code < 300 && resp->body != NULL &&
-	    clm_parse_model_ctx(resp->body, &ctx) == 0)
-		agent->ctx_max = ctx;
+	    resp->status_code < 300 && resp->body != NULL) {
+		if (clm_parse_model_ctx(resp->body, &ctx) == 0)
+			agent->ctx_max = ctx;
+		agent_learn_vision(agent, clm_parse_model_vision(resp->body));
+	}
 	if (resp)
 		clm_http_response_free(resp);
 }
@@ -2153,6 +2188,11 @@ health_success_cb(struct clm_http_response *resp, void *user)
 			    CLM_CONN_OFFLINE, detail, agent->cb_user);
 		}
 	}
+	if (status >= 200 && status < 300 && resp != NULL &&
+	    resp->body != NULL && agent->llm != NULL &&
+	    agent->llm->model != NULL)
+		agent_learn_vision(agent,
+		    clm_parse_models_vision_for(resp->body, agent->llm->model));
 	/* The window drives compaction, not just the gauge, so learn it even
 	 * when no UI is listening for connection events. */
 	if (agent->ctx_max == 0 && status >= 200 && status < 300) {
@@ -2628,6 +2668,7 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 	/* Reset context info: a new server/model may have different limits,
 	 * unless the new model/provider supplies an explicit override. */
 	agent->ctx_max = cfg->context_size > 0 ? cfg->context_size : 0;
+	agent->vision = agent->vision_cfg = cfg->vision;
 	agent->autocompact_pct =
 	    cfg->autocompact_pct > 0 ? cfg->autocompact_pct : 0;
 

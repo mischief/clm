@@ -177,6 +177,8 @@ struct clm_agent {
 	 * clm_agent_set_provider), turns are sent with no "tools" field at
 	 * all instead of repeating the same failing request every time. */
 	bool tools_unsupported;
+	int vision;     /* 1 takes images, -1 does not, 0 unknown */
+	int vision_cfg; /* the configured value; nonzero wins over servers */
 
 	/* Event callbacks */
 	void (*cb_on_assistant_text)(const char *, void *);
@@ -244,6 +246,16 @@ int clm_image_sniff(const uint8_t *data, size_t len, const char **media_type,
 
 int clm_parse_props(const char *body, int64_t *ctx_out);
 int clm_parse_model_ctx(const char *body, int64_t *ctx_out);
+
+/*
+ * Whether a model takes images, from what the server says: 1 yes, -1 no,
+ * 0 unknown. clm_parse_props_vision reads llama.cpp's /props
+ * modalities.vision; the other two read a "capabilities" list ("multimodal"
+ * or "vision"), from a /v1/models catalogue entry or a model document.
+ */
+int clm_parse_props_vision(const char *body);
+int clm_parse_models_vision_for(const char *body, const char *model);
+int clm_parse_model_vision(const char *body);
 
 /*
  * Parse an OpenAI-compatible GET /v1/models body ({"data":[{"id":...}]})

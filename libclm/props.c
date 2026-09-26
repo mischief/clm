@@ -91,3 +91,19 @@ clm_parse_model_ctx(const char *body, int64_t *ctx_out)
 	*ctx_out = (int64_t)v->valuedouble;
 	return 0;
 }
+
+int
+clm_parse_props_vision(const char *body)
+{
+	json_cleanup cJSON *root = NULL;
+	cJSON *v;
+
+	if (body == NULL)
+		return 0;
+	root = cJSON_Parse(body);
+	v = cJSON_GetObjectItemCaseSensitive(
+	    cJSON_GetObjectItemCaseSensitive(root, "modalities"), "vision");
+	if (!cJSON_IsBool(v))
+		return 0;
+	return cJSON_IsTrue(v) ? 1 : -1;
+}

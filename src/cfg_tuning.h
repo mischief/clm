@@ -14,7 +14,7 @@ static inline void
 clm_cfg_apply_tuning(struct clm_lua_cfg *lcfg, const char *provider,
     const char *model, struct clm_cfg *cfg)
 {
-	int64_t size, tokens, pct;
+	int64_t size, tokens, pct, vision;
 
 	if (lcfg == NULL || cfg == NULL || provider == NULL)
 		return;
@@ -23,6 +23,7 @@ clm_cfg_apply_tuning(struct clm_lua_cfg *lcfg, const char *provider,
 	pct = clm_lua_cfg_provider_int(lcfg, provider, "autocompact_pct", 0);
 	tokens =
 	    clm_lua_cfg_provider_int(lcfg, provider, "autocompact_tokens", 0);
+	vision = clm_lua_cfg_provider_int(lcfg, provider, "vision", 0);
 
 	if (model != NULL) {
 		size = clm_lua_cfg_provider_model_int(
@@ -31,11 +32,14 @@ clm_cfg_apply_tuning(struct clm_lua_cfg *lcfg, const char *provider,
 		    lcfg, provider, model, "autocompact_pct", pct);
 		tokens = clm_lua_cfg_provider_model_int(
 		    lcfg, provider, model, "autocompact_tokens", tokens);
+		vision = clm_lua_cfg_provider_model_int(
+		    lcfg, provider, model, "vision", vision);
 	}
 
 	cfg->context_size = size;
 	cfg->autocompact_pct = (int)pct;
 	cfg->autocompact_tokens = tokens;
+	cfg->vision = vision > 0 ? 1 : vision < 0 ? -1 : 0;
 }
 
 #endif /* CLM_CFG_TUNING_H */

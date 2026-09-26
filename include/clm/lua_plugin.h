@@ -133,7 +133,8 @@ CLM_API const char *clm_lua_cfg_get_agent_name(struct clm_lua_cfg *cfg);
 CLM_API const char *clm_lua_cfg_provider_str(
     struct clm_lua_cfg *cfg, const char *provider_name, const char *key);
 
-/* Same as above but for integer values. Returns fallback if not set. */
+/* Same as above but for integer values. Returns fallback if not set. A
+ * boolean reads as 1 (true) or -1 (false). */
 CLM_API int64_t clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *key, int64_t fallback);
 
@@ -160,7 +161,8 @@ CLM_API int64_t clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
 CLM_API const char *clm_lua_cfg_provider_model_str(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *model_id, const char *key);
 
-/* Same as above but for integer values. Returns fallback if not set. */
+/* Same as above but for integer values. Returns fallback if not set. A
+ * boolean reads as 1 (true) or -1 (false). */
 CLM_API int64_t clm_lua_cfg_provider_model_int(struct clm_lua_cfg *cfg,
     const char *provider_name, const char *model_id, const char *key,
     int64_t fallback);

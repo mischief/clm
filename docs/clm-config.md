@@ -194,7 +194,7 @@ A per-model entry overrides this provider-wide value, and the TUI's
 **/effort**
 command overrides both for one session.
 
-*context\_size*, *autocompact\_pct*, *autocompact\_tokens*
+*context\_size*, *autocompact\_pct*, *autocompact\_tokens*, *vision*
 
 Context tuning for every model on this connection; see the
 *models*
@@ -238,6 +238,28 @@ ceiling is a tenth of that.
 Unset takes the provider-wide value of the same name, and with neither
 set the decision is left to
 *autocompact\_pct*.
+
+*vision*
+
+Whether the model takes images:
+`true`
+or
+`false`.
+Unset,
+[clm(1)](clm.md)
+asks the server: llama.cpp reports it in
+*/props*,
+and some servers list a
+"multimodal"
+or
+"vision"
+capability in
+*/v1/models*.
+When it is known to be false, the
+*read\_image*
+tool is not offered to the model.
+When nothing says either way, images are sent, and an error from the
+server on such a turn names this key.
 
 *effort*
 

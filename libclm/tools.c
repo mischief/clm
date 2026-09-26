@@ -369,6 +369,8 @@ clm_tools_build_schema(const struct clm_agent *agent)
 	{
 		if (t->removed || (t->flags & CLM_TOOL_HIDDEN))
 			continue;
+		if ((t->flags & CLM_TOOL_VISION) && agent->vision < 0)
+			continue;
 		cJSON *sch = tool_schema(t);
 		if (sch != NULL)
 			cJSON_AddItemToArray(arr, sch); /* steals reference */
@@ -821,6 +823,19 @@ clm_tool_complete_image(struct clm_tool_invocation *inv, const char *text,
 	    media_type, len);
 	if (inv->timed_out) {
 		finalize_timeout(inv);
+		return;
+	}
+	/* Never hand an image to a model known not to take one. The note
+	 * keeps it from describing an image it never got. */
+	if (inv->batch->agent->vision < 0) {
+		autofree char *note = NULL;
+
+		if (asprintf(&note,
+		        "%s\n[image omitted: the model does not take images]",
+		        text) < 0)
+			note = NULL;
+		inv_finalize(inv, (const uint8_t *)(note != NULL ? note : text),
+		    strlen(note != NULL ? note : text), CLM_TOOL_OK, NULL);
 		return;
 	}
 	att.media_type = (char *)media_type;
@@ -1711,7 +1726,8 @@ clm_tools_register_builtins(struct clm_agent *agent)
 	                     "\"path to the image file\"}},"
 	                     "\"required\":[\"path\"]}",
 	    .invoke = tool_read_image,
-	    .flags = CLM_TOOL_NO_PROMPT, /* read-only: safe to run unprompted */
+	    /* read-only: safe to run unprompted */
+	    .flags = CLM_TOOL_NO_PROMPT | CLM_TOOL_VISION,
 	};
 
 	r = clm_tool_add(agent, &write_def);

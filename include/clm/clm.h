@@ -163,6 +163,10 @@ enum clm_tool_flags {
 	 * is invocable internally (e.g. by plugins), but is filtered out of the
 	 * schema sent to the model. */
 	CLM_TOOL_HIDDEN = 1 << 3,
+
+	/* The tool returns images. It is not advertised to a model known not
+	 * to take them (see clm_cfg.vision). */
+	CLM_TOOL_VISION = 1 << 4,
 };
 
 /*
@@ -253,6 +257,9 @@ struct clm_cfg {
 
 	/* Provider-specific overrides (0 = use defaults) */
 	int64_t context_size; /* override ctx_max (tokens) */
+	/* Whether the model takes images: 1 yes, -1 no, 0 unknown (clm asks
+	 * the server, and sends images when it cannot tell). */
+	int vision;
 	int autocompact_pct;
 	/* Compact once the conversation reaches this many tokens, whatever
 	 * the window allows. For an account whose throughput limit bites

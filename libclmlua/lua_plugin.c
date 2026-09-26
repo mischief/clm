@@ -1939,6 +1939,8 @@ cfg_table_entry_int(lua_State *L, int cfg_ref, const char *table,
 	lua_getfield(L, -1, key);
 	if (lua_isnumber(L, -1))
 		*out = (int64_t)lua_tonumber(L, -1);
+	else if (lua_isboolean(L, -1))
+		*out = lua_toboolean(L, -1) ? 1 : -1;
 	lua_pop(L, 4);
 	return true;
 }
@@ -2025,6 +2027,10 @@ cfg_provider_model_int(lua_State *L, int cfg_ref, const char *provider_name,
 					if (lua_isnumber(L, -1))
 						*out = (int64_t)lua_tonumber(
 						    L, -1);
+					else if (lua_isboolean(L, -1))
+						*out = lua_toboolean(L, -1)
+						    ? 1
+						    : -1;
 					found = true;
 				}
 			}

@@ -23,6 +23,7 @@ struct tstate {
 	struct clm_agent *agent;
 	int stream;
 	enum clm_provider provider;
+	int vision;
 	const char *system_prompt;
 	const char *system_prompt_suffix;
 	const char *effort;
@@ -211,6 +212,7 @@ make_agent(struct tstate *st, int port)
 	cfg.api_key = "test";
 	cfg.base_url = url;
 	cfg.provider = st->provider;
+	cfg.vision = st->vision;
 	cfg.model = "test-model";
 	cfg.stream = st->stream;
 	cfg.system_prompt = st->system_prompt;
@@ -370,6 +372,9 @@ test_read_image(uv_loop_t *loop)
 	CHECK(st.last_outcome == CLM_TOOL_OK, "read_image: outcome ok");
 	CHECK(req != NULL && strstr(req, "png 8x8") != NULL,
 	    "read_image: text names type and size");
+	CHECK(req != NULL &&
+	        strstr(req, "\"name\":\"read_image\",\"desc") != NULL,
+	    "read_image: offered when image input is unknown");
 	CHECK(req != NULL &&
 	        strstr(req, "\"url\":\"data:image/png;base64,iVBORw0KGgo") !=
 	            NULL,
@@ -539,6 +544,39 @@ test_read_image_anthropic(uv_loop_t *loop)
 	            "iVBORw0KGgo", 11) == 0,
 	    "read_image anthropic: base64 image source");
 	cJSON_Delete(body);
+	teardown(&st, srv);
+	unlink(img);
+}
+
+/* (b1v) A model configured without image input: read_image is not
+ * offered, and a call to it anyway returns a note instead of the image. */
+static void
+test_read_image_no_vision(uv_loop_t *loop)
+{
+	char img[] = "/tmp/clm-test-image-XXXXXX";
+	char args[128];
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *req;
+
+	CHECK(write_test_png(img), "no vision: temp png");
+	st.loop = loop;
+	st.vision = -1;
+	srv = canned_start(loop);
+	(void)snprintf(args, sizeof(args), "{\"path\":\"%s\"}", img);
+	canned_tool_call(srv, "read_image", args);
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+	run_until_done(&st);
+
+	req = canned_last_request(srv);
+	CHECK(req != NULL &&
+	        strstr(req, "\"name\":\"read_image\",\"desc") == NULL,
+	    "no vision: read_image is not in the tool list");
+	CHECK(req != NULL && strstr(req, "image omitted") != NULL &&
+	        strstr(req, "image_url") == NULL,
+	    "no vision: a call anyway returns a note, no image");
 	teardown(&st, srv);
 	unlink(img);
 }
@@ -2829,6 +2867,36 @@ test_parse_model_ctx(void)
  * sequences and stray control bytes go away, text is left alone.
  */
 static void
+test_parse_vision(void)
+{
+	CHECK(clm_parse_props_vision("{\"modalities\":{\"vision\":true}}") == 1,
+	    "vision: llama.cpp props true");
+	CHECK(
+	    clm_parse_props_vision("{\"modalities\":{\"vision\":false}}") == -1,
+	    "vision: llama.cpp props false");
+	CHECK(clm_parse_props_vision("{\"build_info\":\"x\"}") == 0,
+	    "vision: props without modalities is unknown");
+	CHECK(clm_parse_models_vision_for(
+	          "{\"data\":[{\"id\":\"a\",\"capabilities\":[\"completion\"]},"
+	          "{\"id\":\"g\",\"capabilities\":[\"completion\","
+	          "\"multimodal\"]}]}",
+	          "g") == 1,
+	    "vision: lgml multimodal capability");
+	CHECK(
+	    clm_parse_models_vision_for(
+	        "{\"data\":[{\"id\":\"a\",\"capabilities\":[\"completion\"]}]}",
+	        "a") == -1,
+	    "vision: capabilities without vision");
+	CHECK(clm_parse_models_vision_for(
+	          "{\"data\":[{\"id\":\"gpt\",\"owned_by\":\"system\"}]}",
+	          "gpt") == 0,
+	    "vision: no capabilities list is unknown");
+	CHECK(clm_parse_model_vision(
+	          "{\"id\":\"g\",\"capabilities\":[\"vision\"]}") == 1,
+	    "vision: model document");
+}
+
+static void
 test_clean_text(void)
 {
 	uint8_t buf[128];
@@ -3335,6 +3403,7 @@ test_agent_suite(void *arg)
 	test_read_image(&loop);
 	test_read_image_responses(&loop);
 	test_read_image_anthropic(&loop);
+	test_read_image_no_vision(&loop);
 	test_binary_tool_output(&loop);
 	test_bg_exec(&loop);
 	test_agent_free_during_bg_exec(&loop);
@@ -3382,6 +3451,7 @@ test_agent_suite(void *arg)
 	test_parse_models_ctx_for();
 	test_parse_model_ctx();
 	test_clean_text();
+	test_parse_vision();
 	test_history_compact();
 	test_history_compact_agentic();
 	test_history_supersede();

@@ -135,3 +135,56 @@ clm_parse_models_ctx_for(const char *body, const char *model, int64_t *ctx_out)
 
 	return -1;
 }
+
+/* An entry's "capabilities" list (lgml): 1 with "multimodal" or "vision"
+ * in it, -1 without, 0 when the entry has no such list. */
+static int
+entry_vision(const cJSON *item)
+{
+	const cJSON *caps =
+	    cJSON_GetObjectItemCaseSensitive(item, "capabilities");
+	const cJSON *c;
+
+	if (!cJSON_IsArray(caps))
+		return 0;
+	cJSON_ArrayForEach(c, caps)
+	{
+		if (cJSON_IsString(c) &&
+		    (strcmp(c->valuestring, "multimodal") == 0 ||
+		        strcmp(c->valuestring, "vision") == 0))
+			return 1;
+	}
+	return -1;
+}
+
+int
+clm_parse_models_vision_for(const char *body, const char *model)
+{
+	json_cleanup cJSON *root = NULL;
+	cJSON *item;
+
+	if (body == NULL || model == NULL)
+		return 0;
+	root = cJSON_Parse(body);
+	cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(root, "data"))
+	{
+		cJSON *id = cJSON_GetObjectItemCaseSensitive(item, "id");
+
+		if (cJSON_IsString(id) && strcmp(id->valuestring, model) == 0)
+			return entry_vision(item);
+	}
+	return 0;
+}
+
+int
+clm_parse_model_vision(const char *body)
+{
+	json_cleanup cJSON *root = NULL;
+	cJSON *doc;
+
+	if (body == NULL)
+		return 0;
+	root = cJSON_Parse(body);
+	doc = cJSON_GetObjectItemCaseSensitive(root, "data");
+	return entry_vision(cJSON_IsObject(doc) ? doc : root);
+}
