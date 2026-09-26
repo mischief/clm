@@ -325,6 +325,65 @@ test_tool_call(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* (b1) read_image: the image rides with the tool result as an image_url
+ * data URL; a file that is not an image fails with a reason. */
+static void
+test_read_image(uv_loop_t *loop)
+{
+	static const uint8_t png[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a,
+	    '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R', 0, 0, 0, 8, 0, 0, 0, 8, 8, 2,
+	    0, 0, 0};
+	char img[] = "/tmp/clm-test-image-XXXXXX";
+	char args[128];
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *req;
+	int fd;
+
+	fd = mkstemp(img);
+	CHECK(fd >= 0 && write(fd, png, sizeof(png)) == (ssize_t)sizeof(png),
+	    "read_image: temp png");
+	if (fd >= 0)
+		close(fd);
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+	(void)snprintf(args, sizeof(args), "{\"path\":\"%s\"}", img);
+	canned_tool_call(srv, "read_image", args);
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+	run_until_done(&st);
+
+	req = canned_last_request(srv);
+	CHECK(st.last_outcome == CLM_TOOL_OK, "read_image: outcome ok");
+	CHECK(req != NULL && strstr(req, "png 8x8") != NULL,
+	    "read_image: text names type and size");
+	CHECK(req != NULL &&
+	        strstr(req, "\"url\":\"data:image/png;base64,iVBORw0KGgo") !=
+	            NULL,
+	    "read_image: image sent as a data URL");
+	teardown(&st, srv);
+
+	memset(&st, 0, sizeof(st));
+	st.loop = loop;
+	srv = canned_start(loop);
+	canned_tool_call(srv, "read_image", "{\"path\":\"/etc\"}");
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+	run_until_done(&st);
+	req = canned_last_request(srv);
+	CHECK(st.last_outcome == CLM_TOOL_FAILED &&
+	        strstr(req, "not a regular file") != NULL,
+	    "read_image: a directory is refused");
+	CHECK(strstr(req, "image_url") == NULL,
+	    "read_image: no image part on failure");
+	teardown(&st, srv);
+	unlink(img);
+}
+
 /*
  * (b2) A tool that reports raw binary output via clm_tool_complete_buf: the
  * history/request-building path must never emit invalid-UTF-8 bytes into the
@@ -3114,6 +3173,7 @@ test_agent_suite(void *arg)
 	uv_loop_init(&loop);
 	test_text_reply(&loop);
 	test_tool_call(&loop);
+	test_read_image(&loop);
 	test_binary_tool_output(&loop);
 	test_bg_exec(&loop);
 	test_agent_free_during_bg_exec(&loop);

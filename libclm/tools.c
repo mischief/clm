@@ -10,6 +10,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <cjson/cJSON.h>
 
@@ -660,7 +661,8 @@ tool_is_volatile(const struct clm_agent *agent, const char *name)
 
 static void
 inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content,
-    size_t content_len, enum clm_tool_outcome outcome)
+    size_t content_len, enum clm_tool_outcome outcome,
+    const struct clm_attachment *att)
 {
 	struct clm_tool_batch *batch = inv->batch;
 	struct clm_agent *agent = batch->agent;
@@ -755,6 +757,10 @@ inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content,
 		struct clm_message *m = clm_history_add_tool_result(
 		    &agent->history, inv->id, inv->name, (const char *)out,
 		    out_len, agent->compressor);
+		if (m != NULL && att != NULL &&
+		    clm_message_add_attachment(
+		        m, att->media_type, att->data, att->len) < 0)
+			m = NULL;
 		if (m == NULL)
 			batch->status = -ENOMEM;
 		else
@@ -778,7 +784,8 @@ finalize_timeout(struct clm_tool_invocation *inv)
 	(void)snprintf(buf, sizeof(buf),
 	    "[tool failed: timed out after %llu ms]",
 	    (unsigned long long)inv->timeout_ms);
-	inv_finalize(inv, (const uint8_t *)buf, strlen(buf), CLM_TOOL_TIMEDOUT);
+	inv_finalize(
+	    inv, (const uint8_t *)buf, strlen(buf), CLM_TOOL_TIMEDOUT, NULL);
 }
 
 void
@@ -793,7 +800,34 @@ clm_tool_complete_buf(struct clm_tool_invocation *inv, struct clm_buffer buf)
 		finalize_timeout(inv);
 		return;
 	}
-	inv_finalize(inv, buf.data, buf.len, CLM_TOOL_OK);
+	inv_finalize(inv, buf.data, buf.len, CLM_TOOL_OK, NULL);
+}
+
+void
+clm_tool_complete_image(struct clm_tool_invocation *inv, const char *text,
+    const char *media_type, const uint8_t *data, size_t len)
+{
+	struct clm_attachment att;
+
+	if (inv == NULL || inv->completed)
+		return;
+	if (media_type == NULL || data == NULL || len == 0) {
+		clm_tool_fail(inv, "no image");
+		return;
+	}
+	if (text == NULL)
+		text = "";
+	clm_debug("[result] %s -> %s (+%s, %zu bytes)", inv->name, text,
+	    media_type, len);
+	if (inv->timed_out) {
+		finalize_timeout(inv);
+		return;
+	}
+	att.media_type = (char *)media_type;
+	att.data = (uint8_t *)data;
+	att.len = len;
+	inv_finalize(
+	    inv, (const uint8_t *)text, strlen(text), CLM_TOOL_OK, &att);
 }
 
 void
@@ -820,10 +854,10 @@ clm_tool_fail(struct clm_tool_invocation *inv, const char *msg)
 	wrapped = fail_wrap(msg);
 	if (wrapped != NULL)
 		inv_finalize(inv, (const uint8_t *)wrapped, strlen(wrapped),
-		    CLM_TOOL_FAILED);
+		    CLM_TOOL_FAILED, NULL);
 	else
 		inv_finalize(inv, (const uint8_t *)"[tool failed]",
-		    strlen("[tool failed]"), CLM_TOOL_FAILED);
+		    strlen("[tool failed]"), CLM_TOOL_FAILED, NULL);
 }
 
 static void
@@ -1125,7 +1159,7 @@ clm_tools_cancel(struct clm_agent *agent)
 			agent->host->timer_cancel(inv->rl_timer);
 			inv->rl_timer = NULL;
 			inv_finalize(inv, (const uint8_t *)msg, sizeof(msg) - 1,
-			    CLM_TOOL_FAILED);
+			    CLM_TOOL_FAILED, NULL);
 			continue;
 		}
 		/* A call parked on a permission decision stays parked: the
@@ -1516,6 +1550,108 @@ tool_list_dir(struct clm_tool_invocation *inv, void *user)
 	clm_tool_complete(inv, out);
 }
 
+/* Larger images are refused, not scaled: clm has no image decoder. The
+ * Anthropic API takes about 5 MB per image. */
+#define CLM_IMAGE_MAX_BYTES (5 * 1024 * 1024)
+
+/*
+ * Read at most max + 1 bytes of a regular file from one descriptor, so a
+ * file that changes between the checks and the read cannot slip past the
+ * cap. Returns the malloc'd bytes, or NULL with *why set.
+ */
+static uint8_t *
+read_image_file(const char *path, size_t max, size_t *len, const char **why)
+{
+	autoclose int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOCTTY);
+	autofree uint8_t *buf = NULL;
+	struct stat st;
+	size_t n = 0;
+	uint8_t *ret;
+
+	if (fd < 0) {
+		*why = strerror(errno);
+		return NULL;
+	}
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+		*why = "not a regular file";
+		return NULL;
+	}
+	buf = malloc(max + 1);
+	if (buf == NULL) {
+		*why = "out of memory";
+		return NULL;
+	}
+	while (n < max + 1) {
+		ssize_t r = read(fd, buf + n, max + 1 - n);
+
+		if (r < 0 && errno == EINTR)
+			continue;
+		if (r < 0) {
+			*why = strerror(errno);
+			return NULL;
+		}
+		if (r == 0)
+			break;
+		n += (size_t)r;
+	}
+	if (n > max) {
+		*why = "larger than 5 MiB";
+		return NULL;
+	}
+	*len = n;
+	ret = buf;
+	buf = NULL;
+	return ret;
+}
+
+static void
+tool_read_image(struct clm_tool_invocation *inv, void *user)
+{
+	json_cleanup cJSON *args = inv_args(inv);
+	autofree char *path = NULL;
+	autofree uint8_t *data = NULL;
+	const char *why = NULL, *mt = NULL;
+	uint32_t w = 0, h = 0;
+	size_t len = 0;
+	char msg[512];
+
+	(void)user;
+	if (args == NULL || !cJSON_IsObject(args)) {
+		clm_tool_fail(inv, "invalid arguments");
+		return;
+	}
+	path = arg_string(args, "path");
+	if (path == NULL) {
+		clm_tool_fail(inv, "missing required string argument 'path'");
+		return;
+	}
+	{
+		char *ep = expand_tilde(path);
+		if (ep != NULL) {
+			free(path);
+			path = ep;
+		}
+	}
+
+	data = read_image_file(path, CLM_IMAGE_MAX_BYTES, &len, &why);
+	if (data == NULL) {
+		(void)snprintf(msg, sizeof(msg), "cannot read '%s': %s", path,
+		    why != NULL ? why : "unknown error");
+		clm_tool_fail(inv, msg);
+		return;
+	}
+	if (clm_image_sniff(data, len, &mt, &w, &h) < 0) {
+		(void)snprintf(msg, sizeof(msg),
+		    "'%s' is not a PNG, JPEG, GIF or WebP image", path);
+		clm_tool_fail(inv, msg);
+		return;
+	}
+	(void)snprintf(msg, sizeof(msg), "image %s: %s %ux%u, %zu KiB", path,
+	    mt + strlen("image/"), (unsigned)w, (unsigned)h,
+	    (len + 1023) / 1024);
+	clm_tool_complete_image(inv, msg, mt, data, len);
+}
+
 int
 clm_tools_register_builtins(struct clm_agent *agent)
 {
@@ -1563,8 +1699,26 @@ clm_tools_register_builtins(struct clm_agent *agent)
 	r = clm_tool_add(agent, &read_def);
 	if (r < 0)
 		return r;
+	const struct clm_tool_def image_def = {
+	    .name = "read_image",
+	    .description = "look at an image file (PNG, JPEG, GIF or WebP, at "
+	                   "most 5 MiB): the image itself comes back with the "
+	                   "result. Use it when a path to an image turns up "
+	                   "and seeing it would help.",
+	    .params_schema = "{\"type\":\"object\","
+	                     "\"properties\":{"
+	                     "\"path\":{\"type\":\"string\",\"description\":"
+	                     "\"path to the image file\"}},"
+	                     "\"required\":[\"path\"]}",
+	    .invoke = tool_read_image,
+	    .flags = CLM_TOOL_NO_PROMPT, /* read-only: safe to run unprompted */
+	};
+
 	r = clm_tool_add(agent, &write_def);
 	if (r < 0)
 		return r;
-	return clm_tool_add(agent, &list_def);
+	r = clm_tool_add(agent, &list_def);
+	if (r < 0)
+		return r;
+	return clm_tool_add(agent, &image_def);
 }

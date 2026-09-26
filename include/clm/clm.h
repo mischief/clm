@@ -692,6 +692,14 @@ CLM_API void clm_tool_complete(
     struct clm_tool_invocation *inv, const char *content);
 CLM_API void clm_tool_complete_buf(
     struct clm_tool_invocation *inv, struct clm_buffer buf);
+
+/*
+ * Complete with text and one image. The text says what the image is; the
+ * image goes to the model with the result, in each provider's shape. data
+ * is copied before this returns.
+ */
+CLM_API void clm_tool_complete_image(struct clm_tool_invocation *inv,
+    const char *text, const char *media_type, const uint8_t *data, size_t len);
 CLM_API void clm_tool_fail(struct clm_tool_invocation *inv, const char *msg);
 
 CLM_API void clm_agent_free_ptr(struct clm_agent **agent);
