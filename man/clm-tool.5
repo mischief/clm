@@ -403,6 +403,11 @@ the final reply of the model, or
 .El
 .Pp
 The turn hooks are callbacks with a 2 s deadline, and cannot yield.
+.Pp
+The source tree has an example in
+.Pa plugins/opt/jev_guard.lua .
+It asks a Jev System One server to rate each shell command as run,
+ask or deny.
 .Ss The json module
 .Bd -literal -offset indent
 local text = json.encode(value)
