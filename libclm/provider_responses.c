@@ -448,6 +448,20 @@ responses_cached_tokens(const cJSON *usage)
 	return cJSON_IsNumber(v) ? v->valuedouble : 0;
 }
 
+/* Append s to the malloc'd string *buf, which may be NULL. */
+static int
+str_append(char **buf, const char *s)
+{
+	size_t old = *buf != NULL ? strlen(*buf) : 0, add = strlen(s);
+	char *p = realloc(*buf, old + add + 1);
+
+	if (p == NULL)
+		return -1;
+	memcpy(p + old, s, add + 1);
+	*buf = p;
+	return 0;
+}
+
 static cJSON *
 responses_normalize_response(cJSON *raw)
 {
@@ -493,46 +507,32 @@ responses_normalize_response(cJSON *raw)
 				if (cJSON_IsString(jctype) &&
 				    strcmp(jctype->valuestring,
 				        "output_text") == 0 &&
-				    cJSON_IsString(jtext)) {
-					size_t old =
-					    text_buf ? strlen(text_buf) : 0;
-					size_t add = strlen(jtext->valuestring);
-					char *p =
-					    realloc(text_buf, old + add + 1);
-					if (p == NULL)
-						return NULL;
-					memcpy(p + old, jtext->valuestring,
-					    add + 1);
-					text_buf = p;
-				}
+				    cJSON_IsString(jtext) &&
+				    str_append(&text_buf, jtext->valuestring) <
+				        0)
+					return NULL;
 			}
 		} else if (strcmp(itype, "reasoning") == 0) {
-			cJSON *summary =
-			    cJSON_GetObjectItemCaseSensitive(item, "summary");
-			int j,
-			    sn = cJSON_IsArray(summary)
-			    ? cJSON_GetArraySize(summary)
-			    : 0;
+			/* The summary, then raw reasoning_text from servers
+			 * that expose it. */
+			static const char *const keys[] = {
+			    "summary", "content"};
 
-			for (j = 0; j < sn; j++) {
-				cJSON *s = cJSON_GetArrayItem(summary, j);
-				cJSON *jtext = s
-				    ? cJSON_GetObjectItemCaseSensitive(
-				          s, "text")
-				    : NULL;
+			for (size_t k = 0; k < 2; k++) {
+				cJSON *part;
 
-				if (cJSON_IsString(jtext)) {
-					size_t old = reasoning_buf
-					    ? strlen(reasoning_buf)
-					    : 0;
-					size_t add = strlen(jtext->valuestring);
-					char *p = realloc(
-					    reasoning_buf, old + add + 1);
-					if (p == NULL)
+				cJSON_ArrayForEach(part,
+				    cJSON_GetObjectItemCaseSensitive(
+				        item, keys[k]))
+				{
+					cJSON *jtext =
+					    cJSON_GetObjectItemCaseSensitive(
+					        part, "text");
+
+					if (cJSON_IsString(jtext) &&
+					    str_append(&reasoning_buf,
+					        jtext->valuestring) < 0)
 						return NULL;
-					memcpy(p + old, jtext->valuestring,
-					    add + 1);
-					reasoning_buf = p;
 				}
 			}
 		} else if (strcmp(itype, "function_call") == 0) {
@@ -752,7 +752,10 @@ responses_normalize_stream_event(cJSON *raw, void **state)
 		    cJSON_IsString(jdelta) ? jdelta->valuestring : "");
 	}
 
-	if (strcmp(type, "response.reasoning_summary_text.delta") == 0) {
+	/* Raw reasoning (reasoning_text) comes from servers that expose it;
+	 * others send only the summary. */
+	if (strcmp(type, "response.reasoning_summary_text.delta") == 0 ||
+	    strcmp(type, "response.reasoning_text.delta") == 0) {
 		cJSON *jdelta = cJSON_GetObjectItemCaseSensitive(raw, "delta");
 		return make_delta_chunk("reasoning_content",
 		    cJSON_IsString(jdelta) ? jdelta->valuestring : "");

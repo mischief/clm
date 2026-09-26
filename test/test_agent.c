@@ -3515,6 +3515,51 @@ test_stream_usage_last(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* Servers that expose raw reasoning send reasoning_text, not a summary. */
+static void
+test_responses_reasoning_text(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+	canned_reply(srv,
+	    "{\"id\":\"r1\",\"status\":\"completed\",\"output\":["
+	    "{\"type\":\"reasoning\",\"summary\":[],\"content\":[{\"type\":"
+	    "\"reasoning_text\",\"text\":\"rawthought\"}]},"
+	    "{\"type\":\"message\",\"content\":[{\"type\":\"output_text\","
+	    "\"text\":\"ok\"}]}]}");
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	run_until_done(&st);
+	CHECK(strstr(st.reasoning, "rawthought") != NULL,
+	    "reasoning_text content reaches on_reasoning");
+	teardown(&st, srv);
+
+	memset(&st, 0, sizeof(st));
+	st.loop = loop;
+	st.stream = 1;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+	canned_reply(srv,
+	    "data: {\"type\":\"response.reasoning_text.delta\","
+	    "\"delta\":\"streamthought\"}\n\n"
+	    "data: {\"type\":\"response.output_text.delta\","
+	    "\"delta\":\"ok\"}\n\n"
+	    "data: {\"type\":\"response.completed\",\"response\":"
+	    "{\"id\":\"r2\",\"status\":\"completed\"}}\n\n");
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	run_until_done(&st);
+	CHECK(strstr(st.reasoning, "streamthought") != NULL,
+	    "reasoning_text deltas reach on_reasoning");
+	teardown(&st, srv);
+}
+
 static int
 test_agent_suite(void *arg)
 {
@@ -3555,6 +3600,7 @@ test_agent_suite(void *arg)
 	test_responses_stream(&loop);
 	test_stream_error_event(&loop);
 	test_stream_usage_last(&loop);
+	test_responses_reasoning_text(&loop);
 	test_rate_limit_retry(&loop);
 	test_rate_limit_delay_forms(&loop);
 	test_rate_limit_backoff_grows();
