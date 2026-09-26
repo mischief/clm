@@ -9,6 +9,7 @@
 #include <cjson/cJSON.h>
 
 #include "clm/agent.h"
+#include "clm/compress.h"
 #include "clm/http.h"
 #include "clm/host.h"
 #include "clm/llm.h"
@@ -245,6 +246,102 @@ agent_probe_get(struct clm_agent *agent, const char *url,
 	return r;
 }
 
+int
+clm_agent_add_pre_tool_hook(
+    struct clm_agent *agent, clm_pre_tool_hook fn, void *user)
+{
+	struct clm_pre_tool_entry *n;
+
+	ASSERT_RETURN(agent != NULL && fn != NULL, -EINVAL);
+	n = realloc(
+	    agent->pre_tool_hooks, (agent->n_pre_tool_hooks + 1) * sizeof(*n));
+	if (n == NULL)
+		return -ENOMEM;
+	n[agent->n_pre_tool_hooks].fn = fn;
+	n[agent->n_pre_tool_hooks].user = user;
+	agent->pre_tool_hooks = n;
+	agent->n_pre_tool_hooks++;
+	return 0;
+}
+
+int
+clm_agent_remove_pre_tool_hook(
+    struct clm_agent *agent, clm_pre_tool_hook fn, void *user)
+{
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	for (size_t i = 0; i < agent->n_pre_tool_hooks; i++) {
+		struct clm_pre_tool_entry *e = &agent->pre_tool_hooks[i];
+
+		if (e->fn != fn || e->user != user)
+			continue;
+		memmove(
+		    e, e + 1, (agent->n_pre_tool_hooks - i - 1) * sizeof(*e));
+		agent->n_pre_tool_hooks--;
+		return 0;
+	}
+	return -ENOENT;
+}
+
+int
+clm_agent_add_turn_hook(struct clm_agent *agent, clm_turn_hook fn, void *user)
+{
+	struct clm_turn_hook_entry *n;
+
+	ASSERT_RETURN(agent != NULL && fn != NULL, -EINVAL);
+	n = realloc(agent->turn_hooks, (agent->n_turn_hooks + 1) * sizeof(*n));
+	if (n == NULL)
+		return -ENOMEM;
+	n[agent->n_turn_hooks].fn = fn;
+	n[agent->n_turn_hooks].user = user;
+	agent->turn_hooks = n;
+	agent->n_turn_hooks++;
+	return 0;
+}
+
+int
+clm_agent_remove_turn_hook(
+    struct clm_agent *agent, clm_turn_hook fn, void *user)
+{
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	for (size_t i = 0; i < agent->n_turn_hooks; i++) {
+		struct clm_turn_hook_entry *e = &agent->turn_hooks[i];
+
+		if (e->fn != fn || e->user != user)
+			continue;
+		memmove(e, e + 1, (agent->n_turn_hooks - i - 1) * sizeof(*e));
+		agent->n_turn_hooks--;
+		return 0;
+	}
+	return -ENOENT;
+}
+
+/* A hook may remove hooks, so the bound is read on each pass. */
+static void
+run_turn_hooks(struct clm_agent *agent, const struct clm_turn_info *info)
+{
+	for (size_t i = 0; i < agent->n_turn_hooks; i++)
+		agent->turn_hooks[i].fn(info, agent->turn_hooks[i].user);
+}
+
+/* The text of the reply that ended the turn, malloc'd, or NULL. */
+static char *
+final_assistant_text(struct clm_agent *agent)
+{
+	const struct clm_message *m = TAILQ_LAST(&agent->history, clm_history);
+	const struct clm_compressor *cz = agent->compressor;
+	char *plain = NULL;
+
+	if (m == NULL || m->role != CLM_ROLE_ASSISTANT || m->content == NULL ||
+	    !TAILQ_EMPTY(&m->tool_calls))
+		return NULL;
+	if (!m->content_compressed)
+		return strdup(m->content);
+	if (cz == NULL || cz->read == NULL ||
+	    cz->read(cz->ctx, m->content, m->content_len, &plain) < 0)
+		return NULL;
+	return plain;
+}
+
 /* Free a finished probe. Returns its agent, or NULL if the agent is gone. */
 static struct clm_agent *
 agent_probe_done(void *user)
@@ -452,6 +549,8 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->models_url);
 	free(agent->props_url);
 	free(agent->compact_body);
+	free(agent->pre_tool_hooks);
+	free(agent->turn_hooks);
 	clm_tools_free_registry(&agent->tools);
 	clm_ratelimit_free(agent->tool_rl);
 	if (agent->llm_rl_timer != NULL && agent->host != NULL &&
@@ -605,6 +704,13 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 		return -EBUSY;
 	}
 
+	{
+		struct clm_turn_info info = {
+		    .event = CLM_TURN_START, .prompt = prompt};
+
+		run_turn_hooks(agent, &info);
+	}
+
 	/*
 	 * Refresh the model's sense of time on a new turn once enough has
 	 * passed. The Qwen3 template forbids a non-leading system message, so
@@ -687,7 +793,14 @@ static void
 agent_turn_done(struct clm_agent *agent, int status)
 {
 	autofree char *notify = agent->pending_notify;
+	autofree char *text = NULL;
+	struct clm_turn_info info = {.event = CLM_TURN_END, .status = status};
+
 	agent->pending_notify = NULL;
+	if (status == 0 && agent->n_turn_hooks > 0)
+		text = final_assistant_text(agent);
+	info.text = text;
+	run_turn_hooks(agent, &info);
 
 	if (agent->cb_on_turn_done)
 		agent->cb_on_turn_done(status, agent->cb_user);

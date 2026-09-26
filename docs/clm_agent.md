@@ -20,7 +20,15 @@ CLM\_AGENT(3) - Library Functions Manual
 **clm\_agent\_over\_autocompact\_threshold**,
 **clm\_agent\_take\_mid\_chain\_compact\_started**,
 **clm\_agent\_take\_mid\_chain\_compact\_succeeded**,
-**clm\_agent\_take\_mid\_chain\_compact\_error** - create and drive a clm agent
+**clm\_agent\_take\_mid\_chain\_compact\_error**,
+**clm\_agent\_add\_pre\_tool\_hook**,
+**clm\_agent\_remove\_pre\_tool\_hook**,
+**clm\_agent\_add\_turn\_hook**,
+**clm\_agent\_remove\_turn\_hook**,
+**clm\_tool\_gate\_name**,
+**clm\_tool\_gate\_args**,
+**clm\_tool\_gate\_respond**,
+**clm\_permission\_req\_reason** - create and drive a clm agent
 
 # SYNOPSIS
 
@@ -99,6 +107,41 @@ CLM\_AGENT(3) - Library Functions Manual
 
 *bool*  
 **clm\_agent\_take\_mid\_chain\_compact\_error**(*struct clm\_agent \*agent*);
+
+*int*  
+**clm\_agent\_add\_pre\_tool\_hook**(*struct clm\_agent \*agent*,
+*clm\_pre\_tool\_hook fn*,
+*void \*user*);
+
+*int*  
+**clm\_agent\_remove\_pre\_tool\_hook**(*struct clm\_agent \*agent*,
+*clm\_pre\_tool\_hook fn*,
+*void \*user*);
+
+*int*  
+**clm\_agent\_add\_turn\_hook**(*struct clm\_agent \*agent*,
+*clm\_turn\_hook fn*,
+*void \*user*);
+
+*int*  
+**clm\_agent\_remove\_turn\_hook**(*struct clm\_agent \*agent*,
+*clm\_turn\_hook fn*,
+*void \*user*);
+
+*const char \*&zwnj;*  
+**clm\_tool\_gate\_name**(*const struct clm\_tool\_gate \*gate*);
+
+*const char \*&zwnj;*  
+**clm\_tool\_gate\_args**(*const struct clm\_tool\_gate \*gate*);
+
+*int*  
+**clm\_tool\_gate\_respond**(*struct clm\_tool\_gate \*gate*,
+*enum clm\_gate\_verdict verdict*,
+*const char \*reason*,
+*const char \*args*);
+
+*const char \*&zwnj;*  
+**clm\_permission\_req\_reason**(*const struct clm\_permission\_req \*req*);
 
 # DESCRIPTION
 
@@ -376,6 +419,72 @@ It exists for persisting a rewrite the
 *on\_message*
 callback never sees, such as the fold a compaction performs.
 
+## Hooks
+
+A hook is a function pair
+(*fn*, *user*).
+The agent calls hooks in the order they were added.
+The remove functions take the same pair as the add functions.
+
+A pre\_tool hook runs for each tool call, before the permission prompt.
+It gets a
+*struct clm\_tool\_gate*
+and must answer it exactly once with
+**clm\_tool\_gate\_respond**(),
+now or later.
+**clm\_tool\_gate\_name**()
+and
+**clm\_tool\_gate\_args**()
+return the tool name and its JSON arguments.
+*verdict*
+is one of:
+
+`CLM_GATE_PASS`
+
+Go on to the next hook, then to the permission prompt.
+
+`CLM_GATE_DENY`
+
+Fail the call with
+*reason*.
+The model sees it.
+
+`CLM_GATE_ASK`
+
+Send the call to
+*on\_permission*,
+also for a tool that has no prompt and after an
+"always"
+answer.
+**clm\_permission\_req\_reason**()
+then returns
+*reason*.
+A frontend with no person to answer must deny such a request.
+
+A non-NULL
+*args*
+replaces the arguments the tool gets.
+The history keeps the arguments the model sent.
+When the turn is cancelled or the agent is freed before the answer, the
+answer only frees the gate.
+
+A turn hook gets a
+*struct clm\_turn\_info*.
+`CLM_TURN_START`
+comes from
+**clm\_agent\_submit**(),
+with
+*prompt*.
+`CLM_TURN_END`
+comes just before
+*on\_turn\_done*,
+with
+*status*
+and
+*text*,
+the final reply of the model or
+`NULL`.
+
 # RETURN VALUES
 
 **clm\_agent\_new**(),
@@ -383,8 +492,9 @@ callback never sees, such as the fold a compaction performs.
 **clm\_agent\_cancel**(),
 **clm\_agent\_compact**(),
 **clm\_agent\_check\_connection**(),
-and
-**clm\_agent\_set\_provider**()
+**clm\_agent\_set\_provider**(),
+the hook add and remove functions, and
+**clm\_tool\_gate\_respond**()
 return 0 on success, or a negative
 errno(2)
 value on failure.
@@ -431,6 +541,10 @@ successfully cancelled a turn that was in flight; this is reported to
 as the turn's status, not returned directly by
 **clm\_agent\_cancel**()
 itself.
+
+\[`ENOENT`]
+
+A remove function found no hook with that pair.
 
 \[`EBUSY`]
 

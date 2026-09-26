@@ -68,6 +68,18 @@ struct clm_agent {
 
 	/* Metadata probes in flight (props, model document, health). */
 	LIST_HEAD(, agent_probe) probes;
+
+	/* Hooks, in the order they were added. */
+	struct clm_pre_tool_entry {
+		clm_pre_tool_hook fn;
+		void *user;
+	} *pre_tool_hooks;
+	size_t n_pre_tool_hooks;
+	struct clm_turn_hook_entry {
+		clm_turn_hook fn;
+		void *user;
+	} *turn_hooks;
+	size_t n_turn_hooks;
 	struct clm_tool_list tools;
 	size_t tool_count; /* live (non-removed) tools; diagnostics only */
 	size_t max_iterations;

@@ -117,6 +117,64 @@ CLM_API const char *clm_permission_req_args(
  */
 CLM_API const char *clm_permission_req_schema(
     const struct clm_permission_req *req);
+/*
+ * Why a pre_tool hook sent this call to the permission gate (see
+ * CLM_GATE_ASK), or NULL for an ordinary request. A frontend that answers
+ * without a person (an allow-all mode, a daemon) must not allow a request
+ * with a reason.
+ */
+CLM_API const char *clm_permission_req_reason(
+    const struct clm_permission_req *req);
+
+/*
+ * A pre_tool hook's answer. PASS lets the call go on to the next hook and
+ * then to the permission gate. DENY fails the call with the reason, and the
+ * model sees it. ASK sends the call to the permission gate even when the
+ * tool or an earlier answer would skip it.
+ */
+enum clm_gate_verdict {
+	CLM_GATE_PASS,
+	CLM_GATE_DENY,
+	CLM_GATE_ASK,
+};
+
+/*
+ * A tool call waiting on a pre_tool hook. The hook must answer it exactly
+ * once with clm_tool_gate_respond, now or later; the answer frees it.
+ */
+struct clm_tool_gate;
+
+CLM_API const char *clm_tool_gate_name(const struct clm_tool_gate *gate);
+CLM_API const char *clm_tool_gate_args(const struct clm_tool_gate *gate);
+
+/*
+ * Answer a gate. reason is for DENY and ASK and may be NULL. args, when
+ * not NULL, replaces the call's JSON arguments. After the agent is freed
+ * or the turn is cancelled, the answer only frees the gate. Returns 0, or
+ * negative errno.
+ */
+CLM_API int clm_tool_gate_respond(struct clm_tool_gate *gate,
+    enum clm_gate_verdict verdict, const char *reason, const char *args);
+
+/*
+ * Runs before the permission gate for each tool call, in the order the
+ * hooks were added.
+ */
+typedef void (*clm_pre_tool_hook)(struct clm_tool_gate *gate, void *user);
+
+enum clm_turn_event {
+	CLM_TURN_START, /* a prompt was submitted */
+	CLM_TURN_END,   /* the turn is over, just before on_turn_done */
+};
+
+struct clm_turn_info {
+	enum clm_turn_event event;
+	const char *prompt; /* START: the submitted text */
+	int status;         /* END: as on_turn_done */
+	const char *text;   /* END: the final assistant text, or NULL */
+};
+
+typedef void (*clm_turn_hook)(const struct clm_turn_info *info, void *user);
 
 /* Result of a server connectivity probe (see clm_agent_check_connection). */
 enum clm_conn_status {
@@ -641,6 +699,20 @@ CLM_API int clm_agent_compact(struct clm_agent *agent);
 CLM_API int clm_tool_permission_respond(struct clm_agent *agent,
     const struct clm_permission_req *req,
     enum clm_permission_decision decision);
+
+/*
+ * Add or remove a hook. A pair (fn, user) is one hook: remove takes the same
+ * pair add got. Hooks do not outlive the agent. add returns 0 or -ENOMEM;
+ * remove returns 0 or -ENOENT.
+ */
+CLM_API int clm_agent_add_pre_tool_hook(
+    struct clm_agent *agent, clm_pre_tool_hook fn, void *user);
+CLM_API int clm_agent_remove_pre_tool_hook(
+    struct clm_agent *agent, clm_pre_tool_hook fn, void *user);
+CLM_API int clm_agent_add_turn_hook(
+    struct clm_agent *agent, clm_turn_hook fn, void *user);
+CLM_API int clm_agent_remove_turn_hook(
+    struct clm_agent *agent, clm_turn_hook fn, void *user);
 
 /*
  * Register a tool. The agent copies def and its strings. The same name may

@@ -21,7 +21,15 @@
 .Nm clm_agent_over_autocompact_threshold ,
 .Nm clm_agent_take_mid_chain_compact_started ,
 .Nm clm_agent_take_mid_chain_compact_succeeded ,
-.Nm clm_agent_take_mid_chain_compact_error
+.Nm clm_agent_take_mid_chain_compact_error ,
+.Nm clm_agent_add_pre_tool_hook ,
+.Nm clm_agent_remove_pre_tool_hook ,
+.Nm clm_agent_add_turn_hook ,
+.Nm clm_agent_remove_turn_hook ,
+.Nm clm_tool_gate_name ,
+.Nm clm_tool_gate_args ,
+.Nm clm_tool_gate_respond ,
+.Nm clm_permission_req_reason
 .Nd create and drive a clm agent
 .Sh SYNOPSIS
 .In clm/clm.h
@@ -85,6 +93,43 @@
 .Fn clm_agent_take_mid_chain_compact_succeeded "struct clm_agent *agent"
 .Ft bool
 .Fn clm_agent_take_mid_chain_compact_error "struct clm_agent *agent"
+.Ft int
+.Fo clm_agent_add_pre_tool_hook
+.Fa "struct clm_agent *agent"
+.Fa "clm_pre_tool_hook fn"
+.Fa "void *user"
+.Fc
+.Ft int
+.Fo clm_agent_remove_pre_tool_hook
+.Fa "struct clm_agent *agent"
+.Fa "clm_pre_tool_hook fn"
+.Fa "void *user"
+.Fc
+.Ft int
+.Fo clm_agent_add_turn_hook
+.Fa "struct clm_agent *agent"
+.Fa "clm_turn_hook fn"
+.Fa "void *user"
+.Fc
+.Ft int
+.Fo clm_agent_remove_turn_hook
+.Fa "struct clm_agent *agent"
+.Fa "clm_turn_hook fn"
+.Fa "void *user"
+.Fc
+.Ft "const char *"
+.Fn clm_tool_gate_name "const struct clm_tool_gate *gate"
+.Ft "const char *"
+.Fn clm_tool_gate_args "const struct clm_tool_gate *gate"
+.Ft int
+.Fo clm_tool_gate_respond
+.Fa "struct clm_tool_gate *gate"
+.Fa "enum clm_gate_verdict verdict"
+.Fa "const char *reason"
+.Fa "const char *args"
+.Fc
+.Ft "const char *"
+.Fn clm_permission_req_reason "const struct clm_permission_req *req"
 .Sh DESCRIPTION
 A
 .Vt struct clm_agent
@@ -363,14 +408,75 @@ changes it.
 It exists for persisting a rewrite the
 .Va on_message
 callback never sees, such as the fold a compaction performs.
+.Ss Hooks
+A hook is a function pair
+.Pq Fa fn , Fa user .
+The agent calls hooks in the order they were added.
+The remove functions take the same pair as the add functions.
+.Pp
+A pre_tool hook runs for each tool call, before the permission prompt.
+It gets a
+.Vt struct clm_tool_gate
+and must answer it exactly once with
+.Fn clm_tool_gate_respond ,
+now or later.
+.Fn clm_tool_gate_name
+and
+.Fn clm_tool_gate_args
+return the tool name and its JSON arguments.
+.Fa verdict
+is one of:
+.Bl -tag -width CLM_GATE_DENY
+.It Dv CLM_GATE_PASS
+Go on to the next hook, then to the permission prompt.
+.It Dv CLM_GATE_DENY
+Fail the call with
+.Fa reason .
+The model sees it.
+.It Dv CLM_GATE_ASK
+Send the call to
+.Va on_permission ,
+also for a tool that has no prompt and after an
+.Qq always
+answer.
+.Fn clm_permission_req_reason
+then returns
+.Fa reason .
+A frontend with no person to answer must deny such a request.
+.El
+.Pp
+A non-NULL
+.Fa args
+replaces the arguments the tool gets.
+The history keeps the arguments the model sent.
+When the turn is cancelled or the agent is freed before the answer, the
+answer only frees the gate.
+.Pp
+A turn hook gets a
+.Vt struct clm_turn_info .
+.Dv CLM_TURN_START
+comes from
+.Fn clm_agent_submit ,
+with
+.Va prompt .
+.Dv CLM_TURN_END
+comes just before
+.Va on_turn_done ,
+with
+.Va status
+and
+.Va text ,
+the final reply of the model or
+.Dv NULL .
 .Sh RETURN VALUES
 .Fn clm_agent_new ,
 .Fn clm_agent_submit ,
 .Fn clm_agent_cancel ,
 .Fn clm_agent_compact ,
 .Fn clm_agent_check_connection ,
-and
-.Fn clm_agent_set_provider
+.Fn clm_agent_set_provider ,
+the hook add and remove functions, and
+.Fn clm_tool_gate_respond
 return 0 on success, or a negative
 .Xr errno 2
 value on failure.
@@ -413,6 +519,8 @@ successfully cancelled a turn that was in flight; this is reported to
 as the turn's status, not returned directly by
 .Fn clm_agent_cancel
 itself.
+.It Bq Er ENOENT
+A remove function found no hook with that pair.
 .It Bq Er EBUSY
 .Fn clm_agent_submit
 or

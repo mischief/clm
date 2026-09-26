@@ -47,6 +47,7 @@ struct tstate {
 	/* Permission-gate testing. */
 	int perm_prompts; /* times on_permission fired */
 	enum clm_permission_decision perm_decision; /* what to answer */
+	char perm_reason[64];                       /* last hook reason */
 	int notices;
 	char notice[256];
 };
@@ -162,7 +163,11 @@ static void
 on_permission(const struct clm_permission_req *req, void *user)
 {
 	struct tstate *st = user;
+	const char *why = clm_permission_req_reason(req);
+
 	st->perm_prompts++;
+	(void)snprintf(
+	    st->perm_reason, sizeof(st->perm_reason), "%s", why ? why : "");
 	clm_tool_permission_respond(st->agent, req, st->perm_decision);
 }
 
@@ -3561,6 +3566,176 @@ test_responses_reasoning_text(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* A pre_tool hook for the tests: answers now, or parks the gate. */
+struct hook_state {
+	enum clm_gate_verdict verdict;
+	const char *reason;
+	const char *args;
+	int park; /* keep the gate for a later answer */
+	int calls;
+	char seen[64]; /* tool name the hook saw */
+	struct clm_tool_gate *gate;
+	char turn_log[256]; /* turn hook events */
+};
+
+static void
+test_pre_tool(struct clm_tool_gate *gate, void *user)
+{
+	struct hook_state *hs = user;
+
+	hs->calls++;
+	(void)snprintf(hs->seen, sizeof(hs->seen), "%s",
+	    clm_tool_gate_name(gate) ? clm_tool_gate_name(gate) : "");
+	if (hs->park) {
+		hs->gate = gate;
+		return;
+	}
+	clm_tool_gate_respond(gate, hs->verdict, hs->reason, hs->args);
+}
+
+static void
+test_turn(const struct clm_turn_info *info, void *user)
+{
+	struct hook_state *hs = user;
+	size_t n = strlen(hs->turn_log);
+
+	(void)snprintf(hs->turn_log + n, sizeof(hs->turn_log) - n, "%s[%s]",
+	    info->event == CLM_TURN_START ? "start" : "end",
+	    info->event == CLM_TURN_START ? info->prompt
+	                                  : (info->text ? info->text : "-"));
+}
+
+/* Completes with its own arguments, to show what reached it. */
+static void
+echo_args(struct clm_tool_invocation *inv, void *user)
+{
+	(void)user;
+	clm_tool_complete(inv, clm_tool_invocation_args(inv));
+}
+
+static void
+hook_timer_cb(uv_timer_t *t)
+{
+	struct hook_state *hs = t->data;
+
+	if (hs->gate != NULL) {
+		struct clm_tool_gate *g = hs->gate;
+
+		hs->gate = NULL;
+		clm_tool_gate_respond(g, hs->verdict, hs->reason, hs->args);
+	}
+	uv_close((uv_handle_t *)t, NULL);
+}
+
+/* Run one echo_args call (NO_PROMPT) through a pre_tool hook. */
+static void
+run_hooked_call(uv_loop_t *loop, struct tstate *st, struct hook_state *hs,
+    struct canned_server **srvp)
+{
+	struct clm_tool_def def = {0};
+
+	st->loop = loop;
+	st->perm_decision = CLM_PERM_DENY_ONCE;
+	*srvp = canned_start(loop);
+	canned_tool_call(*srvp, "echo_args", "{\"x\":1}");
+	canned_reply(*srvp, final_reply);
+	st->agent = make_agent(st, canned_port(*srvp));
+	def.name = "echo_args";
+	def.description = "echo";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = echo_args;
+	def.flags = CLM_TOOL_NO_PROMPT;
+	CHECK(clm_tool_add(st->agent, &def) == 0, "hook: add tool");
+	CHECK(clm_agent_add_pre_tool_hook(st->agent, test_pre_tool, hs) == 0,
+	    "hook: add pre_tool hook");
+	CHECK(clm_agent_add_turn_hook(st->agent, test_turn, hs) == 0,
+	    "hook: add turn hook");
+	CHECK(clm_agent_submit(st->agent, "go") == 0, "hook: submit");
+}
+
+static void
+test_pre_tool_hooks(uv_loop_t *loop)
+{
+	struct canned_server *srv;
+
+	/* Deny: the tool never runs, the model sees why. */
+	{
+		struct tstate st = {0};
+		struct hook_state hs = {
+		    .verdict = CLM_GATE_DENY, .reason = "not today"};
+
+		run_hooked_call(loop, &st, &hs, &srv);
+		run_until_done(&st);
+		CHECK(hs.calls == 1 && strcmp(hs.seen, "echo_args") == 0,
+		    "hook: saw the call once");
+		CHECK(st.last_outcome == CLM_TOOL_FAILED &&
+		        strstr(st.tool_content, "not today") != NULL,
+		    "hook: deny fails the call with the reason");
+		CHECK(strcmp(hs.turn_log, "start[go]end[done]") == 0,
+		    "hook: turn hooks see the prompt and the final text");
+		teardown(&st, srv);
+	}
+
+	/* A later answer that rewrites the arguments. */
+	{
+		struct tstate st = {0};
+		struct hook_state hs = {
+		    .verdict = CLM_GATE_PASS, .args = "{\"x\":2}", .park = 1};
+		uv_timer_t t;
+
+		run_hooked_call(loop, &st, &hs, &srv);
+		while (hs.gate == NULL && !st.turn_done)
+			uv_run(loop, UV_RUN_ONCE);
+		uv_timer_init(loop, &t);
+		t.data = &hs;
+		uv_timer_start(&t, hook_timer_cb, 5, 0);
+		run_until_done(&st);
+		CHECK(st.last_outcome == CLM_TOOL_OK &&
+		        strcmp(st.tool_content, "{\"x\":2}") == 0,
+		    "hook: a late pass runs the call with the new arguments");
+		CHECK(st.perm_prompts == 0, "hook: pass keeps NO_PROMPT");
+		teardown(&st, srv);
+	}
+
+	/* Ask: the permission gate runs even for a NO_PROMPT tool. */
+	{
+		struct tstate st = {0};
+		struct hook_state hs = {
+		    .verdict = CLM_GATE_ASK, .reason = "looks risky"};
+
+		run_hooked_call(loop, &st, &hs, &srv);
+		run_until_done(&st);
+		CHECK(st.perm_prompts == 1 &&
+		        strcmp(st.perm_reason, "looks risky") == 0,
+		    "hook: ask reaches the permission gate with its reason");
+		CHECK(st.last_outcome == CLM_TOOL_FAILED,
+		    "hook: the denied prompt fails the call");
+		teardown(&st, srv);
+	}
+
+	/* Cancel while the hook holds the gate; its late answer is harmless. */
+	{
+		struct tstate st = {0};
+		struct hook_state hs = {.verdict = CLM_GATE_PASS, .park = 1};
+
+		run_hooked_call(loop, &st, &hs, &srv);
+		while (hs.gate == NULL && !st.turn_done)
+			uv_run(loop, UV_RUN_ONCE);
+		CHECK(clm_agent_cancel(st.agent) == 0, "hook: cancel");
+		run_until_done(&st);
+		CHECK(st.turn_status == -ECANCELED, "hook: turn cancelled");
+		CHECK(clm_tool_gate_respond(
+		          hs.gate, CLM_GATE_PASS, NULL, NULL) == 0,
+		    "hook: a late answer only frees the gate");
+		CHECK(clm_agent_remove_pre_tool_hook(
+		          st.agent, test_pre_tool, &hs) == 0 &&
+		        clm_agent_remove_pre_tool_hook(
+		            st.agent, test_pre_tool, &hs) == -ENOENT,
+		    "hook: remove finds the hook once");
+		teardown(&st, srv);
+	}
+}
+
 /*
  * Free an agent while its model request and a health probe are still in
  * flight, as an /agent switch can. Neither reply may reach the freed agent.
@@ -3668,6 +3843,7 @@ test_agent_suite(void *arg)
 	test_perm_remember(&loop);
 	test_perm_no_handler(&loop);
 	test_hidden_tool(&loop);
+	test_pre_tool_hooks(&loop);
 	uv_loop_close(&loop);
 
 	return 0;

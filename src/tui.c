@@ -951,6 +951,10 @@ show_next_perm(struct ui *u)
 	ui_push(u, ST_PERM, "\nallow tool ");
 	ui_push(u, ST_PERM, name ? name : "?");
 	push_perm_args(u, args, schema);
+	if (clm_permission_req_reason(req) != NULL) {
+		ui_push(u, ST_PERM, "\nhook: ");
+		ui_push(u, ST_PERM, clm_permission_req_reason(req));
+	}
 	ui_push(u, ST_PERM,
 	    "\n(y) once  (n) deny  (a) always  (d) never  [esc = "
 	    "deny+cancel]\n");
@@ -965,7 +969,7 @@ cb_permission(const struct clm_permission_req *req, void *user)
 	/* Nobody is watching this one: answer for them. The status bar says
 	 * the session is running this way, so it cannot pass for a normal
 	 * one. */
-	if (u->allow_all) {
+	if (u->allow_all && clm_permission_req_reason(req) == NULL) {
 		clm_tool_permission_respond(u->agent, req, CLM_PERM_ALLOW_ONCE);
 		return;
 	}

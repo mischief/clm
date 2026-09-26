@@ -335,7 +335,11 @@ static void
 cb_permission(const struct clm_permission_req *req, void *user)
 {
 	struct cli_state *state = (struct cli_state *)user;
-	clm_tool_permission_respond(state->agent, req, CLM_PERM_ALLOW_ONCE);
+
+	/* Nobody is here to answer a hook that asked for a person. */
+	clm_tool_permission_respond(state->agent, req,
+	    clm_permission_req_reason(req) != NULL ? CLM_PERM_DENY_ONCE
+	                                           : CLM_PERM_ALLOW_ONCE);
 }
 
 static const struct clm_callbacks cli_callbacks = {

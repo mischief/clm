@@ -38,7 +38,13 @@ struct clm_permission_req {
 	struct clm_tool_invocation *inv;
 };
 
+/* A call waiting on one pre_tool hook. inv is NULL once the call is gone. */
+struct clm_tool_gate {
+	struct clm_tool_invocation *inv;
+};
+
 static void run_invoke(struct clm_tool_invocation *inv);
+static void gate_run(struct clm_tool_invocation *inv);
 
 struct clm_tool_invocation {
 	struct clm_tool_batch *batch;
@@ -64,6 +70,13 @@ struct clm_tool_invocation {
 	 * invocation. */
 	bool awaiting_perm;
 	struct clm_permission_req perm_req;
+
+	/* pre_tool hooks: the one waiting now, the next to run, and whether
+	 * one asked for the permission gate, and why. */
+	struct clm_tool_gate *gate;
+	size_t gate_next;
+	bool force_ask;
+	char *ask_reason;
 
 	/* Rate-limit deferral: when the token bucket is empty, the invocation
 	 *	 * is parked on rl_timer and dispatched when tokens refill. */
@@ -415,6 +428,72 @@ clm_permission_req_args(const struct clm_permission_req *req)
 }
 
 const char *
+clm_permission_req_reason(const struct clm_permission_req *req)
+{
+	if (req == NULL || req->inv == NULL || !req->inv->force_ask)
+		return NULL;
+	return req->inv->ask_reason != NULL ? req->inv->ask_reason
+	                                    : "a hook asked for approval";
+}
+
+const char *
+clm_tool_gate_name(const struct clm_tool_gate *gate)
+{
+	return gate != NULL && gate->inv != NULL ? gate->inv->name : NULL;
+}
+
+const char *
+clm_tool_gate_args(const struct clm_tool_gate *gate)
+{
+	return gate != NULL && gate->inv != NULL ? gate->inv->args : NULL;
+}
+
+int
+clm_tool_gate_respond(struct clm_tool_gate *gate, enum clm_gate_verdict verdict,
+    const char *reason, const char *args)
+{
+	struct clm_tool_invocation *inv;
+
+	ASSERT_RETURN(gate != NULL, -EINVAL);
+	inv = gate->inv;
+	free(gate);
+	if (inv == NULL)
+		return 0; /* the call was cancelled or its agent freed */
+	inv->gate = NULL;
+
+	if (args != NULL) {
+		char *copy = strdup(args);
+
+		if (copy == NULL) {
+			clm_tool_fail(inv, "out of memory");
+			return -ENOMEM;
+		}
+		free(inv->args);
+		inv->args = copy;
+	}
+
+	switch (verdict) {
+	case CLM_GATE_DENY: {
+		char msg[512];
+
+		(void)snprintf(msg, sizeof(msg), "denied by hook: %s",
+		    reason != NULL ? reason : "no reason given");
+		clm_tool_fail(inv, msg);
+		return 0;
+	}
+	case CLM_GATE_ASK:
+		inv->force_ask = true;
+		if (reason != NULL && inv->ask_reason == NULL)
+			inv->ask_reason = strdup(reason);
+		break;
+	case CLM_GATE_PASS:
+		break;
+	}
+	gate_run(inv);
+	return 0;
+}
+
+const char *
 clm_permission_req_schema(const struct clm_permission_req *req)
 {
 	if (req == NULL || req->inv == NULL || req->inv->def == NULL)
@@ -504,6 +583,7 @@ batch_really_free(struct clm_tool_batch *batch)
 		free(batch->inv[i].id);
 		free(batch->inv[i].name);
 		free(batch->inv[i].args);
+		free(batch->inv[i].ask_reason);
 	}
 	free(batch->inv);
 	free(batch);
@@ -962,7 +1042,7 @@ run_invoke(struct clm_tool_invocation *inv)
 
 	/* Hold the batch open: a tool may complete inside invoke and still
 	 * read inv afterwards. Dispatch holds it too, but an answer from a
-	 * permission prompt can come later. */
+	 * hook or a permission prompt can come later. */
 	batch->pending++;
 	inv->def->invoke(inv, inv->def->user);
 	if (batch->pending > 0)
@@ -1004,18 +1084,26 @@ dispatch_one(struct clm_tool_invocation *inv)
 		clm_tool_fail(inv, "unknown tool");
 		return;
 	}
+	gate_run(inv);
+}
 
-	/* Permission gate (default-deny). NO_PROMPT tools run unconditionally.
-	 *	 * A remembered _ALWAYS decision short-circuits. Otherwise, if a
-	 * handler
-	 *	 * is registered, park the invocation and ask; with no handler,
-	 * deny --
-	 *	 * a frontend that wires no policy runs no gated tools. */
-	if (t->flags & CLM_TOOL_NO_PROMPT) {
+/*
+ * Permission gate (default-deny). NO_PROMPT tools run unconditionally, and a
+ * remembered _ALWAYS decision short-circuits, unless a hook asked. Otherwise,
+ * if a handler is registered, park the invocation and ask; with no handler,
+ * deny: a frontend that wires no policy runs no gated tools.
+ */
+static void
+permission_gate(struct clm_tool_invocation *inv)
+{
+	struct clm_agent *agent = inv->batch->agent;
+	const struct clm_tool *t = inv->def;
+
+	if ((t->flags & CLM_TOOL_NO_PROMPT) && !inv->force_ask) {
 		run_invoke(inv);
 		return;
 	}
-	if (t->remembered) {
+	if (t->remembered && (!t->remember_allow || !inv->force_ask)) {
 		if (t->remember_allow)
 			run_invoke(inv);
 		else
@@ -1029,6 +1117,27 @@ dispatch_one(struct clm_tool_invocation *inv)
 	inv->awaiting_perm = true;
 	inv->perm_req.inv = inv;
 	agent->cb_on_permission(&inv->perm_req, agent->cb_user);
+}
+
+/* Run the next pre_tool hook, or the permission gate after the last one. */
+static void
+gate_run(struct clm_tool_invocation *inv)
+{
+	struct clm_agent *agent = inv->batch->agent;
+	struct clm_pre_tool_entry e;
+
+	if (inv->gate_next >= agent->n_pre_tool_hooks) {
+		permission_gate(inv);
+		return;
+	}
+	e = agent->pre_tool_hooks[inv->gate_next++];
+	inv->gate = calloc(1, sizeof(*inv->gate));
+	if (inv->gate == NULL) {
+		clm_tool_fail(inv, "out of memory");
+		return;
+	}
+	inv->gate->inv = inv;
+	e.fn(inv->gate, e.user);
 }
 
 int
@@ -1193,6 +1302,15 @@ clm_tools_cancel(struct clm_agent *agent)
 		 * is what retires it. */
 		if (inv->awaiting_perm)
 			continue;
+		/* A hook may take a long time; its late answer finds the gate
+		 * empty and only frees it. */
+		if (inv->gate != NULL) {
+			inv->gate->inv = NULL;
+			inv->gate = NULL;
+			inv_finalize(inv, (const uint8_t *)msg, sizeof(msg) - 1,
+			    CLM_TOOL_FAILED, NULL);
+			continue;
+		}
 		if (inv->cancel != NULL)
 			inv->cancel(inv, inv->cancel_user);
 	}
@@ -1236,6 +1354,16 @@ clm_tools_detach(struct clm_agent *agent)
 			 * and retire the invocation now. */
 			agent->host->timer_cancel(inv->rl_timer);
 			inv->rl_timer = NULL;
+			inv->completed = true;
+			if (batch->pending > 0)
+				batch->pending--;
+			continue;
+		}
+
+		if (inv->gate != NULL) {
+			/* Waiting on a hook. Its late answer frees the gate. */
+			inv->gate->inv = NULL;
+			inv->gate = NULL;
 			inv->completed = true;
 			if (batch->pending > 0)
 				batch->pending--;
