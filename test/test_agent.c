@@ -3560,6 +3560,40 @@ test_responses_reasoning_text(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/*
+ * Free an agent while its model request and a health probe are still in
+ * flight, as an /agent switch can. Neither reply may reach the freed agent.
+ */
+static void
+test_agent_free_during_request(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+	canned_reply(srv, "{\"object\":\"list\",\"data\":[]}");
+	canned_reply(srv,
+	    "{\"choices\":[{\"message\":{\"role\":\"assistant\","
+	    "\"content\":\"never seen\"},\"finish_reason\":\"stop\"}]}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_check_connection(st.agent) == 0, "health probe");
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "submit");
+	clm_agent_free(st.agent);
+	st.agent = NULL;
+	CHECK(!st.turn_done, "a freed agent reports no turn");
+
+	/* Let the probe finish against the server, then drain. */
+	for (int i = 0; i < 50; i++)
+		uv_run(loop, UV_RUN_NOWAIT);
+	canned_stop(srv);
+	uv_run(loop, UV_RUN_DEFAULT);
+	clm_host_uv_free(st.host);
+	uv_run(loop, UV_RUN_DEFAULT);
+}
+
 static int
 test_agent_suite(void *arg)
 {
@@ -3591,6 +3625,7 @@ test_agent_suite(void *arg)
 	test_agent_free_during_monitor(&loop);
 	test_shell_exec(&loop);
 	test_agent_free_during_shell_exec(&loop);
+	test_agent_free_during_request(&loop);
 	test_shell_exec_cancel_backgrounded_job(&loop);
 	test_shell_exec_sigterm_ignored(&loop);
 	test_shell_exec_cancel_reaps_child(&loop);

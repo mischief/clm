@@ -215,6 +215,49 @@ agent_http_post(struct clm_agent *agent, const char *url, const char *body,
 	    agent->host->ctx, &req, success, error, data, user, out);
 }
 
+/*
+ * A metadata probe the agent does not wait on. clm_agent_free detaches the
+ * ones still in flight, so a probe that lands later finds agent NULL.
+ */
+struct agent_probe {
+	struct clm_agent *agent;
+	LIST_ENTRY(agent_probe) entries;
+};
+
+/* GET url with a probe as the callbacks' user. */
+static int
+agent_probe_get(struct clm_agent *agent, const char *url,
+    clm_http_success_cb success, clm_http_error_cb error)
+{
+	struct agent_probe *p = calloc(1, sizeof(*p));
+	int r;
+
+	if (p == NULL)
+		return -ENOMEM;
+	p->agent = agent;
+	LIST_INSERT_HEAD(&agent->probes, p, entries);
+	r = agent_http_post(agent, url, NULL, success, error, NULL, p, NULL);
+	if (r < 0) {
+		/* No callback runs on a failed start. */
+		LIST_REMOVE(p, entries);
+		free(p);
+	}
+	return r;
+}
+
+/* Free a finished probe. Returns its agent, or NULL if the agent is gone. */
+static struct clm_agent *
+agent_probe_done(void *user)
+{
+	struct agent_probe *p = user;
+	struct clm_agent *agent = p->agent;
+
+	if (agent != NULL)
+		LIST_REMOVE(p, entries);
+	free(p);
+	return agent;
+}
+
 int
 clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
     const struct clm_callbacks *cb, void *user, struct clm_agent **out)
@@ -239,6 +282,7 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 	agent->backend = cfg->backend;
 	agent->max_iterations = cfg->max_iterations; /* 0 = unlimited */
 	clm_history_init(&agent->history);
+	LIST_INIT(&agent->probes);
 	TAILQ_INIT(&agent->tools);
 
 	if (cb != NULL) {
@@ -344,11 +388,59 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 	return 0;
 }
 
+struct clm_async_turn;
+static void clm_async_turn_free(struct clm_async_turn *turn);
+
+/* Stop calling back into the embedder. */
+static void
+agent_mute_callbacks(struct clm_agent *agent)
+{
+	agent->cb_on_assistant_text = NULL;
+	agent->cb_on_reasoning = NULL;
+	agent->cb_on_tool_begin = NULL;
+	agent->cb_on_permission = NULL;
+	agent->cb_on_tool_result = NULL;
+	agent->cb_on_tool_batch = NULL;
+	agent->cb_on_finish_reason = NULL;
+	agent->cb_on_usage = NULL;
+	agent->cb_on_connection = NULL;
+	agent->cb_on_state = NULL;
+	agent->cb_on_turn_done = NULL;
+	agent->cb_on_notice = NULL;
+	agent->cb_on_message = NULL;
+}
+
 void
 clm_agent_free(struct clm_agent *agent)
 {
+	struct agent_probe *p;
+
 	if (agent == NULL)
 		return;
+
+	/*
+	 * Settle the model request first. Its error callback runs inside
+	 * http_cancel and still uses the agent, so mute the embedder and
+	 * drop queued input that would start a new turn.
+	 */
+	agent_mute_callbacks(agent);
+	free(agent->pending_notify);
+	agent->pending_notify = NULL;
+	if (agent->inflight != NULL) {
+		struct clm_http_call *call = agent->inflight;
+
+		agent->inflight = NULL;
+		agent->cancelling = true;
+		agent->host->http_cancel(call);
+	}
+	if (agent->rl_parked_turn != NULL) {
+		clm_async_turn_free(agent->rl_parked_turn);
+		agent->rl_parked_turn = NULL;
+	}
+	while ((p = LIST_FIRST(&agent->probes)) != NULL) {
+		LIST_REMOVE(p, entries);
+		p->agent = NULL;
+	}
 
 	clm_tools_detach(agent);
 	clm_llm_free(agent->llm);
@@ -360,7 +452,6 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->models_url);
 	free(agent->props_url);
 	free(agent->compact_body);
-	free(agent->pending_notify);
 	clm_tools_free_registry(&agent->tools);
 	clm_ratelimit_free(agent->tool_rl);
 	if (agent->llm_rl_timer != NULL && agent->host != NULL &&
@@ -2100,9 +2191,13 @@ agent_learn_vision(struct clm_agent *agent, int vision)
 static void
 props_success_cb(struct clm_http_response *resp, void *user)
 {
-	struct clm_agent *agent = user;
+	struct clm_agent *agent = agent_probe_done(user);
 	int64_t ctx = 0;
 
+	if (agent == NULL) {
+		clm_http_response_free(resp);
+		return;
+	}
 	if (resp != NULL && resp->status_code >= 200 &&
 	    resp->status_code < 300 && resp->body != NULL &&
 	    clm_parse_props(resp->body, &ctx) == 0) {
@@ -2121,9 +2216,12 @@ props_success_cb(struct clm_http_response *resp, void *user)
 static void
 props_error_cb(int error_code, const char *error_msg, void *user)
 {
+	struct clm_agent *agent = agent_probe_done(user);
+
 	(void)error_code;
 	(void)error_msg;
-	clm_agent_fetch_model_meta(user);
+	if (agent != NULL)
+		clm_agent_fetch_model_meta(agent);
 }
 
 /* The model document is the last source; a failure leaves ctx unknown. */
@@ -2132,7 +2230,7 @@ model_meta_error_cb(int error_code, const char *error_msg, void *user)
 {
 	(void)error_code;
 	(void)error_msg;
-	(void)user;
+	(void)agent_probe_done(user);
 }
 
 /*
@@ -2148,18 +2246,18 @@ clm_agent_fetch_props(struct clm_agent *agent)
 	if (agent->backend != CLM_BACKEND_GENERIC &&
 	    agent->backend != CLM_BACKEND_LLAMACPP)
 		return;
-	(void)agent_http_post(agent, agent->props_url, NULL, props_success_cb,
-	    props_error_cb, NULL, agent, NULL);
+	(void)agent_probe_get(
+	    agent, agent->props_url, props_success_cb, props_error_cb);
 }
 
 /* GET <models_url>/<model> completed: take the window the backend reports. */
 static void
 model_meta_success_cb(struct clm_http_response *resp, void *user)
 {
-	struct clm_agent *agent = user;
+	struct clm_agent *agent = agent_probe_done(user);
 	int64_t ctx = 0;
 
-	if (resp != NULL && resp->status_code >= 200 &&
+	if (agent != NULL && resp != NULL && resp->status_code >= 200 &&
 	    resp->status_code < 300 && resp->body != NULL) {
 		if (clm_parse_model_ctx(resp->body, &ctx) == 0)
 			agent->ctx_max = ctx;
@@ -2184,8 +2282,8 @@ clm_agent_fetch_model_meta(struct clm_agent *agent)
 		return;
 	if (asprintf(&url, "%s/%s", agent->models_url, agent->llm->model) < 0)
 		return;
-	(void)agent_http_post(agent, url, NULL, model_meta_success_cb,
-	    model_meta_error_cb, NULL, agent, NULL);
+	(void)agent_probe_get(
+	    agent, url, model_meta_success_cb, model_meta_error_cb);
 }
 
 /* Learn the context window however this backend exposes it. */
@@ -2204,9 +2302,13 @@ clm_agent_fetch_ctx_max(struct clm_agent *agent)
 static void
 health_success_cb(struct clm_http_response *resp, void *user)
 {
-	struct clm_agent *agent = user;
+	struct clm_agent *agent = agent_probe_done(user);
 	int status = resp ? resp->status_code : -1;
 
+	if (agent == NULL) {
+		clm_http_response_free(resp);
+		return;
+	}
 	/* 2xx = healthy; 4xx = server is reachable but the models endpoint is
 	 * missing or auth-gated. Either way, the server is up. */
 	if (agent->cb_on_connection) {
@@ -2249,10 +2351,10 @@ health_success_cb(struct clm_http_response *resp, void *user)
 static void
 health_error_cb(int error_code, const char *error_msg, void *user)
 {
-	struct clm_agent *agent = user;
+	struct clm_agent *agent = agent_probe_done(user);
 
 	(void)error_code;
-	if (agent->cb_on_connection)
+	if (agent != NULL && agent->cb_on_connection)
 		agent->cb_on_connection(CLM_CONN_OFFLINE,
 		    error_msg ? error_msg : "unreachable", agent->cb_user);
 }
@@ -2267,10 +2369,8 @@ clm_agent_check_connection(struct clm_agent *agent)
 		agent->cb_on_connection(
 		    CLM_CONN_CHECKING, NULL, agent->cb_user);
 
-	/* NULL body => GET. user is the agent, distinct from turn requests;
-	 * out_req is NULL so this probe is not tracked for cancellation. */
-	return agent_http_post(agent, agent->models_url, NULL,
-	    health_success_cb, health_error_cb, NULL, agent, NULL);
+	return agent_probe_get(
+	    agent, agent->models_url, health_success_cb, health_error_cb);
 }
 
 struct models_list_ctx {

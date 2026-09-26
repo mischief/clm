@@ -65,6 +65,9 @@ struct clm_agent {
 	 */
 	char *resp_chain_id;
 	size_t resp_chain_sent;
+
+	/* Metadata probes in flight (props, model document, health). */
+	LIST_HEAD(, agent_probe) probes;
 	struct clm_tool_list tools;
 	size_t tool_count; /* live (non-removed) tools; diagnostics only */
 	size_t max_iterations;
