@@ -325,26 +325,36 @@ test_tool_call(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* Write an 8x8 PNG header to a fresh temp file; path is a mkstemp
+ * template. Returns true on success. */
+static bool
+write_test_png(char *path)
+{
+	static const uint8_t png[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a,
+	    '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R', 0, 0, 0, 8, 0, 0, 0, 8, 8, 2,
+	    0, 0, 0};
+	int fd = mkstemp(path);
+	bool ok;
+
+	if (fd < 0)
+		return false;
+	ok = write(fd, png, sizeof(png)) == (ssize_t)sizeof(png);
+	close(fd);
+	return ok;
+}
+
 /* (b1) read_image: the image rides with the tool result as an image_url
  * data URL; a file that is not an image fails with a reason. */
 static void
 test_read_image(uv_loop_t *loop)
 {
-	static const uint8_t png[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a,
-	    '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R', 0, 0, 0, 8, 0, 0, 0, 8, 8, 2,
-	    0, 0, 0};
 	char img[] = "/tmp/clm-test-image-XXXXXX";
 	char args[128];
 	struct tstate st = {0};
 	struct canned_server *srv;
 	const char *req;
-	int fd;
 
-	fd = mkstemp(img);
-	CHECK(fd >= 0 && write(fd, png, sizeof(png)) == (ssize_t)sizeof(png),
-	    "read_image: temp png");
-	if (fd >= 0)
-		close(fd);
+	CHECK(write_test_png(img), "read_image: temp png");
 
 	st.loop = loop;
 	srv = canned_start(loop);
@@ -429,21 +439,13 @@ request_json(const char *req)
 static void
 test_read_image_responses(uv_loop_t *loop)
 {
-	static const uint8_t png[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a,
-	    '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R', 0, 0, 0, 8, 0, 0, 0, 8, 8, 2,
-	    0, 0, 0};
 	char img[] = "/tmp/clm-test-image-XXXXXX";
 	char reply[512];
 	struct tstate st = {0};
 	struct canned_server *srv;
 	cJSON *body, *input, *item, *out = NULL;
-	int fd;
 
-	fd = mkstemp(img);
-	CHECK(fd >= 0 && write(fd, png, sizeof(png)) == (ssize_t)sizeof(png),
-	    "read_image responses: temp png");
-	if (fd >= 0)
-		close(fd);
+	CHECK(write_test_png(img), "read_image responses: temp png");
 
 	st.loop = loop;
 	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
@@ -482,6 +484,60 @@ test_read_image_responses(uv_loop_t *loop)
 	                  cJSON_GetArrayItem(out, 1), "image_url")),
 	          "data:image/png;base64,", 22) == 0,
 	    "read_image responses: input_image with the data URL");
+	cJSON_Delete(body);
+	teardown(&st, srv);
+	unlink(img);
+}
+
+/* (b1a) read_image over Anthropic: the tool_result block holds a text
+ * block and an image block with a base64 source. */
+static void
+test_read_image_anthropic(uv_loop_t *loop)
+{
+	char img[] = "/tmp/clm-test-image-XXXXXX";
+	char reply[512];
+	struct tstate st = {0};
+	struct canned_server *srv;
+	cJSON *body, *msgs, *last, *tr, *parts, *src;
+
+	CHECK(write_test_png(img), "read_image anthropic: temp png");
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	srv = canned_start(loop);
+	(void)snprintf(reply, sizeof(reply),
+	    "{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":"
+	    "\"read_image\",\"input\":{\"path\":\"%s\"}}],\"stop_reason\":"
+	    "\"tool_use\",\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}",
+	    img);
+	canned_reply(srv, reply);
+	canned_reply(srv,
+	    "{\"id\":\"m2\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"text\",\"text\":\"done\"}],"
+	    "\"stop_reason\":\"end_turn\","
+	    "\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}");
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+	run_until_done(&st);
+
+	body = request_json(canned_last_request(srv));
+	msgs = cJSON_GetObjectItemCaseSensitive(body, "messages");
+	last = cJSON_GetArrayItem(msgs, cJSON_GetArraySize(msgs) - 1);
+	tr = cJSON_GetArrayItem(
+	    cJSON_GetObjectItemCaseSensitive(last, "content"), 0);
+	parts = cJSON_GetObjectItemCaseSensitive(tr, "content");
+	src = cJSON_GetObjectItemCaseSensitive(
+	    cJSON_GetArrayItem(parts, 1), "source");
+	CHECK(cJSON_IsArray(parts) && cJSON_GetArraySize(parts) == 2,
+	    "read_image anthropic: tool_result holds text and image");
+	CHECK(src != NULL &&
+	        strcmp(cJSON_GetStringValue(
+	                   cJSON_GetObjectItemCaseSensitive(src, "media_type")),
+	            "image/png") == 0 &&
+	        strncmp(cJSON_GetStringValue(
+	                    cJSON_GetObjectItemCaseSensitive(src, "data")),
+	            "iVBORw0KGgo", 11) == 0,
+	    "read_image anthropic: base64 image source");
 	cJSON_Delete(body);
 	teardown(&st, srv);
 	unlink(img);
@@ -3278,6 +3334,7 @@ test_agent_suite(void *arg)
 	test_tool_call(&loop);
 	test_read_image(&loop);
 	test_read_image_responses(&loop);
+	test_read_image_anthropic(&loop);
 	test_binary_tool_output(&loop);
 	test_bg_exec(&loop);
 	test_agent_free_during_bg_exec(&loop);

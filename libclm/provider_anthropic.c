@@ -152,6 +152,110 @@ is_tool_result_carrier(const cJSON *msg)
  * there was no system message. Returns a new array on success, or NULL on
  * OOM/malformed input (in which case *system_out is left untouched).
  */
+/*
+ * An image_url part in Anthropic's shape. A data URL splits into media
+ * type and base64 data; any other URL becomes a url source.
+ */
+static cJSON *
+image_block(const char *url)
+{
+	cJSON *block = cJSON_CreateObject();
+	cJSON *src = cJSON_CreateObject();
+	const char *comma = strchr(url, ',');
+	const char *semi = strstr(url, ";base64,");
+
+	if (block == NULL || src == NULL)
+		goto fail;
+	if (strncmp(url, "data:", 5) == 0 && semi != NULL &&
+	    comma == semi + 7) {
+		char *mt = strndup(url + 5, (size_t)(semi - (url + 5)));
+
+		if (mt == NULL ||
+		    cJSON_AddStringToObject(src, "type", "base64") == NULL ||
+		    cJSON_AddStringToObject(src, "media_type", mt) == NULL ||
+		    cJSON_AddStringToObject(src, "data", comma + 1) == NULL) {
+			free(mt);
+			goto fail;
+		}
+		free(mt);
+	} else if (cJSON_AddStringToObject(src, "type", "url") == NULL ||
+	    cJSON_AddStringToObject(src, "url", url) == NULL) {
+		goto fail;
+	}
+	if (cJSON_AddStringToObject(block, "type", "image") == NULL)
+		goto fail;
+	cJSON_AddItemToObject(block, "source", src);
+	return block;
+fail:
+	cJSON_Delete(src);
+	cJSON_Delete(block);
+	return NULL;
+}
+
+/* Append a chat-completions parts array to blocks as text and image
+ * blocks. Empty text is dropped: the API rejects empty text blocks. */
+static int
+append_part_blocks(cJSON *blocks, const cJSON *parts)
+{
+	const cJSON *p;
+
+	cJSON_ArrayForEach(p, parts)
+	{
+		const char *type = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(p, "type"));
+		cJSON *b = NULL;
+
+		if (type != NULL && strcmp(type, "text") == 0) {
+			const char *t = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(p, "text"));
+
+			if (t == NULL || t[0] == '\0')
+				continue;
+			b = cJSON_CreateObject();
+			if (b == NULL ||
+			    cJSON_AddStringToObject(b, "type", "text") ==
+			        NULL ||
+			    cJSON_AddStringToObject(b, "text", t) == NULL) {
+				cJSON_Delete(b);
+				return -1;
+			}
+		} else if (type != NULL && strcmp(type, "image_url") == 0) {
+			const char *url = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(
+			        cJSON_GetObjectItemCaseSensitive(
+			            p, "image_url"),
+			        "url"));
+
+			if (url == NULL)
+				continue;
+			b = image_block(url);
+			if (b == NULL)
+				return -1;
+		} else {
+			continue;
+		}
+		cJSON_AddItemToArray(blocks, b);
+	}
+	return 0;
+}
+
+/* content as Anthropic content: a string stays one, parts become blocks. */
+static cJSON *
+convert_content(const cJSON *content)
+{
+	cJSON *blocks;
+
+	if (!cJSON_IsArray(content))
+		return cJSON_CreateString(
+		    cJSON_IsString(content) ? content->valuestring : "");
+	blocks = cJSON_CreateArray();
+	if (blocks != NULL && append_part_blocks(blocks, content) < 0) {
+		cJSON_Delete(blocks);
+		return NULL;
+	}
+	return blocks;
+}
+
 static cJSON *
 convert_messages(cJSON *messages, char **system_out)
 {
@@ -226,8 +330,8 @@ convert_messages(cJSON *messages, char **system_out)
 			cJSON_AddItemToObject(block, "tool_use_id",
 			    cJSON_CreateString(
 			        cJSON_IsString(jtid) ? jtid->valuestring : ""));
-			cJSON_AddItemToObject(block, "content",
-			    cJSON_CreateString(content ? content : ""));
+			cJSON_AddItemToObject(
+			    block, "content", convert_content(jcontent));
 			continue;
 		}
 
@@ -241,6 +345,18 @@ convert_messages(cJSON *messages, char **system_out)
 			cJSON *carrier = cJSON_GetArrayItem(
 			    out, cJSON_GetArraySize(out) - 1);
 
+			if (carrier != NULL &&
+			    is_tool_result_carrier(carrier) &&
+			    cJSON_IsArray(jcontent)) {
+				if (append_part_blocks(
+				        cJSON_GetObjectItemCaseSensitive(
+				            carrier, "content"),
+				        jcontent) < 0) {
+					cJSON_Delete(out);
+					return NULL;
+				}
+				continue;
+			}
 			if (carrier != NULL &&
 			    is_tool_result_carrier(carrier)) {
 				cJSON *carr_content =
@@ -314,7 +430,7 @@ convert_messages(cJSON *messages, char **system_out)
 				}
 			} else {
 				cJSON_AddItemToObject(out_msg, "content",
-				    cJSON_CreateString(content ? content : ""));
+				    convert_content(jcontent));
 			}
 
 			cJSON_AddItemToArray(out, out_msg);
