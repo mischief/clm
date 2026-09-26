@@ -6,12 +6,161 @@
  * messages/tools arrays -- and every response-side hook is NULL ("already
  * canonical, no translation needed").
  */
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <cjson/cJSON.h>
 
 #include "clm/provider.h"
 #include "banned.h"
+
+/* The name of the tool call id belongs to, from the assistant message
+ * before index i that requested it. */
+static const char *
+tool_name_for(cJSON *messages, int i, const char *id)
+{
+	for (i--; i >= 0; i--) {
+		cJSON *calls = cJSON_GetObjectItemCaseSensitive(
+		    cJSON_GetArrayItem(messages, i), "tool_calls");
+		cJSON *c;
+
+		cJSON_ArrayForEach(c, calls)
+		{
+			const char *cid = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(c, "id"));
+
+			if (cid != NULL && id != NULL && strcmp(cid, id) == 0)
+				return cJSON_GetStringValue(
+				    cJSON_GetObjectItemCaseSensitive(
+				        cJSON_GetObjectItemCaseSensitive(
+				            c, "function"),
+				        "name"));
+		}
+	}
+	return NULL;
+}
+
+/*
+ * Move the images of one tool message into carrier, labelled, and leave
+ * the message its text as a plain string.
+ */
+static int
+split_tool_images(cJSON *messages, int i, cJSON *msg, cJSON *carrier)
+{
+	cJSON *content = cJSON_GetObjectItemCaseSensitive(msg, "content");
+	const char *id = cJSON_GetStringValue(
+	    cJSON_GetObjectItemCaseSensitive(msg, "tool_call_id"));
+	const char *name = tool_name_for(messages, i, id);
+	char *text = NULL;
+	size_t tlen = 0;
+	cJSON *part, *next;
+
+	for (part = content->child; part != NULL; part = next) {
+		const char *type = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(part, "type"));
+
+		next = part->next;
+		if (type != NULL && strcmp(type, "text") == 0) {
+			const char *t = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(part, "text"));
+			size_t n = t != NULL ? strlen(t) : 0;
+			char *nt = realloc(text, tlen + n + 2);
+
+			if (nt == NULL) {
+				free(text);
+				return -1;
+			}
+			text = nt;
+			if (tlen > 0)
+				text[tlen++] = '\n';
+			memcpy(text + tlen, t != NULL ? t : "", n);
+			tlen += n;
+			text[tlen] = '\0';
+		} else if (type != NULL && strcmp(type, "image_url") == 0) {
+			char label[256];
+			cJSON *lp = cJSON_CreateObject();
+
+			(void)snprintf(label, sizeof(label),
+			    "image from tool %s (call %s):",
+			    name != NULL ? name : "?", id != NULL ? id : "?");
+			if (lp == NULL ||
+			    cJSON_AddStringToObject(lp, "type", "text") ==
+			        NULL ||
+			    cJSON_AddStringToObject(lp, "text", label) ==
+			        NULL) {
+				cJSON_Delete(lp);
+				free(text);
+				return -1;
+			}
+			cJSON_AddItemToArray(carrier, lp);
+			cJSON_AddItemToArray(
+			    carrier, cJSON_DetachItemViaPointer(content, part));
+		}
+	}
+	cJSON_DeleteItemFromObjectCaseSensitive(msg, "content");
+	cJSON_AddItemToObject(msg, "content",
+	    cJSON_CreateString(text != NULL ? text : "(image result)"));
+	free(text);
+	return 0;
+}
+
+/*
+ * Chat completions reads only text from a tool message: OpenAI accepts
+ * image parts there and silently ignores them. So the images of a batch of
+ * tool results go in one user message right after the batch; a tool
+ * message must follow its assistant tool_calls directly, so the carrier
+ * never goes between them.
+ */
+static int
+carry_tool_images(cJSON *messages)
+{
+	cJSON *carrier = NULL;
+	int n = cJSON_GetArraySize(messages);
+
+	for (int i = 0; i <= n; i++) {
+		cJSON *msg = i < n ? cJSON_GetArrayItem(messages, i) : NULL;
+		const char *role = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(msg, "role"));
+		bool tool = role != NULL && strcmp(role, "tool") == 0;
+
+		if (tool &&
+		    cJSON_IsArray(
+		        cJSON_GetObjectItemCaseSensitive(msg, "content"))) {
+			if (carrier == NULL &&
+			    (carrier = cJSON_CreateArray()) == NULL)
+				return -1;
+			if (split_tool_images(messages, i, msg, carrier) < 0) {
+				cJSON_Delete(carrier);
+				return -1;
+			}
+			continue;
+		}
+		if (tool || carrier == NULL)
+			continue;
+		/* The batch ended before message i: insert the carrier. */
+		{
+			cJSON *user = cJSON_CreateObject();
+
+			if (user == NULL ||
+			    cJSON_AddStringToObject(user, "role", "user") ==
+			        NULL) {
+				cJSON_Delete(user);
+				cJSON_Delete(carrier);
+				return -1;
+			}
+			cJSON_AddItemToObject(user, "content", carrier);
+			carrier = NULL;
+			if (i < n)
+				cJSON_InsertItemInArray(messages, i, user);
+			else
+				cJSON_AddItemToArray(messages, user);
+			n++;
+			i++;
+		}
+	}
+	return 0;
+}
 
 static cJSON *
 openai_build_request(
@@ -30,6 +179,9 @@ openai_build_request(
 
 	cJSON_AddItemToObject(req, "messages", messages);
 	messages = NULL; /* req owns it now, even if a later step fails */
+	if (carry_tool_images(
+	        cJSON_GetObjectItemCaseSensitive(req, "messages")) < 0)
+		goto fail;
 
 	jstream = cJSON_CreateBool(stream);
 	if (jstream == NULL)

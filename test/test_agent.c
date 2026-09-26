@@ -364,6 +364,37 @@ test_read_image(uv_loop_t *loop)
 	        strstr(req, "\"url\":\"data:image/png;base64,iVBORw0KGgo") !=
 	            NULL,
 	    "read_image: image sent as a data URL");
+	{
+		/* Chat completions: text in the tool message, the image in a
+		 * user message after it. */
+		const char *jb = req != NULL ? strstr(req, "\r\n\r\n") : NULL;
+		cJSON *body = jb != NULL ? cJSON_Parse(jb + 4) : NULL;
+		cJSON *msgs =
+		    cJSON_GetObjectItemCaseSensitive(body, "messages");
+		int n = cJSON_GetArraySize(msgs);
+		cJSON *tool = cJSON_GetArrayItem(msgs, n - 2);
+		cJSON *user = cJSON_GetArrayItem(msgs, n - 1);
+		cJSON *parts =
+		    cJSON_GetObjectItemCaseSensitive(user, "content");
+		const char *label =
+		    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
+		        cJSON_GetArrayItem(parts, 0), "text"));
+
+		CHECK(cJSON_IsString(
+		          cJSON_GetObjectItemCaseSensitive(tool, "content")),
+		    "read_image: tool message keeps text only");
+		const char *urole = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(user, "role"));
+
+		CHECK(urole != NULL && strcmp(urole, "user") == 0 &&
+		        cJSON_GetArraySize(parts) == 2,
+		    "read_image: carrier user message after the batch");
+		CHECK(label != NULL &&
+		        strcmp(label,
+		            "image from tool read_image (call c1):") == 0,
+		    "read_image: carrier labels the image");
+		cJSON_Delete(body);
+	}
 	teardown(&st, srv);
 
 	memset(&st, 0, sizeof(st));
