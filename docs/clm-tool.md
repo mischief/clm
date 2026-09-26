@@ -450,8 +450,8 @@ The turn hooks are callbacks with a 2 s deadline, and cannot yield.
 
 The source tree has an example in
 *plugins/opt/jev\_guard.lua*.
-It asks a Jev System One server to rate each shell command as run,
-ask or deny.
+It asks a Jev System One server to rate each tool call as run,
+ask or deny, with the last request of the user as context.
 
 ## The json module
 

@@ -1,50 +1,77 @@
 -- plugins/opt/jev_guard.lua: ask a Jev System One server (lgml's
--- /v1/systemone) about each shell command before it runs.
--- Config under tools.jev_guard: url, model (use the chat model, so the
--- server does not swap models), tools (default shell_exec, bg_exec),
--- on_error ("pass", the default, or "deny").
+-- /v1/systemone) about each tool call before it runs, with the user's
+-- request for context. Config under tools.jev_guard: url, model (use the
+-- chat model, so the server does not swap models), skip (tools that only
+-- read), on_error ("ask", the default, "pass" or "deny").
 
 local cfg = clm.config or {}
 local url = cfg.url or "http://127.0.0.1:8091/v1/systemone"
-local on_error = cfg.on_error or "pass"
+local on_error = cfg.on_error or "ask"
 
-local guarded = {}
-for _, t in ipairs(cfg.tools or { "shell_exec", "bg_exec" }) do
-    guarded[t] = true
+local skip = {}
+for _, t in ipairs(cfg.skip or { "read_file", "read_image", "list_dir",
+    "monitor_list", "agents_list", "tasks", "reverse_string" }) do
+    skip[t] = true
 end
 
 local question = {
     type = "choice",
     instructions = cfg.instructions or
-        "An AI agent wants to run this shell command on a user's machine. " ..
-        "Decide how to handle it.",
+        "An AI agent wants to make this tool call on a user's machine. " ..
+        "The request field is what the user last asked for. " ..
+        "Decide how to handle the call.",
     criteria = {
-        run = "Safe: it reads, builds, tests or changes only files " ..
-            "the task is about.",
-        ask = "Risky: it deletes or overwrites data, changes the system, " ..
-            "or sends data off the machine. A person should confirm.",
+        run = "Safe: it reads, builds or tests; it changes only files the " ..
+            "request is about; or it sends a message the request calls for.",
+        ask = "Risky: it deletes or overwrites data the request does not " ..
+            "name, changes the system outside the project, or sends " ..
+            "private data off the machine. A person should confirm.",
         deny = "Harmful: it destroys data or the system, sends keys or " ..
             "secrets off the machine, or hides its tracks.",
     },
 }
 
+local request = ""
+local seen, nseen = {}, 0 -- verdicts by call; the plugin heap is small
+
+clm.on("turn_start", function(t)
+    request = (t.prompt or ""):sub(1, 2000)
+end)
+
 local function failed(why)
+    why = "guard unavailable: " .. why
     if on_error == "deny" then
-        return { deny = "guard unavailable: " .. why }
+        return { deny = why }
+    elseif on_error == "ask" then
+        return { ask = why }
+    end
+    return nil
+end
+
+local function verdict(choice, p)
+    local why = string.format("guard: %s (%.2f)", choice, p or 0)
+    if choice == "deny" then
+        return { deny = why }
+    elseif choice == "ask" then
+        return { ask = why }
     end
     return nil
 end
 
 clm.on("pre_tool", function(call)
-    if not guarded[call.name] then
+    if skip[call.name] then
         return nil
     end
-    local body = json.encode({
-        state = { tool = call.name, args = call.args },
+    local state = { request = request, tool = call.name, args = call.args }
+    local key = request .. "\0" .. call.name .. "\0" .. json.encode(call.args)
+    if seen[key] then
+        return verdict(seen[key].choice, seen[key].p)
+    end
+    local r, err = http.post(url, json.encode({
+        state = state,
         model = cfg.model,
         questions = { action = question },
-    })
-    local r, err = http.post(url, body)
+    }))
     if r == nil then
         return failed(err or "no response")
     end
@@ -56,12 +83,11 @@ clm.on("pre_tool", function(call)
     if a == nil or a.choice == nil then
         return failed("no answer")
     end
-    local why = string.format("guard: %s (%.2f)", a.choice,
-        a.probabilities and a.probabilities[a.choice] or 0)
-    if a.choice == "deny" then
-        return { deny = why }
-    elseif a.choice == "ask" then
-        return { ask = why }
+    local p = a.probabilities and a.probabilities[a.choice]
+    if nseen >= 256 then
+        seen, nseen = {}, 0
     end
-    return nil
+    seen[key] = { choice = a.choice, p = p }
+    nseen = nseen + 1
+    return verdict(a.choice, p)
 end)

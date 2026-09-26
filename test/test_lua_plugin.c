@@ -1330,6 +1330,97 @@ test_hook_plugin(void)
 	unlink(logpath);
 }
 
+/* One turn that calls guard_echo, with the guard's server reply queued. */
+static void
+guard_turn(uv_loop_t *loop, struct canned_server *srv, struct clm_agent *agent,
+    struct exec_state *st, const char *prompt, int status, const char *verdict)
+{
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"tool_calls\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"\","
+	    "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+	    "\"function\":{\"name\":\"guard_echo\","
+	    "\"arguments\":\"{\\\"cmd\\\":\\\"x\\\"}\"}}]}}]}");
+	if (verdict != NULL)
+		canned_reply_status(srv, status, verdict);
+	canned_reply(srv,
+	    "{\"choices\":[{\"finish_reason\":\"stop\","
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"done\"}}]}");
+	st->done = 0;
+	CHECK(clm_agent_submit(agent, prompt) == 0, "guard submit");
+	while (!st->done)
+		uv_run(loop, UV_RUN_ONCE);
+}
+
+static void
+test_jev_guard(void)
+{
+	uv_loop_t loop;
+	struct canned_server *srv;
+	struct clm_host *uv_host = NULL;
+	struct exec_state st = {0};
+	struct clm_agent *agent = NULL;
+	struct clm_lua_env *env = NULL;
+	struct clm_callbacks callbacks = {
+	    .on_tool_result = exec_on_tool_result,
+	    .on_turn_done = exec_on_turn_done,
+	};
+	struct clm_cfg cfg = {
+	    .api_key = "test",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .max_iterations = 2,
+	};
+	char url[128], tcfg[256];
+	size_t n;
+
+	CHECK(uv_loop_init(&loop) == 0, "guard loop init");
+	srv = canned_start(&loop);
+	CHECK(srv != NULL, "guard canned server");
+	if (srv == NULL)
+		return;
+	(void)snprintf(url, sizeof(url),
+	    "http://127.0.0.1:%d/v1/chat/completions", canned_port(srv));
+	cfg.base_url = url;
+	(void)snprintf(tcfg, sizeof(tcfg),
+	    "{\"jev_guard\":{\"url\":\"http://127.0.0.1:%d/v1/systemone\"}}",
+	    canned_port(srv));
+	CHECK(clm_host_uv_new(&loop, &uv_host) == 0, "guard uv host");
+	CHECK(clm_agent_new(&cfg, uv_host, &callbacks, &st, &agent) == 0,
+	    "guard agent");
+	CHECK(clm_lua_env_new(agent, &env) == 0, "guard lua env");
+	CHECK(clm_lua_env_set_config(env, tcfg) == 0, "guard config");
+	CHECK(clm_lua_load_plugins(env, "test/plugins_guard") == 0,
+	    "guard test tool");
+	CHECK(clm_lua_load_plugin(env, "plugins", "jev_guard") == 0,
+	    "jev_guard loads");
+
+	guard_turn(&loop, srv, agent, &st, "do x", 200,
+	    "{\"answers\":{\"action\":{\"type\":\"choice\",\"choice\":"
+	    "\"deny\",\"probabilities\":{\"ask\":0.1,\"deny\":0.9,"
+	    "\"run\":0.0}}}}");
+	CHECK(strstr(st.content, "guard: deny (0.90)") != NULL,
+	    "jev_guard denies what the server rates deny");
+
+	n = canned_request_count(srv);
+	guard_turn(&loop, srv, agent, &st, "do x", 200, NULL);
+	CHECK(strstr(st.content, "guard: deny") != NULL &&
+	        canned_request_count(srv) == n + 2,
+	    "jev_guard answers the same call from its cache");
+
+	/* A server error asks; with no one to ask, the call is denied. */
+	guard_turn(&loop, srv, agent, &st, "do y", 500, "{}");
+	CHECK(strstr(st.content, "no permission policy") != NULL,
+	    "jev_guard asks when the server fails");
+
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	clm_host_uv_free(uv_host);
+	canned_stop(srv);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(uv_loop_close(&loop) == 0, "guard loop close");
+}
+
 /* An agent's tools entry replaces the top-level entry of the same name. */
 static void
 test_tools_config_merge(void)
@@ -1386,6 +1477,7 @@ test_lua_plugin_suite(void *arg)
 	test_proc_teardown();
 	test_exec_and_opt_plugins();
 	test_hook_plugin();
+	test_jev_guard();
 	test_tools_config_merge();
 
 	return 0;
