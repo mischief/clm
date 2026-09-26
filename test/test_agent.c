@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cjson/cJSON.h>
@@ -427,6 +428,34 @@ test_read_image(uv_loop_t *loop)
 	CHECK(strstr(req, "image_url") == NULL,
 	    "read_image: no image part on failure");
 	teardown(&st, srv);
+
+	/* A FIFO is refused without waiting for a writer. */
+	{
+		char fifo[] = "/tmp/clm-test-fifo-XXXXXX";
+		char fargs[128];
+		int ffd = mkstemp(fifo);
+
+		if (ffd >= 0) {
+			close(ffd);
+			unlink(fifo);
+		}
+		CHECK(mkfifo(fifo, 0600) == 0, "read_image: mkfifo");
+		memset(&st, 0, sizeof(st));
+		st.loop = loop;
+		srv = canned_start(loop);
+		(void)snprintf(fargs, sizeof(fargs), "{\"path\":\"%s\"}", fifo);
+		canned_tool_call(srv, "read_image", fargs);
+		canned_reply(srv, final_reply);
+		st.agent = make_agent(&st, canned_port(srv));
+		CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+		run_until_done(&st);
+		req = canned_last_request(srv);
+		CHECK(st.last_outcome == CLM_TOOL_FAILED && req != NULL &&
+		        strstr(req, "not a regular file") != NULL,
+		    "read_image: a FIFO is refused, not waited on");
+		teardown(&st, srv);
+		unlink(fifo);
+	}
 	unlink(img);
 }
 

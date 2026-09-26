@@ -668,6 +668,34 @@ test_attachment_json(void)
 	clm_history_free(&h);
 }
 
+/* A superseded tool result loses its image along with its text. */
+static void
+test_supersede_drops_images(void)
+{
+	struct clm_history h;
+	struct clm_message *m, *old;
+
+	clm_history_init(&h);
+	clm_history_add_user(&h, "shoot", NULL);
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "c1", "screenshot", "{}");
+	old = clm_history_add_tool_result(
+	    &h, "c1", "screenshot", "shot 1", 6, NULL);
+	clm_message_add_attachment(old, "image/png", (const uint8_t *)"a", 1);
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "c2", "screenshot", "{}");
+	m = clm_history_add_tool_result(
+	    &h, "c2", "screenshot", "shot 2", 6, NULL);
+	clm_message_add_attachment(m, "image/png", (const uint8_t *)"b", 1);
+
+	CHECK(clm_history_supersede_tool(&h, "screenshot", "[superseded]") == 1,
+	    "supersede: one old result");
+	CHECK(old->n_attachments == 0 && old->attachments == NULL,
+	    "supersede: the old image is dropped");
+	CHECK(m->n_attachments == 1, "supersede: the new image stays");
+	clm_history_free(&h);
+}
+
 static void
 test_sha256(void)
 {
@@ -803,6 +831,7 @@ test_session_suite(void *arg)
 	test_gc(dir);
 	test_prompt_records(dir);
 	test_attachment_json();
+	test_supersede_drops_images();
 	test_sha256();
 	test_session_blobs(dir);
 	remove_dir(dir);

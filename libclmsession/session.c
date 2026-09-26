@@ -877,16 +877,9 @@ clm_session_free(struct clm_session *s)
 }
 
 /*
- * Parse one JSONL line into hist (also the fuzz entry point, see
- * session_internal.h). Unknown types and unparsable lines are skipped
- * (returns 0): the loader must survive a truncated final line and lines
- * written by a newer clm. A meta line is validated for version and, when
- * out_meta is non-NULL and still empty, handed to the caller.
- */
-/*
  * Read the images a message record names from bdir. A missing one adds a
- * note to the record's content instead, so the model is told. Returns
- * the number read into imgs (at most max).
+ * note to the record's content instead, so the model is told. imgs has
+ * room for every reference; returns the number read into it.
  */
 static size_t
 load_attachments(
@@ -932,6 +925,13 @@ load_attachments(
 	return n;
 }
 
+/*
+ * Parse one JSONL line into hist (also the fuzz entry point, see
+ * session_internal.h). Unknown types and unparsable lines are skipped
+ * (returns 0): the loader must survive a truncated final line and lines
+ * written by a newer clm. A meta line is validated for version and, when
+ * out_meta is non-NULL and still empty, handed to the caller.
+ */
 int
 session_parse_line(struct clm_history *hist, const char *line, size_t len,
     cJSON **out_meta, const char *blob_dir)
@@ -960,11 +960,20 @@ session_parse_line(struct clm_history *hist, const char *line, size_t len,
 	}
 
 	if (strcmp(type, "msg") == 0) {
-		struct clm_attachment imgs[16];
+		int na = cJSON_GetArraySize(
+		    cJSON_GetObjectItemCaseSensitive(obj, "attachments"));
+		autofree struct clm_attachment *imgs =
+		    calloc(na > 0 ? (size_t)na : 1, sizeof(*imgs));
 		struct clm_message *before = TAILQ_LAST(hist, clm_history);
-		size_t n = load_attachments(obj, blob_dir, imgs, 16);
-		int r = clm_message_from_json(hist, obj, NULL);
-		struct clm_message *m = TAILQ_LAST(hist, clm_history);
+		size_t n;
+		int r;
+		struct clm_message *m;
+
+		if (imgs == NULL)
+			return -ENOMEM;
+		n = load_attachments(obj, blob_dir, imgs, (size_t)na);
+		r = clm_message_from_json(hist, obj, NULL);
+		m = TAILQ_LAST(hist, clm_history);
 
 		for (size_t i = 0; i < n; i++) {
 			if (r == 0 && m != NULL && m != before &&

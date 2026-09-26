@@ -826,8 +826,9 @@ clm_tool_complete_image(struct clm_tool_invocation *inv, const char *text,
 		return;
 	}
 	/* Never hand an image to a model known not to take one. The note
-	 * keeps it from describing an image it never got. */
-	if (inv->batch->agent->vision < 0) {
+	 * keeps it from describing an image it never got. A detached batch
+	 * has no agent left; inv_finalize only retires it. */
+	if (!inv->batch->detached && inv->batch->agent->vision < 0) {
 		autofree char *note = NULL;
 
 		if (asprintf(&note,
@@ -1565,6 +1566,9 @@ tool_list_dir(struct clm_tool_invocation *inv, void *user)
 	clm_tool_complete(inv, out);
 }
 
+/* read_image needs a buffer as large as an image, which a microcontroller
+ * does not have, so ESP-IDF builds leave it out. */
+#ifndef ESP_PLATFORM
 /* Larger images are refused, not scaled: clm has no image decoder. The
  * Anthropic API takes about 5 MB per image. */
 #define CLM_IMAGE_MAX_BYTES (5 * 1024 * 1024)
@@ -1572,15 +1576,17 @@ tool_list_dir(struct clm_tool_invocation *inv, void *user)
 /*
  * Read at most max + 1 bytes of a regular file from one descriptor, so a
  * file that changes between the checks and the read cannot slip past the
- * cap. Returns the malloc'd bytes, or NULL with *why set.
+ * cap. O_NONBLOCK keeps open() from waiting on a FIFO before fstat can
+ * refuse it. Returns the malloc'd bytes, or NULL with *why set.
  */
 static uint8_t *
 read_image_file(const char *path, size_t max, size_t *len, const char **why)
 {
-	autoclose int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOCTTY);
+	autoclose int fd =
+	    open(path, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
 	autofree uint8_t *buf = NULL;
 	struct stat st;
-	size_t n = 0;
+	size_t n = 0, cap;
 	uint8_t *ret;
 
 	if (fd < 0) {
@@ -1591,13 +1597,28 @@ read_image_file(const char *path, size_t max, size_t *len, const char **why)
 		*why = "not a regular file";
 		return NULL;
 	}
-	buf = malloc(max + 1);
+	/* Size the buffer from the file; it grows if the file does. */
+	cap = (size_t)st.st_size < max ? (size_t)st.st_size + 1 : max + 1;
+	buf = malloc(cap);
 	if (buf == NULL) {
 		*why = "out of memory";
 		return NULL;
 	}
 	while (n < max + 1) {
-		ssize_t r = read(fd, buf + n, max + 1 - n);
+		ssize_t r;
+
+		if (n == cap) {
+			size_t ncap = cap * 2 < max + 1 ? cap * 2 : max + 1;
+			uint8_t *nb = realloc(buf, ncap);
+
+			if (nb == NULL) {
+				*why = "out of memory";
+				return NULL;
+			}
+			buf = nb;
+			cap = ncap;
+		}
+		r = read(fd, buf + n, cap - n);
 
 		if (r < 0 && errno == EINTR)
 			continue;
@@ -1666,6 +1687,7 @@ tool_read_image(struct clm_tool_invocation *inv, void *user)
 	    (len + 1023) / 1024);
 	clm_tool_complete_image(inv, msg, mt, data, len);
 }
+#endif /* ESP_PLATFORM */
 
 int
 clm_tools_register_builtins(struct clm_agent *agent)
@@ -1714,6 +1736,7 @@ clm_tools_register_builtins(struct clm_agent *agent)
 	r = clm_tool_add(agent, &read_def);
 	if (r < 0)
 		return r;
+#ifndef ESP_PLATFORM
 	const struct clm_tool_def image_def = {
 	    .name = "read_image",
 	    .description = "look at an image file (PNG, JPEG, GIF or WebP, at "
@@ -1729,12 +1752,16 @@ clm_tools_register_builtins(struct clm_agent *agent)
 	    /* read-only: safe to run unprompted */
 	    .flags = CLM_TOOL_NO_PROMPT | CLM_TOOL_VISION,
 	};
+#endif
 
 	r = clm_tool_add(agent, &write_def);
 	if (r < 0)
 		return r;
 	r = clm_tool_add(agent, &list_def);
+#ifndef ESP_PLATFORM
 	if (r < 0)
 		return r;
-	return clm_tool_add(agent, &image_def);
+	r = clm_tool_add(agent, &image_def);
+#endif
+	return r;
 }

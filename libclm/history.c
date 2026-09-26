@@ -40,17 +40,25 @@ clm_tool_call_free(struct clm_tool_call *tc)
 }
 
 static void
+drop_attachments(struct clm_message *m)
+{
+	for (size_t i = 0; i < m->n_attachments; i++) {
+		free(m->attachments[i].media_type);
+		free(m->attachments[i].data);
+	}
+	free(m->attachments);
+	m->attachments = NULL;
+	m->n_attachments = 0;
+}
+
+static void
 clm_message_free(struct clm_message *m)
 {
 	if (m) {
 		free(m->content);
 		free(m->tool_call_id);
 		free(m->tool_name);
-		for (size_t i = 0; i < m->n_attachments; i++) {
-			free(m->attachments[i].media_type);
-			free(m->attachments[i].data);
-		}
-		free(m->attachments);
+		drop_attachments(m);
 		struct clm_tool_call *tc, *tc_next;
 		for (tc = TAILQ_FIRST(&m->tool_calls); tc != NULL;
 		    tc = tc_next) {
@@ -682,6 +690,8 @@ clm_history_supersede_tool(
 		 * content_compressed flag from the content it replaces. */
 		if (message_set_content(m, stub, NULL) < 0)
 			return -ENOMEM;
+		/* A superseded screenshot must not be sent again either. */
+		drop_attachments(m);
 		stubbed++;
 	}
 
