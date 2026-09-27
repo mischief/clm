@@ -200,10 +200,80 @@ clm_message_create(enum clm_role role)
  * (content_compressed = false) if cz is NULL, content is too short,
  * compression fails, or the compressed result is not actually smaller.
  */
+/* Length of the valid UTF-8 sequence at s[0..len), or 0 if invalid. */
+static size_t
+utf8_seq(const uint8_t *s, size_t len)
+{
+	size_t need;
+
+	if (s[0] < 0x80)
+		return 1;
+	if ((s[0] & 0xE0) == 0xC0 && s[0] >= 0xC2)
+		need = 1;
+	else if ((s[0] & 0xF0) == 0xE0)
+		need = 2;
+	else if ((s[0] & 0xF8) == 0xF0 && s[0] <= 0xF4)
+		need = 3;
+	else
+		return 0;
+	if (need >= len)
+		return 0;
+	for (size_t k = 1; k <= need; k++)
+		if ((s[k] & 0xC0) != 0x80)
+			return 0;
+	/* Overlong forms, surrogates, and code points past U+10FFFF. */
+	if ((s[0] == 0xE0 && s[1] < 0xA0) || (s[0] == 0xED && s[1] > 0x9F) ||
+	    (s[0] == 0xF0 && s[1] < 0x90) || (s[0] == 0xF4 && s[1] > 0x8F))
+		return 0;
+	return need + 1;
+}
+
+/*
+ * A copy of s with each byte that is not valid UTF-8 replaced by U+FFFD,
+ * or NULL when s is valid as it is. A request with invalid UTF-8 fails at
+ * the server on every later turn, so history never holds any.
+ */
+static char *
+utf8_repair(const char *s, size_t len, size_t *out_len)
+{
+	const uint8_t *u = (const uint8_t *)s;
+	size_t i = 0, bad = 0, n;
+	char *out, *p;
+
+	while (i < len) {
+		n = utf8_seq(u + i, len - i);
+		bad += n == 0;
+		i += n == 0 ? 1 : n;
+	}
+	if (bad == 0)
+		return NULL;
+	out = malloc(len + bad * 2 + 1);
+	if (out == NULL)
+		return NULL;
+	for (i = 0, p = out; i < len;) {
+		n = utf8_seq(u + i, len - i);
+		if (n == 0) {
+			memcpy(p, "\xEF\xBF\xBD", 3);
+			p += 3;
+			i++;
+		} else {
+			memcpy(p, s + i, n);
+			p += n;
+			i += n;
+		}
+	}
+	*p = '\0';
+	*out_len = (size_t)(p - out);
+	return out;
+}
+
 static int
 message_set_content_len(struct clm_message *m, const char *content, size_t len,
     const struct clm_compressor *cz)
 {
+	autofree char *repaired = NULL;
+	size_t rlen = 0;
+
 	if (content == NULL) {
 		free(m->content);
 		m->content = NULL;
@@ -212,8 +282,16 @@ message_set_content_len(struct clm_message *m, const char *content, size_t len,
 		return 0;
 	}
 
-	if (len > UINT16_MAX)
+	if ((repaired = utf8_repair(content, len, &rlen)) != NULL) {
+		content = repaired;
+		len = rlen;
+	}
+	if (len > UINT16_MAX) {
+		/* Cut on a character boundary, not inside one. */
 		len = UINT16_MAX;
+		while (len > 0 && ((uint8_t)content[len] & 0xC0) == 0x80)
+			len--;
+	}
 
 	if (cz != NULL && cz->write != NULL && len >= cz->min_len) {
 		char *packed = NULL;

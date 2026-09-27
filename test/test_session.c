@@ -650,6 +650,34 @@ test_prompt_records(const char *dir)
 
 /* A message with an image goes out as a parts array: the text, then an
  * image_url part with a data URL. */
+/* History never holds invalid UTF-8: a cut character or a stray byte
+ * becomes U+FFFD, and good text is kept as it is. */
+static void
+test_utf8_repair(void)
+{
+	struct clm_history h;
+	const struct clm_message *m;
+	static const char cut[] = "rule \xE2\x80\n[output truncated]";
+	static const char good[] = "rule \xE2\x80\x95 ok";
+
+	clm_history_init(&h);
+	clm_history_add_tool_result(
+	    &h, "c1", "shell_exec", cut, sizeof(cut) - 1, NULL);
+	clm_history_add_user(&h, good, NULL);
+	clm_history_add_user(&h, "a\xED\xA0\x80z", NULL);
+
+	m = TAILQ_FIRST(&h);
+	CHECK(strcmp(m->content,
+	          "rule \xEF\xBF\xBD\xEF\xBF\xBD\n[output truncated]") == 0,
+	    "utf8: a cut character becomes U+FFFD");
+	m = TAILQ_NEXT(m, entries);
+	CHECK(strcmp(m->content, good) == 0, "utf8: valid text is unchanged");
+	m = TAILQ_NEXT(m, entries);
+	CHECK(strcmp(m->content, "a\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBDz") == 0,
+	    "utf8: a surrogate is replaced");
+	clm_history_free(&h);
+}
+
 static void
 test_attachment_json(void)
 {
@@ -890,6 +918,7 @@ test_session_suite(void *arg)
 	test_listing(dir);
 	test_gc(dir);
 	test_prompt_records(dir);
+	test_utf8_repair();
 	test_attachment_json();
 	test_supersede_drops_images();
 	test_decompress_error();

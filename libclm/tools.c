@@ -708,6 +708,9 @@ clamp_dup(const uint8_t *data, size_t len, size_t cap, size_t *out_len)
 	}
 
 	keep = cap > mlen ? cap - mlen : 0;
+	/* Do not split a UTF-8 sequence: back up to its first byte. */
+	while (keep > 0 && (data[keep] & 0xC0) == 0x80)
+		keep--;
 	out = malloc(keep + mlen + 1);
 	if (out == NULL)
 		return NULL;

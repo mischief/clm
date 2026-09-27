@@ -3683,6 +3683,43 @@ test_prompt_parts(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+static void
+emit_rules(struct clm_tool_invocation *inv, void *user)
+{
+	(void)user;
+	clm_tool_complete(inv,
+	    "abcde\xE2\x80\x95\xE2\x80\x95\xE2\x80\x95"
+	    "\xE2\x80\x95\xE2\x80\x95\xE2\x80\x95"
+	    "\xE2\x80\x95\xE2\x80\x95\xE2\x80\x95");
+}
+
+/* Output cut at the cap keeps whole characters. */
+static void
+test_output_cap_utf8(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	canned_tool_call(srv, "rules", "{}");
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+	def.name = "rules";
+	def.description = "print a rule";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = emit_rules;
+	def.flags = CLM_TOOL_NO_PROMPT;
+	def.output_cap = 25;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "cap: add tool");
+	CHECK(clm_agent_submit(st.agent, "go") == 0, "cap: submit");
+	run_until_done(&st);
+	CHECK(strcmp(st.tool_content, "abcde\n[output truncated]") == 0,
+	    "cap: the cut backs up to a character boundary");
+	teardown(&st, srv);
+}
+
 /* A pre_tool hook for the tests: answers now, or parks the gate. */
 struct hook_state {
 	enum clm_gate_verdict verdict;
@@ -3985,6 +4022,7 @@ test_agent_suite(void *arg)
 	test_hidden_tool(&loop);
 	test_pre_tool_hooks(&loop);
 	test_prompt_parts(&loop);
+	test_output_cap_utf8(&loop);
 	uv_loop_close(&loop);
 
 	return 0;
