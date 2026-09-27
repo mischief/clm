@@ -291,6 +291,30 @@ test_dangling_tool_call_repair(const char *dir)
 	CHECK(history_len(&h) == 3, "no extra messages added on re-run");
 	clm_history_free(&h);
 
+	/* Two batches that overlapped: the first call's result came after
+	 * the second batch and an event. It moves up next to its call. */
+	clm_history_init(&h);
+	clm_history_add_user(&h, "go", NULL);
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "call_a", "shell_exec", "{}");
+	m = clm_history_add_assistant_tool_calls(&h);
+	clm_message_add_tool_call(m, "call_b", "shell_exec", "{}");
+	clm_history_add_tool_result(&h, "call_b", "shell_exec", "b", 1, NULL);
+	clm_history_add_user(&h, "[monitor 1] line", NULL);
+	clm_history_add_tool_result(&h, "call_a", "shell_exec", "a", 1, NULL);
+
+	CHECK(clm_history_repair_dangling_tool_calls(&h) == 1,
+	    "a late result is moved, not duplicated");
+	CHECK(history_len(&h) == 6, "no message added for a late result");
+	r = TAILQ_NEXT(TAILQ_NEXT(TAILQ_FIRST(&h), entries), entries);
+	CHECK(r->role == CLM_ROLE_TOOL &&
+	        strcmp(r->tool_call_id, "call_a") == 0 &&
+	        strcmp(r->content, "a") == 0,
+	    "the late result follows its call");
+	CHECK(clm_history_repair_dangling_tool_calls(&h) == 0,
+	    "the moved history needs no more repair");
+	clm_history_free(&h);
+
 	/* Partial batch: two calls, only one has a result. Order of the
 	 * existing result relative to insertion must be preserved and the
 	 * missing one filled in right after. */

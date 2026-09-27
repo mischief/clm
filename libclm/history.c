@@ -716,6 +716,22 @@ tool_result_present(struct clm_message *first, const char *id)
 	return false;
 }
 
+/* The first tool result for id after `from`, anywhere later in history. */
+static struct clm_message *
+tool_result_later(struct clm_message *from, const char *id)
+{
+	struct clm_message *scan;
+
+	if (id == NULL)
+		return NULL;
+	for (scan = TAILQ_NEXT(from, entries); scan != NULL;
+	    scan = TAILQ_NEXT(scan, entries))
+		if (scan->role == CLM_ROLE_TOOL && scan->tool_call_id != NULL &&
+		    strcmp(scan->tool_call_id, id) == 0)
+			return scan;
+	return NULL;
+}
+
 int
 clm_history_repair_dangling_tool_calls(struct clm_history *h)
 {
@@ -746,10 +762,22 @@ clm_history_repair_dangling_tool_calls(struct clm_history *h)
 
 		TAILQ_FOREACH(tc, &m->tool_calls, entries)
 		{
-			struct clm_message *synth;
+			struct clm_message *synth, *late;
 
 			if (tool_result_present(batch_first, tc->id))
 				continue;
+
+			/* A result that arrived after other messages moves up
+			 * next to its call: providers want it there. */
+			late = tool_result_later(insert_after, tc->id);
+			if (late != NULL) {
+				TAILQ_REMOVE(h, late, entries);
+				TAILQ_INSERT_AFTER(
+				    h, insert_after, late, entries);
+				insert_after = late;
+				repaired++;
+				continue;
+			}
 
 			synth = clm_message_create(CLM_ROLE_TOOL);
 			if (synth == NULL)
