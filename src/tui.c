@@ -56,6 +56,7 @@
  * landing as a single multi-line prompt. Values are well above KEY_MAX
  * (0777) so they can't collide with any real curses key code.
  */
+#define CLM_TUI_EVENT_LINES 4 /* lines of a background event to show */
 #define UI_KEY_PASTE_START 0x1000
 #define UI_KEY_PASTE_END 0x1001
 
@@ -1008,11 +1009,87 @@ cb_notice(const char *text, void *user)
  * message becomes a prompt record, kept for reference: the prologue is
  * rebuilt from config on every start and never replayed.
  */
+/* Remember a prompt the transcript shows; the oldest goes when full. */
+static void
+echo_note(struct ui *u, const char *text)
+{
+	char *copy = strdup(text);
+
+	if (copy == NULL)
+		return;
+	if (u->n_echoed == sizeof(u->echoed) / sizeof(u->echoed[0])) {
+		free(u->echoed[0]);
+		memmove(u->echoed, u->echoed + 1,
+		    (u->n_echoed - 1) * sizeof(u->echoed[0]));
+		u->n_echoed--;
+	}
+	u->echoed[u->n_echoed++] = copy;
+}
+
+/* True, and forgets it, if the transcript already shows this text. */
+static bool
+echo_take(struct ui *u, const char *text)
+{
+	for (size_t i = 0; i < u->n_echoed; i++) {
+		if (strcmp(u->echoed[i], text) != 0)
+			continue;
+		free(u->echoed[i]);
+		memmove(u->echoed + i, u->echoed + i + 1,
+		    (u->n_echoed - i - 1) * sizeof(u->echoed[0]));
+		u->n_echoed--;
+		return true;
+	}
+	return false;
+}
+
+/*
+ * Show a user message nobody typed here: an irc event, a monitor line, a
+ * finished background job. Long ones show their first lines.
+ */
+static void
+show_event(struct ui *u, const char *text)
+{
+	const char *p = text;
+	int lines = 0;
+
+	while (*p != '\0' && lines < CLM_TUI_EVENT_LINES) {
+		const char *nl = strchr(p, '\n');
+
+		p = nl != NULL ? nl + 1 : p + strlen(p);
+		lines++;
+	}
+	ui_push(u, ST_META, "\nevent> ");
+	if (*p == '\0') {
+		ui_push(u, ST_META, text);
+	} else {
+		char more[48];
+		int rest = 0;
+
+		for (const char *q = p; *q != '\0'; q++)
+			rest += *q == '\n';
+		(void)snprintf(more, sizeof(more), "[+%d lines]", rest + 1);
+		char *head = strndup(text, (size_t)(p - text));
+
+		if (head != NULL)
+			ui_push(u, ST_META, head);
+		free(head);
+		ui_push(u, ST_META, more);
+	}
+	ui_push(u, ST_META, "\n");
+	u->dirty = true;
+}
+
 static void
 cb_message(const struct clm_message *msg, void *user)
 {
 	struct ui *u = user;
 	int r;
+
+	if (msg->role == CLM_ROLE_USER && msg->content != NULL &&
+	    strncmp(msg->content, "[context update]", 16) != 0 &&
+	    strncmp(msg->content, "[message from agent ", 20) != 0 &&
+	    !echo_take(u, msg->content))
+		show_event(u, msg->content);
 
 	if (u->session == NULL)
 		return;
@@ -2217,6 +2294,7 @@ do_submit(struct ui *u, const char *prompt, bool echo)
 		ui_push(u, ST_USER, "\nyou> ");
 		ui_push(u, ST_USER, prompt);
 		ui_push(u, ST_USER, "\n");
+		echo_note(u, prompt);
 	}
 	r = clm_agent_submit(u->agent, prompt);
 	if (r < 0) {
@@ -2288,6 +2366,7 @@ drain_steering_one(struct ui *u)
 	ui_push(u, ST_USER, "\nyou> ");
 	ui_push(u, ST_USER, prompt);
 	ui_push(u, ST_USER, "\n");
+	echo_note(u, prompt);
 
 	/*
 	 * clm_agent_notify(), not clm_agent_submit(): two of the three
@@ -4334,6 +4413,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	for (size_t i = 0; i < u->steering_nqueue; i++)
 		free(u->steering_queue[i]);
 	free(u->steering_queue);
+	for (size_t i = 0; i < u->n_echoed; i++)
+		free(u->echoed[i]);
 	for (size_t i = 0; i < u->nhist; i++)
 		free(u->hist[i]);
 	free(u->hist);

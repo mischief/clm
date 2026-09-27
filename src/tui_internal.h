@@ -213,6 +213,11 @@ struct ui {
 	char **steering_queue;
 	size_t steering_nqueue, steering_cap;
 
+	/* Prompts the transcript already shows as "you>", so cb_message
+	 * does not show them again as events. */
+	char *echoed[8];
+	size_t n_echoed;
+
 	/* --forever: NULL normally; when set, this fixed prompt is
 	 * auto-resubmitted every time a turn completes and nothing else is
 	 * queued, so the agent keeps going without a human re-prompting it. */
