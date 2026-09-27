@@ -2191,6 +2191,21 @@ test_responses_chain(uv_loop_t *loop)
 	CHECK(req != NULL && strstr(req, "secondturn") != NULL,
 	    "chain: the follow-up carries the new turn");
 
+	/* A chain the server finds a tool result missing from is dropped,
+	 * and the turn is sent again in full. */
+	canned_reply_status(srv, 400,
+	    "{\"error\":{\"message\":\"No tool output found for function "
+	    "call call_x.\",\"type\":\"invalid_request_error\"}}");
+	canned_reply(srv, reply2);
+	CHECK(clm_agent_submit(st.agent, "thirdturn") == 0, "submit third");
+	run_until_done(&st);
+	st.turn_done = 0;
+	req = canned_last_request(srv);
+	CHECK(st.turn_status == 0, "chain: the resent turn succeeds");
+	CHECK(req != NULL && strstr(req, "previous_response_id") == NULL &&
+	        strstr(req, "openingturn") != NULL,
+	    "chain: a missing tool output resends the whole conversation");
+
 	/* Compaction rewrites history, so the chain must be abandoned. */
 	canned_reply(srv,
 	    "{\"id\":\"resp_3\",\"status\":\"completed\",\"output\":"

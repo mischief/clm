@@ -1916,12 +1916,14 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 
 		/*
 		 * The stored response is gone (expired, or another process
-		 * ended it). Nothing is lost: clm still holds the whole
-		 * conversation, so drop the chain and send it again.
+		 * ended it), or the server's copy of the chain is missing a
+		 * tool result that clm holds. Nothing is lost: clm still holds
+		 * the whole conversation, so drop the chain and send it again.
 		 */
 		if (agent->resp_chain_id != NULL && resp != NULL &&
 		    resp->body != NULL &&
-		    strstr(resp->body, "previous_response") != NULL) {
+		    (strstr(resp->body, "previous_response") != NULL ||
+		        strstr(resp->body, "No tool output found") != NULL)) {
 			clm_agent_chain_reset(agent);
 			clm_http_response_free(resp);
 			clm_async_turn_free(turn);
