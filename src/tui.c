@@ -79,7 +79,8 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 	/* Coalesce consecutive same-style pushes into one span. This keeps the
 	 * span count small under streaming (many tiny chunks) and, crucially,
 	 * rejoins a multibyte char that was split across two stream chunks. */
-	if (u->nsegs > 0 && u->segs[u->nsegs - 1].style == style) {
+	if (u->nsegs > 0 && u->segs[u->nsegs - 1].style == style &&
+	    style != ST_EVENT) {
 		char *old = u->segs[u->nsegs - 1].text;
 		size_t oldlen = strlen(old);
 		size_t addlen = strlen(text);
@@ -470,7 +471,8 @@ cb_tool_result(const char *name, const char *content,
  * the collapsed-older-clusters aggregate (push_collapsed_summary). Returns
  * false (line untouched) if every count is zero. */
 static bool
-format_tool_tally(char *line, size_t cap, const int cnt[4], const char *suffix)
+format_tool_tally(
+    char *line, size_t cap, const int cnt[CLM_TALLY_N], const char *suffix)
 {
 	size_t n;
 	int parts = 0;
@@ -481,14 +483,19 @@ format_tool_tally(char *line, size_t cap, const int cnt[4], const char *suffix)
 	    {"read 1 file", "files"},
 	    {"wrote 1 file", "files"},
 	    {"called 1 tool", "tools"},
+	    {"received 1 event", "events"},
 	};
-	static const char *verb[] = {"ran", "read", "wrote", "called"};
+	static const char *verb[] = {
+	    "ran", "read", "wrote", "called", "received"};
+	int sum = 0;
 
-	if (cnt[0] + cnt[1] + cnt[2] + cnt[3] == 0)
+	for (size_t i = 0; i < CLM_TALLY_N; i++)
+		sum += cnt[i];
+	if (sum == 0)
 		return false;
 
 	n = (size_t)snprintf(line, cap, "  -- ");
-	for (size_t i = 0; i < 4; i++) {
+	for (size_t i = 0; i < CLM_TALLY_N; i++) {
 		if (cnt[i] == 0)
 			continue;
 		if (parts++ > 0 && n < cap - 4)
@@ -510,7 +517,7 @@ format_tool_tally(char *line, size_t cap, const int cnt[4], const char *suffix)
  * later, no-longer-latest cluster can still be folded into a combined
  * aggregate once a newer one takes its place (see rebuild_render). */
 static void
-push_batch_counts(struct ui *u, const int cnt[4])
+push_batch_counts(struct ui *u, const int cnt[CLM_TALLY_N])
 {
 	char line[128];
 
@@ -518,24 +525,22 @@ push_batch_counts(struct ui *u, const int cnt[4])
 		return;
 	ui_push(u, ST_BATCH, line);
 	if (u->nsegs > 0 && u->segs[u->nsegs - 1].style == ST_BATCH) {
-		u->segs[u->nsegs - 1].cnt[0] = cnt[0];
-		u->segs[u->nsegs - 1].cnt[1] = cnt[1];
-		u->segs[u->nsegs - 1].cnt[2] = cnt[2];
-		u->segs[u->nsegs - 1].cnt[3] = cnt[3];
+		memcpy(u->segs[u->nsegs - 1].cnt, cnt,
+		    sizeof(u->segs[u->nsegs - 1].cnt));
 	}
 }
 
 static void
 push_batch_summary(struct ui *u)
 {
-	int cnt[4] = {u->n_cmd, u->n_read, u->n_write, u->n_other};
+	int cnt[CLM_TALLY_N] = {u->n_cmd, u->n_read, u->n_write, u->n_other};
 
 	push_batch_counts(u, cnt);
 }
 
 /* Which of the four tally slots a tool name belongs to. */
 static void
-tally_tool(int cnt[4], const char *name)
+tally_tool(int cnt[CLM_TALLY_N], const char *name)
 {
 	if (name == NULL)
 		cnt[3]++;
@@ -1042,41 +1047,12 @@ echo_take(struct ui *u, const char *text)
 	return false;
 }
 
-/*
- * Show a user message nobody typed here: an irc event, a monitor line, a
- * finished background job. Long ones show their first lines.
- */
+/* Show a user message nobody typed here: an irc event, a monitor line, a
+ * finished background job. rebuild_render collapses the body. */
 static void
 show_event(struct ui *u, const char *text)
 {
-	const char *p = text;
-	int lines = 0;
-
-	while (*p != '\0' && lines < CLM_TUI_EVENT_LINES) {
-		const char *nl = strchr(p, '\n');
-
-		p = nl != NULL ? nl + 1 : p + strlen(p);
-		lines++;
-	}
-	ui_push(u, ST_META, "\nevent> ");
-	if (*p == '\0') {
-		ui_push(u, ST_META, text);
-	} else {
-		char more[48];
-		int rest = 0;
-
-		for (const char *q = p; *q != '\0'; q++)
-			rest += *q == '\n';
-		(void)snprintf(more, sizeof(more), "[+%d lines]", rest + 1);
-		char *head = strndup(text, (size_t)(p - text));
-
-		if (head != NULL)
-			ui_push(u, ST_META, head);
-		free(head);
-		ui_push(u, ST_META, more);
-	}
-	ui_push(u, ST_META, "\n");
-	u->dirty = true;
+	ui_push(u, ST_EVENT, text);
 }
 
 static void
@@ -1240,6 +1216,7 @@ seg_attr(struct ui *u, enum ui_style style)
 	case ST_ASSIST:
 		return A_NORMAL;
 	case ST_TOOL_OUT:
+	case ST_EVENT:
 	case ST_META:
 	case ST_BATCH:
 		return A_DIM;
@@ -1801,12 +1778,39 @@ push_tool_output(struct ui *u, const char *text, bool is_latest)
 	rseg_push(u, seg_attr(u, ST_TOOL_OUT), hint, strlen(hint));
 }
 
+/* Emit an event body: the latest shows its first lines, older ones their
+ * first line, each with a hint when there is more. ^O shows all. */
+static void
+push_event(struct ui *u, const char *text, bool is_latest)
+{
+	int keep = is_latest ? CLM_TUI_EVENT_LINES : 1;
+	size_t len = strlen(text), cut = 0;
+	int total = count_lines(text, len), seen = 0;
+	char hint[64];
+
+	rseg_push(u, seg_attr(u, ST_META), "\nevent> ", 8);
+	if (u->expand_output || total <= keep) {
+		rseg_push(u, seg_attr(u, ST_EVENT), text, len);
+	} else {
+		while (cut < len && seen < keep) {
+			if (text[cut] == '\n')
+				seen++;
+			cut++;
+		}
+		rseg_push(u, seg_attr(u, ST_EVENT), text, cut);
+		snprintf(hint, sizeof(hint), "  ... (+%d lines, ^O to expand)",
+		    total - keep);
+		rseg_push(u, seg_attr(u, ST_EVENT), hint, strlen(hint));
+	}
+	rseg_push(u, seg_attr(u, ST_META), "\n", 1);
+}
+
 /* Render one combined "-- ran N commands, read N files, ..." line summarizing
  * every tool-call cluster older than the most recent one, in place of their
  * individual "executing ..."/output/tally lines. ^O (u->expand_output)
  * bypasses this in rebuild_render, so this is only ever reached collapsed. */
 static void
-push_collapsed_summary(struct ui *u, const int cnt[4])
+push_collapsed_summary(struct ui *u, const int cnt[CLM_TALLY_N])
 {
 	char line[160];
 
@@ -1814,13 +1818,29 @@ push_collapsed_summary(struct ui *u, const int cnt[4])
 		rseg_push(u, seg_attr(u, ST_META), line, strlen(line));
 }
 
+/* True if the event at i led to tool calls within [i, end]: only those fold
+ * into the tally, so an event answered in words stays in view. */
+static bool
+event_starts_tools(const struct ui *u, size_t i, size_t end)
+{
+	for (size_t j = i + 1; j <= end && j < u->nsegs; j++) {
+		enum ui_style st = u->segs[j].style;
+
+		if (st == ST_TOOL)
+			return true;
+		if (st != ST_EVENT && st != ST_REASON && st != ST_META)
+			return false;
+	}
+	return false;
+}
+
 /* Resolve the source span list into the rendered run cache for width w. */
 static void
 rebuild_render(struct ui *u, int w)
 {
-	size_t last_tool_out = (size_t)-1;
+	size_t last_tool_out = (size_t)-1, last_event = (size_t)-1;
 	size_t last_batch = (size_t)-1, collapse_end = (size_t)-1;
-	int agg[4] = {0, 0, 0, 0};
+	int agg[CLM_TALLY_N] = {0};
 	bool aggregating = false;
 
 	for (size_t i = 0; i < u->nrsegs; i++) {
@@ -1835,6 +1855,12 @@ rebuild_render(struct ui *u, int w)
 	for (size_t i = u->nsegs; i > 0; i--) {
 		if (u->segs[i - 1].style == ST_TOOL_OUT) {
 			last_tool_out = i - 1;
+			break;
+		}
+	}
+	for (size_t i = u->nsegs; i > 0; i--) {
+		if (u->segs[i - 1].style == ST_EVENT) {
+			last_event = i - 1;
 			break;
 		}
 	}
@@ -1878,19 +1904,20 @@ rebuild_render(struct ui *u, int w)
 		 * ordering stays correct. */
 		if (collapse_end != (size_t)-1 && i <= collapse_end &&
 		    (g->style == ST_TOOL || g->style == ST_TOOL_OUT ||
-		        g->style == ST_BATCH)) {
-			if (g->style == ST_BATCH) {
-				agg[0] += g->cnt[0];
-				agg[1] += g->cnt[1];
-				agg[2] += g->cnt[2];
-				agg[3] += g->cnt[3];
-			}
+		        g->style == ST_BATCH ||
+		        (g->style == ST_EVENT &&
+		            event_starts_tools(u, i, collapse_end)))) {
+			if (g->style == ST_BATCH)
+				for (size_t k = 0; k < CLM_TALLY_N; k++)
+					agg[k] += g->cnt[k];
+			else if (g->style == ST_EVENT)
+				agg[4]++;
 			aggregating = true;
 			continue;
 		}
 		if (aggregating) {
 			push_collapsed_summary(u, agg);
-			agg[0] = agg[1] = agg[2] = agg[3] = 0;
+			memset(agg, 0, sizeof(agg));
 			aggregating = false;
 		}
 
@@ -1901,6 +1928,8 @@ rebuild_render(struct ui *u, int w)
 			    u->color ? COLOR_PAIR(6) : A_DIM, true);
 		else if (g->style == ST_TOOL_OUT)
 			push_tool_output(u, g->text, i == last_tool_out);
+		else if (g->style == ST_EVENT)
+			push_event(u, g->text, i == last_event);
 		else
 			rseg_push_ref(u, seg_attr(u, g->style), g->text);
 	}
@@ -4029,7 +4058,7 @@ static void
 replay_transcript(struct ui *u, const struct clm_history *h)
 {
 	const struct clm_message *m;
-	int cnt[4] = {0, 0, 0, 0};
+	int cnt[CLM_TALLY_N] = {0};
 
 	TAILQ_FOREACH(m, h, entries)
 	{
@@ -4039,7 +4068,7 @@ replay_transcript(struct ui *u, const struct clm_history *h)
 		 * a live one does. */
 		if (m->role != CLM_ROLE_TOOL) {
 			push_batch_counts(u, cnt);
-			cnt[0] = cnt[1] = cnt[2] = cnt[3] = 0;
+			memset(cnt, 0, sizeof(cnt));
 		}
 		switch (m->role) {
 		case CLM_ROLE_SYSTEM:

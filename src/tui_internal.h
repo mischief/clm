@@ -25,6 +25,9 @@ struct clm_lua_cfg;
 struct clm_mcp_client;
 
 /* Style buckets, mapped to curses attributes in seg_attr() (tui.c). */
+/* Tally slots: commands, files read, files written, other tools, events. */
+#define CLM_TALLY_N 5
+
 enum ui_style {
 	ST_NORMAL,
 	ST_USER,     /* the user's prompt echo */
@@ -34,6 +37,7 @@ enum ui_style {
 	ST_REASON,   /* dim "thinking" channel */
 	ST_TOOL,     /* tool invocation summary line */
 	ST_TOOL_OUT, /* tool output body (collapsible) */
+	ST_EVENT,    /* background event body (collapsible) */
 	ST_ERROR,    /* failures */
 	ST_TIMEOUT,  /* timed-out tool */
 	ST_META,     /* dim meta notes */
@@ -52,7 +56,7 @@ struct seg {
 	 * (not just the rendered text) so several older ST_BATCH segments
 	 * can be summed into one combined aggregate line at render time (see
 	 * rebuild_render/push_collapsed_summary in tui.c). */
-	int cnt[4];
+	int cnt[CLM_TALLY_N];
 };
 
 /* One run of rendered text with a resolved curses attribute, ready to draw. */
