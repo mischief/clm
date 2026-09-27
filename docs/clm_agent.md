@@ -24,6 +24,7 @@ CLM\_AGENT(3) - Library Functions Manual
 **clm\_agent\_add\_pre\_tool\_hook**,
 **clm\_agent\_remove\_pre\_tool\_hook**,
 **clm\_agent\_pre\_tool\_hook\_count**,
+**clm\_agent\_set\_prompt\_part**,
 **clm\_agent\_add\_turn\_hook**,
 **clm\_agent\_remove\_turn\_hook**,
 **clm\_tool\_gate\_name**,
@@ -121,6 +122,11 @@ CLM\_AGENT(3) - Library Functions Manual
 
 *size\_t*  
 **clm\_agent\_pre\_tool\_hook\_count**(*const struct clm\_agent \*agent*);
+
+*int*  
+**clm\_agent\_set\_prompt\_part**(*struct clm\_agent \*agent*,
+*const char \*key*,
+*const char \*text*);
 
 *int*  
 **clm\_agent\_add\_turn\_hook**(*struct clm\_agent \*agent*,
@@ -415,6 +421,18 @@ and the server, not clm, rejects a level its model does not accept.
 returns the effort in force, or
 `NULL`,
 borrowed from the agent.
+
+**clm\_agent\_set\_prompt\_part**()
+sets the system prompt part named
+*key*,
+or removes it when
+*text*
+is
+`NULL`.
+Each request carries the parts after the system prompt, in key order.
+They are not in the history, so compaction keeps them.
+Each change starts a new prompt prefix, so they suit state that rarely
+changes.
 
 **clm\_agent\_get\_history**()
 returns the agent's live history, borrowed and valid until the next turn

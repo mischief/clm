@@ -31,3 +31,7 @@ clm.on("turn_end", function(t)
     clm.write_file(clm.config.log,
         f .. "end:" .. t.status .. ":" .. (t.text or "-") .. "\n")
 end)
+
+clm.prompt_set("hook", "HOOK PART")
+clm.prompt_set("gone", "GONE PART")
+clm.prompt_set("gone", nil)

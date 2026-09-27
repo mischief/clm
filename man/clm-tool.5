@@ -337,6 +337,17 @@ Seconds since the epoch for a local time table like the one
 returns.
 Fields out of range carry over, as in
 .Xr mktime 3 .
+.It Fn clm.prompt_set key text
+Set a part of the system prompt, or remove it when
+.Va text
+is
+.Dv nil .
+Parts follow the system prompt in key order, and compaction keeps
+them.
+Each change starts a new prompt prefix, which the server's prompt
+cache has not seen, so use parts for state that rarely changes, such as
+the nick an agent has on IRC.
+A plugin's parts go away when it unloads.
 .It Fn clm.on event fn
 Call
 .Va fn

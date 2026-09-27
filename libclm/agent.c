@@ -283,6 +283,93 @@ clm_agent_remove_pre_tool_hook(
 	return -ENOENT;
 }
 
+int
+clm_agent_set_prompt_part(
+    struct clm_agent *agent, const char *key, const char *text)
+{
+	struct clm_prompt_part *parts;
+	size_t i, n;
+	char *copy = NULL;
+
+	ASSERT_RETURN(agent != NULL && key != NULL, -EINVAL);
+	parts = agent->prompt_parts;
+	n = agent->n_prompt_parts;
+	for (i = 0; i < n && strcmp(parts[i].key, key) < 0; i++)
+		;
+	if (text != NULL && (copy = strdup(text)) == NULL)
+		return -ENOMEM;
+	if (i < n && strcmp(parts[i].key, key) == 0) {
+		if (copy != NULL && strcmp(parts[i].text, copy) == 0) {
+			free(copy);
+			return 0;
+		}
+		free(parts[i].text);
+		if (copy != NULL) {
+			parts[i].text = copy;
+		} else {
+			free(parts[i].key);
+			memmove(parts + i, parts + i + 1,
+			    (n - i - 1) * sizeof(*parts));
+			agent->n_prompt_parts--;
+		}
+		agent->prompt_parts_changed = true;
+		return 0;
+	}
+	if (copy == NULL)
+		return 0;
+	parts = realloc(parts, (n + 1) * sizeof(*parts));
+	if (parts == NULL) {
+		free(copy);
+		return -ENOMEM;
+	}
+	agent->prompt_parts = parts;
+	{
+		char *k = strdup(key);
+
+		if (k == NULL) {
+			free(copy);
+			return -ENOMEM;
+		}
+		memmove(parts + i + 1, parts + i, (n - i) * sizeof(*parts));
+		parts[i].key = k;
+		parts[i].text = copy;
+	}
+	agent->n_prompt_parts++;
+	agent->prompt_parts_changed = true;
+	return 0;
+}
+
+/* Append the prompt parts to the leading system message of a request. */
+static int
+apply_prompt_parts(const struct clm_agent *agent, cJSON *messages)
+{
+	cJSON *sys = cJSON_GetArrayItem(messages, 0);
+	const char *role =
+	    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(sys, "role"));
+	const char *base = cJSON_GetStringValue(
+	    cJSON_GetObjectItemCaseSensitive(sys, "content"));
+	size_t len;
+	char *text, *p;
+
+	if (agent->n_prompt_parts == 0 || role == NULL ||
+	    strcmp(role, "system") != 0 || base == NULL)
+		return 0;
+	len = strlen(base) + 1;
+	for (size_t i = 0; i < agent->n_prompt_parts; i++)
+		len += strlen(agent->prompt_parts[i].text) + 2;
+	text = malloc(len);
+	if (text == NULL)
+		return -ENOMEM;
+	p = text + snprintf(text, len, "%s", base);
+	for (size_t i = 0; i < agent->n_prompt_parts; i++)
+		p += snprintf(p, len - (size_t)(p - text), "\n\n%s",
+		    agent->prompt_parts[i].text);
+	cJSON_ReplaceItemInObjectCaseSensitive(
+	    sys, "content", cJSON_CreateString(text));
+	free(text);
+	return 0;
+}
+
 size_t
 clm_agent_pre_tool_hook_count(const struct clm_agent *agent)
 {
@@ -556,6 +643,11 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->models_url);
 	free(agent->props_url);
 	free(agent->compact_body);
+	for (size_t i = 0; i < agent->n_prompt_parts; i++) {
+		free(agent->prompt_parts[i].key);
+		free(agent->prompt_parts[i].text);
+	}
+	free(agent->prompt_parts);
 	free(agent->pre_tool_hooks);
 	free(agent->turn_hooks);
 	clm_tools_free_registry(&agent->tools);
@@ -1538,8 +1630,10 @@ clm_agent_compact(struct clm_agent *agent)
 	}
 
 	messages = clm_history_to_json(&agent->history, agent->compressor);
-	if (messages == NULL)
+	if (messages == NULL || apply_prompt_parts(agent, messages) < 0) {
+		cJSON_Delete(messages);
 		return -ENOMEM;
+	}
 
 	/* Append the summarization instruction as a trailing user message. */
 	msg = cJSON_CreateObject();
@@ -3111,7 +3205,16 @@ clm_agent_start_turn(struct clm_agent *agent)
 
 	agent_flush_pending_notify(agent);
 
+	/* The server's copy of a chain holds the old parts. */
+	if (agent->prompt_parts_changed) {
+		clm_agent_chain_reset(agent);
+		agent->prompt_parts_changed = false;
+	}
 	messages = clm_history_to_json(&agent->history, agent->compressor);
+	if (messages != NULL && apply_prompt_parts(agent, messages) < 0) {
+		cJSON_Delete(messages);
+		messages = NULL;
+	}
 	/* Skip building/attaching "tools" entirely once this model/provider
 	 * has told us it doesn't support them (see clm_http_success_cb_wrapper)
 	 * -- attaching an empty or absent list is not the same signal to every

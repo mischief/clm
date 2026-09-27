@@ -3624,6 +3624,65 @@ test_responses_reasoning_text(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* The system message content of the last request, or "". */
+static void
+last_system(struct canned_server *srv, char *out, size_t len)
+{
+	cJSON *body = request_json(canned_last_request(srv));
+	cJSON *sys = cJSON_GetArrayItem(
+	    cJSON_GetObjectItemCaseSensitive(body, "messages"), 0);
+	const char *s = cJSON_GetStringValue(
+	    cJSON_GetObjectItemCaseSensitive(sys, "content"));
+
+	(void)snprintf(out, len, "%s", s != NULL ? s : "");
+	cJSON_Delete(body);
+}
+
+/* Prompt parts follow the system prompt in key order, in every request,
+ * and never enter the history. */
+static void
+test_prompt_parts(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const struct clm_message *m;
+	char sys[4096];
+	size_t n;
+
+	st.loop = loop;
+	st.system_prompt = "BASE";
+	srv = canned_start(loop);
+	canned_reply(srv, final_reply);
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+
+	CHECK(clm_agent_set_prompt_part(st.agent, "irc", "on IRC as llama") ==
+	            0 &&
+	        clm_agent_set_prompt_part(st.agent, "cron", "2 jobs") == 0,
+	    "parts: set two");
+	CHECK(clm_agent_submit(st.agent, "hi") == 0, "parts: submit");
+	run_until_done(&st);
+	st.turn_done = 0;
+	last_system(srv, sys, sizeof(sys));
+	n = strlen(sys);
+	CHECK(strncmp(sys, "BASE", 4) == 0 && n > 30 &&
+	        strcmp(sys + n - strlen("\n\n2 jobs\n\non IRC as llama"),
+	            "\n\n2 jobs\n\non IRC as llama") == 0,
+	    "parts: they follow the prompt, sorted by key");
+	m = TAILQ_FIRST(clm_agent_get_history(st.agent));
+	CHECK(m != NULL && strstr(m->content, "llama") == NULL,
+	    "parts: the history keeps the prompt alone");
+
+	CHECK(clm_agent_set_prompt_part(st.agent, "cron", NULL) == 0,
+	    "parts: remove one");
+	CHECK(clm_agent_submit(st.agent, "again") == 0, "parts: submit again");
+	run_until_done(&st);
+	last_system(srv, sys, sizeof(sys));
+	CHECK(strstr(sys, "2 jobs") == NULL && strstr(sys, "llama") != NULL,
+	    "parts: a removed part is gone");
+	teardown(&st, srv);
+}
+
 /* A pre_tool hook for the tests: answers now, or parks the gate. */
 struct hook_state {
 	enum clm_gate_verdict verdict;
@@ -3925,6 +3984,7 @@ test_agent_suite(void *arg)
 	test_perm_no_handler(&loop);
 	test_hidden_tool(&loop);
 	test_pre_tool_hooks(&loop);
+	test_prompt_parts(&loop);
 	uv_loop_close(&loop);
 
 	return 0;

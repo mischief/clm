@@ -377,6 +377,19 @@ returns.
 Fields out of range carry over, as in
 mktime(3).
 
+**clm.prompt\_set**(*key*, *text*)
+
+Set a part of the system prompt, or remove it when
+*text*
+is
+`nil`.
+Parts follow the system prompt in key order, and compaction keeps
+them.
+Each change starts a new prompt prefix, which the server's prompt
+cache has not seen, so use parts for state that rarely changes, such as
+the nick an agent has on IRC.
+A plugin's parts go away when it unloads.
+
 **clm.on**(*event*, *fn*)
 
 Call

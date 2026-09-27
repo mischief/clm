@@ -81,6 +81,14 @@ struct clm_agent {
 	} *turn_hooks;
 	size_t n_turn_hooks;
 	unsigned gate_denials; /* hook denials this turn */
+
+	/* Parts appended to the system prompt, sorted by key. */
+	struct clm_prompt_part {
+		char *key;
+		char *text;
+	} *prompt_parts;
+	size_t n_prompt_parts;
+	bool prompt_parts_changed; /* since the chain was last started */
 	struct clm_tool_list tools;
 	size_t tool_count; /* live (non-removed) tools; diagnostics only */
 	size_t max_iterations;

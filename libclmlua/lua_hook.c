@@ -28,6 +28,7 @@ enum lua_hook_kind {
 	LUA_HOOK_PRE_TOOL,
 	LUA_HOOK_TURN_START,
 	LUA_HOOK_TURN_END,
+	LUA_HOOK_PROMPT,
 };
 
 struct lua_hook {
@@ -35,6 +36,7 @@ struct lua_hook {
 	struct clm_lua_plugin *plugin;
 	enum lua_hook_kind kind;
 	int fn_ref;
+	char *key; /* LUA_HOOK_PROMPT: the part this plugin set */
 };
 
 /* One pre_tool hook run: from the call into the hook to its answer. */
@@ -364,12 +366,51 @@ lua_clm_on(lua_State *L)
 	return 0;
 }
 
+/* clm.prompt_set(key, text): a system prompt part, removed with nil. */
+static int
+lua_clm_prompt_set(lua_State *L)
+{
+	struct clm_lua_plugin *plugin = lua_touserdata(L, lua_upvalueindex(1));
+	struct clm_lua_hook_list *hooks = clm_lua_plugin_hooks(plugin);
+	const char *key = luaL_checkstring(L, 1);
+	const char *text = luaL_optstring(L, 2, NULL);
+	struct lua_hook *hook;
+	int r;
+
+	TAILQ_FOREACH(hook, hooks, entry)
+	if (hook->kind == LUA_HOOK_PROMPT && strcmp(hook->key, key) == 0)
+		break;
+	if (hook == NULL && text != NULL) {
+		hook = calloc(1, sizeof(*hook));
+		if (hook == NULL || (hook->key = strdup(key)) == NULL) {
+			free(hook);
+			return luaL_error(L, "clm.prompt_set: out of memory");
+		}
+		hook->plugin = plugin;
+		hook->kind = LUA_HOOK_PROMPT;
+		hook->fn_ref = LUA_NOREF;
+		TAILQ_INSERT_TAIL(hooks, hook, entry);
+	}
+	r = clm_agent_set_prompt_part(clm_lua_plugin_agent(plugin), key, text);
+	if (r < 0)
+		return luaL_error(L, "clm.prompt_set: %s", strerror(-r));
+	if (hook != NULL && text == NULL) {
+		TAILQ_REMOVE(hooks, hook, entry);
+		free(hook->key);
+		free(hook);
+	}
+	return 0;
+}
+
 void
 clm_lua_hook_open(lua_State *L, struct clm_lua_plugin *plugin)
 {
 	lua_pushlightuserdata(L, plugin);
 	lua_pushcclosure(L, lua_clm_on, 1);
 	lua_setfield(L, -2, "on");
+	lua_pushlightuserdata(L, plugin);
+	lua_pushcclosure(L, lua_clm_prompt_set, 1);
+	lua_setfield(L, -2, "prompt_set");
 
 	/* The runner, closed over finish. */
 	if (luaL_loadstring(L, runner_src) == LUA_OK) {
@@ -392,6 +433,12 @@ clm_lua_hook_drop_all(struct clm_lua_plugin *plugin)
 
 	while ((hook = TAILQ_FIRST(hooks)) != NULL) {
 		TAILQ_REMOVE(hooks, hook, entry);
+		if (hook->kind == LUA_HOOK_PROMPT) {
+			(void)clm_agent_set_prompt_part(agent, hook->key, NULL);
+			free(hook->key);
+			free(hook);
+			continue;
+		}
 		if (hook->kind == LUA_HOOK_PRE_TOOL)
 			(void)clm_agent_remove_pre_tool_hook(
 			    agent, lua_pre_tool_hook, hook);

@@ -25,6 +25,7 @@
 .Nm clm_agent_add_pre_tool_hook ,
 .Nm clm_agent_remove_pre_tool_hook ,
 .Nm clm_agent_pre_tool_hook_count ,
+.Nm clm_agent_set_prompt_part ,
 .Nm clm_agent_add_turn_hook ,
 .Nm clm_agent_remove_turn_hook ,
 .Nm clm_tool_gate_name ,
@@ -108,6 +109,12 @@
 .Fc
 .Ft size_t
 .Fn clm_agent_pre_tool_hook_count "const struct clm_agent *agent"
+.Ft int
+.Fo clm_agent_set_prompt_part
+.Fa "struct clm_agent *agent"
+.Fa "const char *key"
+.Fa "const char *text"
+.Fc
 .Ft int
 .Fo clm_agent_add_turn_hook
 .Fa "struct clm_agent *agent"
@@ -404,6 +411,18 @@ and the server, not clm, rejects a level its model does not accept.
 returns the effort in force, or
 .Dv NULL ,
 borrowed from the agent.
+.Pp
+.Fn clm_agent_set_prompt_part
+sets the system prompt part named
+.Fa key ,
+or removes it when
+.Fa text
+is
+.Dv NULL .
+Each request carries the parts after the system prompt, in key order.
+They are not in the history, so compaction keeps them.
+Each change starts a new prompt prefix, so they suit state that rarely
+changes.
 .Pp
 .Fn clm_agent_get_history
 returns the agent's live history, borrowed and valid until the next turn

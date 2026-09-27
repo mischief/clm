@@ -1284,6 +1284,9 @@ test_hook_plugin(void)
 	hook_turn(&loop, srv, agent, &st, "ls", "{\"say\":\"allow\"}");
 	CHECK(strcmp(st.content, "ls!") == 0,
 	    "pre_tool hook rewrites the arguments after an http call");
+	CHECK(agent->n_prompt_parts == 1 &&
+	        strcmp(agent->prompt_parts[0].text, "HOOK PART") == 0,
+	    "clm.prompt_set sets a part, and nil removes one");
 	slurp(logpath, log, sizeof(log));
 	CHECK(strcmp(log, "start:ls\nend:0:done\n") == 0,
 	    "turn hooks see the prompt and the final text");
@@ -1318,6 +1321,8 @@ test_hook_plugin(void)
 	env = NULL;
 	while (!st.done)
 		uv_run(&loop, UV_RUN_ONCE);
+	CHECK(agent->n_prompt_parts == 0,
+	    "a plugin's prompt parts go when it unloads");
 	CHECK(strstr(st.content, "hook plugin unloaded") != NULL,
 	    "unloading a waiting hook denies the call");
 

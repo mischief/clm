@@ -709,6 +709,15 @@ CLM_API int clm_agent_add_pre_tool_hook(
     struct clm_agent *agent, clm_pre_tool_hook fn, void *user);
 CLM_API int clm_agent_remove_pre_tool_hook(
     struct clm_agent *agent, clm_pre_tool_hook fn, void *user);
+/*
+ * Set the system prompt part named key, or remove it when text is NULL.
+ * Parts follow the system prompt in key order in every request, and
+ * compaction keeps them. Each change is a new prompt prefix, so use them
+ * for state that rarely changes. Returns 0, or negative errno.
+ */
+CLM_API int clm_agent_set_prompt_part(
+    struct clm_agent *agent, const char *key, const char *text);
+
 /* How many pre_tool hooks the agent has. */
 CLM_API size_t clm_agent_pre_tool_hook_count(const struct clm_agent *agent);
 CLM_API int clm_agent_add_turn_hook(
