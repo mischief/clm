@@ -320,6 +320,23 @@ The value of environment variable
 .Va name ,
 or
 .Dv nil .
+.It Fn clm.time
+Seconds since the epoch.
+.It Fn clm.localtime t
+The local time of
+.Va t ,
+or of now, as a table with
+.Va year , month
+(1\(en12),
+.Va day , hour , min , sec , wday
+(0\(en6 from Sunday) and
+.Va isdst .
+.It Fn clm.mktime t
+Seconds since the epoch for a local time table like the one
+.Fn clm.localtime
+returns.
+Fields out of range carry over, as in
+.Xr mktime 3 .
 .It Fn clm.on event fn
 Call
 .Va fn
@@ -408,9 +425,13 @@ the final reply of the model, or
 .Pp
 The turn hooks are callbacks with a 2 s deadline, and cannot yield.
 .Pp
-The source tree has an example in
-.Pa plugins/opt/jev_guard.lua .
-It asks a Jev System One server to rate each tool call as run,
+The source tree has examples.
+.Pa plugins/opt/cron.lua
+sends scheduled prompts from the config and from the model's
+.Va cron_add
+tool.
+.Pa plugins/opt/jev_guard.lua
+asks a Jev System One server to rate each tool call as run,
 ask or deny, with the last request of the user as context.
 .Ss The json module
 .Bd -literal -offset indent

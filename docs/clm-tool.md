@@ -354,6 +354,29 @@ The value of environment variable
 or
 `nil`.
 
+**clm.time**()
+
+Seconds since the epoch.
+
+**clm.localtime**(*t*)
+
+The local time of
+*t*,
+or of now, as a table with
+*year*, *month*
+(1&#8211;12),
+*day*, *hour*, *min*, *sec*, *wday*
+(0&#8211;6 from Sunday) and
+*isdst*.
+
+**clm.mktime**(*t*)
+
+Seconds since the epoch for a local time table like the one
+**clm.localtime**()
+returns.
+Fields out of range carry over, as in
+mktime(3).
+
 **clm.on**(*event*, *fn*)
 
 Call
@@ -454,9 +477,13 @@ the final reply of the model, or
 
 The turn hooks are callbacks with a 2 s deadline, and cannot yield.
 
-The source tree has an example in
-*plugins/opt/jev\_guard.lua*.
-It asks a Jev System One server to rate each tool call as run,
+The source tree has examples.
+*plugins/opt/cron.lua*
+sends scheduled prompts from the config and from the model's
+*cron\_add*
+tool.
+*plugins/opt/jev\_guard.lua*
+asks a Jev System One server to rate each tool call as run,
 ask or deny, with the last request of the user as context.
 
 ## The json module

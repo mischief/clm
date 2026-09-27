@@ -178,6 +178,10 @@ test('md', test_md, protocol: 'tap', suite: 'md')
 # these are skipped under -Dlua=disabled rather than referencing targets that
 # were never built.
 if have_lua
+  test('cron', lua_bin,
+    args: [files('cron_test.lua'), files('../plugins/opt/cron.lua')],
+  )
+
   tui_script = files('tui/test_tui.lua')
   tui_groups = {
     'tui_basic': ['connection', 'offline', 'agent', 'markdown', 'resize',
