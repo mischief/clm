@@ -694,6 +694,15 @@ clm_agent_take_mid_chain_compact_succeeded(struct clm_agent *agent)
 
 static void clm_agent_start_turn(struct clm_agent *agent);
 
+/* A turn is running: waiting on the model, on tools, or on a rate limit. */
+static bool
+agent_busy(const struct clm_agent *agent)
+{
+	return agent->state == CLM_STATE_THINKING ||
+	    agent->state == CLM_STATE_CALLING_TOOL ||
+	    agent->state == CLM_STATE_RATE_LIMITED;
+}
+
 int
 clm_agent_submit(struct clm_agent *agent, const char *prompt)
 {
@@ -705,8 +714,7 @@ clm_agent_submit(struct clm_agent *agent, const char *prompt)
 	 * finished, errored, or was cancelled must not lock out new prompts:
 	 * the user should be able to just type again to recover.
 	 */
-	if (agent->state == CLM_STATE_THINKING ||
-	    agent->state == CLM_STATE_CALLING_TOOL) {
+	if (agent_busy(agent)) {
 		clm_agent_set_error(agent, "turn already in progress");
 		return -EBUSY;
 	}
@@ -823,8 +831,7 @@ clm_agent_notify(struct clm_agent *agent, const char *text)
 	ASSERT_RETURN(agent != NULL, -EINVAL);
 	ASSERT_RETURN(text != NULL, -EINVAL);
 
-	if (agent->state == CLM_STATE_THINKING ||
-	    agent->state == CLM_STATE_CALLING_TOOL) {
+	if (agent_busy(agent)) {
 		char *joined = NULL;
 
 		if (agent->pending_notify == NULL) {
@@ -1525,8 +1532,7 @@ clm_agent_compact(struct clm_agent *agent)
 
 	ASSERT_RETURN(agent != NULL, -EINVAL);
 
-	if (agent->state == CLM_STATE_THINKING ||
-	    agent->state == CLM_STATE_CALLING_TOOL) {
+	if (agent_busy(agent)) {
 		clm_agent_set_error(agent, "turn already in progress");
 		return -EBUSY;
 	}

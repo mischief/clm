@@ -1033,6 +1033,22 @@ test_cancel_during_rate_limit_wait(uv_loop_t *loop)
 	CHECK(canned_request_count(srv) == 1, "the rate-limited request went");
 	CHECK(!st.turn_done, "the turn is waiting, not finished");
 
+	/* A turn waiting out a rate limit is still a running turn. */
+	for (i = 0;
+	    i < 200 && clm_agent_get_state(st.agent) != CLM_STATE_RATE_LIMITED;
+	    i++)
+		uv_run(loop, UV_RUN_ONCE);
+	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_RATE_LIMITED,
+	    "the turn is parked on the rate limit");
+	CHECK(clm_agent_submit(st.agent, "second") == -EBUSY,
+	    "a prompt during the wait does not start a second turn");
+	CHECK(clm_agent_notify(st.agent, "event") == 0,
+	    "an event during the wait is queued");
+	for (i = 0; i < 20; i++)
+		uv_run(loop, UV_RUN_NOWAIT);
+	CHECK(canned_request_count(srv) == 1,
+	    "nothing is sent while the turn waits");
+
 	CHECK(clm_agent_cancel(st.agent) == 0, "cancel reaches the wait");
 	run_until_done(&st);
 
