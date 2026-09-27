@@ -2206,6 +2206,33 @@ test_responses_chain(uv_loop_t *loop)
 	        strstr(req, "openingturn") != NULL,
 	    "chain: a missing tool output resends the whole conversation");
 
+	/* A call with no result anywhere: the full resend fails the same way,
+	 * so the history is repaired and sent once more. */
+	{
+		struct clm_history h;
+		struct clm_message *m;
+
+		clm_history_init(&h);
+		clm_history_add_user(&h, "earlier", NULL);
+		m = clm_history_add_assistant_tool_calls(&h);
+		clm_message_add_tool_call(m, "call_lost", "shell_exec", "{}");
+		CHECK(clm_agent_restore_history(st.agent, &h) == 0,
+		    "chain: restore a history with a lost result");
+		clm_history_free(&h);
+	}
+	canned_reply_status(srv, 400,
+	    "{\"error\":{\"message\":\"No tool output found for function "
+	    "call call_lost.\",\"type\":\"invalid_request_error\"}}");
+	canned_reply(srv, reply2);
+	CHECK(
+	    clm_agent_submit(st.agent, "afterloss") == 0, "submit after loss");
+	run_until_done(&st);
+	st.turn_done = 0;
+	req = canned_last_request(srv);
+	CHECK(st.turn_status == 0 && req != NULL &&
+	        strstr(req, "tool result missing") != NULL,
+	    "chain: a lost result is repaired and the turn sent again");
+
 	/* Compaction rewrites history, so the chain must be abandoned. */
 	canned_reply(srv,
 	    "{\"id\":\"resp_3\",\"status\":\"completed\",\"output\":"

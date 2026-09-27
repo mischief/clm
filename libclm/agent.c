@@ -1931,6 +1931,20 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 			return;
 		}
 
+		/* Sent in full and still missing: a call has no result, or it
+		 * came late. Nothing runs between turns, so repair the history
+		 * and try once more; a second failure finds nothing to repair.
+		 */
+		if (resp != NULL && resp->body != NULL &&
+		    strstr(resp->body, "No tool output found") != NULL &&
+		    clm_history_repair_dangling_tool_calls(&agent->history) >
+		        0) {
+			clm_http_response_free(resp);
+			clm_async_turn_free(turn);
+			clm_agent_start_turn(agent);
+			return;
+		}
+
 		if (status == 400 && !agent->tools_unsupported &&
 		    resp != NULL && resp->body != NULL &&
 		    strstr(resp->body, "does not support tools") != NULL) {
