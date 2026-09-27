@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: ISC
 /*
- * clm.spawn, clm.exec, clm.after, clm.notify and clm.getenv for plugins.
+ * clm.spawn, clm.exec, clm.after, clm.notify, clm.getenv and the clock
+ * functions for plugins.
  * Children run through the host's proc_spawn and timers through its
  * timer_set, so this file needs no event loop of its own.
  */
@@ -10,6 +11,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <lua.h>
 #include <lauxlib.h>
@@ -762,6 +764,80 @@ lua_clm_getenv(lua_State *L)
 	return 1;
 }
 
+/* clm.time() -> seconds since the epoch */
+static int
+lua_clm_time(lua_State *L)
+{
+	lua_pushinteger(L, (lua_Integer)time(NULL));
+	return 1;
+}
+
+/* clm.localtime([t]) -> {year, month, day, hour, min, sec, wday, isdst};
+ * month is 1-12, wday 0-6 from Sunday. */
+static int
+lua_clm_localtime(lua_State *L)
+{
+	time_t t = (time_t)luaL_optinteger(L, 1, (lua_Integer)time(NULL));
+	struct tm tm;
+
+	if (localtime_r(&t, &tm) == NULL)
+		return luaL_error(L, "localtime: time out of range");
+	lua_createtable(L, 0, 8);
+	lua_pushinteger(L, tm.tm_year + 1900);
+	lua_setfield(L, -2, "year");
+	lua_pushinteger(L, tm.tm_mon + 1);
+	lua_setfield(L, -2, "month");
+	lua_pushinteger(L, tm.tm_mday);
+	lua_setfield(L, -2, "day");
+	lua_pushinteger(L, tm.tm_hour);
+	lua_setfield(L, -2, "hour");
+	lua_pushinteger(L, tm.tm_min);
+	lua_setfield(L, -2, "min");
+	lua_pushinteger(L, tm.tm_sec);
+	lua_setfield(L, -2, "sec");
+	lua_pushinteger(L, tm.tm_wday);
+	lua_setfield(L, -2, "wday");
+	lua_pushboolean(L, tm.tm_isdst > 0);
+	lua_setfield(L, -2, "isdst");
+	return 1;
+}
+
+static int
+tm_field(lua_State *L, const char *key, int dflt)
+{
+	lua_Integer v;
+
+	lua_getfield(L, 1, key);
+	v = lua_isnil(L, -1) ? dflt : luaL_checkinteger(L, -1);
+	lua_pop(L, 1);
+	if (v < -1000000 || v > 1000000)
+		return luaL_error(L, "mktime: %s out of range", key);
+	return (int)v;
+}
+
+/* clm.mktime(t) -> seconds since the epoch for local time t, a table like
+ * localtime returns; fields out of range carry over, as mktime(3) does. */
+static int
+lua_clm_mktime(lua_State *L)
+{
+	struct tm tm = {0};
+	time_t t;
+
+	luaL_checktype(L, 1, LUA_TTABLE);
+	tm.tm_year = tm_field(L, "year", 1970) - 1900;
+	tm.tm_mon = tm_field(L, "month", 1) - 1;
+	tm.tm_mday = tm_field(L, "day", 1);
+	tm.tm_hour = tm_field(L, "hour", 0);
+	tm.tm_min = tm_field(L, "min", 0);
+	tm.tm_sec = tm_field(L, "sec", 0);
+	tm.tm_isdst = -1;
+	t = mktime(&tm);
+	if (t == (time_t)-1)
+		return luaL_error(L, "mktime: time out of range");
+	lua_pushinteger(L, (lua_Integer)t);
+	return 1;
+}
+
 static const luaL_Reg proc_methods[] = {
     {"kill", lua_proc_kill},
     {"running", lua_proc_running},
@@ -799,4 +875,10 @@ clm_lua_proc_open(lua_State *L, struct clm_lua_plugin *plugin)
 	lua_setfield(L, -2, "notify");
 	lua_pushcfunction(L, lua_clm_getenv);
 	lua_setfield(L, -2, "getenv");
+	lua_pushcfunction(L, lua_clm_time);
+	lua_setfield(L, -2, "time");
+	lua_pushcfunction(L, lua_clm_localtime);
+	lua_setfield(L, -2, "localtime");
+	lua_pushcfunction(L, lua_clm_mktime);
+	lua_setfield(L, -2, "mktime");
 }
