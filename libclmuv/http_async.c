@@ -94,6 +94,7 @@ struct clm_http_request {
 	enum clm_http_request_state state;
 	int error_code;
 	char error_msg[256];
+	char curl_errbuf[CURL_ERROR_SIZE];
 	int closing;
 	bool starting;
 };
@@ -186,6 +187,23 @@ req_from_easy(CURL *easy)
  * timeout), and if only the poll path reaped CURLMSG_DONE the timer would
  * keep re-arming at 0ms and the loop would spin at 100% CPU.
  */
+/* Write "METHOD URL: reason" into req->error_msg. The query string is left
+ * out because it can hold a key. */
+static void
+http_format_error(struct clm_http_request *req, const char *reason)
+{
+	const char *url = NULL;
+	const char *method = NULL;
+
+	curl_easy_getinfo(req->easy_handle, CURLINFO_EFFECTIVE_URL, &url);
+	curl_easy_getinfo(req->easy_handle, CURLINFO_EFFECTIVE_METHOD, &method);
+	if (url == NULL)
+		url = "?";
+	(void)snprintf(req->error_msg, sizeof(req->error_msg), "%s %.*s: %s",
+	    method != NULL ? method : "request", (int)strcspn(url, "?#"), url,
+	    reason);
+}
+
 static void
 http_reap_done(struct clm_http_mux *mux, int poll_status)
 {
@@ -206,22 +224,26 @@ http_reap_done(struct clm_http_mux *mux, int poll_status)
 			continue;
 		}
 
+		/* Prefer curl's own result: after a socket error it names the
+		 * cause (connection refused, host unreachable) where the poll
+		 * status alone does not. */
 		CURLcode curl_err = msg->data.result;
-		if (poll_status < 0) {
-			req->state = CLM_HTTP_ERROR;
-			req->error_code = poll_status;
-			snprintf(req->error_msg, sizeof(req->error_msg),
-			    "poll error: %s", uv_err_name(poll_status));
-			clm_debug("poll error, status=%d", poll_status);
-		} else if (curl_err == CURLE_OK) {
-			req->state = CLM_HTTP_DONE;
-			clm_debug("CURLMSG_DONE, CURLE_OK");
-		} else if (req->state != CLM_HTTP_ERROR) {
+		if (req->state == CLM_HTTP_ERROR) {
+			clm_debug("CURLMSG_DONE, error already set");
+		} else if (curl_err != CURLE_OK) {
 			req->state = CLM_HTTP_ERROR;
 			req->error_code = (int)curl_err;
-			snprintf(req->error_msg, sizeof(req->error_msg),
-			    "curl error: %s", curl_easy_strerror(curl_err));
+			http_format_error(req, req->curl_errbuf[0] != '\0'
+			    ? req->curl_errbuf : curl_easy_strerror(curl_err));
 			clm_debug("CURLMSG_DONE, curl_err=%d", curl_err);
+		} else if (poll_status < 0) {
+			req->state = CLM_HTTP_ERROR;
+			req->error_code = poll_status;
+			http_format_error(req, uv_strerror(poll_status));
+			clm_debug("poll error, status=%d", poll_status);
+		} else {
+			req->state = CLM_HTTP_DONE;
+			clm_debug("CURLMSG_DONE, CURLE_OK");
 		}
 		http_request_teardown(req);
 	}
@@ -592,6 +614,8 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 	}
 
 	curl_easy_setopt(req->easy_handle, CURLOPT_URL, url);
+	req->curl_errbuf[0] = '\0';
+	curl_easy_setopt(req->easy_handle, CURLOPT_ERRORBUFFER, req->curl_errbuf);
 	if (json_body != NULL) {
 		curl_easy_setopt(req->easy_handle, CURLOPT_POST, 1L);
 		/* COPY, not POSTFIELDS: the latter only stores the pointer and
