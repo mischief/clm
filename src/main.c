@@ -151,8 +151,9 @@ struct cli_state {
 };
 
 static void
-cb_mcp_status(const char *msg, void *user)
+cb_mcp_status(const char *msg, bool error, void *user)
 {
+	(void)error;
 	(void)user;
 	fprintf(stderr, "%s\n", msg);
 }

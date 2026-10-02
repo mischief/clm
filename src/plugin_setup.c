@@ -32,7 +32,7 @@ load_opt(struct clm_lua_env *env, const char *dir, const char *name,
 	else
 		(void)snprintf(
 		    msg, sizeof(msg), "plugin %s: %s", name, strerror(-r));
-	status_cb(msg, status_user);
+	status_cb(msg, true, status_user);
 }
 
 static bool

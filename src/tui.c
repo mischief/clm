@@ -120,7 +120,7 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 }
 
 static void
-cb_mcp_status(const char *msg, void *user)
+cb_mcp_status(const char *msg, bool error, void *user)
 {
 	struct ui *u = user;
 	char line[512];
@@ -128,7 +128,7 @@ cb_mcp_status(const char *msg, void *user)
 	if (msg == NULL)
 		return;
 	(void)snprintf(line, sizeof(line), "%s\n", msg);
-	ui_push(u, ST_META, line);
+	ui_push(u, error ? ST_ERROR : ST_META, line);
 }
 
 /*

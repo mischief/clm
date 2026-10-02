@@ -4,12 +4,16 @@
 #ifndef CLM_CLI_MCP_SETUP_H
 #define CLM_CLI_MCP_SETUP_H
 
+#include <stdbool.h>
+
 #include <uv.h>
 
 struct clm_agent;
 struct clm_lua_cfg;
 
-typedef void (*clm_cli_mcp_status_cb)(const char *msg, void *user);
+/* error is true when msg reports a failure. */
+typedef void (*clm_cli_mcp_status_cb)(
+    const char *msg, bool error, void *user);
 
 /* How long a frontend waits for MCP servers to register their tools before
  * it sends the first request. */

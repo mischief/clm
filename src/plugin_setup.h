@@ -3,10 +3,14 @@
 #ifndef CLM_CLI_PLUGIN_SETUP_H
 #define CLM_CLI_PLUGIN_SETUP_H
 
+#include <stdbool.h>
+
 struct clm_lua_cfg;
 struct clm_lua_env;
 
-typedef void (*clm_cli_plugin_status_cb)(const char *msg, void *user);
+/* error is true when msg reports a failure. */
+typedef void (*clm_cli_plugin_status_cb)(
+    const char *msg, bool error, void *user);
 
 /*
  * Load every plugin in dir, then each opt-in plugin in dir/opt named by the

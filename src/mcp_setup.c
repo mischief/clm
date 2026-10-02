@@ -37,10 +37,11 @@ struct mcp_ready_ctx {
 static int mcp_pending;
 
 static void
-emit_status(clm_cli_mcp_status_cb status_cb, void *user, const char *msg)
+emit_status(clm_cli_mcp_status_cb status_cb, void *user, const char *msg,
+    bool error)
 {
 	if (status_cb != NULL)
-		status_cb(msg, user);
+		status_cb(msg, error, user);
 	else
 		fprintf(stderr, "%s\n", msg);
 }
@@ -60,9 +61,9 @@ on_mcp_ready(int status, size_t tool_count, void *user)
 		    "mcp: %s: %zu tool%s registered", ctx->name, tool_count,
 		    tool_count == 1 ? "" : "s");
 	else
-		(void)snprintf(msg, sizeof(msg), "mcp: %s: connect failed (%d)",
-		    ctx->name, status);
-	emit_status(ctx->status_cb, ctx->status_user, msg);
+		(void)snprintf(msg, sizeof(msg), "mcp: %s: connect failed: %s",
+		    ctx->name, uv_strerror(status));
+	emit_status(ctx->status_cb, ctx->status_user, msg, status != 0);
 }
 
 static void
@@ -98,10 +99,11 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 	cJSON *jtimeout, *jcmd;
 	autofree char **argv = NULL;
 	struct clm_mcp_client *client = NULL;
+	int r;
 
 	if (name == NULL) {
 		emit_status(status_cb, status_user,
-		    "mcp: skipping server with no 'name'");
+		    "mcp: skipping server with no 'name'", true);
 		return NULL;
 	}
 
@@ -119,7 +121,7 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 			char msg[256];
 			(void)snprintf(msg, sizeof(msg),
 			    "mcp: %s: http transport needs 'url'", name);
-			emit_status(status_cb, status_user, msg);
+			emit_status(status_cb, status_user, msg, true);
 			return NULL;
 		}
 	} else {
@@ -134,7 +136,7 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 			    "mcp: %s: stdio transport needs a non-empty "
 			    "'command' array",
 			    name);
-			emit_status(status_cb, status_user, msg);
+			emit_status(status_cb, status_user, msg, true);
 			return NULL;
 		}
 		n = (size_t)cJSON_GetArraySize(jcmd);
@@ -157,12 +159,13 @@ connect_one(struct clm_agent *agent, uv_loop_t *loop, cJSON *srv,
 	ready_ctx->settled = false;
 	mcp_pending++;
 
-	if (clm_mcp_connect(agent, loop, &server_cfg, on_mcp_ready, ready_ctx,
-	        free_mcp_ready_ctx, &client) != 0) {
+	r = clm_mcp_connect(agent, loop, &server_cfg, on_mcp_ready, ready_ctx,
+	    free_mcp_ready_ctx, &client);
+	if (r != 0) {
 		char msg[256];
-		(void)snprintf(
-		    msg, sizeof(msg), "mcp: %s: failed to start", name);
-		emit_status(status_cb, status_user, msg);
+		(void)snprintf(msg, sizeof(msg), "mcp: %s: failed to start: %s",
+		    name, uv_strerror(r));
+		emit_status(status_cb, status_user, msg, true);
 		mcp_pending--;
 		free(ready_ctx->name);
 		free(ready_ctx);
@@ -201,7 +204,7 @@ clm_cli_connect_mcp_servers(struct clm_agent *agent, uv_loop_t *loop,
 	clients = calloc(n, sizeof(*clients));
 	if (clients == NULL) {
 		emit_status(status_cb, status_user,
-		    "mcp: out of memory starting configured servers");
+		    "mcp: out of memory starting configured servers", true);
 		return NULL;
 	}
 
