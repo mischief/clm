@@ -22,9 +22,9 @@
 #include "banned.h"
 
 #define CLM_TOOL_OUTPUT_CAP_DEFAULT (16 * 1024) /* bytes returned to model */
-#define CLM_TOOL_OUTPUT_CAP_MAX (1024 * 1024)   /* ceiling for overrides */
-#define CLM_TOOL_TIMEOUT_MAX_MS 600000u         /* 10 minutes */
-#define CLM_READ_DEFAULT_LIMIT 200              /* lines */
+#define CLM_TOOL_OUTPUT_CAP_MAX (60 * 1024) /* below the 64 KiB message cap */
+#define CLM_TOOL_TIMEOUT_MAX_MS 600000u     /* 10 minutes */
+#define CLM_READ_DEFAULT_LIMIT 200          /* lines */
 
 /*
  * One in-flight tool call. Owned by its batch. Completed exactly once via

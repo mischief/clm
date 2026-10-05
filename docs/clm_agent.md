@@ -428,7 +428,8 @@ borrowed from the agent.
 
 A tool result larger than its cap, 16 KiB by default or the
 *output\_cap*
-the model asks for, or larger than about a quarter of that cap in
+of its tool definition, at most 60 KiB, or larger than about a quarter
+of that cap in
 estimated tokens, keeps its first and last lines with a marker line
 between them.
 The marker gives the estimated tokens left out, the lines, and the size.

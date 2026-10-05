@@ -465,8 +465,7 @@ clm_tools_register_shell(struct clm_agent *agent)
 	        "\"required\":[\"command\"]}",
 	    .invoke = tool_shell_exec,
 	    .timeout_ms = CLM_SHELL_DEFAULT_TIMEOUT_MS,
-	    .flags =
-	        CLM_TOOL_TIMEOUT_OVERRIDABLE | CLM_TOOL_OUTPUT_CAP_OVERRIDABLE,
+	    .flags = CLM_TOOL_TIMEOUT_OVERRIDABLE,
 	};
 	return clm_tool_add(agent, &shell_def);
 }
