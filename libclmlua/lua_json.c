@@ -24,6 +24,7 @@ int clm_lua_json_open(lua_State *L);
 /* Push a cJSON object as a Lua value (table/string/number/etc).
  * Called from lua_plugin.c to decode tool args without a Lua hop. */
 void clm_lua_push_json_value(lua_State *L, cJSON *obj);
+cJSON *clm_lua_to_cjson(lua_State *L, int idx);
 
 /* Sentinel for JSON null. */
 static char json_null_sentinel;
@@ -346,6 +347,13 @@ static const luaL_Reg json_funcs[] = {
     {"array", lua_json_array},
     {NULL, NULL},
 };
+
+/* A Lua value as cJSON, or NULL. For C code outside this file. */
+cJSON *
+clm_lua_to_cjson(lua_State *L, int idx)
+{
+	return lua_to_json(L, idx, 0);
+}
 
 int
 clm_lua_json_open(lua_State *L)

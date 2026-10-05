@@ -178,6 +178,19 @@ test('md', test_md, protocol: 'tap', suite: 'md')
 # these are skipped under -Dlua=disabled rather than referencing targets that
 # were never built.
 if have_lua
+  lua_binding = executable('lua_binding',
+    files('lua_binding.c', 'tui/mock_server.c', '../lua/clm_lua.c',
+      '../libclmlua/lua_json.c'),
+    dependencies: [lua_dep, clmuv_deps, clm_dep, clmuv_dep],
+    include_directories: [include_directories('tui'),
+      include_directories('..'), include_directories('../include')],
+    c_args: test_hardening_args,
+  )
+  test('lua_binding', lua_binding,
+    args: [files('lua_binding_test.lua')],
+    timeout: 60,
+  )
+
   test('cron', lua_bin,
     args: [files('cron_test.lua'), files('../plugins/opt/cron.lua')],
   )

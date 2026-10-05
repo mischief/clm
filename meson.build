@@ -179,6 +179,7 @@ subdir('libclmuv')
 subdir('libclmsession')
 subdir('libemoji')
 subdir('src')
+subdir('lua')
 subdir('man')
 
 if get_option('tests')
