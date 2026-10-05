@@ -24,6 +24,7 @@ local h = a:history()
 check(h[1].role == "system" and h[#h].role == "assistant" and h[#h].content == text,
     "history starts with the system prompt and ends with the reply")
 check(a:state() == "complete", "state after a turn")
+check(a:clear() and #a:history() == 1, "clear leaves only the system prompt")
 a:close()
 
 -- A Lua tool runs in a coroutine and may sleep.

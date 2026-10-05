@@ -836,6 +836,21 @@ l_history(lua_State *L)
 	return 1;
 }
 
+/* agent:clear(): start a fresh conversation; not while a turn runs. */
+static int
+l_clear(lua_State *L)
+{
+	int r = clm_agent_clear_history(check_agent(L, 1)->agent);
+
+	if (r < 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(-r));
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 static int
 l_state(lua_State *L)
 {
@@ -970,6 +985,7 @@ static const luaL_Reg agent_methods[] = {
     {"on", l_on},
     {"prompt_set", l_prompt_set},
     {"history", l_history},
+    {"clear", l_clear},
     {"state", l_state},
     {"error", l_error},
     {"close", l_close},
