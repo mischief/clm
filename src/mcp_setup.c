@@ -37,8 +37,8 @@ struct mcp_ready_ctx {
 static int mcp_pending;
 
 static void
-emit_status(clm_cli_mcp_status_cb status_cb, void *user, const char *msg,
-    bool error)
+emit_status(
+    clm_cli_mcp_status_cb status_cb, void *user, const char *msg, bool error)
 {
 	if (status_cb != NULL)
 		status_cb(msg, error, user);

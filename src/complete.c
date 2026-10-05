@@ -472,7 +472,8 @@ model_live_result(char **ids, void *user)
 			for (size_t i = 0;
 			    ids[i] != NULL && nprefixed < MAX_CANDIDATES; i++) {
 				size_t need = memchr(prefix, '/', typed) != NULL
-				    ? strlen(req->provider_name) + 1 + strlen(ids[i]) + 1
+				    ? strlen(req->provider_name) + 1 +
+				        strlen(ids[i]) + 1
 				    : strlen(ids[i]) + 1;
 				char *spec = malloc(need);
 				if (spec == NULL)
@@ -481,7 +482,8 @@ model_live_result(char **ids, void *user)
 					(void)snprintf(spec, need, "%s/%s",
 					    req->provider_name, ids[i]);
 				else
-					(void)snprintf(spec, need, "%s", ids[i]);
+					(void)snprintf(
+					    spec, need, "%s", ids[i]);
 				prefixed[nprefixed++] = spec;
 			}
 
@@ -558,7 +560,8 @@ source_model_names(
 		if (pn > 0) {
 			if (pn > 1)
 				list_plain(u, NULL, matches, pn);
-			apply_insert(u, wstart, wlen, 0, matches, pn, typed, '/');
+			apply_insert(
+			    u, wstart, wlen, 0, matches, pn, typed, '/');
 			clm_lua_cfg_free_str_list(names);
 		}
 		/* bare model ids use active connection catalog */
@@ -572,8 +575,9 @@ source_model_names(
 				req->match_len = wlen;
 				req->provider_name = strdup(u->provider_name);
 				if (req->provider_name != NULL &&
-				    clm_agent_list_models(u->agent, model_live_result,
-				    model_live_error, req) == 0)
+				    clm_agent_list_models(u->agent,
+				        model_live_result, model_live_error,
+				        req) == 0)
 					return;
 				model_complete_req_free(req);
 			}
@@ -584,8 +588,8 @@ source_model_names(
 	size_t n = match_config_names(
 	    u->lcfg, "models", prefix, typed, matches, &names);
 	if (n > 0) {
-		/* live catalog owns completion insertion; avoid committing local
-		 * singleton before async response */
+		/* live catalog owns completion insertion; avoid committing
+		 * local singleton before async response */
 		if (n > 1)
 			list_plain(u, "from config:", matches, n);
 		clm_lua_cfg_free_str_list(names);
@@ -641,9 +645,9 @@ source_model_names(
 
 		if (purl != NULL && u->provider_name != NULL &&
 		    strcmp(spec_provider, u->provider_name) == 0) {
-			/* active connection already owns correct live endpoint */
+			/* active connection owns correct live endpoint */
 			if (clm_agent_list_models(u->agent, model_live_result,
-			    model_live_error, req) != 0)
+			        model_live_error, req) != 0)
 				model_complete_req_free(req);
 		} else if (purl != NULL) {
 			enum clm_provider provider =

@@ -233,8 +233,10 @@ http_reap_done(struct clm_http_mux *mux, int poll_status)
 		} else if (curl_err != CURLE_OK) {
 			req->state = CLM_HTTP_ERROR;
 			req->error_code = (int)curl_err;
-			http_format_error(req, req->curl_errbuf[0] != '\0'
-			    ? req->curl_errbuf : curl_easy_strerror(curl_err));
+			http_format_error(req,
+			    req->curl_errbuf[0] != '\0'
+			        ? req->curl_errbuf
+			        : curl_easy_strerror(curl_err));
 			clm_debug("CURLMSG_DONE, curl_err=%d", curl_err);
 		} else if (poll_status < 0) {
 			req->state = CLM_HTTP_ERROR;
@@ -330,8 +332,8 @@ http_socket_callback(
 		 */
 		r = uv_poll_init_socket(mux->uv, &ctx->poll, s);
 		if (r != 0) {
-			clm_debug("uv_poll_init_socket failed: %s",
-			    uv_strerror(r));
+			clm_debug(
+			    "uv_poll_init_socket failed: %s", uv_strerror(r));
 			free(ctx);
 			return 0;
 		}
@@ -615,7 +617,8 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 
 	curl_easy_setopt(req->easy_handle, CURLOPT_URL, url);
 	req->curl_errbuf[0] = '\0';
-	curl_easy_setopt(req->easy_handle, CURLOPT_ERRORBUFFER, req->curl_errbuf);
+	curl_easy_setopt(
+	    req->easy_handle, CURLOPT_ERRORBUFFER, req->curl_errbuf);
 	if (json_body != NULL) {
 		curl_easy_setopt(req->easy_handle, CURLOPT_POST, 1L);
 		/* COPY, not POSTFIELDS: the latter only stores the pointer and
