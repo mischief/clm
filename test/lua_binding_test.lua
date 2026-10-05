@@ -105,7 +105,46 @@ clm.run(function()
 end)
 
 check(not pcall(clm.sleep, 1), "clm.sleep outside clm.run is an error")
+clm.run(function()
+    check(not pcall(clm.run, function() end), "clm.run does not nest")
+    check(not pcall(clm.step), "clm.step does not run inside clm.run")
+end)
 check(not pcall(clm.run, function() error("boom") end), "clm.run raises")
+
+-- An agent its own callbacks and tools capture is still collected.
+local weak = setmetatable({}, { __mode = "v" })
+do
+    local x
+    x = agent{ on_text = function() return x end }
+    x:tool{ name = "selfref", invoke = function() return x:state() end }
+    x:on("turn_end", function() return x end)
+    weak[1] = x
+end
+collectgarbage("collect")
+collectgarbage("collect")
+check(weak[1] == nil, "an agent in a cycle with its callbacks is collected")
+
+-- The registry does not grow with turns, tools, sleeps and posts.
+local function registry_size()
+    collectgarbage("collect")
+    local n = 0
+    for _ in pairs(debug.getregistry()) do n = n + 1 end
+    return n
+end
+local before = registry_size()
+for _ = 1, 5 do
+    local r = agent{}
+    r:tool{ name = "shell_exec", no_prompt = true,
+        invoke = function() clm.sleep(1); return "x" end }
+    clm.run(function()
+        r:turn("shelltest")
+        clm.post(url .. "/chat/completions", "{}")
+        clm.spawn(function() clm.sleep(1) end)
+        clm.sleep(5)
+    end)
+    r:close()
+end
+check(registry_size() <= before, "the registry does not grow")
 
 print(string.format("%d/%d checks passed", checks - fails, checks))
 if fails > 0 then os.exit(1) end

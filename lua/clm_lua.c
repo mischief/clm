@@ -20,19 +20,51 @@
 #include "clm/host_uv.h"
 
 #define AGENT_META "clm.agent"
+#define CTX_META "clm.ctx"
+#define CTX_KEY "clm.context"
 #define TASKS_KEY "clm.tasks"
+#define AGENTS_KEY "clm.agents"
 
 cJSON *clm_lua_to_cjson(lua_State *L, int idx);
 void clm_lua_push_json_value(lua_State *L, cJSON *obj);
 
-static uv_loop_t loop;
-static lua_State *mainL;
+/*
+ * One per Lua state that loads the module, kept in its registry: the loop
+ * all its agents share, the state's main thread for callbacks, and the
+ * HTTP host for clm.post. Nothing is shared between Lua states.
+ */
+struct cctx {
+	uv_loop_t loop;
+	lua_State *L;
+	struct clm_host *post_host;
+	int in_loop; /* uv_run calls under way; uv_run must not nest */
+};
+
+static struct cctx *
+ctx_of(lua_State *L)
+{
+	struct cctx *c;
+
+	lua_getfield(L, LUA_REGISTRYINDEX, CTX_KEY);
+	c = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+	return c;
+}
+
+static void
+run_loop(struct cctx *c, uv_run_mode mode)
+{
+	c->in_loop++;
+	uv_run(&c->loop, mode);
+	c->in_loop--;
+}
 
 /* ------------------------------------------------------------------ */
 /* Tasks: coroutines this module starts, with a hook for their end     */
 /* ------------------------------------------------------------------ */
 
 struct task {
+	struct cctx *c;
 	lua_State *co;
 	int ref;
 	void (*finish)(struct task *t, bool ok, int nres);
@@ -50,8 +82,9 @@ report(const char *what, const char *msg)
 }
 
 static struct task *
-task_of(lua_State *co)
+task_of(struct cctx *c, lua_State *co)
 {
+	lua_State *mainL = c->L;
 	struct task *t;
 
 	lua_getfield(mainL, LUA_REGISTRYINDEX, TASKS_KEY);
@@ -66,6 +99,8 @@ task_of(lua_State *co)
 static void
 task_forget(struct task *t)
 {
+	lua_State *mainL = t->c->L;
+
 	lua_getfield(mainL, LUA_REGISTRYINDEX, TASKS_KEY);
 	lua_pushthread(t->co);
 	lua_xmove(t->co, mainL, 1);
@@ -78,10 +113,10 @@ task_forget(struct task *t)
 /* Resume co with the nargs values on its stack. A task that ends runs its
  * finish hook; a coroutine this module did not start is just resumed. */
 static void
-co_resume(lua_State *co, int nargs)
+co_resume(struct cctx *c, lua_State *co, int nargs)
 {
-	struct task *t = task_of(co);
-	int nres = 0, rc = lua_resume(co, mainL, nargs, &nres);
+	struct task *t = task_of(c, co);
+	int nres = 0, rc = lua_resume(co, c->L, nargs, &nres);
 
 	if (rc == LUA_YIELD)
 		return;
@@ -111,15 +146,17 @@ co_resume(lua_State *co, int nargs)
 
 /* Start fn (at idx on L) with nargs arguments above it in a new coroutine. */
 static struct task *
-task_start(lua_State *L, int nargs, void (*finish)(struct task *, bool, int),
-    void *user, bool keep)
+task_start(struct cctx *c, lua_State *L, int nargs,
+    void (*finish)(struct task *, bool, int), void *user, bool keep)
 {
+	lua_State *mainL = c->L;
 	struct task *t = calloc(1, sizeof(*t));
 
 	if (t == NULL) {
 		lua_pop(L, nargs + 1);
 		return NULL;
 	}
+	t->c = c;
 	t->keep = keep;
 	t->co = lua_newthread(mainL);
 	t->ref = luaL_ref(mainL, LUA_REGISTRYINDEX);
@@ -132,36 +169,39 @@ task_start(lua_State *L, int nargs, void (*finish)(struct task *, bool, int),
 	lua_pushlightuserdata(mainL, t);
 	lua_rawset(mainL, -3);
 	lua_pop(mainL, 1);
-	co_resume(t->co, nargs);
+	co_resume(c, t->co, nargs);
 	return t;
 }
 
 /* A coroutine parked until a callback resumes it. */
 struct wait {
+	struct cctx *c;
 	lua_State *co;
 	int ref;
 };
 
 static int
-wait_begin(lua_State *L, struct wait *w)
+wait_begin(struct cctx *c, lua_State *L, struct wait *w)
 {
-	if (L == mainL || !lua_isyieldable(L))
+	if (L == c->L || !lua_isyieldable(L))
 		return -1;
+	w->c = c;
 	w->co = L;
 	lua_pushthread(L);
-	lua_xmove(L, mainL, 1);
-	w->ref = luaL_ref(mainL, LUA_REGISTRYINDEX);
+	lua_xmove(L, c->L, 1);
+	w->ref = luaL_ref(c->L, LUA_REGISTRYINDEX);
 	return 0;
 }
 
 static void
 wait_end(struct wait *w, int nargs)
 {
+	struct cctx *c = w->c;
 	lua_State *co = w->co;
 
-	luaL_unref(mainL, LUA_REGISTRYINDEX, w->ref);
+	luaL_unref(c->L, LUA_REGISTRYINDEX, w->ref);
 	w->co = NULL;
-	co_resume(co, nargs);
+	co_resume(c, co, nargs);
 }
 
 /* ------------------------------------------------------------------ */
@@ -170,11 +210,16 @@ wait_end(struct wait *w, int nargs)
 
 #define MAX_STRS 8
 
+/*
+ * The Lua values an agent needs (its options and callbacks, hooks and tool
+ * functions) live in its userdata's user value, never in the registry, so
+ * a callback that captures the agent forms a cycle the collector can free.
+ * AGENTS_KEY maps each agent to its userdata, weakly, for C callbacks.
+ */
 struct lagent {
+	struct cctx *c;
 	struct clm_agent *agent;
 	struct clm_host *host;
-	int opts;  /* registry ref: the options table, callbacks included */
-	int hooks; /* registry ref: {pre_tool = {...}, turn_start = ...} */
 	char *strs[MAX_STRS];
 	size_t nstrs;
 	bool busy;
@@ -183,6 +228,28 @@ struct lagent {
 	struct wait waiter;
 	bool sync_wait;
 };
+
+/* Push the agent's store table, {opts, hooks, tools}, on L. */
+static void
+push_store(lua_State *L, struct lagent *la)
+{
+	lua_getfield(L, LUA_REGISTRYINDEX, AGENTS_KEY);
+	if (lua_rawgetp(L, -1, la) == LUA_TUSERDATA)
+		lua_getiuservalue(L, -1, 1);
+	else
+		lua_newtable(L); /* being collected: nothing to call */
+	lua_replace(L, -3);
+	lua_pop(L, 1);
+}
+
+/* Push store[field] on L. */
+static void
+push_field(lua_State *L, struct lagent *la, const char *field)
+{
+	push_store(L, la);
+	lua_getfield(L, -1, field);
+	lua_remove(L, -2);
+}
 
 static struct lagent *
 check_agent(lua_State *L, int idx)
@@ -194,11 +261,13 @@ check_agent(lua_State *L, int idx)
 	return la;
 }
 
-/* Push opts[name] on mainL; true if it is a function. */
+/* Push opts[name] on the main thread; true if it is a function. */
 static bool
 push_cb(struct lagent *la, const char *name)
 {
-	lua_rawgeti(mainL, LUA_REGISTRYINDEX, la->opts);
+	lua_State *mainL = la->c->L;
+
+	push_field(mainL, la, "opts");
 	lua_getfield(mainL, -1, name);
 	lua_remove(mainL, -2);
 	if (lua_isfunction(mainL, -1))
@@ -208,7 +277,7 @@ push_cb(struct lagent *la, const char *name)
 }
 
 static void
-call_cb(const char *name, int nargs)
+call_cb(lua_State *mainL, const char *name, int nargs)
 {
 	if (lua_pcall(mainL, nargs, 0, 0) != LUA_OK) {
 		report(name, lua_tostring(mainL, -1));
@@ -219,29 +288,35 @@ call_cb(const char *name, int nargs)
 static void
 cb_text(const char *text, void *user)
 {
+	lua_State *mainL = ((struct lagent *)user)->c->L;
+
 	if (!push_cb(user, "on_text"))
 		return;
 	lua_pushstring(mainL, text);
-	call_cb("on_text", 1);
+	call_cb(mainL, "on_text", 1);
 }
 
 static void
 cb_reasoning(const char *text, void *user)
 {
+	lua_State *mainL = ((struct lagent *)user)->c->L;
+
 	if (!push_cb(user, "on_reasoning"))
 		return;
 	lua_pushstring(mainL, text);
-	call_cb("on_reasoning", 1);
+	call_cb(mainL, "on_reasoning", 1);
 }
 
 static void
 cb_tool_begin(const char *name, const char *args, void *user)
 {
+	lua_State *mainL = ((struct lagent *)user)->c->L;
+
 	if (!push_cb(user, "on_tool_begin"))
 		return;
 	lua_pushstring(mainL, name);
 	lua_pushstring(mainL, args != NULL ? args : "{}");
-	call_cb("on_tool_begin", 2);
+	call_cb(mainL, "on_tool_begin", 2);
 }
 
 static void
@@ -249,6 +324,7 @@ cb_tool_result(const char *name, const char *content,
     enum clm_tool_outcome outcome, void *user)
 {
 	static const char *const names[] = {"ok", "failed", "timedout"};
+	lua_State *mainL = ((struct lagent *)user)->c->L;
 
 	if (!push_cb(user, "on_tool"))
 		return;
@@ -256,21 +332,25 @@ cb_tool_result(const char *name, const char *content,
 	lua_pushstring(mainL, content != NULL ? content : "");
 	lua_pushstring(
 	    mainL, (unsigned)outcome < 3 ? names[outcome] : "failed");
-	call_cb("on_tool", 3);
+	call_cb(mainL, "on_tool", 3);
 }
 
 static void
 cb_notice(const char *text, void *user)
 {
+	lua_State *mainL = ((struct lagent *)user)->c->L;
+
 	if (!push_cb(user, "on_notice"))
 		return;
 	lua_pushstring(mainL, text);
-	call_cb("on_notice", 1);
+	call_cb(mainL, "on_notice", 1);
 }
 
 static void
 cb_usage(const struct clm_usage *u, void *user)
 {
+	lua_State *mainL = ((struct lagent *)user)->c->L;
+
 	if (!push_cb(user, "on_usage"))
 		return;
 	lua_createtable(mainL, 0, 4);
@@ -282,13 +362,14 @@ cb_usage(const struct clm_usage *u, void *user)
 	lua_setfield(mainL, -2, "cached");
 	lua_pushinteger(mainL, u->cache_write_tokens);
 	lua_setfield(mainL, -2, "cache_written");
-	call_cb("on_usage", 1);
+	call_cb(mainL, "on_usage", 1);
 }
 
 static void
 cb_permission(const struct clm_permission_req *req, void *user)
 {
 	struct lagent *la = user;
+	lua_State *mainL = la->c->L;
 	const char *reason = clm_permission_req_reason(req);
 	bool allow = false;
 
@@ -308,7 +389,7 @@ cb_permission(const struct clm_permission_req *req, void *user)
 	} else {
 		/* "allow" answers yes, except when a hook asked for a
 		 * person: no one is here to answer. */
-		lua_rawgeti(mainL, LUA_REGISTRYINDEX, la->opts);
+		push_field(mainL, la, "opts");
 		lua_getfield(mainL, -1, "permission");
 		allow = reason == NULL && lua_isstring(mainL, -1) &&
 		    strcmp(lua_tostring(mainL, -1), "allow") == 0;
@@ -321,6 +402,8 @@ cb_permission(const struct clm_permission_req *req, void *user)
 static void
 push_result(struct lagent *la)
 {
+	lua_State *mainL = la->c->L;
+
 	if (la->status == 0) {
 		lua_pushstring(mainL, la->text != NULL ? la->text : "");
 		lua_pushinteger(mainL, 0);
@@ -340,6 +423,7 @@ static void
 cb_turn_done(int status, void *user)
 {
 	struct lagent *la = user;
+	lua_State *mainL = la->c->L;
 
 	la->busy = false;
 	la->status = status;
@@ -365,6 +449,7 @@ static void
 turn_hook(const struct clm_turn_info *info, void *user)
 {
 	struct lagent *la = user;
+	lua_State *mainL = la->c->L;
 	const char *ev =
 	    info->event == CLM_TURN_START ? "turn_start" : "turn_end";
 	int n, i;
@@ -373,7 +458,7 @@ turn_hook(const struct clm_turn_info *info, void *user)
 		free(la->text);
 		la->text = info->text != NULL ? strdup(info->text) : NULL;
 	}
-	lua_rawgeti(mainL, LUA_REGISTRYINDEX, la->hooks);
+	push_field(mainL, la, "hooks");
 	lua_getfield(mainL, -1, ev);
 	n = lua_istable(mainL, -1) ? (int)lua_rawlen(mainL, -1) : 0;
 	for (i = 1; i <= n; i++) {
@@ -390,7 +475,7 @@ turn_hook(const struct clm_turn_info *info, void *user)
 				lua_setfield(mainL, -2, "text");
 			}
 		}
-		call_cb(ev, 1);
+		call_cb(mainL, ev, 1);
 	}
 	lua_pop(mainL, 2);
 }
@@ -446,6 +531,7 @@ static void
 pre_tool_hook(struct clm_tool_gate *gate, void *user)
 {
 	struct lagent *la = user;
+	lua_State *mainL = la->c->L;
 	struct gate_task *g = calloc(1, sizeof(*g));
 	cJSON *args;
 
@@ -454,7 +540,7 @@ pre_tool_hook(struct clm_tool_gate *gate, void *user)
 		return;
 	}
 	g->gate = gate;
-	lua_rawgeti(mainL, LUA_REGISTRYINDEX, la->hooks);
+	push_field(mainL, la, "hooks");
 	lua_getfield(mainL, -1, "pre_tool");
 	lua_rawgeti(mainL, -1, 1);
 	lua_remove(mainL, -2);
@@ -470,12 +556,13 @@ pre_tool_hook(struct clm_tool_gate *gate, void *user)
 		lua_newtable(mainL);
 	}
 	lua_setfield(mainL, -2, "args");
-	(void)task_start(mainL, 1, gate_finish, g, false);
+	(void)task_start(la->c, mainL, 1, gate_finish, g, false);
 }
 
 /* Tools written in Lua: invoke(args) returns the result, or raises. */
 struct ltool {
-	int fn;
+	struct lagent *la;
+	char *name;
 };
 
 static void
@@ -502,16 +589,19 @@ static void
 tool_invoke(struct clm_tool_invocation *inv, void *user)
 {
 	struct ltool *lt = user;
+	lua_State *mainL = lt->la->c->L;
 	cJSON *args = cJSON_Parse(clm_tool_invocation_args(inv));
 
-	lua_rawgeti(mainL, LUA_REGISTRYINDEX, lt->fn);
+	push_field(mainL, lt->la, "tools");
+	lua_getfield(mainL, -1, lt->name);
+	lua_remove(mainL, -2);
 	if (args != NULL) {
 		clm_lua_push_json_value(mainL, args);
 		cJSON_Delete(args);
 	} else {
 		lua_newtable(mainL);
 	}
-	if (task_start(mainL, 1, tool_finish, inv, false) == NULL)
+	if (task_start(lt->la->c, mainL, 1, tool_finish, inv, false) == NULL)
 		clm_tool_fail(inv, "out of memory");
 }
 
@@ -520,8 +610,7 @@ tool_detach(void *user)
 {
 	struct ltool *lt = user;
 
-	if (mainL != NULL)
-		luaL_unref(mainL, LUA_REGISTRYINDEX, lt->fn);
+	free(lt->name);
 	free(lt);
 }
 
@@ -553,6 +642,8 @@ opt_int(lua_State *L, int t, const char *key, lua_Integer dflt)
 static void
 agent_close(struct lagent *la)
 {
+	lua_State *mainL = la->c != NULL ? la->c->L : NULL;
+
 	if (la->agent != NULL) {
 		clm_agent_free(la->agent);
 		la->agent = NULL;
@@ -575,11 +666,6 @@ agent_close(struct lagent *la)
 	la->nstrs = 0;
 	free(la->text);
 	la->text = NULL;
-	if (mainL != NULL) {
-		luaL_unref(mainL, LUA_REGISTRYINDEX, la->opts);
-		luaL_unref(mainL, LUA_REGISTRYINDEX, la->hooks);
-	}
-	la->opts = la->hooks = LUA_NOREF;
 }
 
 /* clm.agent{url=, model=, provider=, api_key=, system_prompt=, stream=,
@@ -595,10 +681,22 @@ l_agent(lua_State *L)
 	int r;
 
 	luaL_checktype(L, 1, LUA_TTABLE);
-	la = lua_newuserdatauv(L, sizeof(*la), 0);
+	la = lua_newuserdatauv(L, sizeof(*la), 1);
 	memset(la, 0, sizeof(*la));
-	la->opts = la->hooks = LUA_NOREF;
+	la->c = ctx_of(L);
 	luaL_setmetatable(L, AGENT_META);
+	lua_createtable(L, 0, 3);
+	lua_pushvalue(L, 1);
+	lua_setfield(L, -2, "opts");
+	lua_newtable(L);
+	lua_setfield(L, -2, "hooks");
+	lua_newtable(L);
+	lua_setfield(L, -2, "tools");
+	lua_setiuservalue(L, -2, 1);
+	lua_getfield(L, LUA_REGISTRYINDEX, AGENTS_KEY);
+	lua_pushvalue(L, -2);
+	lua_rawsetp(L, -2, la);
+	lua_pop(L, 1);
 
 	url = keep_str(la, L, 1, "url");
 	if (url == NULL)
@@ -621,12 +719,7 @@ l_agent(lua_State *L)
 	cfg.context_size = opt_int(L, 1, "context_size", 0);
 	cfg.max_iterations = (size_t)opt_int(L, 1, "max_iterations", 0);
 
-	lua_pushvalue(L, 1);
-	la->opts = luaL_ref(L, LUA_REGISTRYINDEX);
-	lua_newtable(L);
-	la->hooks = luaL_ref(L, LUA_REGISTRYINDEX);
-
-	r = clm_host_uv_new(&loop, &la->host);
+	r = clm_host_uv_new(&la->c->loop, &la->host);
 	if (r == 0)
 		r = clm_agent_new(&cfg, la->host, &callbacks, la, &la->agent);
 	if (r < 0) {
@@ -680,31 +773,31 @@ l_turn(lua_State *L)
 		lua_pushinteger(L, -EBUSY);
 		return 3;
 	}
+	if (wait_begin(la->c, L, &la->waiter) < 0 && la->c->in_loop > 0)
+		return luaL_error(L,
+		    "clm: turn outside a coroutine while the "
+		    "loop runs; call it from clm.run's function");
 	free(la->text);
 	la->text = NULL;
 	la->busy = true;
-	if (wait_begin(L, &la->waiter) == 0) {
-		r = clm_agent_submit(la->agent, prompt);
-		if (r < 0) {
-			luaL_unref(mainL, LUA_REGISTRYINDEX, la->waiter.ref);
-			la->waiter.co = NULL;
-			la->busy = false;
-			la->status = r;
-			push_result(la);
-			lua_xmove(mainL, L, 3);
-			return 3;
-		}
-		return lua_yieldk(L, 0, 0, l_turn_k);
-	}
 	r = clm_agent_submit(la->agent, prompt);
 	if (r < 0) {
+		if (la->waiter.co != NULL) {
+			luaL_unref(la->c->L, LUA_REGISTRYINDEX, la->waiter.ref);
+			la->waiter.co = NULL;
+		}
 		la->busy = false;
 		la->status = r;
+		push_result(la);
+		lua_xmove(la->c->L, L, 3);
+		return 3;
 	}
+	if (la->waiter.co != NULL)
+		return lua_yieldk(L, 0, 0, l_turn_k);
 	while (la->busy)
-		uv_run(&loop, UV_RUN_ONCE);
+		run_loop(la->c, UV_RUN_ONCE);
 	push_result(la);
-	lua_xmove(mainL, L, 3);
+	lua_xmove(la->c->L, L, 3);
 	return 3;
 }
 
@@ -755,12 +848,13 @@ l_tool(lua_State *L)
 	def.timeout_ms = (uint64_t)opt_int(L, 2, "timeout_ms", 0);
 	lua_getfield(L, 2, "invoke");
 	luaL_checktype(L, -1, LUA_TFUNCTION);
-	lt = malloc(sizeof(*lt));
-	if (lt == NULL) {
+	lt = calloc(1, sizeof(*lt));
+	if (lt == NULL || (lt->name = strdup(def.name)) == NULL) {
+		free(lt);
 		free(schema);
 		return luaL_error(L, "clm: out of memory");
 	}
-	lt->fn = luaL_ref(L, LUA_REGISTRYINDEX);
+	lt->la = la;
 	def.invoke = tool_invoke;
 	def.detach = tool_detach;
 	def.user = lt;
@@ -771,6 +865,10 @@ l_tool(lua_State *L)
 		return luaL_error(
 		    L, "clm: tool %s: %s", def.name, strerror(-r));
 	}
+	lua_getiuservalue(L, 1, 1);
+	lua_getfield(L, -1, "tools");
+	lua_pushvalue(L, -3); /* the invoke function */
+	lua_setfield(L, -2, def.name);
 	return 0;
 }
 
@@ -785,7 +883,9 @@ l_on(lua_State *L)
 	bool first;
 
 	luaL_checktype(L, 3, LUA_TFUNCTION);
-	lua_rawgeti(L, LUA_REGISTRYINDEX, la->hooks);
+	lua_getiuservalue(L, 1, 1);
+	lua_getfield(L, -1, "hooks");
+	lua_remove(L, -2);
 	lua_getfield(L, -1, events[ev]);
 	if (!lua_istable(L, -1)) {
 		lua_pop(L, 1);
@@ -920,18 +1020,15 @@ l_sleep(lua_State *L)
 
 	if (s == NULL)
 		return luaL_error(L, "clm.sleep: out of memory");
-	if (wait_begin(L, &s->w) < 0) {
+	if (wait_begin(ctx_of(L), L, &s->w) < 0) {
 		free(s);
 		return luaL_error(L, "clm.sleep: call it inside clm.run");
 	}
-	uv_timer_init(&loop, &s->timer);
+	uv_timer_init(&s->w.c->loop, &s->timer);
 	s->timer.data = s;
 	uv_timer_start(&s->timer, sleeper_fire, ms > 0 ? (uint64_t)ms : 0, 0);
 	return lua_yieldk(L, 0, 0, l_sleep_k);
 }
-
-/* One HTTP host for clm.post, made on first use. */
-static struct clm_host *post_host;
 
 struct post {
 	struct wait w;
@@ -968,9 +1065,9 @@ post_wake(struct post *p)
 		return; /* clm.post returns the result itself */
 	{
 		struct wait w = p->w;
-		int n = post_push(mainL, p);
+		int n = post_push(w.c->L, p);
 
-		lua_xmove(mainL, w.co, n);
+		lua_xmove(w.c->L, w.co, n);
 		wait_end(&w, n);
 	}
 }
@@ -1017,6 +1114,7 @@ l_post(lua_State *L)
 	const char *body = luaL_checkstring(L, 2);
 	char *hdrs[16] = {NULL};
 	struct clm_http_req req = {0};
+	struct cctx *c = ctx_of(L);
 	struct post *p = NULL;
 	int n = 0, r;
 
@@ -1033,11 +1131,12 @@ l_post(lua_State *L)
 	} else {
 		hdrs[n++] = strdup("Content-Type: application/json");
 	}
-	if (post_host == NULL && clm_host_uv_new(&loop, &post_host) < 0)
+	if (c->post_host == NULL &&
+	    clm_host_uv_new(&c->loop, &c->post_host) < 0)
 		r = -ENOMEM;
 	else if ((p = calloc(1, sizeof(*p))) == NULL)
 		r = -ENOMEM;
-	else if (wait_begin(L, &p->w) < 0) {
+	else if (wait_begin(c, L, &p->w) < 0) {
 		free(p);
 		r = -EAGAIN;
 	} else {
@@ -1045,8 +1144,8 @@ l_post(lua_State *L)
 		req.body = body;
 		req.headers = (const char *const *)hdrs;
 		p->starting = true;
-		r = post_host->http_post(
-		    post_host->ctx, &req, post_ok, post_fail, NULL, p, NULL);
+		r = c->post_host->http_post(
+		    c->post_host->ctx, &req, post_ok, post_fail, NULL, p, NULL);
 		p->starting = false;
 	}
 	for (int i = 0; i < n; i++)
@@ -1056,14 +1155,14 @@ l_post(lua_State *L)
 	if (r == -ENOMEM && p == NULL)
 		return luaL_error(L, "clm.post: out of memory");
 	if (r < 0) {
-		luaL_unref(mainL, LUA_REGISTRYINDEX, p->w.ref);
+		luaL_unref(c->L, LUA_REGISTRYINDEX, p->w.ref);
 		free(p);
 		lua_pushnil(L);
 		lua_pushstring(L, strerror(-r));
 		return 2;
 	}
 	if (p->done) {
-		luaL_unref(mainL, LUA_REGISTRYINDEX, p->w.ref);
+		luaL_unref(c->L, LUA_REGISTRYINDEX, p->w.ref);
 		return post_push(L, p);
 	}
 	return lua_yieldk(L, 0, 0, l_post_k);
@@ -1076,7 +1175,7 @@ l_spawn(lua_State *L)
 	int n = lua_gettop(L);
 
 	luaL_checktype(L, 1, LUA_TFUNCTION);
-	(void)task_start(L, n - 1, NULL, NULL, false);
+	(void)task_start(ctx_of(L), L, n - 1, NULL, NULL, false);
 	return 0;
 }
 
@@ -1090,12 +1189,21 @@ l_run(lua_State *L)
 	char *err;
 	bool ok;
 
+	struct cctx *c = ctx_of(L);
+
 	luaL_checktype(L, 1, LUA_TFUNCTION);
-	t = task_start(L, n - 1, NULL, NULL, true);
-	if (t == NULL)
+	if (c->in_loop > 0)
+		return luaL_error(L, "clm.run: the loop is already running");
+	/* Busy from the first resume on, so fn cannot start a second run. */
+	c->in_loop++;
+	t = task_start(c, L, n - 1, NULL, NULL, true);
+	if (t == NULL) {
+		c->in_loop--;
 		return luaL_error(L, "clm.run: out of memory");
+	}
 	while (!t->done)
-		uv_run(&loop, UV_RUN_ONCE);
+		uv_run(&c->loop, UV_RUN_ONCE);
+	c->in_loop--;
 	ok = t->ok;
 	err = t->err;
 	free(t);
@@ -1111,8 +1219,11 @@ l_run(lua_State *L)
 static int
 l_step(lua_State *L)
 {
-	(void)L;
-	uv_run(&loop, UV_RUN_NOWAIT);
+	struct cctx *c = ctx_of(L);
+
+	if (c->in_loop > 0)
+		return luaL_error(L, "clm.step: the loop is already running");
+	run_loop(c, UV_RUN_NOWAIT);
 	return 0;
 }
 
@@ -1141,19 +1252,62 @@ static const luaL_Reg module_fns[] = {
     {NULL, NULL},
 };
 
+static void
+close_handle(uv_handle_t *h, void *arg)
+{
+	(void)arg;
+	if (!uv_is_closing(h))
+		uv_close(h, NULL);
+}
+
+/* The state is closing: its agents went first, so only the loop is left. */
+static int
+ctx_gc(lua_State *L)
+{
+	struct cctx *c = luaL_checkudata(L, 1, CTX_META);
+
+	if (c->L == NULL)
+		return 0;
+	if (c->post_host != NULL) {
+		clm_host_uv_free(c->post_host);
+		c->post_host = NULL;
+	}
+	uv_walk(&c->loop, close_handle, NULL);
+	uv_run(&c->loop, UV_RUN_DEFAULT);
+	(void)uv_loop_close(&c->loop);
+	c->L = NULL;
+	return 0;
+}
+
 int luaopen_clm(lua_State *L);
 
 int
 luaopen_clm(lua_State *L)
 {
-	if (mainL == NULL) {
+	/* Made before any agent, so the state closes the agents first. */
+	if (ctx_of(L) == NULL) {
+		struct cctx *c = lua_newuserdatauv(L, sizeof(*c), 0);
+
+		memset(c, 0, sizeof(*c));
+		if (uv_loop_init(&c->loop) != 0)
+			return luaL_error(L, "clm: cannot make an event loop");
 		lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
-		mainL = lua_tothread(L, -1);
+		c->L = lua_tothread(L, -1);
 		lua_pop(L, 1);
-		uv_loop_init(&loop);
+		luaL_newmetatable(L, CTX_META);
+		lua_pushcfunction(L, ctx_gc);
+		lua_setfield(L, -2, "__gc");
+		lua_setmetatable(L, -2);
+		lua_setfield(L, LUA_REGISTRYINDEX, CTX_KEY);
+		lua_newtable(L);
+		lua_setfield(L, LUA_REGISTRYINDEX, TASKS_KEY);
+		lua_newtable(L);
+		lua_createtable(L, 0, 1);
+		lua_pushstring(L, "v");
+		lua_setfield(L, -2, "__mode");
+		lua_setmetatable(L, -2);
+		lua_setfield(L, LUA_REGISTRYINDEX, AGENTS_KEY);
 	}
-	lua_newtable(L);
-	lua_setfield(L, LUA_REGISTRYINDEX, TASKS_KEY);
 	if (luaL_newmetatable(L, AGENT_META)) {
 		lua_newtable(L);
 		luaL_setfuncs(L, agent_methods, 0);
