@@ -294,6 +294,9 @@ script_tool_call(struct conn *c, const char *text)
 		cJSON_AddStringToObject(args, "command",
 		    "printf 'N\\bNA\\bAM\\bME\\bE _\\bi_\\bn_\\bt "
 		    "\\033[31mred\\033[0m\\n'");
+	} else if (has_ci(text, "readtest")) {
+		name = "read_file";
+		cJSON_AddStringToObject(args, "path", "/etc/hostname");
 	} else if (has_ci(text, "edittest")) {
 		/* Key order a model is free to pick, and the one that reads
 		 * backwards if the tui renders keys as they arrive. */
@@ -424,8 +427,8 @@ script_whole(struct conn *c)
 static bool
 wants_tool(const cJSON *msgs)
 {
-	static const char *const words[] = {
-	    "shelltest", "multilinetest", "manytest", "escapetest", "edittest"};
+	static const char *const words[] = {"shelltest", "multilinetest",
+	    "manytest", "escapetest", "edittest", "readtest"};
 	const cJSON *m;
 	const char *last = NULL;
 	int i = 0;

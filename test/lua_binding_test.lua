@@ -57,6 +57,16 @@ clm.run(function() t:turn("shelltest") end)
 check(results[1] ~= nil and results[1]:find("not today") ~= nil,
     "pre_tool denies with its reason")
 
+-- builtins = false drops the file tools; a list keeps the ones named.
+for _, c in ipairs({ { false, "failed" }, { { "read_file" }, "ok" } }) do
+    local how
+    local b = agent{ builtins = c[1], permission = "allow",
+        on_tool = function(_, _, h) how = h end }
+    clm.run(function() b:turn("readtest") end)
+    check(how == c[2], "builtins " .. tostring(c[1]) .. ": read_file " .. c[2])
+    b:close()
+end
+
 -- Turn hooks see the prompt and the reply.
 local seen = {}
 t:on("turn_start", function(info) seen.prompt = info.prompt end)

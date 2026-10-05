@@ -730,6 +730,35 @@ l_agent(lua_State *L)
 		(void)clm_agent_set_effort(la->agent, effort);
 	(void)clm_agent_add_turn_hook(la->agent, turn_hook, la);
 
+	/* builtins = false drops the file tools; a list keeps only those. */
+	lua_getfield(L, 1, "builtins");
+	if (lua_isboolean(L, -1) || lua_istable(L, -1)) {
+		static const char *const names[] = {
+		    "read_file", "write_file", "list_dir", "read_image"};
+
+		for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+			bool keep = false;
+
+			if (lua_istable(L, -1)) {
+				for (int j = 1; j <= (int)lua_rawlen(L, -1);
+				    j++) {
+					const char *s;
+
+					lua_rawgeti(L, -1, j);
+					s = lua_tostring(L, -1);
+					keep = keep ||
+					    (s && strcmp(s, names[i]) == 0);
+					lua_pop(L, 1);
+				}
+			} else {
+				keep = lua_toboolean(L, -1);
+			}
+			if (!keep)
+				(void)clm_tool_remove(la->agent, names[i]);
+		}
+	}
+	lua_pop(L, 1);
+
 	lua_getfield(L, 1, "tools");
 	if (lua_istable(L, -1)) {
 		for (int i = 1; i <= (int)lua_rawlen(L, -1); i++) {
