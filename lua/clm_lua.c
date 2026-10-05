@@ -930,6 +930,145 @@ l_sleep(lua_State *L)
 	return lua_yieldk(L, 0, 0, l_sleep_k);
 }
 
+/* One HTTP host for clm.post, made on first use. */
+static struct clm_host *post_host;
+
+struct post {
+	struct wait w;
+	bool starting, done;
+	int status;
+	char *body;
+	char err[256];
+};
+
+static int
+post_push(lua_State *L, struct post *p)
+{
+	int n;
+
+	if (p->err[0] != '\0') {
+		lua_pushnil(L);
+		lua_pushstring(L, p->err);
+		n = 2;
+	} else {
+		lua_pushinteger(L, p->status);
+		lua_pushstring(L, p->body != NULL ? p->body : "");
+		n = 2;
+	}
+	free(p->body);
+	free(p);
+	return n;
+}
+
+static void
+post_wake(struct post *p)
+{
+	p->done = true;
+	if (p->starting)
+		return; /* clm.post returns the result itself */
+	{
+		struct wait w = p->w;
+		int n = post_push(mainL, p);
+
+		lua_xmove(mainL, w.co, n);
+		wait_end(&w, n);
+	}
+}
+
+static void
+post_ok(struct clm_http_response *resp, void *user)
+{
+	struct post *p = user;
+
+	p->status = resp->status_code;
+	p->body = resp->body;
+	resp->body = NULL;
+	free(resp->error_msg);
+	resp->error_msg = NULL;
+	post_wake(p);
+}
+
+static void
+post_fail(int code, const char *msg, void *user)
+{
+	struct post *p = user;
+
+	(void)code;
+	(void)snprintf(p->err, sizeof(p->err), "%s",
+	    msg != NULL && msg[0] != '\0' ? msg : "request failed");
+	post_wake(p);
+}
+
+static int
+l_post_k(lua_State *L, int status, lua_KContext ctx)
+{
+	(void)status;
+	(void)ctx;
+	(void)L;
+	return 2;
+}
+
+/* clm.post(url, body[, headers]) -> status, body | nil, err. Inside a
+ * coroutine; JSON content type unless headers says otherwise. */
+static int
+l_post(lua_State *L)
+{
+	const char *url = luaL_checkstring(L, 1);
+	const char *body = luaL_checkstring(L, 2);
+	char *hdrs[16] = {NULL};
+	struct clm_http_req req = {0};
+	struct post *p = NULL;
+	int n = 0, r;
+
+	if (lua_istable(L, 3)) {
+		lua_pushnil(L);
+		while (lua_next(L, 3) != 0) {
+			if (n < 15 && lua_type(L, -2) == LUA_TSTRING &&
+			    lua_isstring(L, -1) &&
+			    asprintf(&hdrs[n], "%s: %s", lua_tostring(L, -2),
+			        lua_tostring(L, -1)) >= 0)
+				n++;
+			lua_pop(L, 1);
+		}
+	} else {
+		hdrs[n++] = strdup("Content-Type: application/json");
+	}
+	if (post_host == NULL && clm_host_uv_new(&loop, &post_host) < 0)
+		r = -ENOMEM;
+	else if ((p = calloc(1, sizeof(*p))) == NULL)
+		r = -ENOMEM;
+	else if (wait_begin(L, &p->w) < 0) {
+		free(p);
+		r = -EAGAIN;
+	} else {
+		req.url = url;
+		req.body = body;
+		req.headers = (const char *const *)hdrs;
+		p->starting = true;
+		r = post_host->http_post(
+		    post_host->ctx, &req, post_ok, post_fail, NULL, p, NULL);
+		p->starting = false;
+	}
+	for (int i = 0; i < n; i++)
+		free(hdrs[i]);
+	if (r == -EAGAIN)
+		return luaL_error(L, "clm.post: call it inside clm.run");
+	if (r == -ENOMEM && p == NULL)
+		return luaL_error(L, "clm.post: out of memory");
+	if (r < 0) {
+		luaL_unref(mainL, LUA_REGISTRYINDEX, p->w.ref);
+		free(p);
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(-r));
+		return 2;
+	}
+	if (p->done) {
+		luaL_unref(mainL, LUA_REGISTRYINDEX, p->w.ref);
+		return post_push(L, p);
+	}
+	return lua_yieldk(L, 0, 0, l_post_k);
+}
+
 /* clm.spawn(fn, ...) runs fn in a new coroutine; errors are printed. */
 static int
 l_spawn(lua_State *L)
@@ -997,6 +1136,7 @@ static const luaL_Reg module_fns[] = {
     {"run", l_run},
     {"spawn", l_spawn},
     {"sleep", l_sleep},
+    {"post", l_post},
     {"step", l_step},
     {NULL, NULL},
 };

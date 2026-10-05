@@ -95,6 +95,15 @@ clm.run(function()
     check(r2 == nil and err2 == "agent closed", "close ends a waiting turn")
 end)
 
+-- clm.post waits in its coroutine for the reply.
+clm.run(function()
+    local st, body = clm.post(url .. "/chat/completions",
+        '{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}]}')
+    check(st == 200 and body:find("choices") ~= nil, "clm.post returns status and body")
+    local none, err = clm.post("http://127.0.0.1:1/x", "{}")
+    check(none == nil and type(err) == "string", "a failed post returns nil and why")
+end)
+
 check(not pcall(clm.sleep, 1), "clm.sleep outside clm.run is an error")
 check(not pcall(clm.run, function() error("boom") end), "clm.run raises")
 
