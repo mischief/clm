@@ -3845,6 +3845,48 @@ test_output_cut_tokens(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* With cache_system, the Responses request sends the system prompt as a
+ * developer message ending in an explicit breakpoint, and usage reports
+ * cache writes. */
+static void
+test_responses_cache_system(uv_loop_t *loop)
+{
+	static const char *reply =
+	    "{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":"
+	    "[{\"type\":\"message\",\"content\":[{\"type\":"
+	    "\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":"
+	    "2000,\"output_tokens\":5,\"input_tokens_details\":{"
+	    "\"cached_tokens\":300,\"cache_write_tokens\":1500}}}";
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *req;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_OPENAI_RESPONSES;
+	st.system_prompt = "CACHEDPROMPT";
+	srv = canned_start(loop);
+	canned_reply(srv, reply);
+	st.agent = make_agent(&st, canned_port(srv));
+	clm_agent_set_cache_system(st.agent, true);
+	CHECK(clm_agent_submit(st.agent, "hello") == 0, "cache: submit");
+	run_until_done(&st);
+	req = canned_last_request(srv);
+	CHECK(req != NULL && strstr(req, "\"role\":\"developer\"") != NULL &&
+	        strstr(req, "\"role\":\"system\"") == NULL,
+	    "cache: the system prompt goes as a developer message");
+	CHECK(req != NULL &&
+	        strstr(req,
+	            "\"prompt_cache_breakpoint\":{\"mode\":"
+	            "\"explicit\"}") != NULL,
+	    "cache: it ends in an explicit breakpoint");
+	CHECK(req != NULL && strstr(req, "CACHEDPROMPT") != NULL,
+	    "cache: the prompt text is kept");
+	CHECK(st.got_usage && st.usage.cache_write_tokens == 1500 &&
+	        st.usage.cache_read_tokens == 300,
+	    "cache: usage reports cache reads and writes");
+	teardown(&st, srv);
+}
+
 /* A pre_tool hook for the tests: answers now, or parks the gate. */
 struct hook_state {
 	enum clm_gate_verdict verdict;
@@ -4120,6 +4162,7 @@ test_agent_suite(void *arg)
 	test_rate_limit_backoff_grows();
 	test_autocompact_absolute_cap(&loop);
 	test_responses_chain(&loop);
+	test_responses_cache_system(&loop);
 	test_responses_chain_dropped_by_supersede(&loop);
 	test_responses_failure_is_not_a_filter(&loop);
 	test_responses_rate_limit_is_waited_out(&loop);

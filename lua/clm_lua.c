@@ -728,6 +728,9 @@ l_agent(lua_State *L)
 	}
 	if (effort != NULL)
 		(void)clm_agent_set_effort(la->agent, effort);
+	lua_getfield(L, 1, "cache_system");
+	clm_agent_set_cache_system(la->agent, lua_toboolean(L, -1));
+	lua_pop(L, 1);
 	(void)clm_agent_add_turn_hook(la->agent, turn_hook, la);
 
 	/* builtins = false drops the file tools; a list keeps only those. */

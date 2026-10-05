@@ -14,6 +14,7 @@
 .Nm clm_agent_set_effort ,
 .Nm clm_agent_get_effort ,
 .Nm clm_agent_set_spool ,
+.Nm clm_agent_set_cache_system ,
 .Nm clm_agent_get_history ,
 .Nm clm_provider_from_str ,
 .Nm clm_agent_get_state ,
@@ -64,6 +65,8 @@
 .Fn clm_agent_get_effort "const struct clm_agent *agent"
 .Ft void
 .Fn clm_agent_set_spool "struct clm_agent *agent" "clm_spool_fn fn" "void *user"
+.Ft void
+.Fn clm_agent_set_cache_system "struct clm_agent *agent" "bool on"
 .Ft "const struct clm_history *"
 .Fn clm_agent_get_history "const struct clm_agent *agent"
 .Ft int
@@ -435,6 +438,18 @@ removes it.
 A shell command keeps at most
 .Dv CLM_TOOL_SPOOL_MAX
 bytes of output, 1 MiB.
+.Pp
+.Fn clm_agent_set_cache_system
+with
+.Fa on
+true makes the
+.Qq openai-responses
+provider send the system prompt as a developer message that ends in an
+explicit cache breakpoint.
+The server otherwise places its breakpoint after the latest user message,
+so a new conversation writes the shared prompt to the cache again
+instead of reading it.
+Other providers ignore the setting.
 .Pp
 .Fn clm_agent_set_prompt_part
 sets the system prompt part named

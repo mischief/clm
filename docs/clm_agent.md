@@ -13,6 +13,7 @@ CLM\_AGENT(3) - Library Functions Manual
 **clm\_agent\_set\_effort**,
 **clm\_agent\_get\_effort**,
 **clm\_agent\_set\_spool**,
+**clm\_agent\_set\_cache\_system**,
 **clm\_agent\_get\_history**,
 **clm\_provider\_from\_str**,
 **clm\_agent\_get\_state**,
@@ -73,6 +74,9 @@ CLM\_AGENT(3) - Library Functions Manual
 
 *void*  
 **clm\_agent\_set\_spool**(*struct clm\_agent \*agent*, *clm\_spool\_fn fn*, *void \*user*);
+
+*void*  
+**clm\_agent\_set\_cache\_system**(*struct clm\_agent \*agent*, *bool on*);
 
 *const struct clm\_history \*&zwnj;*  
 **clm\_agent\_get\_history**(*const struct clm\_agent \*agent*);
@@ -446,6 +450,18 @@ removes it.
 A shell command keeps at most
 `CLM_TOOL_SPOOL_MAX`
 bytes of output, 1 MiB.
+
+**clm\_agent\_set\_cache\_system**()
+with
+*on*
+true makes the
+"openai-responses"
+provider send the system prompt as a developer message that ends in an
+explicit cache breakpoint.
+The server otherwise places its breakpoint after the latest user message,
+so a new conversation writes the shared prompt to the cache again
+instead of reading it.
+Other providers ignore the setting.
 
 **clm\_agent\_set\_prompt\_part**()
 sets the system prompt part named

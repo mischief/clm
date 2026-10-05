@@ -152,18 +152,79 @@ convert_content(const cJSON *content)
 	    cJSON_IsString(content) ? content->valuestring : "");
 }
 
+static const char *
+role_of(const cJSON *m)
+{
+	const cJSON *r = m ? cJSON_GetObjectItemCaseSensitive(m, "role") : NULL;
+
+	return cJSON_IsString(r) ? r->valuestring : "";
+}
+
+/* The system prompt as a developer message whose last part
+ * carries an explicit cache breakpoint. OpenAI places its implicit
+ * breakpoint after the latest user message, so without this a new
+ * conversation writes the shared prompt to the cache again. */
 static cJSON *
-convert_messages(cJSON *messages)
+cached_system_item(const cJSON *jcontent)
+{
+	cJSON *item = cJSON_CreateObject();
+	cJSON *parts = convert_content(jcontent);
+	cJSON *last, *bp;
+
+	if (item == NULL || parts == NULL) {
+		cJSON_Delete(item);
+		cJSON_Delete(parts);
+		return NULL;
+	}
+	if (cJSON_IsString(parts)) {
+		cJSON *arr = cJSON_CreateArray();
+		cJSON *p = cJSON_CreateObject();
+
+		if (arr == NULL || p == NULL) {
+			cJSON_Delete(arr);
+			cJSON_Delete(p);
+			cJSON_Delete(parts);
+			cJSON_Delete(item);
+			return NULL;
+		}
+		cJSON_AddItemToObject(
+		    p, "type", cJSON_CreateString("input_text"));
+		cJSON_AddItemToObject(
+		    p, "text", cJSON_CreateString(parts->valuestring));
+		cJSON_AddItemToArray(arr, p);
+		cJSON_Delete(parts);
+		parts = arr;
+	}
+	last = cJSON_GetArrayItem(parts, cJSON_GetArraySize(parts) - 1);
+	bp = cJSON_CreateObject();
+	if (last != NULL && bp != NULL) {
+		cJSON_AddItemToObject(
+		    bp, "mode", cJSON_CreateString("explicit"));
+		cJSON_AddItemToObject(last, "prompt_cache_breakpoint", bp);
+	} else {
+		cJSON_Delete(bp);
+	}
+	cJSON_AddItemToObject(item, "role", cJSON_CreateString("developer"));
+	cJSON_AddItemToObject(item, "content", parts);
+	return item;
+}
+
+static cJSON *
+convert_messages(cJSON *messages, bool cache_system)
 {
 	json_cleanup cJSON *in = messages;
 	cJSON *out;
-	int i, n;
+	int i, n, sys_end = -1;
 
 	out = cJSON_CreateArray();
 	if (out == NULL)
 		return NULL;
 
 	n = cJSON_GetArraySize(in);
+	/* The breakpoint goes after the leading run of system messages. */
+	while (cache_system && sys_end + 1 < n &&
+	    strcmp(role_of(cJSON_GetArrayItem(in, sys_end + 1)), "system") == 0)
+		sys_end++;
 	for (i = 0; i < n; i++) {
 		cJSON *m = cJSON_GetArrayItem(in, i);
 		cJSON *jrole =
@@ -173,6 +234,16 @@ convert_messages(cJSON *messages)
 		const char *role =
 		    cJSON_IsString(jrole) ? jrole->valuestring : "";
 
+		if (i == sys_end) {
+			cJSON *item = cached_system_item(jcontent);
+
+			if (item == NULL) {
+				cJSON_Delete(out);
+				return NULL;
+			}
+			cJSON_AddItemToArray(out, item);
+			continue;
+		}
 		if (strcmp(role, "tool") == 0) {
 			cJSON *jtid =
 			    cJSON_GetObjectItemCaseSensitive(m, "tool_call_id");
@@ -296,7 +367,7 @@ responses_build_request(
 	json_cleanup cJSON *req = NULL;
 	cJSON *input, *rtools;
 
-	input = convert_messages(messages);
+	input = convert_messages(messages, llm->cache_system);
 	if (input == NULL) {
 		cJSON_Delete(tools);
 		return NULL;
@@ -433,16 +504,16 @@ carry_error(cJSON *out, const cJSON *response)
 	cJSON_AddItemToObject(out, "error", copy);
 }
 
-/* Prompt tokens served from an upstream cache, per the Responses API's
- * usage.input_tokens_details.cached_tokens. Unlike Anthropic, input_tokens
- * already counts these, so this is reporting only. */
+/* A field of usage.input_tokens_details: cached_tokens (read from the
+ * cache) or cache_write_tokens (written to it). Unlike Anthropic,
+ * input_tokens already counts both, so these are reporting only. */
 static double
-responses_cached_tokens(const cJSON *usage)
+responses_input_detail(const cJSON *usage, const char *field)
 {
 	cJSON *d =
 	    cJSON_GetObjectItemCaseSensitive(usage, "input_tokens_details");
 	cJSON *v = cJSON_IsObject(d)
-	    ? cJSON_GetObjectItemCaseSensitive(d, "cached_tokens")
+	    ? cJSON_GetObjectItemCaseSensitive(d, field)
 	    : NULL;
 
 	return cJSON_IsNumber(v) ? v->valuedouble : 0;
@@ -644,8 +715,11 @@ responses_normalize_response(cJSON *raw)
 			cJSON_AddItemToObject(usage, "total_tokens",
 			    cJSON_CreateNumber(itok + otok));
 			cJSON_AddItemToObject(usage, "cache_read_tokens",
-			    cJSON_CreateNumber(
-			        responses_cached_tokens(jusage)));
+			    cJSON_CreateNumber(responses_input_detail(
+			        jusage, "cached_tokens")));
+			cJSON_AddItemToObject(usage, "cache_write_tokens",
+			    cJSON_CreateNumber(responses_input_detail(
+			        jusage, "cache_write_tokens")));
 			cJSON_AddItemToObject(out, "usage", usage);
 		}
 	}
@@ -867,8 +941,11 @@ responses_normalize_stream_event(cJSON *raw, void **state)
 				cJSON_AddItemToObject(cu, "total_tokens",
 				    cJSON_CreateNumber(itok + otok));
 				cJSON_AddItemToObject(cu, "cache_read_tokens",
-				    cJSON_CreateNumber(
-				        responses_cached_tokens(jusage)));
+				    cJSON_CreateNumber(responses_input_detail(
+				        jusage, "cached_tokens")));
+				cJSON_AddItemToObject(cu, "cache_write_tokens",
+				    cJSON_CreateNumber(responses_input_detail(
+				        jusage, "cache_write_tokens")));
 				cJSON_AddItemToObject(out, "usage", cu);
 			}
 		}

@@ -689,6 +689,14 @@ clm_agent_set_spool(struct clm_agent *agent, clm_spool_fn fn, void *user)
 	agent->spool_user = user;
 }
 
+void
+clm_agent_set_cache_system(struct clm_agent *agent, bool on)
+{
+	if (agent == NULL || agent->llm == NULL)
+		return;
+	agent->llm->cache_system = on;
+}
+
 enum clm_agent_state
 clm_agent_get_state(const struct clm_agent *agent)
 {

@@ -495,6 +495,11 @@ typedef int (*clm_spool_fn)(const char *call_id, const char *tool,
 CLM_API void clm_agent_set_spool(
     struct clm_agent *agent, clm_spool_fn fn, void *user);
 
+/* Responses API: put an explicit cache breakpoint after the system prompt,
+ * so fresh conversations that share it read it from the cache instead of
+ * writing it again. Off by default; other providers ignore it. */
+CLM_API void clm_agent_set_cache_system(struct clm_agent *agent, bool on);
+
 /*
  * Submit a user turn. Returns immediately (0 on accepted, negative errno on
  * failure to enqueue). The turn runs as the loop is driven, emitting events

@@ -20,6 +20,9 @@ struct clm_llm {
 	 * the history already on the server is not resent. Borrowed, set per
 	 * request by the agent. NULL sends the whole conversation. */
 	const char *prev_response_id;
+	/* Responses API only: send the leading system prompt as a developer
+	 * message with an explicit cache breakpoint at its end. */
+	bool cache_system;
 };
 
 int clm_llm_new(struct clm_llm **ret, enum clm_provider provider,
