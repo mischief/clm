@@ -680,6 +680,15 @@ clm_agent_set_compressor(
 	agent->compressor = cz;
 }
 
+void
+clm_agent_set_spool(struct clm_agent *agent, clm_spool_fn fn, void *user)
+{
+	if (agent == NULL)
+		return;
+	agent->spool = fn;
+	agent->spool_user = user;
+}
+
 enum clm_agent_state
 clm_agent_get_state(const struct clm_agent *agent)
 {

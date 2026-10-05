@@ -361,6 +361,20 @@ blob_dir_of(const char *log_path)
 	return out;
 }
 
+/* "<dir>/<id>.jsonl" -> "<dir>/<id>.spool": tool output that was cut. */
+static char *
+spool_dir_of(const char *log_path)
+{
+	size_t n = strlen(log_path);
+	char *out;
+
+	if (n > 6 && strcmp(log_path + n - 6, ".jsonl") == 0)
+		n -= 6;
+	if (asprintf(&out, "%.*s.spool", (int)n, log_path) < 0)
+		return NULL;
+	return out;
+}
+
 static const char *
 blob_ext(const char *media_type)
 {
@@ -855,12 +869,68 @@ clm_session_discard(struct clm_session *s)
 		autofree char *bak = NULL;
 		autofree char *bdir = blob_dir_of(s->path);
 
+		autofree char *sdir = spool_dir_of(s->path);
+
 		if (asprintf(&bak, "%s.bak", s->path) >= 0)
 			(void)unlink(bak);
 		if (bdir != NULL)
 			blob_dir_remove(bdir);
+		if (sdir != NULL)
+			blob_dir_remove(sdir);
 	}
 	clm_session_free(s);
+	return r;
+}
+
+int
+clm_session_spool(struct clm_session *s, const char *name, const void *data,
+    size_t len, char *path, size_t pathsz)
+{
+	autofree char *sdir = NULL;
+	autofree char *file = NULL;
+	const uint8_t *p = data;
+	int fd, r = 0;
+
+	char safe[129];
+	size_t i;
+
+	ASSERT_RETURN(s != NULL && name != NULL && path != NULL, -EINVAL);
+	/* Call ids come from the provider: keep them out of path syntax. */
+	for (i = 0; name[i] != '\0' && i < sizeof(safe) - 1; i++) {
+		char c = name[i];
+
+		safe[i] = ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		              (c >= '0' && c <= '9') || c == '-')
+		    ? c
+		    : '_';
+	}
+	safe[i] = '\0';
+	if (i == 0)
+		return -EINVAL;
+	sdir = spool_dir_of(s->path);
+	if (sdir == NULL || asprintf(&file, "%s/%s.txt", sdir, safe) < 0)
+		return -ENOMEM;
+	if (mkdir(sdir, 0700) != 0 && errno != EEXIST)
+		return -errno;
+	fd = open(file, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (fd < 0)
+		return -errno;
+	while (len > 0) {
+		ssize_t n = write(fd, p, len);
+
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			r = -errno;
+			break;
+		}
+		p += n;
+		len -= (size_t)n;
+	}
+	if (close(fd) < 0 && r == 0)
+		r = -errno;
+	if (r == 0 && (size_t)snprintf(path, pathsz, "%s", file) >= pathsz)
+		r = -ENAMETOOLONG;
 	return r;
 }
 
@@ -1244,14 +1314,15 @@ clm_session_gc(const char *dir, unsigned max_age_days, size_t *removed)
 			n++;
 	}
 
-	/* A blob directory goes with its log. */
+	/* A blob or spool directory goes with its log. */
 	rewinddir(dp);
 	while ((de = readdir(dp)) != NULL) {
 		autofree char *bdir = NULL;
 		autofree char *log = NULL;
 		size_t nl = strlen(de->d_name);
 
-		if (!has_suffix(de->d_name, ".blobs"))
+		if (!has_suffix(de->d_name, ".blobs") &&
+		    !has_suffix(de->d_name, ".spool"))
 			continue;
 		if (asprintf(&bdir, "%s/%s", d, de->d_name) < 0 ||
 		    asprintf(&log, "%s/%.*s.jsonl", d, (int)(nl - 6),

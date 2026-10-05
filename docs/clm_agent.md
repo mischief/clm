@@ -12,6 +12,7 @@ CLM\_AGENT(3) - Library Functions Manual
 **clm\_agent\_set\_provider**,
 **clm\_agent\_set\_effort**,
 **clm\_agent\_get\_effort**,
+**clm\_agent\_set\_spool**,
 **clm\_agent\_get\_history**,
 **clm\_provider\_from\_str**,
 **clm\_agent\_get\_state**,
@@ -69,6 +70,9 @@ CLM\_AGENT(3) - Library Functions Manual
 
 *const char \*&zwnj;*  
 **clm\_agent\_get\_effort**(*const struct clm\_agent \*agent*);
+
+*void*  
+**clm\_agent\_set\_spool**(*struct clm\_agent \*agent*, *clm\_spool\_fn fn*, *void \*user*);
 
 *const struct clm\_history \*&zwnj;*  
 **clm\_agent\_get\_history**(*const struct clm\_agent \*agent*);
@@ -421,6 +425,26 @@ and the server, not clm, rejects a level its model does not accept.
 returns the effort in force, or
 `NULL`,
 borrowed from the agent.
+
+A tool result larger than its cap, 16 KiB by default or the
+*output\_cap*
+the model asks for, or larger than about a quarter of that cap in
+estimated tokens, keeps its first and last lines with a marker line
+between them.
+The marker gives the estimated tokens left out, the lines, and the size.
+**clm\_agent\_set\_spool**()
+installs
+*fn*,
+which receives the whole output first, with the tool call id and the
+tool name.
+It stores the bytes, writes their path into
+*path*,
+and returns 0; the marker then names that path.
+`NULL`
+removes it.
+A shell command keeps at most
+`CLM_TOOL_SPOOL_MAX`
+bytes of output, 1 MiB.
 
 **clm\_agent\_set\_prompt\_part**()
 sets the system prompt part named

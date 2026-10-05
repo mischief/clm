@@ -13,6 +13,7 @@
 .Nm clm_agent_set_provider ,
 .Nm clm_agent_set_effort ,
 .Nm clm_agent_get_effort ,
+.Nm clm_agent_set_spool ,
 .Nm clm_agent_get_history ,
 .Nm clm_provider_from_str ,
 .Nm clm_agent_get_state ,
@@ -61,6 +62,8 @@
 .Fn clm_agent_set_effort "struct clm_agent *agent" "const char *effort"
 .Ft "const char *"
 .Fn clm_agent_get_effort "const struct clm_agent *agent"
+.Ft void
+.Fn clm_agent_set_spool "struct clm_agent *agent" "clm_spool_fn fn" "void *user"
 .Ft "const struct clm_history *"
 .Fn clm_agent_get_history "const struct clm_agent *agent"
 .Ft int
@@ -411,6 +414,26 @@ and the server, not clm, rejects a level its model does not accept.
 returns the effort in force, or
 .Dv NULL ,
 borrowed from the agent.
+.Pp
+A tool result larger than its cap, 16 KiB by default or the
+.Va output_cap
+the model asks for, or larger than about a quarter of that cap in
+estimated tokens, keeps its first and last lines with a marker line
+between them.
+The marker gives the estimated tokens left out, the lines, and the size.
+.Fn clm_agent_set_spool
+installs
+.Fa fn ,
+which receives the whole output first, with the tool call id and the
+tool name.
+It stores the bytes, writes their path into
+.Fa path ,
+and returns 0; the marker then names that path.
+.Dv NULL
+removes it.
+A shell command keeps at most
+.Dv CLM_TOOL_SPOOL_MAX
+bytes of output, 1 MiB.
 .Pp
 .Fn clm_agent_set_prompt_part
 sets the system prompt part named

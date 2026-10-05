@@ -1493,6 +1493,46 @@ test_shell_exec(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* The content of the last tool result in the agent's history. */
+static const char *
+last_tool_content(struct tstate *st)
+{
+	const struct clm_message *m, *last = NULL;
+
+	TAILQ_FOREACH(m, clm_agent_get_history(st->agent), entries)
+	{
+		if (m->role == CLM_ROLE_TOOL)
+			last = m;
+	}
+	return last != NULL && last->content != NULL ? last->content : "";
+}
+
+/* Shell output past the cap keeps its last lines, not only its first. */
+static void
+test_shell_exec_tail(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *c;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	canned_tool_call(srv, "shell_exec", "{\"command\":\"seq 1 20000\"}");
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "count") == 0, "tail: submit");
+	run_until_done(&st);
+	c = last_tool_content(&st);
+	CHECK(strncmp(c, "1\n2\n3\n", 6) == 0, "tail: the head is kept");
+	CHECK(strstr(c, "\n19999\n20000") != NULL,
+	    "tail: the last lines are kept");
+	CHECK(strstr(c,
+	          "of 20000, 108894 bytes in all. The full output "
+	          "was not saved.") != NULL,
+	    "tail: the marker counts every line");
+	teardown(&st, srv);
+}
+
 /*
  * (d2) Regression for the use-after-free described in clm issue #3: freeing
  * the agent while a shell_exec child process is still running must not let
@@ -3715,8 +3755,93 @@ test_output_cap_utf8(uv_loop_t *loop)
 	CHECK(clm_tool_add(st.agent, &def) == 0, "cap: add tool");
 	CHECK(clm_agent_submit(st.agent, "go") == 0, "cap: submit");
 	run_until_done(&st);
-	CHECK(strcmp(st.tool_content, "abcde\n[output truncated]") == 0,
-	    "cap: the cut backs up to a character boundary");
+	CHECK(strncmp(st.tool_content, "ab\n[output cut:", 15) == 0,
+	    "cap: the head ends where the long word's budget runs out");
+	CHECK(strstr(st.tool_content, "inside line 1 of 1") != NULL,
+	    "cap: the marker says the cut is inside one line");
+	CHECK(strstr(st.tool_content, "]\n\xE2\x80\x95") != NULL &&
+	        st.tool_content[strlen(st.tool_content) - 1] == '\x95',
+	    "cap: the tail is one whole character");
+	teardown(&st, srv);
+}
+
+/* 400 lines of digits: about 30 KB, and about one token per byte. */
+static void
+emit_digits(struct clm_tool_invocation *inv, void *user)
+{
+	size_t cap = 400 * 80, len = 0;
+	char *buf = malloc(cap);
+
+	(void)user;
+	if (buf == NULL) {
+		clm_tool_fail(inv, "out of memory");
+		return;
+	}
+	for (int i = 1; i <= 400; i++)
+		len += (size_t)snprintf(buf + len, cap - len,
+		    "line %d: "
+		    "31415926535897932384626433832795028841971693993751\n",
+		    i);
+	clm_tool_complete(inv, buf);
+	free(buf);
+}
+
+struct spool_seen {
+	size_t len;
+	int calls;
+};
+
+static int
+spool_capture(const char *call_id, const char *tool, const void *data,
+    size_t len, char *path, size_t pathsz, void *user)
+{
+	struct spool_seen *s = user;
+
+	(void)call_id;
+	(void)data;
+	s->len = len;
+	s->calls++;
+	(void)snprintf(path, pathsz, "/spool/%s.txt", tool);
+	return 0;
+}
+
+/* Digit-heavy output past the token budget keeps whole lines from the
+ * head and the tail, and names the spool file in the marker. */
+static void
+test_output_cut_tokens(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+	struct spool_seen seen = {0};
+	const char *c;
+
+	st.loop = loop;
+	srv = canned_start(loop);
+	canned_tool_call(srv, "digits", "{}");
+	canned_reply(srv, final_reply);
+	st.agent = make_agent(&st, canned_port(srv));
+	clm_agent_set_spool(st.agent, spool_capture, &seen);
+	def.name = "digits";
+	def.description = "print digits";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = emit_digits;
+	def.flags = CLM_TOOL_NO_PROMPT;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "cut: add tool");
+	CHECK(clm_agent_submit(st.agent, "go") == 0, "cut: submit");
+	run_until_done(&st);
+	c = last_tool_content(&st);
+	CHECK(
+	    seen.calls == 1 && seen.len > 20000, "cut: the spool gets it all");
+	CHECK(strlen(c) < 8192, "cut: the result fits the byte cap");
+	CHECK(strncmp(c, "line 1: ", 8) == 0, "cut: the head is kept");
+	CHECK(strstr(c, "line 400: 3141") != NULL, "cut: the tail is kept");
+	CHECK(strstr(c, "line 200: ") == NULL, "cut: the middle is left out");
+	CHECK(strstr(c, "\n[output cut: about ") != NULL &&
+	        strstr(c, "of 400, ") != NULL &&
+	        strstr(c, "Full output: /spool/digits.txt;") != NULL,
+	    "cut: the marker names the lines and the spool file");
+	CHECK(strstr(c, "]\nline ") != NULL, "cut: the tail starts a line");
 	teardown(&st, srv);
 }
 
@@ -3977,6 +4102,7 @@ test_agent_suite(void *arg)
 	test_monitor_start(&loop);
 	test_agent_free_during_monitor(&loop);
 	test_shell_exec(&loop);
+	test_shell_exec_tail(&loop);
 	test_agent_free_during_shell_exec(&loop);
 	test_agent_free_during_request(&loop);
 	test_shell_exec_cancel_backgrounded_job(&loop);
@@ -4023,6 +4149,7 @@ test_agent_suite(void *arg)
 	test_pre_tool_hooks(&loop);
 	test_prompt_parts(&loop);
 	test_output_cap_utf8(&loop);
+	test_output_cut_tokens(&loop);
 	uv_loop_close(&loop);
 
 	return 0;

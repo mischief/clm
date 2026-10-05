@@ -482,6 +482,19 @@ CLM_API void clm_agent_free(struct clm_agent *agent);
 CLM_API void clm_agent_set_compressor(
     struct clm_agent *agent, const struct clm_compressor *cz);
 
+/* A tool result over the cap (estimated tokens or bytes) keeps its head and
+ * tail at line boundaries, with a marker line between. The spool function
+ * gets the whole output first, stores it where the model's file tools can
+ * read it, writes that path into path, and returns 0. Without a spool, or
+ * when it fails, the marker gives only the sizes. */
+#define CLM_TOOL_SPOOL_MAX (1024 * 1024) /* bytes of output a tool keeps */
+
+typedef int (*clm_spool_fn)(const char *call_id, const char *tool,
+    const void *data, size_t len, char *path, size_t pathsz, void *user);
+
+CLM_API void clm_agent_set_spool(
+    struct clm_agent *agent, clm_spool_fn fn, void *user);
+
 /*
  * Submit a user turn. Returns immediately (0 on accepted, negative errno on
  * failure to enqueue). The turn runs as the loop is driven, emitting events

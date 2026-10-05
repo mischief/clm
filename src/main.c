@@ -246,6 +246,20 @@ cb_tool_batch(size_t completed, size_t total, void *user)
  * becomes a prompt record: it is rebuilt from config on every start and
  * never replayed.
  */
+/* A cut tool result goes whole to the session's spool. */
+static int
+cb_spool(const char *call_id, const char *tool, const void *data, size_t len,
+    char *path, size_t pathsz, void *user)
+{
+	struct cli_state *state = user;
+
+	(void)tool;
+	if (state->session == NULL)
+		return -ENOENT;
+	return clm_session_spool(
+	    state->session, call_id, data, len, path, pathsz);
+}
+
 static void
 cb_message(const struct clm_message *msg, void *user)
 {
@@ -1188,6 +1202,7 @@ main(int argc, char *argv[])
 		free(state);
 		return 1;
 	}
+	clm_agent_set_spool(state->agent, cb_spool, state);
 	if (effort != NULL && clm_agent_set_effort(state->agent, effort) < 0)
 		fprintf(
 		    stderr, "warning: could not set effort \"%s\"\n", effort);

@@ -897,6 +897,36 @@ test_session_blobs(const char *dir)
 	clm_history_free(&h);
 }
 
+/* A spooled tool result lands in <id>.spool under a safe name, and goes
+ * with the session on discard. */
+static void
+test_session_spool(const char *dir)
+{
+	struct clm_session *s = NULL;
+	char path[512], want[512], buf[16] = "";
+	FILE *f;
+
+	CHECK(
+	    clm_session_create(dir, "m", "p", NULL, &s) == 0, "spool: create");
+	CHECK(clm_session_spool(
+	          s, "call/1:x", "hello", 5, path, sizeof(path)) == 0,
+	    "spool: write");
+	(void)snprintf(want, sizeof(want), "%s/%s.spool/call_1_x.txt", dir,
+	    clm_session_id(s));
+	CHECK(strcmp(path, want) == 0, "spool: path names the safe call id");
+	f = fopen(path, "r");
+	if (f != NULL) {
+		if (fread(buf, 1, sizeof(buf) - 1, f) == 0)
+			buf[0] = '\0';
+		fclose(f);
+	}
+	CHECK(strcmp(buf, "hello") == 0, "spool: the file holds the bytes");
+	CHECK(clm_session_spool(s, "", "x", 1, path, sizeof(path)) == -EINVAL,
+	    "spool: an empty name is refused");
+	CHECK(clm_session_discard(s) == 0, "spool: discard");
+	CHECK(!file_exists(want), "spool: discard removes the spool");
+}
+
 static int
 test_session_suite(void *arg)
 {
@@ -924,6 +954,7 @@ test_session_suite(void *arg)
 	test_decompress_error();
 	test_sha256();
 	test_session_blobs(dir);
+	test_session_spool(dir);
 	remove_dir(dir);
 
 	return 0;

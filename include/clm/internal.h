@@ -157,6 +157,9 @@ struct clm_agent {
 	/* Optional history-content compressor (NULL = store/serialize plain,
 	 * the default). See clm_agent_set_compressor. */
 	const struct clm_compressor *compressor;
+	clm_spool_fn
+	    spool; /* stores a tool result that gets cut; NULL if none */
+	void *spool_user;
 
 	/* The turn's in-flight HTTP request (for cancellation), else NULL. */
 	struct clm_http_call *inflight;

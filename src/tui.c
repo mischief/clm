@@ -1055,6 +1055,19 @@ show_event(struct ui *u, const char *text)
 	ui_push(u, ST_EVENT, text);
 }
 
+/* A cut tool result goes whole to the current session's spool. */
+static int
+cb_spool(const char *call_id, const char *tool, const void *data, size_t len,
+    char *path, size_t pathsz, void *user)
+{
+	struct ui *u = user;
+
+	(void)tool;
+	if (u->session == NULL)
+		return -ENOENT;
+	return clm_session_spool(u->session, call_id, data, len, path, pathsz);
+}
+
 static void
 cb_message(const struct clm_message *msg, void *user)
 {
@@ -2822,6 +2835,7 @@ cmd_agent(struct ui *u, const char *arg)
 				    u, ST_ERROR, "\nfailed to create agent\n");
 			} else {
 				apply_effort(u, prov, spec_model);
+				clm_agent_set_spool(u->agent, cb_spool, u);
 				clm_tools_register_shell(u->agent);
 				clm_tools_register_bg(u->agent);
 				clm_tools_register_monitor(u->agent);
@@ -4200,6 +4214,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		return 1;
 	}
 	apply_effort(u, cfg->provider_name, cfg->model);
+	clm_agent_set_spool(u->agent, cb_spool, u);
 
 	/* Peer messaging is optional: a bind failure (no runtime dir, a
 	 * hostile /tmp) costs the socket, not the session. */

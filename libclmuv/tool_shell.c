@@ -91,6 +91,7 @@ struct shell_state {
 	char *buf;
 	size_t len;
 	size_t bufcap;
+	size_t dropped; /* output bytes past CLM_TOOL_SPOOL_MAX */
 	int handles; /* uv handles still open (proc + pipes [+ kill_timer]) */
 	int64_t exit_status;
 	int term_signal;
@@ -105,16 +106,21 @@ struct shell_state {
 	bool kill_timer_armed;
 };
 
+/* Keep up to CLM_TOOL_SPOOL_MAX bytes, more than the model sees, so that the
+ * cut can keep the tail and the spool can hold the whole output. */
 static void
 shell_append(struct shell_state *s, const char *data, size_t n)
 {
-	size_t cap = clm_tool_invocation_output_cap(s->inv);
+	size_t cap = CLM_TOOL_SPOOL_MAX;
 	size_t room, take;
 
-	if (s->len >= cap)
-		return; /* full; drain and discard the rest */
+	if (s->len >= cap) {
+		s->dropped += n; /* full; drain and discard the rest */
+		return;
+	}
 	room = cap - s->len;
 	take = n < room ? n : room;
+	s->dropped += n - take;
 
 	if (s->len + take + 1 > s->bufcap) {
 		size_t nc = s->bufcap ? s->bufcap * 2 : 4096;
@@ -146,6 +152,22 @@ static void
 shell_finish(struct shell_state *s)
 {
 	struct clm_tool_invocation *inv = s->inv;
+
+	if (s->dropped > 0) {
+		char note[96];
+		int n = snprintf(note, sizeof(note),
+		    "%s[%zu more bytes of output were not kept]\n",
+		    (s->len && s->buf[s->len - 1] != '\n') ? "\n" : "",
+		    s->dropped);
+		char *p =
+		    n > 0 ? realloc(s->buf, s->len + (size_t)n + 1) : NULL;
+
+		if (p != NULL) {
+			memcpy(p + s->len, note, (size_t)n + 1);
+			s->buf = p;
+			s->len += (size_t)n;
+		}
+	}
 
 	if (s->spawn_err != NULL) {
 		clm_tool_fail(inv, s->spawn_err);

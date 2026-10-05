@@ -242,6 +242,13 @@ Deleting a session, by hand or by age, removes its image directory.
 An image missing on resume is not an error: the message gets a note
 instead.
 
+A tool result that is too large for the context is cut, and its whole
+output, up to 1 MiB, goes to
+*id*&zwnj;*.spool/*&zwnj;*call*&zwnj;*.txt*,
+named by the tool call id.
+The cut result names that file, so the model can read parts of it.
+Deleting a session, by hand or by age, removes its spool directory.
+
 A user message that begins with
 "`[context update]`"
 is injected by the agent, not typed by the user.

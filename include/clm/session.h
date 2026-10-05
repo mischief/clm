@@ -92,6 +92,14 @@ CLM_API int clm_session_append(struct clm_session *s,
 CLM_API int clm_session_rewrite(struct clm_session *s,
     const struct clm_history *h, const struct clm_compressor *cz);
 
+/*
+ * Store data as <dir>/<id>.spool/<name>.txt and write its path into path.
+ * Other bytes of name become "_". For clm_agent_set_spool: the directory
+ * goes with the session log on discard and gc. 0 or negative errno.
+ */
+CLM_API int clm_session_spool(struct clm_session *s, const char *name,
+    const void *data, size_t len, char *path, size_t pathsz);
+
 /* The session's id (borrowed, valid until clm_session_free). */
 CLM_API const char *clm_session_id(const struct clm_session *s);
 

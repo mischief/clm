@@ -21,7 +21,7 @@
 #include "useful.h"
 #include "banned.h"
 
-#define CLM_TOOL_OUTPUT_CAP_DEFAULT (64 * 1024) /* bytes returned to model */
+#define CLM_TOOL_OUTPUT_CAP_DEFAULT (16 * 1024) /* bytes returned to model */
 #define CLM_TOOL_OUTPUT_CAP_MAX (1024 * 1024)   /* ceiling for overrides */
 #define CLM_TOOL_TIMEOUT_MAX_MS 600000u         /* 10 minutes */
 #define CLM_READ_DEFAULT_LIMIT 200              /* lines */
@@ -677,26 +677,196 @@ find_binary_offset(const uint8_t *data, size_t len)
 }
 
 /*
- * Copy len bytes of data, truncating to cap bytes with a marker when it
- * doesn't fit. Byte-based throughout (no strlen) so embedded NUL bytes in
- * binary tool output survive intact instead of silently chopping the copy
- * short. The result is always NUL-terminated one byte past *out_len, for
- * callers that still want to treat it as a C string (e.g. the on_tool_result
- * callback), but *out_len is the real byte count to use for anything
- * length-sensitive. NULL on OOM.
+ * Token estimates without a tokenizer, in twelfths of a token. A word is a
+ * run of bytes between spaces. Digits cost about a token each, a long run
+ * with no spaces (base64, hex, minified JSON) about 1.5 bytes a token, and
+ * prose and code about 4 bytes a token.
  */
-static uint8_t *
-clamp_dup(const uint8_t *data, size_t len, size_t cap, size_t *out_len)
+static bool
+is_space(uint8_t b)
 {
-	static const char marker[] = "\n[output truncated]";
-	size_t mlen = sizeof(marker) - 1;
-	size_t keep;
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\v' ||
+	    b == '\f';
+}
+
+static size_t
+byte_cost(uint8_t b, size_t wordlen)
+{
+	if (b >= '0' && b <= '9')
+		return 12;
+	if (wordlen >= 32)
+		return 8;
+	if (b >= 0x80)
+		return 5;
+	if ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z'))
+		return 3;
+	return 6;
+}
+
+static size_t
+word_cost(const uint8_t *w, size_t n)
+{
+	size_t c = 3;
+
+	for (size_t i = 0; i < n; i++)
+		c += byte_cost(w[i], n);
+	return c;
+}
+
+static size_t
+est_tokens(const uint8_t *d, size_t len)
+{
+	size_t i = 0, c = 0;
+
+	while (i < len) {
+		size_t j;
+
+		while (i < len && is_space(d[i]))
+			i++;
+		j = i;
+		while (j < len && !is_space(d[j]))
+			j++;
+		if (j > i)
+			c += word_cost(d + i, j - i);
+		i = j;
+	}
+	return (c + 11) / 12;
+}
+
+/* Back up off to the first byte of a UTF-8 sequence. */
+static size_t
+utf8_floor(const uint8_t *d, size_t len, size_t off)
+{
+	while (off > 0 && off < len && (d[off] & 0xC0) == 0x80)
+		off--;
+	return off;
+}
+
+/*
+ * Length of the longest head of d within budget (twelfths) and maxbytes.
+ * It ends after a newline when one lies in its second half. A word longer
+ * than the budget is cut inside, at a character boundary.
+ */
+static size_t
+fit_head(const uint8_t *d, size_t len, size_t budget, size_t maxbytes)
+{
+	size_t i = 0, cost = 0, end;
+
+	while (i < len) {
+		size_t j = i, k, c;
+
+		while (j < len && is_space(d[j]))
+			j++;
+		k = j;
+		while (k < len && !is_space(d[k]))
+			k++;
+		c = word_cost(d + j, k - j);
+		if (k > maxbytes || cost + c > budget) {
+			if (i == 0) { /* one word fills the budget */
+				size_t wl = k - j;
+
+				end = j;
+				cost += 3;
+				while (end < k && end < maxbytes &&
+				    cost + byte_cost(d[end], wl) <= budget)
+					cost += byte_cost(d[end++], wl);
+				return utf8_floor(d, len, end);
+			}
+			break;
+		}
+		cost += c;
+		i = k;
+	}
+	end = i;
+	for (size_t p = end; p > end / 2; p--) {
+		if (d[p - 1] == '\n')
+			return p;
+	}
+	return end;
+}
+
+/* Start of the longest tail of d within budget and maxbytes: the mirror of
+ * fit_head. It starts after a newline when one lies in its first half. */
+static size_t
+fit_tail(const uint8_t *d, size_t len, size_t budget, size_t maxbytes)
+{
+	size_t i = len, cost = 0, start;
+
+	while (i > 0) {
+		size_t j = i, k, c;
+
+		while (j > 0 && is_space(d[j - 1]))
+			j--;
+		k = j;
+		while (k > 0 && !is_space(d[k - 1]))
+			k--;
+		c = word_cost(d + k, j - k);
+		if (len - k > maxbytes || cost + c > budget) {
+			if (i == len) { /* one word fills the budget */
+				size_t wl = j - k;
+
+				start = j;
+				cost += 3;
+				while (start > k && len - start < maxbytes &&
+				    cost + byte_cost(d[start - 1], wl) <=
+				        budget)
+					cost += byte_cost(d[--start], wl);
+				while (start > k && (d[start] & 0xC0) == 0x80)
+					start--; /* keep the whole character */
+				return start;
+			}
+			break;
+		}
+		cost += c;
+		i = k;
+	}
+	start = i;
+	for (size_t p = start; p < start + (len - start) / 2; p++) {
+		if (d[p] == '\n')
+			return p + 1;
+	}
+	return start;
+}
+
+static size_t
+count_nl(const uint8_t *d, size_t len)
+{
+	size_t n = 0;
+
+	for (size_t i = 0; i < len; i++)
+		n += d[i] == '\n';
+	return n;
+}
+
+static size_t
+count_lines(const uint8_t *d, size_t len)
+{
+	return count_nl(d, len) + (len > 0 && d[len - 1] != '\n');
+}
+
+/* Copy data for the model. Output over cap bytes or its token budget keeps
+ * a head and a tail with a marker line between; the spool gets all of it
+ * first. NUL bytes survive. The copy is NUL-terminated one byte past
+ * *out_len. NULL on OOM. */
+static uint8_t *
+cut_output(struct clm_agent *agent, const struct clm_tool_invocation *inv,
+    const uint8_t *data, size_t len, size_t *out_len)
+{
+	size_t cap = inv->output_cap;
+	size_t tok_cap, total, budget, head, tail;
+	size_t first, last, lines, left;
+	char where[64];
+	char path[512] = "";
+	char marker[1024];
 	uint8_t *out;
+	int m;
 
 	if (data == NULL)
 		len = 0;
-
-	if (len <= cap) {
+	/* cap bytes of prose is about cap / 4 tokens; digits cost more. */
+	tok_cap = cap / 4 > 0 ? cap / 4 : 1;
+	total = est_tokens(data, len);
+	if (len <= cap && total <= tok_cap) {
 		out = malloc(len + 1);
 		if (out == NULL)
 			return NULL;
@@ -707,17 +877,51 @@ clamp_dup(const uint8_t *data, size_t len, size_t cap, size_t *out_len)
 		return out;
 	}
 
-	keep = cap > mlen ? cap - mlen : 0;
-	/* Do not split a UTF-8 sequence: back up to its first byte. */
-	while (keep > 0 && (data[keep] & 0xC0) == 0x80)
-		keep--;
-	out = malloc(keep + mlen + 1);
+	if (agent->spool == NULL ||
+	    agent->spool(inv->id, inv->name, data, len, path, sizeof(path),
+	        agent->spool_user) != 0)
+		path[0] = '\0';
+
+	/* Leave room for the marker; two thirds to the head. */
+	budget = (tok_cap > 128 ? tok_cap - 128 : tok_cap / 2) * 12;
+	cap = cap > sizeof(marker) ? cap - sizeof(marker) : cap / 2;
+	head = fit_head(data, len, budget * 2 / 3, cap * 2 / 3);
+	tail = fit_tail(data + head, len - head, budget - budget * 2 / 3,
+	    cap - cap * 2 / 3);
+	tail += head;
+	/* The left-out bytes run from line first to line last. */
+	lines = count_lines(data, len);
+	first = count_nl(data, head) + 1;
+	last = tail > head ? count_nl(data, tail - 1) + 1 : first;
+	if (first == last)
+		(void)snprintf(where, sizeof(where), "inside line %zu", first);
+	else
+		(void)snprintf(
+		    where, sizeof(where), "lines %zu-%zu", first, last);
+	left = est_tokens(data + head, tail - head);
+	m = snprintf(marker, sizeof(marker),
+	    "%s[output cut: about %zu of %zu tokens left out, %s of %zu, "
+	    "%zu bytes in all. %s%s%s]\n",
+	    head > 0 && data[head - 1] != '\n' ? "\n" : "", left, total, where,
+	    lines, len,
+	    path[0] ? "Full output: " : "The full output was not saved.", path,
+	    path[0] ? "; read parts of it with read_file offset and limit, "
+	              "or grep it."
+	            : "");
+	if (m < 0)
+		m = 0;
+	if ((size_t)m >= sizeof(marker))
+		m = sizeof(marker) - 1;
+	out = malloc(head + (size_t)m + (len - tail) + 1);
 	if (out == NULL)
 		return NULL;
-	if (keep > 0)
-		memcpy(out, data, keep);
-	memcpy(out + keep, marker, mlen + 1); /* includes trailing NUL */
-	*out_len = keep + mlen;
+	if (head > 0)
+		memcpy(out, data, head);
+	memcpy(out + head, marker, (size_t)m);
+	if (len > tail)
+		memcpy(out + head + m, data + tail, len - tail);
+	*out_len = head + (size_t)m + (len - tail);
+	out[*out_len] = '\0';
 	return out;
 }
 
@@ -812,8 +1016,7 @@ inv_finalize(struct clm_tool_invocation *inv, const uint8_t *content,
 			    sizeof(binary_warning); /* snprintf truncated */
 	}
 
-	clamped =
-	    clamp_dup(effective, effective_len, inv->output_cap, &out_len);
+	clamped = cut_output(agent, inv, effective, effective_len, &out_len);
 	if (clamped != NULL) {
 		/* A tool captures bytes, not a rendered screen, so escape
 		 * sequences and overstrike arrive literally (nroff bolds with
