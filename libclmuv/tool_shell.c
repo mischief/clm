@@ -127,7 +127,7 @@ tool_shell_exec(struct clm_tool_invocation *inv, void *user)
 	    .command = command,
 	    .stdin_data = in,
 	    .keep = CLM_PROC_KEEP_HEAD,
-	    .max = CLM_TOOL_SPOOL_MAX,
+	    .max = (size_t)CLM_TOOL_SPOOL_MAX,
 	    .done = shell_done,
 	    .user = inv,
 	};

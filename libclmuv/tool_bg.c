@@ -155,8 +155,8 @@ tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 	struct clm_proc_opts o = {
 	    .command = command,
 	    .keep = CLM_PROC_KEEP_ENDS,
-	    .max = CLM_BG_OUTPUT_CAP,
-	    .head = CLM_BG_HEAD_KEEP,
+	    .max = (size_t)CLM_BG_OUTPUT_CAP,
+	    .head = (size_t)CLM_BG_HEAD_KEEP,
 	    .done = bg_done,
 	    .user = j,
 	};

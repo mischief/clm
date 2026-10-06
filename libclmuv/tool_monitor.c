@@ -1,24 +1,15 @@
 // SPDX-License-Identifier: ISC
 /*
- * monitor_start builtin -- spawn a long-running command and turn each line
- * it writes to standard output into a fresh turn via clm_agent_notify(),
- * while it keeps running. bg_exec answers once, when its command exits; a
- * monitor answers repeatedly and never needs the command to exit at all.
+ * monitor_start builtin: each line a long-running command writes to stdout
+ * becomes a fresh turn via clm_agent_notify(), while it keeps running.
+ * libclmproc runs the process and streams its output here.
  */
 
 /*
- * The source is anything that emits lines: tail -f, inotifywait, a poll
- * loop, "hive listen". The command must flush per line (stdbuf -oL, grep
- * --line-buffered) or its output sits in libc's buffer unseen.
+ * The command must flush per line (stdbuf -oL, grep --line-buffered).
+ * Lines that arrive together become one notify; stderr is counted, not
+ * delivered; a monitor that floods is stopped.
  */
-
-/*
- * Lines that arrive together are coalesced into one notify, so a multi-line
- * event stays one message. Standard error is read and dropped: a monitor's
- * events are its stdout, and a chatty stderr would otherwise fill the pipe
- * and stall the child. A job is capped and stopped if it floods.
- */
-#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -33,6 +24,7 @@
 #include "clm/cleanup.h"
 #include "clm/host_uv.h"
 #include "clm/tools.h"
+#include "proc.h"
 #include "banned.h"
 
 /* Lines arriving within this window become one notify. */
@@ -44,11 +36,6 @@
 #define CLM_MON_WINDOW_MS 60000
 #define CLM_MON_MAX_EVENTS 60
 
-/* Grace after the stopping SIGTERM before SIGKILL, as tool_shell.c does.
- * The process handle stays open until the child actually exits, so libuv
- * reaps it; closing it earlier would leave a zombie behind. */
-#define CLM_MON_KILL_GRACE_MS 5000
-
 #define CLM_MON_LINE_CAP 2048
 #define CLM_MON_BATCH_CAP (8 * 1024)
 #define CLM_MON_TIMEOUT_MAX 1800000
@@ -58,9 +45,8 @@ struct clm_mon_job {
 	struct clm_agent *agent; /* where events are delivered */
 	char *label;             /* "description" arg, or the command */
 
-	uv_process_t proc;
-	uv_pipe_t out, err;
-	uv_timer_t deadline, coalesce;
+	struct clm_proc *proc; /* NULL once it has ended */
+	uv_timer_t coalesce;
 
 	char *line; /* partial trailing line, no newline seen yet */
 	size_t line_len, line_cap;
@@ -71,8 +57,6 @@ struct clm_mon_job {
 	uint64_t window; /* uv_now when the rate window opened */
 	unsigned events;
 
-	int handles; /* proc + out + err + 2 timers; frees itself at 0 */
-	bool started;
 	bool stopping;
 	const char *reason; /* why it stopped, for the closing notify */
 
@@ -110,16 +94,14 @@ mon_find(uint64_t id)
 	return NULL;
 }
 
+/* Unlike a background job, a monitor with no agent has nothing left to
+ * deliver to, so it is stopped rather than left running. */
 static void
 mon_detach(void *user)
 {
 	struct clm_agent *agent = user;
 	struct clm_mon_job *j;
 
-	/* Unlike a background job, a monitor with no agent has nothing left
-	 * to deliver to, so it is stopped rather than left running. The list
-	 * is safe to walk: mon_stop only closes handles, and the removal
-	 * happens later, in the close callback. */
 	TAILQ_FOREACH(j, &mon_jobs, entries)
 	{
 		if (j->agent == agent) {
@@ -184,12 +166,6 @@ mon_on_coalesce(uv_timer_t *timer)
 	mon_flush(timer->data);
 }
 
-static void
-mon_on_deadline(uv_timer_t *timer)
-{
-	mon_stop(timer->data, "expired");
-}
-
 /* Queues one complete line and arms the coalesce timer. */
 static void
 mon_line(struct clm_mon_job *j, const char *s, size_t n)
@@ -206,7 +182,9 @@ mon_line(struct clm_mon_job *j, const char *s, size_t n)
 	j->batch[j->batch_len++] = '\n';
 	j->batch[j->batch_len] = '\0';
 
-	uv_timer_start(&j->coalesce, mon_on_coalesce, CLM_MON_COALESCE_MS, 0);
+	if (!j->stopping)
+		uv_timer_start(
+		    &j->coalesce, mon_on_coalesce, CLM_MON_COALESCE_MS, 0);
 }
 
 static void
@@ -231,68 +209,6 @@ mon_feed(struct clm_mon_job *j, const char *data, size_t n)
 }
 
 static void
-mon_alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf)
-{
-	(void)handle;
-	buf->base = malloc(suggested);
-	buf->len = buf->base ? suggested : 0;
-}
-
-static void
-mon_finish(struct clm_mon_job *j)
-{
-	if (j->started && j->agent != NULL) {
-		autofree char *msg = NULL;
-		char errnote[64] = "";
-
-		if (j->errbytes > 0)
-			(void)snprintf(errnote, sizeof(errnote),
-			    ", %zu bytes on stderr", j->errbytes);
-
-		if (asprintf(&msg, "[monitor %llu (\"%s\") stopped: %s%s]",
-		        (unsigned long long)j->id, j->label,
-		        j->reason != NULL ? j->reason : "source ended",
-		        errnote) < 0)
-			msg = NULL;
-		if (msg != NULL)
-			(void)clm_agent_notify(j->agent, msg);
-	}
-
-	TAILQ_REMOVE(&mon_jobs, j, entries);
-	free(j->line);
-	free(j->batch);
-	free(j->label);
-	free(j);
-}
-
-static void
-mon_on_close(uv_handle_t *handle)
-{
-	struct clm_mon_job *j = handle->data;
-
-	if (--j->handles == 0)
-		mon_finish(j);
-}
-
-static void
-mon_shut(uv_handle_t *h)
-{
-	if (!uv_is_closing(h))
-		uv_close(h, mon_on_close);
-}
-
-/* Escalation for a child that ignores SIGTERM: SIGKILL cannot be, so the
- * exit callback always runs and the process handle always closes. */
-static void
-mon_on_kill(uv_timer_t *timer)
-{
-	struct clm_mon_job *j = timer->data;
-
-	(void)uv_kill(-uv_process_get_pid(&j->proc), SIGKILL);
-	mon_shut((uv_handle_t *)&j->deadline);
-}
-
-static void
 mon_stop(struct clm_mon_job *j, const char *reason)
 {
 	if (j->stopping)
@@ -303,65 +219,76 @@ mon_stop(struct clm_mon_job *j, const char *reason)
 	/* Whatever was already buffered is still worth delivering. */
 	uv_timer_stop(&j->coalesce);
 	mon_flush(j);
+	if (j->proc != NULL)
+		clm_proc_stop_output(j->proc);
+}
 
-	mon_shut((uv_handle_t *)&j->out);
-	mon_shut((uv_handle_t *)&j->err);
-	mon_shut((uv_handle_t *)&j->coalesce);
+/* Only standard output ending means the source is done: a child that
+ * writes nothing to stderr closes that pipe, and may exit, with output
+ * still unread on stdout. */
+static void
+mon_output(struct clm_proc *p, int fd, const char *data, size_t n, void *user)
+{
+	struct clm_mon_job *j = user;
 
-	if (!j->started) {
-		mon_shut((uv_handle_t *)&j->deadline);
-		mon_shut((uv_handle_t *)&j->proc);
+	(void)p;
+	if (fd == 2) {
+		j->errbytes += n;
 		return;
 	}
-
-	/* UV_PROCESS_DETACHED put the command in its own process group, so
-	 * a group kill reaches anything it backgrounded with "&" too. The
-	 * process handle is left open for mon_on_exit to close. */
-	(void)uv_kill(-uv_process_get_pid(&j->proc), SIGTERM);
-	uv_timer_start(&j->deadline, mon_on_kill, CLM_MON_KILL_GRACE_MS, 0);
-}
-
-static void
-mon_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
-{
-	struct clm_mon_job *j = stream->data;
-
-	if (nread > 0) {
-		if (stream == (uv_stream_t *)&j->err)
-			j->errbytes += (size_t)nread;
-		else
-			mon_feed(j, buf->base, (size_t)nread);
-	} else if (nread < 0) {
-		/* Only standard output ending means the source is done.
-		 * Stopping on the other two would race it: a child that
-		 * writes nothing to stderr closes that pipe, and exits, with
-		 * output still unread in this one. */
-		if (stream == (uv_stream_t *)&j->out) {
-			if (j->line_len > 0) {
-				mon_line(j, j->line, j->line_len);
-				j->line_len = 0;
-			}
-			mon_stop(j, "source ended");
-		} else {
-			mon_shut((uv_handle_t *)stream);
-		}
+	if (data != NULL) {
+		mon_feed(j, data, n);
+		return;
 	}
-	free(buf->base);
+	if (j->line_len > 0) {
+		mon_line(j, j->line, j->line_len);
+		j->line_len = 0;
+	}
+	mon_stop(j, "source ended");
 }
 
-/* Exiting is not the end of the source: output written before the exit may
- * still be sitting in the pipe. The stdout EOF is what ends the monitor. */
 static void
-mon_on_exit(uv_process_t *proc, int64_t exit_status, int term_signal)
+mon_freed(uv_handle_t *h)
 {
-	(void)exit_status;
-	(void)term_signal;
-	struct clm_mon_job *j = proc->data;
+	struct clm_mon_job *j = h->data;
 
-	uv_timer_stop(&j->deadline);
-	if (j->stopping)
-		mon_shut((uv_handle_t *)&j->deadline);
-	mon_shut((uv_handle_t *)proc);
+	TAILQ_REMOVE(&mon_jobs, j, entries);
+	free(j->line);
+	free(j->batch);
+	free(j->label);
+	free(j);
+}
+
+static void
+mon_done(struct clm_proc *p, const struct clm_proc_result *r, void *user)
+{
+	struct clm_mon_job *j = user;
+
+	(void)p;
+	j->proc = NULL;
+	if (!j->stopping) {
+		/* The timeout ended it; deliver what is buffered first. */
+		j->stopping = true;
+		j->reason = r->timed_out ? "expired" : "source ended";
+		mon_flush(j);
+	}
+	uv_timer_stop(&j->coalesce);
+	if (j->agent != NULL) {
+		autofree char *msg = NULL;
+		char errnote[64] = "";
+
+		if (j->errbytes > 0)
+			(void)snprintf(errnote, sizeof(errnote),
+			    ", %zu bytes on stderr", j->errbytes);
+		if (asprintf(&msg, "[monitor %llu (\"%s\") stopped: %s%s]",
+		        (unsigned long long)j->id, j->label,
+		        j->reason != NULL ? j->reason : "source ended",
+		        errnote) < 0)
+			msg = NULL;
+		if (msg != NULL)
+			(void)clm_agent_notify(j->agent, msg);
+	}
+	uv_close((uv_handle_t *)&j->coalesce, mon_freed);
 }
 
 static void
@@ -374,12 +301,8 @@ tool_monitor_start(struct clm_tool_invocation *inv, void *user)
 	autofree char *started_msg = NULL;
 	struct clm_mon_job *j;
 	uv_loop_t *loop = clm_tool_invocation_loop(inv);
-	uv_stdio_container_t stdio[3];
-	uv_process_options_t opt;
 	cJSON *timeout;
 	uint64_t ms = CLM_MON_TIMEOUT_MAX;
-	const char *shell;
-	char *argv[4];
 	int r;
 
 	if (args == NULL || !cJSON_IsObject(args)) {
@@ -408,7 +331,6 @@ tool_monitor_start(struct clm_tool_invocation *inv, void *user)
 		return;
 	}
 	j->agent = agent;
-	j->id = mon_next_id++;
 	j->label = strdup(description != NULL ? description : command);
 	if (j->label == NULL) {
 		free(j);
@@ -416,64 +338,25 @@ tool_monitor_start(struct clm_tool_invocation *inv, void *user)
 		return;
 	}
 
-	j->proc.data = j;
-	uv_pipe_init(loop, &j->out, 0);
-	j->out.data = j;
-	uv_pipe_init(loop, &j->err, 0);
-	j->err.data = j;
-	uv_timer_init(loop, &j->deadline);
-	j->deadline.data = j;
-	uv_timer_init(loop, &j->coalesce);
-	j->coalesce.data = j;
-	j->window = uv_now(loop);
-
-	shell = getenv("SHELL");
-	if (shell == NULL || shell[0] == '\0')
-		shell = "/bin/sh";
-	argv[0] = (char *)shell;
-	argv[1] = "-c";
-	argv[2] = command;
-	argv[3] = NULL;
-
-	memset(&opt, 0, sizeof(opt));
-	opt.file = shell;
-	opt.args = argv;
-	opt.exit_cb = mon_on_exit;
-	/* New session, as tool_bg.c and tool_shell.c do: no controlling
-	 * terminal for the child, and its own process group for the kill in
-	 * mon_stop. */
-	opt.flags = UV_PROCESS_DETACHED;
-	stdio[0].flags = UV_IGNORE;
-	stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
-	stdio[1].data.stream = (uv_stream_t *)&j->out;
-	stdio[2].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
-	stdio[2].data.stream = (uv_stream_t *)&j->err;
-	opt.stdio = stdio;
-	opt.stdio_count = 3;
-
-	/* Insert before spawning: the close callbacks below run whether or
-	 * not uv_spawn succeeds, and mon_finish always does a TAILQ_REMOVE.
-	 * j->started is what keeps a spawn failure, already reported through
-	 * clm_tool_fail, from being notified a second time. */
-	TAILQ_INSERT_TAIL(&mon_jobs, j, entries);
-
-	j->handles = 5;
-	r = uv_spawn(loop, &j->proc, &opt);
+	struct clm_proc_opts o = {
+	    .command = command,
+	    .timeout_ms = ms,
+	    .output = mon_output,
+	    .done = mon_done,
+	    .user = j,
+	};
+	r = clm_proc_spawn(loop, &o, &j->proc);
 	if (r < 0) {
-		j->stopping = true;
-		mon_shut((uv_handle_t *)&j->proc);
-		mon_shut((uv_handle_t *)&j->out);
-		mon_shut((uv_handle_t *)&j->err);
-		mon_shut((uv_handle_t *)&j->deadline);
-		mon_shut((uv_handle_t *)&j->coalesce);
+		free(j->label);
+		free(j);
 		clm_tool_fail(inv, uv_strerror(r));
 		return;
 	}
-	j->started = true;
-
-	uv_read_start((uv_stream_t *)&j->out, mon_alloc, mon_read);
-	uv_read_start((uv_stream_t *)&j->err, mon_alloc, mon_read);
-	uv_timer_start(&j->deadline, mon_on_deadline, ms, 0);
+	j->id = mon_next_id++;
+	uv_timer_init(loop, &j->coalesce);
+	j->coalesce.data = j;
+	j->window = uv_now(loop);
+	TAILQ_INSERT_TAIL(&mon_jobs, j, entries);
 
 	if (asprintf(&started_msg,
 	        "started monitor %llu: %s (each line of its output arrives "

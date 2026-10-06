@@ -9,7 +9,7 @@
 
 #include "proc.h"
 
-#define PROC_MAX_DEFAULT (1024 * 1024)
+#define PROC_MAX_DEFAULT ((size_t)1024 * 1024)
 #define PROC_GRACE_DEFAULT 5000u
 
 struct clm_proc {
@@ -43,7 +43,8 @@ clm_proc_grace_ms(void)
 		return ms;
 	init = true;
 	ms = PROC_GRACE_DEFAULT;
-	if ((e = getenv("CLM_SHELL_KILL_GRACE_MS")) != NULL) {
+	e = getenv("CLM_SHELL_KILL_GRACE_MS");
+	if (e != NULL) {
 		char *end;
 		unsigned long long v = strtoull(e, &end, 10);
 
@@ -65,7 +66,8 @@ grow(struct clm_proc *p, size_t need)
 		nc *= 2;
 	if (nc > p->max + 1)
 		nc = p->max + 1;
-	if ((b = realloc(p->buf, nc)) == NULL)
+	b = realloc(p->buf, nc);
+	if (b == NULL)
 		return false;
 	p->buf = b;
 	p->bufcap = nc;
@@ -328,12 +330,15 @@ clm_proc_spawn(
 	char *argv[4];
 	int r;
 
-	if ((p = calloc(1, sizeof(*p))) == NULL)
+	p = calloc(1, sizeof(*p));
+	if (p == NULL)
 		return UV_ENOMEM;
-	if (o->stdin_data != NULL &&
-	    (p->in_buf = strdup(o->stdin_data)) == NULL) {
-		free(p);
-		return UV_ENOMEM;
+	if (o->stdin_data != NULL) {
+		p->in_buf = strdup(o->stdin_data);
+		if (p->in_buf == NULL) {
+			free(p);
+			return UV_ENOMEM;
+		}
 	}
 	p->has_stdin = p->in_buf != NULL;
 	p->keep = o->keep;
