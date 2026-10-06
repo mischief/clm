@@ -1,27 +1,14 @@
 // SPDX-License-Identifier: ISC
 /*
- * bg_exec builtin — start a shell command via uv_spawn ($SHELL -c <command>)
- * and return to the model immediately, instead of blocking the turn until
- * the command exits (that's what shell_exec is for). The eventual result is
- * delivered later via clm_agent_notify(), as a fresh turn rather than as
- * this tool call's own result -- by the time the command exits, the
- * invocation that started it is long since complete, so there is no pending
- * tool_call_id left to attach a result to (every chat-completions-style API
- * requires each tool_call in an assistant message to be answered before the
- * next request, so a result literally cannot arrive late on the same
- * tool_call_id; it has to become a new turn instead).
- *
- * Like tool_shell.c, this lives in the desktop uv/curl layer (libclmuv), not
- * the portable core: a subprocess needs libuv. Register it with
- * clm_tools_register_bg() alongside clm_tools_register_shell().
- *
- * a job still running when its agent is torn down keeps running and is reaped
- * normally. the tool detach hook severs its agent pointer first, so completion
- * only releases the job and never notifies the freed agent.
+ * bg_exec builtin: start $SHELL -c <command> and answer at once. The result
+ * comes later through clm_agent_notify() as a new turn, since an API takes
+ * no late result on an answered tool call. libclmproc runs the process.
  */
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <sys/queue.h>
 
 #include <cjson/cJSON.h>
 #include <uv.h>
@@ -30,18 +17,16 @@
 #include "clm/tools.h"
 #include "clm/host_uv.h"
 #include "clm/cleanup.h"
+#include "proc.h"
 #include "banned.h"
 
-/* Output captured per job before it's folded into the eventual notify
- * message; independent of shell_exec's per-call output_cap since there is no
- * invocation left by the time this matters to clamp against. */
+/* Output kept per job for the eventual notify. */
 #define CLM_BG_OUTPUT_CAP (16 * 1024)
 
 /*
  * How much of the start of the output survives once the cap is reached. A
  * long-running job says what it is doing at the start and how it went at the
- * end, so keep both ends and drop the middle. Dropping the end instead would
- * throw away the very line the job was started to produce.
+ * end, so keep both ends and drop the middle.
  */
 #define CLM_BG_HEAD_KEEP (4 * 1024)
 
@@ -61,22 +46,6 @@ struct clm_bg_job {
 	uint64_t id;
 	struct clm_agent *agent; /* where the eventual result is delivered */
 	char *label; /* the "label" arg, or the command if none given */
-
-	uv_process_t proc;
-	uv_pipe_t out, err;
-	char *buf;
-	size_t len, bufcap;
-	size_t dropped; /* bytes evicted from the middle; see bg_append() */
-
-	int handles; /* proc + out + err; job frees itself at 0 */
-	int64_t exit_status;
-	int term_signal;
-
-	/* False if uv_spawn itself failed: the invocation already got a
-	 * synchronous clm_tool_fail() for that, so bg_finish must not also
-	 * send a notify -- that would report the same failure twice. */
-	bool started;
-
 	TAILQ_ENTRY(clm_bg_job) entries;
 };
 
@@ -84,6 +53,8 @@ TAILQ_HEAD(clm_bg_job_list, clm_bg_job);
 static struct clm_bg_job_list bg_jobs = TAILQ_HEAD_INITIALIZER(bg_jobs);
 static uint64_t bg_next_id = 1;
 
+/* The agent is going away: its jobs keep running, and their end only frees
+ * them, without a notify to the freed agent. */
 static void
 bg_detach(void *user)
 {
@@ -97,156 +68,51 @@ bg_detach(void *user)
 	}
 }
 
-/*
- * Append to the job's output, growing like tool_shell.c's shell_append until
- * CLM_BG_OUTPUT_CAP. At the cap the buffer keeps its first CLM_BG_HEAD_KEEP
- * bytes and slides the rest, so the newest output always survives and the
- * middle is what goes; j->dropped counts what went, for the finish message.
- */
 static void
-bg_append(struct clm_bg_job *j, const char *data, size_t n)
+bg_done(struct clm_proc *p, const struct clm_proc_result *r, void *user)
 {
-	const size_t tail_room = CLM_BG_OUTPUT_CAP - CLM_BG_HEAD_KEEP;
-	size_t want;
+	struct clm_bg_job *j = user;
 
-	if (n == 0)
-		return;
-
-	/* A single chunk larger than the sliding region: only its own tail
-	 * can survive, so discard the front of it here and account for it. */
-	if (n > tail_room) {
-		j->dropped += n - tail_room;
-		data += n - tail_room;
-		n = tail_room;
-	}
-
-	want = j->len + n;
-	if (want > CLM_BG_OUTPUT_CAP)
-		want = CLM_BG_OUTPUT_CAP;
-	if (want + 1 > j->bufcap) {
-		size_t nc = j->bufcap ? j->bufcap * 2 : 4096;
-		char *p;
-		while (nc < want + 1)
-			nc *= 2;
-		if (nc > CLM_BG_OUTPUT_CAP + 1)
-			nc = CLM_BG_OUTPUT_CAP + 1;
-		p = realloc(j->buf, nc);
-		if (p == NULL)
-			return;
-		j->buf = p;
-		j->bufcap = nc;
-	}
-
-	/*
-	 * Evict from just past the head region. n <= tail_room bounds this to
-	 * at most j->len - CLM_BG_HEAD_KEEP, so the head is never touched.
-	 */
-	if (j->len + n > CLM_BG_OUTPUT_CAP) {
-		size_t evict = j->len + n - CLM_BG_OUTPUT_CAP;
-
-		memmove(j->buf + CLM_BG_HEAD_KEEP,
-		    j->buf + CLM_BG_HEAD_KEEP + evict,
-		    j->len - CLM_BG_HEAD_KEEP - evict);
-		j->len -= evict;
-		j->dropped += evict;
-	}
-
-	memcpy(j->buf + j->len, data, n);
-	j->len += n;
-	j->buf[j->len] = '\0';
-}
-
-static void
-bg_alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf)
-{
-	(void)handle;
-	buf->base = malloc(suggested);
-	buf->len = buf->base ? suggested : 0;
-}
-
-static void
-bg_finish(struct clm_bg_job *j)
-{
-	/* uv_spawn itself failed: clm_tool_fail() already reported this
-	 * synchronously to the invocation, before the job was even started.
-	 * Nothing more to deliver -- just release the uv handles' bookkeeping.
-	 */
-	if (j->started && j->agent != NULL) {
+	(void)p;
+	if (j->agent != NULL) {
 		autofree char *msg = NULL;
 		char dropnote[64] = "";
+		int n;
 
-		if (j->dropped > 0)
+		if (r->dropped > 0)
 			(void)snprintf(dropnote, sizeof(dropnote),
-			    ", %zu bytes dropped from the middle", j->dropped);
+			    ", %zu bytes dropped from the middle", r->dropped);
 
-		/* asprintf's contents-of-*strp-on-failure is unspecified by
-		 * POSIX (glibc happens to leave it NULL, but that's not a
-		 * portable guarantee) -- check the return value explicitly
-		 * instead of trusting msg to still be the NULL it was
-		 * initialized to above. */
-		/* A signal-terminated process has no real exit status (see the
-		 * matching comment in tool_shell.c's shell_finish) -- report
-		 * the actual signal instead of a misleading "exit status 0"
-		 * alongside "killed by signal" when term_signal is set. */
-		if (j->term_signal != 0) {
-			const char *signame = strsignal(j->term_signal);
-			if (asprintf(&msg,
-			        "[background job %llu (\"%s\") finished, "
-			        "killed by "
-			        "signal %d: %s%s]\n%s",
-			        (unsigned long long)j->id, j->label,
-			        j->term_signal,
-			        signame != NULL ? signame : "unknown", dropnote,
-			        j->len ? j->buf : "(no output)") < 0)
-				msg = NULL;
-		} else if (asprintf(&msg,
-		               "[background job %llu (\"%s\") finished, exit "
-		               "status %lld%s]\n%s",
-		               (unsigned long long)j->id, j->label,
-		               (long long)j->exit_status, dropnote,
-		               j->len ? j->buf : "(no output)") < 0)
-			msg = NULL;
-		/* On OOM building msg: drop the notification silently. The
-		 * process itself already ran to completion -- losing the
-		 * notification loses visibility, not correctness, and there is
-		 * no pending tool_call_id left to report a failure through
-		 * (see the file comment). */
-		if (msg != NULL)
+		/* A signal-terminated process has no real exit status (see
+		 * tool_shell.c's shell_done): report the signal instead. */
+		if (r->term_signal != 0) {
+			const char *signame = strsignal(r->term_signal);
+
+			n = asprintf(&msg,
+			    "[background job %llu (\"%s\") finished, killed by "
+			    "signal %d: %s%s]\n%s",
+			    (unsigned long long)j->id, j->label, r->term_signal,
+			    signame != NULL ? signame : "unknown", dropnote,
+			    r->len ? r->output : "(no output)");
+		} else {
+			n = asprintf(&msg,
+			    "[background job %llu (\"%s\") finished, exit "
+			    "status "
+			    "%lld%s]\n%s",
+			    (unsigned long long)j->id, j->label,
+			    (long long)r->exit_status, dropnote,
+			    r->len ? r->output : "(no output)");
+		}
+		/* On OOM the notification is dropped: the job itself ran to
+		 * completion, and there is no tool call left to report a
+		 * failure through (see the file comment). */
+		if (n >= 0 && msg != NULL)
 			(void)clm_agent_notify(j->agent, msg);
 	}
 
 	TAILQ_REMOVE(&bg_jobs, j, entries);
-	free(j->buf);
 	free(j->label);
 	free(j);
-}
-
-static void
-bg_on_close(uv_handle_t *handle)
-{
-	struct clm_bg_job *j = handle->data;
-	if (--j->handles == 0)
-		bg_finish(j);
-}
-
-static void
-bg_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
-{
-	struct clm_bg_job *j = stream->data;
-	if (nread > 0)
-		bg_append(j, buf->base, (size_t)nread);
-	else if (nread < 0)
-		uv_close((uv_handle_t *)stream, bg_on_close);
-	free(buf->base);
-}
-
-static void
-bg_on_exit(uv_process_t *proc, int64_t exit_status, int term_signal)
-{
-	struct clm_bg_job *j = proc->data;
-	j->exit_status = exit_status;
-	j->term_signal = term_signal;
-	uv_close((uv_handle_t *)proc, bg_on_close);
 }
 
 static void
@@ -258,11 +124,7 @@ tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 	autofree char *label = NULL;
 	autofree char *started_msg = NULL;
 	struct clm_bg_job *j;
-	uv_loop_t *loop = clm_tool_invocation_loop(inv);
-	uv_stdio_container_t stdio[3];
-	uv_process_options_t opt;
-	const char *shell;
-	char *argv[4];
+	struct clm_proc *p;
 	int r;
 
 	if (args == NULL || !cJSON_IsObject(args)) {
@@ -283,7 +145,6 @@ tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 		return;
 	}
 	j->agent = agent;
-	j->id = bg_next_id++;
 	j->label = strdup(label != NULL ? label : command);
 	if (j->label == NULL) {
 		free(j);
@@ -291,70 +152,27 @@ tool_bg_exec(struct clm_tool_invocation *inv, void *user)
 		return;
 	}
 
-	j->proc.data = j;
-	uv_pipe_init(loop, &j->out, 0);
-	j->out.data = j;
-	uv_pipe_init(loop, &j->err, 0);
-	j->err.data = j;
-
-	shell = getenv("SHELL");
-	if (shell == NULL || shell[0] == '\0')
-		shell = "/bin/sh";
-	argv[0] = (char *)shell;
-	argv[1] = "-c";
-	argv[2] = command;
-	argv[3] = NULL;
-
-	memset(&opt, 0, sizeof(opt));
-	opt.file = shell;
-	opt.args = argv;
-	opt.exit_cb = bg_on_exit;
-	/* New session (via setsid()) so the job has no controlling terminal at
-	 * all, matching tool_shell.c's shell_exec. Without this, a child that
-	 * opens /dev/tty directly -- e.g. ssh printing a host-key prompt or
-	 * "Permanently added ..." notice, which bypasses redirected
-	 * stdout/stderr on purpose -- resolves /dev/tty to clm's own
-	 * controlling pty and scribbles over the live TUI. It also puts the
-	 * job in its own new process group, so a future group-kill (as
-	 * shell_cancel does) would reach anything the command backgrounds
-	 * with "&" too, not just the immediate $SHELL -c process. */
-	opt.flags = UV_PROCESS_DETACHED;
-	stdio[0].flags = UV_IGNORE; /* no stdin for a detached background job */
-	stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
-	stdio[1].data.stream = (uv_stream_t *)&j->out;
-	stdio[2].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
-	stdio[2].data.stream = (uv_stream_t *)&j->err;
-	opt.stdio = stdio;
-	opt.stdio_count = 3;
-
-	/* Insert before spawning either way: bg_on_close/bg_finish run off the
-	 * uv_close callbacks below regardless of whether uv_spawn succeeds, and
-	 * bg_finish always does a TAILQ_REMOVE. j->started (still false here)
-	 * is what tells bg_finish whether that failure was already reported
-	 * synchronously via clm_tool_fail below (no notify) or needs its usual
-	 * exit-status notify. */
-	TAILQ_INSERT_TAIL(&bg_jobs, j, entries);
-
-	j->handles = 3;
-	r = uv_spawn(loop, &j->proc, &opt);
+	struct clm_proc_opts o = {
+	    .command = command,
+	    .keep = CLM_PROC_KEEP_ENDS,
+	    .max = CLM_BG_OUTPUT_CAP,
+	    .head = CLM_BG_HEAD_KEEP,
+	    .done = bg_done,
+	    .user = j,
+	};
+	r = clm_proc_spawn(clm_tool_invocation_loop(inv), &o, &p);
 	if (r < 0) {
-		uv_close((uv_handle_t *)&j->proc, bg_on_close);
-		uv_close((uv_handle_t *)&j->out, bg_on_close);
-		uv_close((uv_handle_t *)&j->err, bg_on_close);
+		free(j->label);
+		free(j);
 		clm_tool_fail(inv, uv_strerror(r));
 		return;
 	}
-	j->started = true;
+	j->id = bg_next_id++;
+	TAILQ_INSERT_TAIL(&bg_jobs, j, entries);
 
-	uv_read_start((uv_stream_t *)&j->out, bg_alloc, bg_read);
-	uv_read_start((uv_stream_t *)&j->err, bg_alloc, bg_read);
-
-	/* Same asprintf-failure caveat as bg_finish above: check the return
-	 * value rather than trusting started_msg to still be NULL. */
 	if (asprintf(&started_msg,
 	        "started background job %llu: %s (result will arrive later as "
-	        "a "
-	        "new message, not as this call's result)",
+	        "a new message, not as this call's result)",
 	        (unsigned long long)j->id, j->label) < 0)
 		started_msg = NULL;
 	clm_tool_complete(
