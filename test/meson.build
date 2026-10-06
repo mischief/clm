@@ -48,6 +48,15 @@ test_image = executable('test_image',
 )
 test('image', test_image, protocol: 'tap')
 
+# Child processes: the library under the shell, bg and monitor tools.
+test_proc = executable('test_proc',
+  files('test_proc.c') + tap_src,
+  dependencies: [clmuv_dep],
+  include_directories: [tap_inc],
+  c_args: test_hardening_args,
+)
+test('proc', test_proc, protocol: 'tap')
+
 # Peer socket delivery uses the uv host and a plain client socket.
 test_peer = executable('test_peer',
   files('test_peer.c') + tap_src,

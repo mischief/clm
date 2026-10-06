@@ -102,16 +102,28 @@ clmuv_deps = [
   cjson_dep,
 ]
 
+# Child processes for the shell, bg and monitor tools and clm.exec: a small
+# library of its own, taken whole into libclmuv. The second lookup of libuv
+# returns the dependency found above.
+clm_proc_inc = include_directories('../libclmproc')
+clm_proc_lib = static_library('clmproc', files('../libclmproc/proc.c'),
+  c_args: clm_hardening_args,
+  dependencies: dependency('libuv', fallback: ['libuv', 'libuv_dep'],
+    default_options: ['build_tests=false', 'build_benchmarks=false'],
+    kwargs: static_kw),
+)
+
 clm_uv_lib = static_library('clmuv', clmuv_src,
   c_args: ['-DCLM_BUILDING'] + clm_hardening_args,
   dependencies: clmuv_deps,
-  include_directories: [clm_lib_inc, clm_inc],
+  include_directories: [clm_lib_inc, clm_inc, clm_proc_inc],
+  link_whole: clm_proc_lib,
   install: true,
 )
 
 # Consumers link the uv layer plus the core it calls into.
 clmuv_dep = declare_dependency(
   link_with: clm_uv_lib,
-  include_directories: include_directories('..', '../include'),
+  include_directories: include_directories('..', '../include', '../libclmproc'),
   dependencies: [clmuv_deps, clm_dep],
 )
