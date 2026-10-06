@@ -64,6 +64,14 @@ end)
 - `clm.post(url, body[, headers])` sends an HTTP POST from inside a
   coroutine and returns `status, body`, or `nil, err`. The content type
   is JSON unless `headers` (a name to value table) says otherwise.
+- `clm.exec(cmd[, opts])` runs `cmd` with `/bin/sh -c` from inside a
+  coroutine, while the loop keeps running. It returns `code, output`, or
+  `nil, output, why` when the command timed out or died by a signal.
+  `output` holds stdout and stderr together. `opts`: `cwd`, `stdin` (a
+  string), `timeout_ms` (default 120000; 0 for none) and `max` (bytes of
+  output kept, default 1 MiB). The command runs in a process group of its
+  own; when it times out, or exits while a job it started still holds its
+  output, the group is killed after 3 seconds. Plugins cannot call it.
 - `clm.step()` runs ready work once, without waiting.
 
 ## Agent

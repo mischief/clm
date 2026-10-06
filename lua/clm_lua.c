@@ -5,10 +5,12 @@
  * clm.run drives it. See lua/README.md.
  */
 #include <errno.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 #include <cjson/cJSON.h>
 #include <lauxlib.h>
@@ -1200,6 +1202,308 @@ l_post(lua_State *L)
 	return lua_yieldk(L, 0, 0, l_post_k);
 }
 
+/* ------------------------------------------------------------------ */
+/* clm.exec: a shell command, without blocking the loop                */
+/* ------------------------------------------------------------------ */
+
+#define EXEC_TIMEOUT_MS 120000
+#define EXEC_GRACE_MS 3000
+#define EXEC_MAX (1024 * 1024)
+
+struct exec {
+	struct wait w;
+	uv_process_t proc;
+	uv_pipe_t out, err, in;
+	uv_timer_t timer;
+	uv_write_t wreq;
+	int handles;
+	bool has_stdin, timed_out, exited;
+	char *buf, *in_buf, *spawn_err;
+	size_t len, bufcap, max, dropped;
+	int64_t status;
+	int sig;
+	uint64_t timeout_ms;
+};
+
+static void
+exec_append(struct exec *x, const char *data, size_t n)
+{
+	size_t take = x->len >= x->max ? 0 : x->max - x->len;
+
+	if (take > n)
+		take = n;
+	x->dropped += n - take;
+	if (take == 0)
+		return;
+	if (x->len + take + 1 > x->bufcap) {
+		size_t nc = x->bufcap ? x->bufcap * 2 : 4096;
+		char *p;
+
+		while (nc < x->len + take + 1)
+			nc *= 2;
+		if ((p = realloc(x->buf, nc)) == NULL) {
+			x->dropped += take;
+			return;
+		}
+		x->buf = p;
+		x->bufcap = nc;
+	}
+	memcpy(x->buf + x->len, data, take);
+	x->len += take;
+	x->buf[x->len] = '\0';
+}
+
+/* Every handle is closed: resume the caller with code, output[, why]. */
+static void
+exec_finish(struct exec *x)
+{
+	lua_State *mainL = x->w.c->L;
+	struct wait w = x->w;
+
+	if (x->dropped > 0) {
+		char note[96];
+		int k = snprintf(note, sizeof(note),
+		    "\n[%zu more bytes of output were not kept]\n", x->dropped);
+
+		x->max = x->len + (size_t)k;
+		if (k > 0)
+			exec_append(x, note, (size_t)k);
+	}
+	if (x->spawn_err != NULL) {
+		lua_pushnil(mainL);
+		lua_pushliteral(mainL, "");
+		lua_pushstring(mainL, x->spawn_err);
+	} else {
+		if (x->timed_out || x->sig != 0)
+			lua_pushnil(mainL);
+		else
+			lua_pushinteger(mainL, (lua_Integer)x->status);
+		lua_pushlstring(mainL, x->buf != NULL ? x->buf : "", x->len);
+		if (x->timed_out)
+			lua_pushfstring(
+			    mainL, "timed out after %d ms", (int)x->timeout_ms);
+		else if (x->sig != 0)
+			lua_pushfstring(mainL, "killed by signal %d", x->sig);
+		else
+			lua_pushnil(mainL);
+	}
+	free(x->buf);
+	free(x->in_buf);
+	free(x->spawn_err);
+	free(x);
+	lua_xmove(mainL, w.co, 3);
+	wait_end(&w, 3);
+}
+
+static void
+exec_closed(uv_handle_t *h)
+{
+	struct exec *x = h->data;
+
+	if (--x->handles == 0) {
+		exec_finish(x);
+		return;
+	}
+	/* Only the timer is left: nothing remains for it to guard. */
+	if (x->handles == 1 && !uv_is_closing((uv_handle_t *)&x->timer)) {
+		uv_timer_stop(&x->timer);
+		uv_close((uv_handle_t *)&x->timer, exec_closed);
+	}
+}
+
+static void
+exec_close(struct exec *x, uv_handle_t *h)
+{
+	if (!uv_is_closing(h))
+		uv_close(h, exec_closed);
+}
+
+static void
+exec_alloc(uv_handle_t *h, size_t suggested, uv_buf_t *buf)
+{
+	(void)h;
+	buf->base = malloc(suggested);
+	buf->len = buf->base != NULL ? suggested : 0;
+}
+
+static void
+exec_read(uv_stream_t *s, ssize_t nread, const uv_buf_t *buf)
+{
+	struct exec *x = s->data;
+
+	if (nread > 0)
+		exec_append(x, buf->base, (size_t)nread);
+	else if (nread < 0)
+		exec_close(x, (uv_handle_t *)s);
+	free(buf->base);
+}
+
+static void exec_kill(uv_timer_t *t);
+
+static void
+exec_exit(uv_process_t *p, int64_t status, int sig)
+{
+	struct exec *x = p->data;
+
+	x->exited = true;
+	x->status = status;
+	x->sig = sig;
+	/* The pipes close at EOF. Something the command left running may hold
+	 * them open, so stop waiting for them after a grace period; when they
+	 * close first, exec_closed closes the timer at once. */
+	if (!x->timed_out)
+		uv_timer_start(&x->timer, exec_kill, EXEC_GRACE_MS, 0);
+	exec_close(x, (uv_handle_t *)p);
+}
+
+/* The grace is over, after a timeout or after the shell exited with a job
+ * still holding its output: kill the group and stop waiting for EOF. The
+ * group id stays the shell's while any member lives, so it is safe to use
+ * after the shell is reaped. */
+static void
+exec_kill(uv_timer_t *t)
+{
+	struct exec *x = t->data;
+
+	kill(-(pid_t)x->proc.pid, SIGKILL);
+	exec_close(x, (uv_handle_t *)&x->out);
+	exec_close(x, (uv_handle_t *)&x->err);
+	if (x->has_stdin)
+		exec_close(x, (uv_handle_t *)&x->in);
+	exec_close(x, (uv_handle_t *)t);
+}
+
+static void
+exec_timeout(uv_timer_t *t)
+{
+	struct exec *x = t->data;
+
+	x->timed_out = true;
+	if (!x->exited)
+		kill(-(pid_t)x->proc.pid, SIGTERM);
+	uv_timer_start(t, exec_kill, EXEC_GRACE_MS, 0);
+}
+
+static void
+exec_written(uv_write_t *req, int status)
+{
+	struct exec *x = req->data;
+
+	(void)status;
+	exec_close(x, (uv_handle_t *)&x->in);
+}
+
+static int
+l_exec_k(lua_State *L, int status, lua_KContext ctx)
+{
+	(void)L;
+	(void)status;
+	return (int)ctx;
+}
+
+/* clm.exec(cmd[, opts]) -> code, output | nil, output, why. Runs cmd with
+ * /bin/sh -c inside a coroutine. opts: cwd, timeout_ms (default 120000; 0
+ * for none), max (output bytes kept, default 1 MiB), stdin (a string).
+ * stdout and stderr are kept together, in the order they arrive. */
+static int
+l_exec(lua_State *L)
+{
+	const char *cmd = luaL_checkstring(L, 1);
+	struct cctx *c = ctx_of(L);
+	const char *cwd = NULL, *in = NULL;
+	uv_stdio_container_t stdio[3];
+	uv_process_options_t opt;
+	char *argv[4];
+	struct exec *x;
+	int r;
+
+	if ((x = calloc(1, sizeof(*x))) == NULL)
+		return luaL_error(L, "clm.exec: out of memory");
+	x->max = EXEC_MAX;
+	x->timeout_ms = EXEC_TIMEOUT_MS;
+	if (lua_istable(L, 2)) {
+		lua_getfield(L, 2, "cwd");
+		cwd = lua_tostring(L, -1);
+		lua_getfield(L, 2, "stdin");
+		in = lua_tostring(L, -1);
+		lua_getfield(L, 2, "timeout_ms");
+		if (lua_isinteger(L, -1) && lua_tointeger(L, -1) >= 0)
+			x->timeout_ms = (uint64_t)lua_tointeger(L, -1);
+		lua_getfield(L, 2, "max");
+		if (lua_isinteger(L, -1) && lua_tointeger(L, -1) > 0)
+			x->max = (size_t)lua_tointeger(L, -1);
+		lua_pop(L, 2); /* keep cwd and stdin on the stack until spawn */
+	}
+	if (wait_begin(c, L, &x->w) < 0) {
+		free(x);
+		return luaL_error(L, "clm.exec: call it inside clm.run");
+	}
+	if (in != NULL && (x->in_buf = strdup(in)) == NULL) {
+		luaL_unref(c->L, LUA_REGISTRYINDEX, x->w.ref);
+		free(x);
+		return luaL_error(L, "clm.exec: out of memory");
+	}
+	x->has_stdin = x->in_buf != NULL;
+	x->proc.data = x->out.data = x->err.data = x->in.data = x;
+	x->timer.data = x;
+	x->wreq.data = x;
+	uv_pipe_init(&c->loop, &x->out, 0);
+	uv_pipe_init(&c->loop, &x->err, 0);
+	uv_timer_init(&c->loop, &x->timer);
+	if (x->has_stdin) {
+		uv_pipe_init(&c->loop, &x->in, 0);
+		stdio[0].flags = UV_CREATE_PIPE | UV_READABLE_PIPE;
+		stdio[0].data.stream = (uv_stream_t *)&x->in;
+	} else {
+		stdio[0].flags = UV_IGNORE;
+	}
+	stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
+	stdio[1].data.stream = (uv_stream_t *)&x->out;
+	stdio[2].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
+	stdio[2].data.stream = (uv_stream_t *)&x->err;
+	argv[0] = "/bin/sh";
+	argv[1] = "-c";
+	argv[2] = (char *)cmd;
+	argv[3] = NULL;
+	memset(&opt, 0, sizeof(opt));
+	opt.file = argv[0];
+	opt.args = argv;
+	opt.cwd = cwd;
+	opt.exit_cb = exec_exit;
+	/* Its own process group, so a kill reaches what it runs in the
+	 * background too. */
+	opt.flags = UV_PROCESS_DETACHED;
+	opt.stdio = stdio;
+	opt.stdio_count = 3;
+
+	x->handles = x->has_stdin ? 5 : 4;
+	r = uv_spawn(&c->loop, &x->proc, &opt);
+	if (r < 0) {
+		x->spawn_err = strdup(uv_strerror(r));
+		exec_close(x, (uv_handle_t *)&x->proc);
+		exec_close(x, (uv_handle_t *)&x->out);
+		exec_close(x, (uv_handle_t *)&x->err);
+		exec_close(x, (uv_handle_t *)&x->timer);
+		if (x->has_stdin)
+			exec_close(x, (uv_handle_t *)&x->in);
+	} else {
+		uv_read_start((uv_stream_t *)&x->out, exec_alloc, exec_read);
+		uv_read_start((uv_stream_t *)&x->err, exec_alloc, exec_read);
+		if (x->timeout_ms > 0)
+			uv_timer_start(
+			    &x->timer, exec_timeout, x->timeout_ms, 0);
+		if (x->has_stdin) {
+			uv_buf_t b =
+			    uv_buf_init(x->in_buf, (unsigned)strlen(x->in_buf));
+
+			if (uv_write(&x->wreq, (uv_stream_t *)&x->in, &b, 1,
+			        exec_written) < 0)
+				exec_close(x, (uv_handle_t *)&x->in);
+		}
+	}
+	return lua_yieldk(L, 0, 3, l_exec_k);
+}
+
 /* clm.spawn(fn, ...) runs fn in a new coroutine; errors are printed. */
 static int
 l_spawn(lua_State *L)
@@ -1280,6 +1584,7 @@ static const luaL_Reg module_fns[] = {
     {"spawn", l_spawn},
     {"sleep", l_sleep},
     {"post", l_post},
+    {"exec", l_exec},
     {"step", l_step},
     {NULL, NULL},
 };

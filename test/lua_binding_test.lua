@@ -114,6 +114,28 @@ clm.run(function()
     check(none == nil and type(err) == "string", "a failed post returns nil and why")
 end)
 
+-- clm.exec runs a command without blocking the loop.
+clm.run(function()
+    local code, out, why = clm.exec("echo out; echo err >&2; exit 3")
+    check(code == 3 and why == nil, "clm.exec returns the exit code")
+    check(out:find("out") and out:find("err"), "clm.exec keeps stdout and stderr")
+    code, out = clm.exec("pwd; cat", { cwd = "/tmp", stdin = "fed" })
+    check(code == 0 and out == "/tmp\nfed", "clm.exec takes cwd and stdin")
+    local ticks, done = 0, false
+    clm.spawn(function()
+        while not done do ticks = ticks + 1 clm.sleep(10) end
+    end)
+    code, out, why = clm.exec("sleep 5", { timeout_ms = 200 })
+    done = true
+    check(code == nil and why:find("timed out"), "clm.exec stops at its timeout")
+    check(ticks >= 5, "other coroutines run while clm.exec waits")
+    code, out = clm.exec("head -c 5000 /dev/zero | tr '\\0' x", { max = 100 })
+    check(#out < 200 and out:find("more bytes"), "clm.exec keeps at most max bytes")
+    code, out = clm.exec("sleep 30 & echo started")
+    check(code == 0 and out:find("started"), "a job left in the background does not hang it")
+end)
+check(not pcall(clm.exec, "true"), "clm.exec outside clm.run is an error")
+
 check(not pcall(clm.sleep, 1), "clm.sleep outside clm.run is an error")
 clm.run(function()
     check(not pcall(clm.run, function() end), "clm.run does not nest")
