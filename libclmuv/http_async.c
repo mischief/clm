@@ -666,6 +666,11 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 	curl_easy_setopt(req->easy_handle, CURLOPT_FOLLOWLOCATION, 1L);
 	curl_easy_setopt(
 	    req->easy_handle, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
+	/* HTTP/1.1 even with a system libcurl that speaks HTTP/2, as the
+	 * vendored build does: some providers stall or drop HTTP/2 streams
+	 * for minutes, and clm needs nothing HTTP/2 adds. */
+	curl_easy_setopt(req->easy_handle, CURLOPT_HTTP_VERSION,
+	    (long)CURL_HTTP_VERSION_1_1);
 	/* CURLOPT_PRIVATE, not CURLMOPT_SOCKETDATA/TIMERDATA (those carry the
 	 * mux, set once in clm_http_mux_new): this is how the mux's shared
 	 * callbacks recover *this* request out of however many are
