@@ -1907,6 +1907,44 @@ test_stream_meta(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* Timings on the finish chunk and usage on a later one, as lgml sends them:
+ * the speed still reaches the usage. */
+static void
+test_stream_split_timings(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	st.loop = loop;
+	st.stream = 1;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"
+	    "data: "
+	    "{\"usage\":null,\"timings\":{\"predicted_per_second\":17.5},"
+	    "\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":"
+	    "\"stop\"}]}\n\n"
+	    "data: "
+	    "{\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_"
+	    "tokens\":1,\"total_tokens\":5}}\n\n"
+	    "data: [DONE]\n\n");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hello") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "split timings turn ok");
+	CHECK(st.got_usage && st.usage.prompt_tokens == 4,
+	    "usage from its own chunk");
+	CHECK(st.usage.tokens_per_sec > 17.0 && st.usage.tokens_per_sec < 18.0,
+	    "tok/s from the finish chunk");
+
+	teardown(&st, srv);
+}
+
 /*
  * The connection probe learns the context window from the model document a
  * hosted API serves (Anthropic's GET /v1/models/<id>), since there is no
@@ -4153,6 +4191,7 @@ test_agent_suite(void *arg)
 	test_stream_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
+	test_stream_split_timings(&loop);
 	test_responses_stream(&loop);
 	test_stream_error_event(&loop);
 	test_stream_usage_last(&loop);

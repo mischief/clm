@@ -988,6 +988,7 @@ struct clm_async_turn {
 	char *finish_reason; /* captured from the stream */
 	struct clm_usage usage;
 	bool have_usage;
+	double stream_tps; /* last timings seen; some servers send it apart */
 
 	/* History length this request represents, and the byte size of the
 	 * whole conversation it stands for -- the request body may be much
@@ -1748,11 +1749,24 @@ emit_finish(struct clm_agent *agent, const char *reason)
 		    finish_from_str(reason), agent->cb_user);
 }
 
+/* Generation speed from a llama.cpp-style "timings" object, or 0. */
+static double
+timings_tps(cJSON *root)
+{
+	cJSON *t = cJSON_GetObjectItemCaseSensitive(root, "timings");
+	cJSON *v;
+
+	if (t == NULL || !cJSON_IsObject(t))
+		return 0;
+	v = cJSON_GetObjectItemCaseSensitive(t, "predicted_per_second");
+	return cJSON_IsNumber(v) ? cJSON_GetNumberValue(v) : 0;
+}
+
 /* Read usage/timings from a response object. Returns true if usage present. */
 static bool
 extract_usage(cJSON *root, struct clm_usage *out)
 {
-	cJSON *u, *t, *v, *d;
+	cJSON *u, *v, *d;
 
 	u = cJSON_GetObjectItemCaseSensitive(root, "usage");
 	if (u == NULL || !cJSON_IsObject(u))
@@ -1777,11 +1791,7 @@ extract_usage(cJSON *root, struct clm_usage *out)
 	if (cJSON_IsObject(d) &&
 	    (v = cJSON_GetObjectItemCaseSensitive(d, "cached_tokens")) != NULL)
 		out->cache_read_tokens = (int)cJSON_GetNumberValue(v);
-	t = cJSON_GetObjectItemCaseSensitive(root, "timings");
-	if (t != NULL && cJSON_IsObject(t) &&
-	    (v = cJSON_GetObjectItemCaseSensitive(t, "predicted_per_second")) !=
-	        NULL)
-		out->tokens_per_sec = cJSON_GetNumberValue(v);
+	out->tokens_per_sec = timings_tps(root);
 	return true;
 }
 
@@ -2327,6 +2337,16 @@ stream_handle_line(struct clm_async_turn *turn)
 	 * one wins. */
 	if (extract_usage(obj, &turn->usage))
 		turn->have_usage = true;
+	/* Timings may ride on a chunk of their own, before or after the usage
+	 * (lgml puts them on the finish chunk): keep the last and attach it. */
+	{
+		double tps = timings_tps(obj);
+
+		if (tps > 0)
+			turn->stream_tps = tps;
+		if (turn->have_usage && turn->usage.tokens_per_sec <= 0)
+			turn->usage.tokens_per_sec = turn->stream_tps;
+	}
 
 	choices = cJSON_GetObjectItemCaseSensitive(obj, "choices");
 	if (choices == NULL || !cJSON_IsArray(choices))
