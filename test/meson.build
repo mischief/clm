@@ -197,6 +197,8 @@ if have_lua
   )
   test('lua_binding', lua_binding,
     args: [files('lua_binding_test.lua')],
+    # A short grace, so the clm.exec kill paths do not wait 5 seconds.
+    env: ['CLM_SHELL_KILL_GRACE_MS=200'],
     timeout: 60,
   )
 

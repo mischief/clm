@@ -71,7 +71,9 @@ end)
   string), `timeout_ms` (default 120000; 0 for none) and `max` (bytes of
   output kept, default 1 MiB). The command runs in a process group of its
   own; when it times out, or exits while a job it started still holds its
-  output, the group is killed after 3 seconds. Plugins cannot call it.
+  output, the group is killed after a grace period (5 seconds, or
+  `CLM_SHELL_KILL_GRACE_MS`). Commands still running when the Lua state
+  closes are killed. Plugins cannot call it.
 - `clm.step()` runs ready work once, without waiting.
 
 ## Agent
