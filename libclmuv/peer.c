@@ -101,12 +101,21 @@ deliver(
     struct clm_peer *p, const char *from, const char *name, const char *text)
 {
 	autofree char *framed = NULL;
+	int r;
 
-	if (asprintf(&framed,
-	        "[message from agent %s (%s)]\n%s\n"
-	        "(Reply with agent_send to \"%s\" if a reply is warranted; "
-	        "this is another agent, not the user.)",
-	        from, name != NULL ? name : "?", text, from) < 0)
+	if (strcmp(from, CLM_PEER_CLI_ID) == 0)
+		r = asprintf(&framed,
+		    "[message from agent %s (%s)]\n%s\n"
+		    "(This came from clm send, which cannot receive messages; "
+		    "answer in your normal reply.)",
+		    from, name != NULL ? name : "?", text);
+	else
+		r = asprintf(&framed,
+		    "[message from agent %s (%s)]\n%s\n"
+		    "(Reply with agent_send to \"%s\" if a reply is warranted; "
+		    "this is another agent, not the user.)",
+		    from, name != NULL ? name : "?", text, from);
+	if (r < 0)
 		return;
 	if (p->cb != NULL)
 		p->cb(from, name, text, p->cb_user);
@@ -603,6 +612,12 @@ tool_agent_send(struct clm_tool_invocation *inv, void *user)
 	text = in ? cJSON_GetObjectItemCaseSensitive(in, "text") : NULL;
 	if (!cJSON_IsString(to) || !cJSON_IsString(text)) {
 		clm_tool_fail(inv, "need 'to' and 'text'");
+		return;
+	}
+	if (strcmp(to->valuestring, CLM_PEER_CLI_ID) == 0) {
+		clm_tool_fail(inv,
+		    "cli is a person who used clm send and cannot receive "
+		    "messages; put your answer in your normal reply");
 		return;
 	}
 	r = send_message(the_peer->dir, the_peer->id, to->valuestring,

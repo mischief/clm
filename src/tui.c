@@ -1150,6 +1150,42 @@ cb_peer_message(
 	u->dirty = true;
 }
 
+/*
+ * Show a framed peer message from a resumed history the way it showed live.
+ * Returns false when the content is not one, so the caller shows it as is.
+ */
+static bool
+replay_peer_message(struct ui *u, const char *content)
+{
+	static const char pre[] = "[message from agent ";
+	autofree char *copy = NULL;
+	char *head, *name, *text, *tail;
+
+	if (strncmp(content, pre, sizeof(pre) - 1) != 0)
+		return false;
+	copy = strdup(content + sizeof(pre) - 1);
+	if (copy == NULL)
+		return false;
+	text = strstr(copy, "]\n");
+	if (text == NULL)
+		return false;
+	*text = '\0';
+	text += 2;
+	head = copy;
+	name = strstr(head, " (");
+	if (name == NULL || name[strlen(name) - 1] != ')')
+		return false;
+	*name = '\0';
+	name += 2;
+	name[strlen(name) - 1] = '\0';
+	/* Drop the reply hint that deliver appends for the model. */
+	tail = strrchr(text, '\n');
+	if (tail != NULL && tail[1] == '(')
+		*tail = '\0';
+	cb_peer_message(head, name, text, u);
+	return true;
+}
+
 /* Move the peer socket onto the current session id. Other agents address
  * this one by that id, so a new session needs a new socket. */
 static void
@@ -4091,6 +4127,8 @@ replay_transcript(struct ui *u, const struct clm_history *h)
 			if (m->content == NULL ||
 			    strncmp(m->content, "[context update]",
 			        strlen("[context update]")) == 0)
+				break;
+			if (replay_peer_message(u, m->content))
 				break;
 			ui_push(u, ST_USER, "\nyou> ");
 			ui_push(u, ST_USER, m->content);

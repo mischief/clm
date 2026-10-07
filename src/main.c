@@ -839,8 +839,8 @@ run_send(int argc, char *argv[])
 	(void)snprintf(from_name, sizeof(from_name),
 	    "%s on the command line, who cannot receive replies",
 	    user != NULL ? user : "a user");
-	r = clm_peer_send(
-	    argv[2], "cli", from_name, text, to, sizeof(to), err, sizeof(err));
+	r = clm_peer_send(argv[2], CLM_PEER_CLI_ID, from_name, text, to,
+	    sizeof(to), err, sizeof(err));
 	if (r == -ENOENT) {
 		fprintf(stderr, "send: no running agent matches %s\n", argv[2]);
 		return 1;

@@ -63,4 +63,8 @@ CLM_API int clm_peer_send(const char *target, const char *from,
     const char *from_name, const char *text, char *to, size_t tolen, char *err,
     size_t errlen);
 
+/* The sender id of `clm send`. Nothing listens on it, so no reply reaches it.
+ */
+#define CLM_PEER_CLI_ID "cli"
+
 #endif /* CLM_PEER_H */

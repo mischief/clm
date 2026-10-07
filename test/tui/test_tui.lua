@@ -1264,6 +1264,32 @@ tests.peers = function(url)
 	t:pump(2.0)
 	check(has(t:text(), "hello from the other agent"),
 	    "peers: the running agent receives it")
+
+	-- clm send delivers from the shell, and a reply to it fails with
+	-- advice instead of a lookup error.
+	code, out = sys.run({ BIN, "send", tostring(tui_id), "from", "shell" }, {})
+	check(code == 0 and has(out, "delivered to"),
+	    "peers: clm send delivers to a running agent")
+	t:pump(2.0)
+	check(has(t:text(), "peer cli"),
+	    "peers: clm send shows as a message from cli")
+	code, out = sys.run({ BIN, "send", "nobody-here", "x" }, {})
+	check(code == 1, "peers: clm send to no agent exits 1")
+	code, out = sys.run({ BIN, "-u", url, "-m", "mock-model", "-o",
+	    "peersend to=cli please" }, { CLM_YOLO = "1" })
+	check(has(out, "cannot receive"),
+	    "peers: agent_send to cli says it cannot receive")
+	t:send("/quit\r")
+	t:pump(0.8)
+	t:close()
+
+	-- A resumed transcript shows the message as it showed live.
+	t = driver.new(BIN, url, { rows = 30, cols = 100,
+	    args = { "--resume", tostring(tui_id) } })
+	must(t:wait_for("resumed session", 10), "no resume banner")
+	check(has(t:text(), "peer cli") and
+	    not has(t:text(), "[message from agent"),
+	    "peers: a resumed transcript marks peer messages")
 	t:close()
 end
 
