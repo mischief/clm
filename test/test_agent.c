@@ -1143,6 +1143,101 @@ test_compact_content_filter(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* A few ordinary turns, so clm_history_compact has a cut point. */
+static void
+compact_turns(struct tstate *st, struct canned_server *srv)
+{
+	for (int i = 0; i < 3; i++) {
+		canned_reply(srv, final_reply);
+		if (st->agent == NULL)
+			st->agent = make_agent(st, canned_port(srv));
+		CHECK(clm_agent_submit(st->agent, "hi") == 0, "submit");
+		run_until_done(st);
+		st->turn_done = 0;
+	}
+}
+
+static bool
+last_has(const struct canned_server *srv, const char *s)
+{
+	const char *req = canned_last_request(srv);
+
+	return req != NULL && strstr(req, s) != NULL;
+}
+
+/*
+ * Compaction sends effort "none": reasoning adds nothing to a summary. The
+ * turns keep the session effort, and a backend that refuses "none" gets
+ * the request again with the session effort.
+ */
+static void
+test_compact_effort(uv_loop_t *loop)
+{
+	static const char summary[] =
+	    "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,"
+	    "\"message\":{\"role\":\"assistant\",\"content\":\"SUMMARY\"}}]}";
+	struct tstate st = {0};
+	struct canned_server *srv;
+	size_t n;
+
+	st.loop = loop;
+	st.effort = "low";
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	compact_turns(&st, srv);
+	canned_reply(srv, summary);
+	CHECK(clm_agent_compact(st.agent) == 0, "compact effort: accepted");
+	run_until_done(&st);
+	st.turn_done = 0;
+	CHECK(st.turn_status == 0, "compact effort: compaction ok");
+	CHECK(last_has(srv, "\"reasoning_effort\":\"none\""),
+	    "compact effort: compaction sends none");
+
+	compact_turns(&st, srv);
+	CHECK(last_has(srv, "\"reasoning_effort\":\"low\""),
+	    "compact effort: turns keep the session effort");
+
+	/* The backend refuses "none": one resend with the session effort. */
+	canned_reply_status(srv, 400,
+	    "{\"error\":{\"message\":\"unsupported reasoning_effort none\"}}");
+	canned_reply(srv, summary);
+	n = canned_request_count(srv);
+	CHECK(clm_agent_compact(st.agent) == 0, "compact effort: accepted");
+	run_until_done(&st);
+	st.turn_done = 0;
+	CHECK(st.turn_status == 0, "compact effort: fallback succeeds");
+	CHECK(canned_request_count(srv) == n + 2,
+	    "compact effort: refused request is sent once more");
+	CHECK(last_has(srv, "\"reasoning_effort\":\"low\""),
+	    "compact effort: the resend uses the session effort");
+
+	/* "session" opts out. */
+	compact_turns(&st, srv);
+	CHECK(clm_agent_set_compact_effort(st.agent, "session") == 0,
+	    "compact effort: set session");
+	canned_reply(srv, summary);
+	CHECK(clm_agent_compact(st.agent) == 0, "compact effort: accepted");
+	run_until_done(&st);
+	st.turn_done = 0;
+	CHECK(last_has(srv, "\"reasoning_effort\":\"low\""),
+	    "compact effort: session keeps the session effort");
+
+	/* No session effort: nothing is added. */
+	compact_turns(&st, srv);
+	CHECK(clm_agent_set_compact_effort(st.agent, NULL) == 0,
+	    "compact effort: set auto");
+	CHECK(clm_agent_set_effort(st.agent, NULL) == 0,
+	    "compact effort: clear effort");
+	canned_reply(srv, summary);
+	CHECK(clm_agent_compact(st.agent) == 0, "compact effort: accepted");
+	run_until_done(&st);
+	CHECK(!last_has(srv, "reasoning_effort"),
+	    "compact effort: no effort without a session effort");
+
+	teardown(&st, srv);
+}
+
 /* A normal content-filter finish must also leave a durable error diagnostic,
  * not merely notify the UI and report an apparently successful empty turn. */
 static void
@@ -1215,8 +1310,8 @@ test_responses_compact(uv_loop_t *loop)
 	CHECK(req != NULL && strstr(req, "\"messages\"") == NULL,
 	    "responses compact: request omits messages");
 	CHECK(req != NULL &&
-	        strstr(req, "\"reasoning\":{\"effort\":\"low\"}") != NULL,
-	    "responses effort sent");
+	        strstr(req, "\"reasoning\":{\"effort\":\"none\"}") != NULL,
+	    "responses compact: effort none sent");
 
 	teardown(&st, srv);
 }
@@ -4174,6 +4269,7 @@ test_agent_suite(void *arg)
 	test_cancel_during_rate_limit_wait(&loop);
 	test_compact_reasoning_fallback(&loop);
 	test_compact_content_filter(&loop);
+	test_compact_effort(&loop);
 	test_content_filter_fails_turn(&loop);
 	test_responses_compact(&loop);
 	test_compact_http_error_detail(&loop);

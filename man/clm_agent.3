@@ -13,6 +13,7 @@
 .Nm clm_agent_set_provider ,
 .Nm clm_agent_set_effort ,
 .Nm clm_agent_get_effort ,
+.Nm clm_agent_set_compact_effort ,
 .Nm clm_agent_set_spool ,
 .Nm clm_agent_set_cache_system ,
 .Nm clm_agent_get_history ,
@@ -63,6 +64,8 @@
 .Fn clm_agent_set_effort "struct clm_agent *agent" "const char *effort"
 .Ft "const char *"
 .Fn clm_agent_get_effort "const struct clm_agent *agent"
+.Ft int
+.Fn clm_agent_set_compact_effort "struct clm_agent *agent" "const char *effort"
 .Ft void
 .Fn clm_agent_set_spool "struct clm_agent *agent" "clm_spool_fn fn" "void *user"
 .Ft void
@@ -417,6 +420,22 @@ and the server, not clm, rejects a level its model does not accept.
 returns the effort in force, or
 .Dv NULL ,
 borrowed from the agent.
+.Pp
+.Fn clm_agent_set_compact_effort
+sets the effort of compaction requests only.
+With
+.Dv NULL ,
+the default, a compaction request sends
+.Qq none
+when the agent has an effort set, because reasoning adds nothing to a
+summary.
+On Anthropic it keeps the agent effort: Anthropic has no
+.Qq none ,
+and a change of thinking settings drops its cached messages.
+.Qq session
+always keeps the agent effort.
+When the server refuses the compaction effort with a 400 that names the
+reasoning field, clm sends the request once more with the agent effort.
 .Pp
 A tool result larger than its cap, 16 KiB by default or the
 .Va output_cap

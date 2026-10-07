@@ -177,6 +177,22 @@ Backends with no such control ignore it.
 A per-model entry overrides this provider-wide value, and the TUI's
 .Sy /effort
 command overrides both for one session.
+.It Va compact_effort
+Reasoning effort of compaction requests only.
+Unset sends
+.Qq none
+when
+.Va effort
+is set, except on Anthropic, which keeps
+.Va effort .
+.Qq session
+always keeps
+.Va effort .
+Set a value such as
+.Qq minimal
+for a backend that refuses
+.Qq none .
+A per-model entry overrides this provider-wide value.
 .It Va context_size , Va autocompact_pct , Va autocompact_tokens , Va vision
 Context tuning for every model on this connection; see the
 .Va models
@@ -236,6 +252,9 @@ server on such a turn names this key.
 .It Va effort
 Reasoning effort for this model, overriding the provider-wide
 .Va effort .
+.It Va compact_effort
+Compaction effort for this model, overriding the provider-wide
+.Va compact_effort .
 .El
 .El
 .It Va session_keep_days

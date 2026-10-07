@@ -109,6 +109,10 @@ struct clm_agent {
 	int compact_rl_retries; /* rate-limit waits this compaction
 	                           has already served */
 	struct clm_timer *compact_rl_timer; /* non-NULL while one is parked */
+	char *compact_effort; /* clm_agent_set_compact_effort, NULL = auto */
+	bool compact_effort_changed;  /* this compaction overrode the effort */
+	bool compact_effort_fallback; /* already resent with the session effort
+	                               */
 	time_t
 	    last_time_stamp; /* wall clock of the last injected time context */
 	struct clm_tool_batch *active_batch;

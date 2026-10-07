@@ -867,6 +867,7 @@ main(int argc, char *argv[])
 	const char *model_name = NULL; /* -m/--model: a "provider/model-id"
 	                                  spec, or a literal wire id */
 	const char *effort = NULL;
+	const char *compact_effort = NULL;
 	bool allow_all = false;
 	bool auto_mode = false;
 	char **volatile_tools = NULL;
@@ -1082,11 +1083,20 @@ main(int argc, char *argv[])
 		if (prov_name != NULL)
 			effort =
 			    clm_lua_cfg_provider_str(lcfg, prov_name, "effort");
+		if (prov_name != NULL)
+			compact_effort = clm_lua_cfg_provider_str(
+			    lcfg, prov_name, "compact_effort");
 		if (spec_provider != NULL && spec_model != NULL) {
 			const char *me = clm_lua_cfg_provider_model_str(
 			    lcfg, spec_provider, spec_model, "effort");
 			if (me != NULL)
 				effort = me;
+		}
+		if (spec_provider != NULL && spec_model != NULL) {
+			const char *me = clm_lua_cfg_provider_model_str(
+			    lcfg, spec_provider, spec_model, "compact_effort");
+			if (me != NULL)
+				compact_effort = me;
 		}
 	}
 
@@ -1326,6 +1336,7 @@ main(int argc, char *argv[])
 	if (effort != NULL && clm_agent_set_effort(state->agent, effort) < 0)
 		fprintf(
 		    stderr, "warning: could not set effort \"%s\"\n", effort);
+	(void)clm_agent_set_compact_effort(state->agent, compact_effort);
 	if (!TAILQ_EMPTY(&drestore)) {
 		if (clm_agent_restore_history(state->agent, &drestore) < 0)
 			fprintf(stderr,

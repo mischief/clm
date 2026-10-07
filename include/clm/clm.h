@@ -680,6 +680,14 @@ CLM_API int clm_agent_set_effort(struct clm_agent *agent, const char *effort);
 /* The effort last set, or NULL if none is in force. Borrowed. */
 CLM_API const char *clm_agent_get_effort(const struct clm_agent *agent);
 
+/*
+ * Set the effort of compaction requests. NULL picks it: "none" when the
+ * session sends an effort, except on Anthropic. "session" keeps the session
+ * effort. Returns 0, -EINVAL, or -ENOMEM.
+ */
+CLM_API int clm_agent_set_compact_effort(
+    struct clm_agent *agent, const char *effort);
+
 /* The agent's live history, borrowed and valid until the next turn mutates
  * it. For persisting a rewrite (compaction) the on_message callback cannot
  * see; do not hold it across a submit. */

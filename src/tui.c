@@ -2624,6 +2624,25 @@ on_live_models_error(const char *emsg, void *user)
 	ui_push(u, ST_META, msg);
 }
 
+/* A config key of the model entry, else of the provider entry, or NULL. */
+static const char *
+model_cfg_str(
+    struct ui *u, const char *prov, const char *model, const char *key)
+{
+	const char *e = NULL;
+
+	if (u->lcfg == NULL || prov == NULL)
+		return NULL;
+	e = clm_lua_cfg_provider_str(u->lcfg, prov, key);
+	if (model != NULL) {
+		const char *me =
+		    clm_lua_cfg_provider_model_str(u->lcfg, prov, model, key);
+		if (me != NULL)
+			e = me;
+	}
+	return e;
+}
+
 /*
  * Effort for this connection: a /effort override if one is in force, else
  * the model entry, else the provider entry. NULL means "send nothing and
@@ -2632,21 +2651,9 @@ on_live_models_error(const char *emsg, void *user)
 static const char *
 resolve_effort(struct ui *u, const char *prov, const char *model)
 {
-	const char *e = NULL;
-
 	if (u->effort_override[0] != '\0')
 		return u->effort_override;
-	if (u->lcfg == NULL)
-		return NULL;
-	if (prov != NULL)
-		e = clm_lua_cfg_provider_str(u->lcfg, prov, "effort");
-	if (prov != NULL && model != NULL) {
-		const char *me = clm_lua_cfg_provider_model_str(
-		    u->lcfg, prov, model, "effort");
-		if (me != NULL)
-			e = me;
-	}
-	return e;
+	return model_cfg_str(u, prov, model, "effort");
 }
 
 /* Hand the freshly built agent whatever effort applies to it. */
@@ -2657,6 +2664,8 @@ apply_effort(struct ui *u, const char *prov, const char *model)
 
 	if (e != NULL)
 		(void)clm_agent_set_effort(u->agent, e);
+	(void)clm_agent_set_compact_effort(
+	    u->agent, model_cfg_str(u, prov, model, "compact_effort"));
 }
 
 /* Where this session lives: id for addressing it, path for reading it. */

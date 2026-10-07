@@ -211,7 +211,7 @@ wait_end(struct wait *w, int nargs)
 /* Agents                                                              */
 /* ------------------------------------------------------------------ */
 
-#define MAX_STRS 8
+#define MAX_STRS 12
 
 /*
  * The Lua values an agent needs (its options and callbacks, hooks and tool
@@ -672,14 +672,14 @@ agent_close(struct lagent *la)
 }
 
 /* clm.agent{url=, model=, provider=, api_key=, system_prompt=, stream=,
- * effort=, context_size=, max_iterations=, tools={"shell",...},
- * permission="allow"|"deny"|fn, on_text=fn, ...} */
+ * effort=, compact_effort=, context_size=, max_iterations=,
+ * tools={"shell",...}, permission="allow"|"deny"|fn, on_text=fn, ...} */
 static int
 l_agent(lua_State *L)
 {
 	struct lagent *la;
 	struct clm_cfg cfg = {0};
-	const char *url, *kind, *effort;
+	const char *url, *kind, *effort, *compact_effort;
 	char endpoint[512];
 	int r;
 
@@ -716,6 +716,7 @@ l_agent(lua_State *L)
 		cfg.api_key = ""; /* a local server needs none */
 	cfg.system_prompt = keep_str(la, L, 1, "system_prompt");
 	effort = keep_str(la, L, 1, "effort");
+	compact_effort = keep_str(la, L, 1, "compact_effort");
 	lua_getfield(L, 1, "stream");
 	cfg.stream = lua_isnil(L, -1) ? true : lua_toboolean(L, -1);
 	lua_pop(L, 1);
@@ -731,6 +732,7 @@ l_agent(lua_State *L)
 	}
 	if (effort != NULL)
 		(void)clm_agent_set_effort(la->agent, effort);
+	(void)clm_agent_set_compact_effort(la->agent, compact_effort);
 	lua_getfield(L, 1, "cache_system");
 	clm_agent_set_cache_system(la->agent, lua_toboolean(L, -1));
 	lua_pop(L, 1);

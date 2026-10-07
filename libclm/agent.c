@@ -643,6 +643,7 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->models_url);
 	free(agent->props_url);
 	free(agent->compact_body);
+	free(agent->compact_effort);
 	for (size_t i = 0; i < agent->n_prompt_parts; i++) {
 		free(agent->prompt_parts[i].key);
 		free(agent->prompt_parts[i].text);
@@ -1368,6 +1369,7 @@ compact_done(struct clm_agent *agent)
 }
 
 static void compact_post(struct clm_agent *agent);
+static bool compact_effort_retry(struct clm_agent *agent, const char *body);
 
 /* Resend a compaction request that was turned away by a rate limit. */
 static void
@@ -1431,6 +1433,15 @@ compact_success_cb(struct clm_http_response *resp, void *user)
 		if (compact_rl_retry(agent, advice)) {
 			if (resp != NULL)
 				clm_http_response_free(resp);
+			return;
+		}
+		agent->compact_resume_chain = false;
+	}
+
+	if (status == 400 && resp != NULL) {
+		agent->compact_resume_chain = resume;
+		if (compact_effort_retry(agent, resp->body)) {
+			clm_http_response_free(resp);
 			return;
 		}
 		agent->compact_resume_chain = false;
@@ -1630,22 +1641,33 @@ compact_post(struct clm_agent *agent)
 	}
 }
 
-int
-clm_agent_compact(struct clm_agent *agent)
+/*
+ * The effort for a compaction request. A summary gains nothing from
+ * reasoning, so with no setting this is "none" when the session sends an
+ * effort at all. Anthropic has no "none", and a change to its thinking
+ * settings drops the cached messages, so it keeps the session effort.
+ */
+static const char *
+compact_effort(const struct clm_agent *agent)
+{
+	const char *e = agent->compact_effort;
+
+	if (e != NULL)
+		return strcmp(e, "session") == 0 ? agent->llm->effort : e;
+	if (agent->llm->effort == NULL ||
+	    agent->llm->provider == CLM_PROVIDER_ANTHROPIC)
+		return agent->llm->effort;
+	return "none";
+}
+
+/* Build the compaction request with `effort` into agent->compact_body. */
+static int
+compact_build(struct clm_agent *agent, const char *effort)
 {
 	const struct clm_provider_ops *ops;
 	json_cleanup cJSON *req = NULL;
 	cJSON *messages, *msg, *tools;
-	autofree char *body_str = NULL;
-	char *body;
-	int r;
-
-	ASSERT_RETURN(agent != NULL, -EINVAL);
-
-	if (agent_busy(agent)) {
-		clm_agent_set_error(agent, "turn already in progress");
-		return -EBUSY;
-	}
+	char *session_effort;
 
 	messages = clm_history_to_json(&agent->history, agent->compressor);
 	if (messages == NULL || apply_prompt_parts(agent, messages) < 0) {
@@ -1673,37 +1695,77 @@ clm_agent_compact(struct clm_agent *agent)
 	 * they head the prefix the provider caches, so dropping them here
 	 * makes every compaction a full-price prefill of the whole history.
 	 * forbid_tool_calls() blocks the calls instead, from outside the
-	 * cached prefix. */
+	 * cached prefix. Effort also sits outside that prefix. */
 	ops = clm_provider_ops_get(agent->llm->provider);
 	tools = agent->tools_unsupported ? NULL : clm_tools_build_schema(agent);
 	/* This request carries the conversation itself, so it continues
 	 * nothing -- and the fold that follows invalidates the chain anyway. */
 	agent->llm->prev_response_id = NULL;
+	session_effort = agent->llm->effort;
+	agent->llm->effort = (char *)effort; /* borrowed for this build only */
 	req = ops->build_request(agent->llm, messages, tools, false);
+	agent->llm->effort = session_effort;
 	if (req == NULL)
 		return -ENOMEM;
 	if (tools != NULL && ops->forbid_tool_calls != NULL)
 		ops->forbid_tool_calls(req);
 
-	body_str = cJSON_PrintUnformatted(req);
-	if (body_str == NULL)
-		return -ENOMEM;
-	/* Take the printed body rather than copying it: at this point it
-	 * holds the whole conversation. */
-	body = body_str;
-	body_str = NULL;
-
 	/* curl borrows the POST body (CURLOPT_POSTFIELDS), so it must outlive
 	 * the request; stash it and free it when the request completes. */
 	free(agent->compact_body);
-	agent->compact_body = body;
+	agent->compact_body = cJSON_PrintUnformatted(req);
+	if (agent->compact_body == NULL)
+		return -ENOMEM;
+	agent->compact_effort_changed = effort != session_effort &&
+	    (effort == NULL || session_effort == NULL ||
+	        strcmp(effort, session_effort) != 0);
+	return 0;
+}
+
+/*
+ * A 400 that names the reasoning field means the backend refused the
+ * compaction effort. Resend once with the session effort, which the turns
+ * before this one have shown it accepts.
+ */
+static bool
+compact_effort_retry(struct clm_agent *agent, const char *body)
+{
+	if (!agent->compact_effort_changed || agent->compact_effort_fallback ||
+	    body == NULL ||
+	    (strstr(body, "reasoning") == NULL &&
+	        strstr(body, "effort") == NULL))
+		return false;
+	agent->compact_effort_fallback = true;
+	clm_debug("compaction effort refused, resending with the session's");
+	if (compact_build(agent, agent->llm->effort) < 0)
+		return false;
+	compact_post(agent);
+	return true;
+}
+
+int
+clm_agent_compact(struct clm_agent *agent)
+{
+	int r;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+
+	if (agent_busy(agent)) {
+		clm_agent_set_error(agent, "turn already in progress");
+		return -EBUSY;
+	}
+
+	r = compact_build(agent, compact_effort(agent));
+	if (r < 0)
+		return r;
 	agent->compact_rl_retries = 0;
+	agent->compact_effort_fallback = false;
 
 	agent->state = CLM_STATE_THINKING;
 	if (agent->cb_on_state)
 		agent->cb_on_state(agent->state, agent->cb_user);
 
-	r = agent_http_post(agent, agent->llm->base_url, body,
+	r = agent_http_post(agent, agent->llm->base_url, agent->compact_body,
 	    compact_success_cb, compact_error_cb, NULL, agent,
 	    &agent->inflight);
 	if (r < 0) {
@@ -2896,6 +2958,22 @@ clm_agent_get_effort(const struct clm_agent *agent)
 	if (agent == NULL || agent->llm == NULL)
 		return NULL;
 	return agent->llm->effort;
+}
+
+int
+clm_agent_set_compact_effort(struct clm_agent *agent, const char *effort)
+{
+	char *copy = NULL;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	if (effort != NULL) {
+		copy = strdup(effort);
+		if (copy == NULL)
+			return -ENOMEM;
+	}
+	free(agent->compact_effort);
+	agent->compact_effort = copy;
+	return 0;
 }
 
 const struct clm_history *
