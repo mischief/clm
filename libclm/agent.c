@@ -1276,12 +1276,57 @@ response_finish_reason(cJSON *parsed)
 #define CLM_COMPACT_KEEP_MIN 2
 #define CLM_BYTES_PER_TOKEN 4
 
-/* Instruction appended to drive the summarization call. */
-static const char *compact_prompt =
-    "Summarize the conversation so far into a compact briefing that lets you "
-    "continue seamlessly. Preserve: decisions made, file paths touched, "
-    "commands run and their outcomes, and any open tasks or unresolved "
-    "problems. Be terse and factual. Output only the summary.";
+/*
+ * Instruction appended to drive the summarization call. Named sections make
+ * the model fill each one; "be terse" made it drop whole parts. The %s is
+ * the length target, from compact_target().
+ */
+static const char compact_prompt[] =
+    "Summarize the conversation so far into a briefing that lets you "
+    "continue the work without reading anything again. Use these "
+    "sections, and skip a section with nothing in it:\n"
+    "\n"
+    "1. Task: the goal and the current sub-goal, in the user's words where "
+    "they gave them.\n"
+    "2. Files: every file created or changed, each with its state (done, "
+    "broken, in progress) and what is left in it.\n"
+    "3. Facts and decisions: what was decided or verified, each with where "
+    "it came from (a spec section, a test result, a command output). Keep "
+    "exact numbers, identifiers, paths and names.\n"
+    "4. Open problems: failing tests, errors and unanswered questions, with "
+    "the last thing tried for each.\n"
+    "5. Next step: the exact next action.\n"
+    "\n"
+    "Facts already written to a notes file: name the file and what it "
+    "holds; do not copy them. Keep every file path, command and number. "
+    "%s Output only the briefing.";
+
+/* Summary size: 5% of the compaction budget, 500 to 4000 tokens. */
+#define CLM_COMPACT_TARGET_PCT 5
+#define CLM_COMPACT_TARGET_MIN 500
+#define CLM_COMPACT_TARGET_MAX 4000
+
+/* The length line of compact_prompt, scaled to the window. */
+static void
+compact_target(const struct clm_agent *agent, char *buf, size_t len)
+{
+	int64_t budget = agent->ctx_max;
+	int64_t t;
+
+	if (agent->autocompact_tokens > 0 &&
+	    (budget <= 0 || agent->autocompact_tokens < budget))
+		budget = agent->autocompact_tokens;
+	if (budget <= 0) {
+		(void)snprintf(buf, len, "Aim for 2000-4000 tokens.");
+		return;
+	}
+	t = budget * CLM_COMPACT_TARGET_PCT / 100;
+	if (t < CLM_COMPACT_TARGET_MIN)
+		t = CLM_COMPACT_TARGET_MIN;
+	if (t > CLM_COMPACT_TARGET_MAX)
+		t = CLM_COMPACT_TARGET_MAX;
+	(void)snprintf(buf, len, "Aim for at most %lld tokens.", (long long)t);
+}
 
 /*
  * Extract choices[0].message.content from a parsed completion into a malloc'd
@@ -1668,6 +1713,8 @@ compact_build(struct clm_agent *agent, const char *effort)
 	json_cleanup cJSON *req = NULL;
 	cJSON *messages, *msg, *tools;
 	char *session_effort;
+	char prompt[sizeof(compact_prompt) + 64];
+	char target[64];
 
 	messages = clm_history_to_json(&agent->history, agent->compressor);
 	if (messages == NULL || apply_prompt_parts(agent, messages) < 0) {
@@ -1681,9 +1728,10 @@ compact_build(struct clm_agent *agent, const char *effort)
 		cJSON_Delete(messages);
 		return -ENOMEM;
 	}
+	compact_target(agent, target, sizeof(target));
+	(void)snprintf(prompt, sizeof(prompt), compact_prompt, target);
 	cJSON_AddItemToObject(msg, "role", cJSON_CreateString("user"));
-	cJSON_AddItemToObject(
-	    msg, "content", cJSON_CreateString(compact_prompt));
+	cJSON_AddItemToObject(msg, "content", cJSON_CreateString(prompt));
 	cJSON_AddItemToArray(messages, msg);
 
 	/* Build through the provider seam rather than hand-serializing the
