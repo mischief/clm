@@ -744,6 +744,122 @@ run_setup(void)
 	return 0;
 }
 
+/* `clm peers [--json]`: the running clm agents of this user. */
+static int
+run_peers(int argc, char *argv[])
+{
+	autofree char *text = clm_peer_list();
+	json_cleanup cJSON *peers = NULL;
+	time_t now = time(NULL);
+	cJSON *e;
+
+	if (text == NULL) {
+		fprintf(stderr, "peers: cannot read the peer directory\n");
+		return 1;
+	}
+	if (argc >= 3 && strcmp(argv[2], "--json") == 0) {
+		printf("%s\n", text);
+		return 0;
+	}
+	peers = cJSON_Parse(text);
+	if (cJSON_GetArraySize(peers) == 0) {
+		printf("no clm agents are running\n");
+		return 0;
+	}
+	cJSON_ArrayForEach(e, peers)
+	{
+		const char *id = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(e, "short"));
+		const char *name = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(e, "name"));
+		const char *model = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(e, "model"));
+		const char *cwd = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(e, "cwd"));
+		cJSON *started = cJSON_GetObjectItemCaseSensitive(e, "started");
+		long mins = cJSON_IsNumber(started)
+		    ? (long)(now - (time_t)cJSON_GetNumberValue(started)) / 60
+		    : -1;
+
+		printf("%-8s  %-12s  %-24s  %5ldm  %s\n", id ? id : "?",
+		    name ? name : "?", model ? model : "?", mins,
+		    cwd ? cwd : "?");
+	}
+	return 0;
+}
+
+/* `clm send TARGET [TEXT...]`: one message to a running agent. Without
+ * TEXT, or with "-", the message is standard input. */
+static int
+run_send(int argc, char *argv[])
+{
+	enum { TEXT_MAX = 8192 + 2 };
+	autofree char *text = NULL;
+	char from_name[128];
+	char to[64], err[128];
+	const char *user = getenv("USER");
+	size_t len = 0;
+	int r;
+
+	if (argc < 3) {
+		fprintf(stderr, "usage: clm send TARGET [TEXT... | -]\n");
+		return 2;
+	}
+	text = malloc(TEXT_MAX);
+	if (text == NULL) {
+		perror("send");
+		return 1;
+	}
+	if (argc == 3 || (argc == 4 && strcmp(argv[3], "-") == 0)) {
+		len = fread(text, 1, TEXT_MAX - 1, stdin);
+		if (len == TEXT_MAX - 1) {
+			fprintf(stderr, "send: message too long\n");
+			return 1;
+		}
+	} else {
+		for (int i = 3; i < argc; i++) {
+			int n = snprintf(text + len, TEXT_MAX - len, "%s%s",
+			    i > 3 ? " " : "", argv[i]);
+
+			if (n < 0 || (size_t)n >= TEXT_MAX - len) {
+				fprintf(stderr, "send: message too long\n");
+				return 1;
+			}
+			len += (size_t)n;
+		}
+	}
+	text[len] = '\0';
+	while (len > 0 && text[len - 1] == '\n')
+		text[--len] = '\0';
+	if (len == 0) {
+		fprintf(stderr, "send: empty message\n");
+		return 2;
+	}
+	/* The command line cannot take a reply, so the name says so. */
+	(void)snprintf(from_name, sizeof(from_name),
+	    "%s on the command line, who cannot receive replies",
+	    user != NULL ? user : "a user");
+	r = clm_peer_send(
+	    argv[2], "cli", from_name, text, to, sizeof(to), err, sizeof(err));
+	if (r == -ENOENT) {
+		fprintf(stderr, "send: no running agent matches %s\n", argv[2]);
+		return 1;
+	}
+	if (r == -EEXIST) {
+		fprintf(stderr,
+		    "send: %s matches more than one agent; see clm peers\n",
+		    argv[2]);
+		return 1;
+	}
+	if (r < 0) {
+		fprintf(
+		    stderr, "send: %s\n", err[0] != '\0' ? err : strerror(-r));
+		return 1;
+	}
+	printf("delivered to %s\n", to);
+	return 0;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -789,6 +905,10 @@ main(int argc, char *argv[])
 
 	if (argc >= 2 && strcmp(argv[1], "setup") == 0)
 		return run_setup();
+	if (argc >= 2 && strcmp(argv[1], "peers") == 0)
+		return run_peers(argc, argv);
+	if (argc >= 2 && strcmp(argv[1], "send") == 0)
+		return run_send(argc, argv);
 
 	int resume = 0;
 	const char *resume_id = NULL;

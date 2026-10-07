@@ -7,10 +7,12 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,6 +87,52 @@ send_and_ack(
 	return 0;
 }
 
+/*
+ * clm_peer_send blocks for the ack, so a child calls it while this process
+ * steps the loop. With list set, the child checks clm_peer_list instead.
+ */
+static int
+send_api(uv_loop_t *loop, const char *target, int list)
+{
+	char to[64], err[128];
+	pid_t pid;
+	int st, i;
+
+	pid = fork();
+	if (pid < 0)
+		return -errno;
+	if (pid == 0) {
+		char *peers;
+		int r;
+
+		if (list) {
+			peers = clm_peer_list();
+			_exit(peers != NULL && strstr(peers, target) != NULL
+			        ? 0
+			        : 1);
+		}
+		r = clm_peer_send(target, "api", "t", "via api", to, sizeof(to),
+		    err, sizeof(err));
+		_exit(r == 0 && strcmp(to, "testpeer") == 0 ? 0
+		        : r == -ENOENT                      ? 2
+		                                            : 1);
+	}
+	for (i = 0; i < 2000; i++) {
+		if (waitpid(pid, &st, WNOHANG) == pid)
+			break;
+		uv_run(loop, UV_RUN_NOWAIT);
+		(void)poll(NULL, 0, 2);
+	}
+	if (i == 2000) {
+		(void)kill(pid, SIGKILL);
+		(void)waitpid(pid, &st, 0);
+		return -ETIMEDOUT;
+	}
+	if (!WIFEXITED(st))
+		return -EIO;
+	return WEXITSTATUS(st) == 0 ? 0 : WEXITSTATUS(st) == 2 ? -ENOENT : -EIO;
+}
+
 static char *
 msg_line(const char *from, const char *text)
 {
@@ -154,6 +202,12 @@ test_peer(void *arg)
 	}
 	CHECK(accepted == BURST, "every message in a burst is accepted");
 	CHECK(delivered == BURST + 1, "every message reached the agent");
+
+	CHECK(send_api(loop, "stpe", 0) == 0, "clm_peer_send by id part");
+	CHECK(delivered == BURST + 2, "clm_peer_send reached the agent");
+	CHECK(strcmp(last_text, "via api") == 0, "clm_peer_send text intact");
+	CHECK(send_api(loop, "nobody", 0) == -ENOENT, "unknown target");
+	CHECK(send_api(loop, "testpeer", 1) == 0, "clm_peer_list sees it");
 
 	/* Let the turns the deliveries started fail and unwind: freeing the
 	 * agent under an in-flight request leaks it. */

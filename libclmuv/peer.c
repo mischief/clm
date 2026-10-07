@@ -384,11 +384,12 @@ peer_alive(const char *dir, const char *id)
 }
 
 /*
- * Every live peer as a JSON array. Also reaps sockets left by an instance
- * that died, since a failed connect is the only way to tell.
+ * Every live peer in dir as a JSON array, without self_id (NULL lists all).
+ * Also reaps sockets left by an instance that died, since a failed connect
+ * is the only way to tell.
  */
 static cJSON *
-list_peers(struct clm_peer *p, bool include_self)
+list_peers(const char *dir, const char *self_id)
 {
 	cJSON *arr = cJSON_CreateArray();
 	DIR *d;
@@ -396,7 +397,7 @@ list_peers(struct clm_peer *p, bool include_self)
 
 	if (arr == NULL)
 		return NULL;
-	d = opendir(p->dir);
+	d = opendir(dir);
 	if (d == NULL)
 		return arr;
 	while ((de = readdir(d)) != NULL) {
@@ -410,9 +411,9 @@ list_peers(struct clm_peer *p, bool include_self)
 			continue;
 		memcpy(id, de->d_name, n - 5);
 		id[n - 5] = '\0';
-		if (!include_self && strcmp(id, p->id) == 0)
+		if (self_id != NULL && strcmp(id, self_id) == 0)
 			continue;
-		if (!peer_alive(p->dir, id))
+		if (!peer_alive(dir, id))
 			continue;
 
 		entry = cJSON_CreateObject();
@@ -421,7 +422,7 @@ list_peers(struct clm_peer *p, bool include_self)
 		cJSON_AddStringToObject(entry, "id", id);
 		cJSON_AddStringToObject(
 		    entry, "short", strlen(id) > 8 ? id + strlen(id) - 8 : id);
-		meta = read_meta(p->dir, id);
+		meta = read_meta(dir, id);
 		if (meta != NULL) {
 			cJSON *k;
 			static const char *keys[] = {
@@ -443,15 +444,19 @@ list_peers(struct clm_peer *p, bool include_self)
 	return arr;
 }
 
-/* Resolve a caller-supplied target to a full session id. */
+/* Resolve a caller-supplied target (any part of a session id, or a whole
+ * name) to a full session id. *nhits says how many peers matched; the id is
+ * returned only when exactly one did. */
 static char *
-resolve_target(struct clm_peer *p, const char *want)
+resolve_target(
+    const char *dir, const char *self_id, const char *want, int *nhits)
 {
-	json_cleanup cJSON *peers = list_peers(p, false);
+	json_cleanup cJSON *peers = list_peers(dir, self_id);
 	cJSON *e;
 	char *hit = NULL;
 	int hits = 0;
 
+	*nhits = 0;
 	if (peers == NULL || want == NULL)
 		return NULL;
 	cJSON_ArrayForEach(e, peers)
@@ -469,11 +474,84 @@ resolve_target(struct clm_peer *p, const char *want)
 		if (hits == 1)
 			hit = strdup(id->valuestring);
 	}
+	*nhits = hits;
 	if (hits != 1) {
 		free(hit);
 		return NULL;
 	}
 	return hit;
+}
+
+/*
+ * Send text to the one peer in dir that want names, signed from/from_name;
+ * to (tolen bytes) gets its full session id. Returns 0, -ENOENT (no peer
+ * matches), -EEXIST (more than one does), or another negative errno, with
+ * the recipient's reason in err.
+ */
+static int
+send_message(const char *dir, const char *self_id, const char *want,
+    const char *from, const char *from_name, const char *text, char *to,
+    size_t tolen, char *err, size_t errlen)
+{
+	json_cleanup cJSON *msg = NULL;
+	autofree char *target = NULL;
+	autofree char *body = NULL;
+	autofree char *line = NULL;
+	char path[400];
+	int hits;
+
+	err[0] = '\0';
+	if (strlen(text) > PEER_MSG_MAX)
+		return -EMSGSIZE;
+	target = resolve_target(dir, self_id, want, &hits);
+	if (target == NULL)
+		return hits == 0 ? -ENOENT : -EEXIST;
+	(void)snprintf(to, tolen, "%s", target);
+	msg = cJSON_CreateObject();
+	if (msg == NULL)
+		return -ENOMEM;
+	cJSON_AddNumberToObject(msg, "v", 1);
+	cJSON_AddStringToObject(msg, "from", from);
+	cJSON_AddStringToObject(msg, "from_name", from_name);
+	cJSON_AddStringToObject(msg, "text", text);
+	body = cJSON_PrintUnformatted(msg);
+	if (body == NULL || asprintf(&line, "%s\n", body) < 0)
+		return -ENOMEM;
+	(void)snprintf(path, sizeof(path), "%s/%s.sock", dir, target);
+	return send_line(path, line, err, errlen);
+}
+
+/* ------------------------------------------------------------------ */
+/* Without a running agent                                             */
+/* ------------------------------------------------------------------ */
+
+char *
+clm_peer_list(void)
+{
+	json_cleanup cJSON *peers = NULL;
+	char dir[256];
+
+	if (peer_dir(dir, sizeof(dir)) < 0)
+		return NULL;
+	peers = list_peers(dir, NULL);
+	return peers != NULL ? cJSON_PrintUnformatted(peers) : NULL;
+}
+
+int
+clm_peer_send(const char *target, const char *from, const char *from_name,
+    const char *text, char *to, size_t tolen, char *err, size_t errlen)
+{
+	char dir[256];
+	int r;
+
+	if (target == NULL || from == NULL || text == NULL || to == NULL ||
+	    tolen == 0 || err == NULL || errlen == 0)
+		return -EINVAL;
+	r = peer_dir(dir, sizeof(dir));
+	if (r < 0)
+		return r;
+	return send_message(dir, NULL, target, from,
+	    from_name != NULL ? from_name : from, text, to, tolen, err, errlen);
 }
 
 /* ------------------------------------------------------------------ */
@@ -491,7 +569,7 @@ tool_agents_list(struct clm_tool_invocation *inv, void *user)
 		clm_tool_fail(inv, "peer messaging is not running");
 		return;
 	}
-	peers = list_peers(the_peer, false);
+	peers = list_peers(the_peer->dir, the_peer->id);
 	if (peers == NULL) {
 		clm_tool_fail(inv, "out of memory");
 		return;
@@ -509,14 +587,10 @@ tool_agent_send(struct clm_tool_invocation *inv, void *user)
 {
 	const char *args = clm_tool_invocation_args(inv);
 	json_cleanup cJSON *in = NULL;
-	json_cleanup cJSON *msg = NULL;
-	autofree char *target = NULL;
-	autofree char *line = NULL;
-	autofree char *body = NULL;
 	cJSON *to, *text;
-	char path[400];
 	char note[192];
 	char err[128];
+	char id[64];
 	int r;
 
 	(void)user;
@@ -531,43 +605,25 @@ tool_agent_send(struct clm_tool_invocation *inv, void *user)
 		clm_tool_fail(inv, "need 'to' and 'text'");
 		return;
 	}
-	if (strlen(text->valuestring) > PEER_MSG_MAX) {
-		clm_tool_fail(inv, "message too long");
-		return;
-	}
-
-	target = resolve_target(the_peer, to->valuestring);
-	if (target == NULL) {
+	r = send_message(the_peer->dir, the_peer->id, to->valuestring,
+	    the_peer->id, the_peer->name, text->valuestring, id, sizeof(id),
+	    err, sizeof(err));
+	if (r == -ENOENT || r == -EEXIST) {
 		clm_tool_fail(
 		    inv, "no single agent matches that id; call agents_list");
 		return;
 	}
-
-	msg = cJSON_CreateObject();
-	if (msg == NULL) {
-		clm_tool_fail(inv, "out of memory");
+	if (r == -EMSGSIZE) {
+		clm_tool_fail(inv, "message too long");
 		return;
 	}
-	cJSON_AddNumberToObject(msg, "v", 1);
-	cJSON_AddStringToObject(msg, "from", the_peer->id);
-	cJSON_AddStringToObject(msg, "from_name", the_peer->name);
-	cJSON_AddStringToObject(msg, "text", text->valuestring);
-	body = cJSON_PrintUnformatted(msg);
-	if (body == NULL || asprintf(&line, "%s\n", body) < 0) {
-		clm_tool_fail(inv, "out of memory");
-		return;
-	}
-
-	(void)snprintf(path, sizeof(path), "%s/%s.sock", the_peer->dir, target);
-	err[0] = '\0';
-	r = send_line(path, line, err, sizeof(err));
 	if (r < 0) {
 		(void)snprintf(note, sizeof(note), "delivery failed: %s",
 		    err[0] != '\0' ? err : strerror(-r));
 		clm_tool_fail(inv, note);
 		return;
 	}
-	(void)snprintf(note, sizeof(note), "delivered to %s", target);
+	(void)snprintf(note, sizeof(note), "delivered to %s", id);
 	clm_tool_complete(inv, note);
 }
 

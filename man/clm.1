@@ -9,6 +9,13 @@
 .Nm
 .Cm setup
 .Nm
+.Cm peers
+.Op Fl -json
+.Nm
+.Cm send
+.Ar target
+.Op Ar text ... | Cm -
+.Nm
 .Op Fl H | Fl -headless
 .Op Fl D Ar prompt | Fl -daemon Ar prompt
 .Op Fl S | Fl -no-stream
@@ -382,6 +389,31 @@ the receiving model decides whether to answer.
 The recipient answers every message, so
 .Sy agent_send
 reports a refusal instead of reporting a delivery that did not happen.
+.Pp
+.Nm Cm peers
+lists the running sessions: short id, name, model, minutes running and
+working directory.
+With
+.Fl -json
+it prints the raw listing.
+It removes the sockets of sessions that died.
+.Pp
+.Nm Cm send Ar target Ar text
+delivers one message from the shell.
+.Ar target
+is any part of a session id or a whole session name, and must match one
+session.
+Without
+.Ar text ,
+or with
+.Cm - ,
+the message is read from standard input.
+The recipient sees it as coming from
+.Dq cli ,
+which cannot receive replies.
+The exit status is 0 when the recipient took the message, 1 when no
+session matches, several do, or the recipient refused, and 2 on a usage
+error.
 .Sh SEE ALSO
 .Xr clm_agent 3 ,
 .Xr clm-config 5 ,

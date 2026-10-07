@@ -8,6 +8,8 @@
 #ifndef CLM_PEER_H
 #define CLM_PEER_H
 
+#include <stddef.h>
+
 #include "clm/clm_export.h"
 
 struct clm_agent;
@@ -43,5 +45,22 @@ CLM_API void clm_peer_set_model(struct clm_peer *p, const char *model);
 
 /* Stop listening and remove the socket and its metadata. */
 CLM_API void clm_peer_free(struct clm_peer *p);
+
+/*
+ * The live agents of this user as a JSON array (id, short, name, model,
+ * cwd, started), without a running agent of one's own. Reaps the sockets
+ * of instances that died. The caller frees the string; NULL on error.
+ */
+CLM_API char *clm_peer_list(void);
+
+/*
+ * Send text, signed from/from_name, to the one agent that target names (any
+ * part of its session id, or its whole name); to gets its full id. Returns
+ * 0, -ENOENT (no match), -EEXIST (several), -EMSGSIZE, or another negative
+ * errno; err holds the recipient's reason when it refuses.
+ */
+CLM_API int clm_peer_send(const char *target, const char *from,
+    const char *from_name, const char *text, char *to, size_t tolen, char *err,
+    size_t errlen);
 
 #endif /* CLM_PEER_H */
