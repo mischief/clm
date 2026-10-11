@@ -35,6 +35,7 @@ struct tstate {
 	int turn_status;
 	size_t asst_len;
 	char assistant[256];
+	char last_message[256]; /* content of the last assistant on_message */
 	int tool_results;
 	enum clm_tool_outcome last_outcome;
 	char tool_content[256];
@@ -152,6 +153,17 @@ on_notice(const char *text, void *user)
 }
 
 static void
+on_message(const struct clm_message *msg, void *user)
+{
+	struct tstate *st = user;
+
+	if (msg->role == CLM_ROLE_ASSISTANT && msg->content != NULL &&
+	    !msg->content_compressed)
+		(void)snprintf(st->last_message, sizeof(st->last_message), "%s",
+		    msg->content);
+}
+
+static void
 on_turn_done(int status, void *user)
 {
 	struct tstate *st = user;
@@ -180,6 +192,7 @@ static const struct clm_callbacks callbacks = {
     .on_usage = on_usage,
     .on_turn_done = on_turn_done,
     .on_notice = on_notice,
+    .on_message = on_message,
 };
 
 /* A mock tool that completes synchronously with a fixed string. */
@@ -1911,6 +1924,42 @@ test_stream_text(uv_loop_t *loop)
 	CHECK(st.turn_status == 0, "stream text ok");
 	CHECK(strstr(st.assistant, "hi there") != NULL, "deltas assembled");
 	CHECK(canned_request_count(srv) == 1, "one request");
+
+	teardown(&st, srv);
+}
+
+/* (e2) A cancelled stream keeps the text shown so far, with a mark, as an
+ * assistant message: in history and through on_message. */
+static void
+test_stream_cancel_keeps_text(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int i;
+
+	st.loop = loop;
+	st.stream = 1;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_hold_next(srv);
+	canned_reply(srv,
+	    "data: "
+	    "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial "
+	    "reply\"}}]}\n\n");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hello") == 0, "submit");
+	for (i = 0; i < 200 && strstr(st.assistant, "partial") == NULL; i++)
+		uv_run(loop, UV_RUN_NOWAIT);
+	CHECK(strstr(st.assistant, "partial reply") != NULL,
+	    "the held stream showed its text");
+
+	CHECK(clm_agent_cancel(st.agent) == 0, "cancel accepted");
+	run_until_done(&st);
+	CHECK(strstr(st.last_message, "partial reply") != NULL &&
+	        strstr(st.last_message, "[reply cancelled]") != NULL,
+	    "the cancelled text is kept with a mark");
 
 	teardown(&st, srv);
 }
@@ -4285,6 +4334,7 @@ test_agent_suite(void *arg)
 	test_shell_exec_sigterm_ignored(&loop);
 	test_shell_exec_cancel_reaps_child(&loop);
 	test_stream_text(&loop);
+	test_stream_cancel_keeps_text(&loop);
 	test_stream_tool(&loop);
 	test_stream_meta(&loop);
 	test_stream_split_timings(&loop);

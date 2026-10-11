@@ -27,6 +27,8 @@ struct canned_server {
 	size_t request_count;
 	bool pause_next;
 	struct conn *paused;
+	bool hold_next;
+	struct conn *held;
 };
 
 struct conn {
@@ -40,6 +42,7 @@ struct conn {
 	bool request_seen;
 	bool paused;
 	bool responded;
+	bool held;
 };
 
 static void
@@ -157,7 +160,8 @@ on_write(uv_write_t *req, int status)
 {
 	struct conn *c = req->data;
 	(void)status;
-	uv_close((uv_handle_t *)&c->handle, on_conn_close);
+	if (!c->held)
+		uv_close((uv_handle_t *)&c->handle, on_conn_close);
 }
 
 static void
@@ -167,6 +171,9 @@ send_response(struct conn *c)
 	int status;
 	const char *body = canned_pop(srv, &status);
 	size_t blen = strlen(body);
+	/* A held reply claims more body than it sends, so the client waits
+	 * for the rest with the connection open. */
+	size_t clen = blen + (srv->hold_next ? 4096 : 0);
 	const char *fmt = "HTTP/1.1 %s\r\n"
 	                  "Content-Type: application/json\r\n"
 	                  "Content-Length: %zu\r\n"
@@ -176,13 +183,18 @@ send_response(struct conn *c)
 	uv_buf_t b;
 
 	uv_read_stop((uv_stream_t *)&c->handle);
-	hlen = snprintf(NULL, 0, fmt, status_line, blen);
+	if (srv->hold_next) {
+		srv->hold_next = false;
+		srv->held = c;
+		c->held = true;
+	}
+	hlen = snprintf(NULL, 0, fmt, status_line, clen);
 	c->resp = malloc((size_t)hlen + blen + 1);
 	if (c->resp == NULL) {
 		uv_close((uv_handle_t *)&c->handle, on_conn_close);
 		return;
 	}
-	(void)snprintf(c->resp, (size_t)hlen + 1, fmt, status_line, blen);
+	(void)snprintf(c->resp, (size_t)hlen + 1, fmt, status_line, clen);
 	memcpy(c->resp + hlen, body, blen + 1);
 
 	c->responded = true;
@@ -325,6 +337,13 @@ canned_pause_next(struct canned_server *s)
 }
 
 void
+canned_hold_next(struct canned_server *s)
+{
+	if (s != NULL)
+		s->hold_next = true;
+}
+
+void
 canned_resume(struct canned_server *s)
 {
 	struct conn *c;
@@ -370,6 +389,11 @@ canned_stop(struct canned_server *s)
 		s->paused = NULL;
 		c->paused = false;
 		uv_read_stop((uv_stream_t *)&c->handle);
+		uv_close((uv_handle_t *)&c->handle, on_conn_close);
+	}
+	if (s->held != NULL) {
+		struct conn *c = s->held;
+		s->held = NULL;
 		uv_close((uv_handle_t *)&c->handle, on_conn_close);
 	}
 	uv_close((uv_handle_t *)&s->listener, on_listener_close);

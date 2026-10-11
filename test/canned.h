@@ -35,6 +35,11 @@ void canned_reply_status(struct canned_server *s, int status, const char *body);
  * sends its queued reply later. this is useful for deterministic timeout
  * tests where the response must become available after cancellation. */
 void canned_pause_next(struct canned_server *s);
+
+/* send the next reply but keep its connection open, as a stream that
+ * stalls: the reply claims more body than it holds. canned_stop() closes
+ * it. */
+void canned_hold_next(struct canned_server *s);
 void canned_resume(struct canned_server *s);
 
 /* Number of requests received so far. */

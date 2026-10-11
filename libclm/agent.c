@@ -2534,6 +2534,32 @@ clm_http_data_cb_wrapper(const char *data, size_t len, void *user)
 	}
 }
 
+/*
+ * Keep the text that a cancelled stream had shown, so the history and the
+ * session log hold what the user saw. A mark at the end tells the model
+ * the reply was cut. Tool calls of the partial reply are dropped.
+ */
+static void
+agent_keep_partial(struct clm_agent *agent, struct clm_async_turn *turn)
+{
+	static const char mark[] = "\n\n[reply cancelled]";
+	struct clm_message *m;
+	char *text;
+
+	if (!turn->streaming || turn->content_len == 0)
+		return;
+	text = malloc(turn->content_len + sizeof(mark));
+	if (text == NULL)
+		return;
+	memcpy(text, turn->content, turn->content_len);
+	memcpy(text + turn->content_len, mark, sizeof(mark));
+	m = clm_history_add_assistant_text(
+	    &agent->history, text, agent->compressor);
+	free(text);
+	if (m != NULL)
+		clm_agent_emit_message(agent, m);
+}
+
 static void
 clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 {
@@ -2541,6 +2567,8 @@ clm_http_error_cb_wrapper(int error_code, const char *error_msg, void *user)
 	struct clm_agent *agent = turn->agent;
 
 	agent->inflight = NULL; /* request has completed (or was cancelled) */
+	if (error_code == -ECANCELED)
+		agent_keep_partial(agent, turn);
 
 	/*
 	 * A user cancel is not an error: land in a clean, submittable state and
