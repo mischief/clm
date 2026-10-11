@@ -296,7 +296,7 @@ script_tool_call(struct conn *c, const char *text)
 		    "\\033[31mred\\033[0m\\n'");
 	} else if (has_ci(text, "readtest")) {
 		name = "read_file";
-		cJSON_AddStringToObject(args, "path", "/etc/hostname");
+		cJSON_AddStringToObject(args, "path", "/etc/passwd");
 	} else if (has_ci(text, "edittest")) {
 		/* Key order a model is free to pick, and the one that reads
 		 * backwards if the tui renders keys as they arrive. */

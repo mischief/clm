@@ -123,7 +123,9 @@ test_keep(void *arg)
 	uv_loop_t *loop = arg;
 	struct got g = {0};
 	struct clm_proc_opts o = {
-	    .command = "head -c 5000 /dev/zero | tr '\\0' x", .max = 100};
+	    .command = "dd if=/dev/zero bs=5000 count=1 2>/dev/null | "
+		       "tr '\\000' x",
+	    .max = 100};
 
 	start(loop, &o, &g);
 	wait_done(loop, &g, 5000);
@@ -132,8 +134,8 @@ test_keep(void *arg)
 
 	memset(&g, 0, sizeof(g));
 	o = (struct clm_proc_opts){
-	    .command = "printf HEAD; head -c 5000 /dev/zero | tr '\\0' x; "
-	               "printf TAIL",
+	    .command = "printf HEAD; dd if=/dev/zero bs=5000 count=1 "
+		       "2>/dev/null | tr '\\000' x; printf TAIL",
 	    .keep = CLM_PROC_KEEP_ENDS,
 	    .max = 100,
 	    .head = 10};

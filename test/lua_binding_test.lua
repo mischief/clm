@@ -129,7 +129,8 @@ clm.run(function()
     done = true
     check(code == nil and why:find("timed out"), "clm.exec stops at its timeout")
     check(ticks >= 5, "other coroutines run while clm.exec waits")
-    code, out = clm.exec("head -c 5000 /dev/zero | tr '\\0' x", { max = 100 })
+    code, out = clm.exec(
+        "dd if=/dev/zero bs=5000 count=1 2>/dev/null | tr '\\000' x", { max = 100 })
     check(#out < 200 and out:find("more bytes"), "clm.exec keeps at most max bytes")
     code, out = clm.exec("sleep 30 & echo started")
     check(code == 0 and out:find("started"), "a job left in the background does not hang it")
