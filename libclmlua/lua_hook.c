@@ -29,6 +29,7 @@ enum lua_hook_kind {
 	LUA_HOOK_TURN_START,
 	LUA_HOOK_TURN_END,
 	LUA_HOOK_PROMPT,
+	LUA_HOOK_COMMAND,
 };
 
 struct lua_hook {
@@ -36,7 +37,9 @@ struct lua_hook {
 	struct clm_lua_plugin *plugin;
 	enum lua_hook_kind kind;
 	int fn_ref;
-	char *key; /* LUA_HOOK_PROMPT: the part this plugin set */
+	char *key;  /* LUA_HOOK_PROMPT: the part; LUA_HOOK_COMMAND: the name */
+	char *args; /* LUA_HOOK_COMMAND: argument synopsis */
+	char *help; /* LUA_HOOK_COMMAND: one line of help */
 };
 
 /* One pre_tool hook run: from the call into the hook to its answer. */
@@ -402,9 +405,197 @@ lua_clm_prompt_set(lua_State *L)
 	return 0;
 }
 
+static void
+command_free(lua_State *L, struct lua_hook *hook)
+{
+	if (L != NULL)
+		luaL_unref(L, LUA_REGISTRYINDEX, hook->fn_ref);
+	free(hook->key);
+	free(hook->args);
+	free(hook->help);
+	free(hook);
+}
+
+static struct lua_hook *
+command_find(struct clm_lua_plugin *plugin, const char *name)
+{
+	struct lua_hook *hook;
+
+	TAILQ_FOREACH(hook, clm_lua_plugin_hooks(plugin), entry)
+	if (hook->kind == LUA_HOOK_COMMAND && strcmp(hook->key, name) == 0)
+		return hook;
+	return NULL;
+}
+
+/* A command name: 1 to 32 of [a-z0-9_-], a letter first. */
+static bool
+command_name_ok(const char *s)
+{
+	size_t n = strlen(s);
+
+	if (n == 0 || n > 32 || s[0] < 'a' || s[0] > 'z')
+		return false;
+	return strspn(s, "abcdefghijklmnopqrstuvwxyz0123456789_-") == n;
+}
+
+/* Copy an optional string field of the table at idx. */
+static int
+command_field(lua_State *L, int idx, const char *field, char **out)
+{
+	const char *s;
+
+	lua_getfield(L, idx, field);
+	s = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+	*out = strdup(s);
+	lua_pop(L, 1);
+	return *out != NULL ? 0 : -ENOMEM;
+}
+
+/* clm.command_register(name, {args=, help=, run=fn}) */
+static int
+lua_clm_command_register(lua_State *L)
+{
+	struct clm_lua_plugin *plugin = lua_touserdata(L, lua_upvalueindex(1));
+	const char *name = luaL_checkstring(L, 1);
+	struct lua_hook *hook, *old;
+
+	luaL_checktype(L, 2, LUA_TTABLE);
+	if (!command_name_ok(name))
+		return luaL_error(
+		    L, "clm.command_register: bad name '%s'", name);
+	lua_getfield(L, 2, "run");
+	luaL_checktype(L, -1, LUA_TFUNCTION);
+	hook = calloc(1, sizeof(*hook));
+	if (hook == NULL)
+		return luaL_error(L, "clm.command_register: out of memory");
+	hook->plugin = plugin;
+	hook->kind = LUA_HOOK_COMMAND;
+	hook->fn_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	hook->key = strdup(name);
+	if (hook->key == NULL || command_field(L, 2, "args", &hook->args) < 0 ||
+	    command_field(L, 2, "help", &hook->help) < 0) {
+		command_free(L, hook);
+		return luaL_error(L, "clm.command_register: out of memory");
+	}
+	/* Registering a name again replaces it. */
+	old = command_find(plugin, name);
+	if (old != NULL) {
+		TAILQ_REMOVE(clm_lua_plugin_hooks(plugin), old, entry);
+		command_free(L, old);
+	}
+	TAILQ_INSERT_TAIL(clm_lua_plugin_hooks(plugin), hook, entry);
+	return 0;
+}
+
+/* clm.command_remove(name) */
+static int
+lua_clm_command_remove(lua_State *L)
+{
+	struct clm_lua_plugin *plugin = lua_touserdata(L, lua_upvalueindex(1));
+	struct lua_hook *hook = command_find(plugin, luaL_checkstring(L, 1));
+
+	if (hook != NULL) {
+		TAILQ_REMOVE(clm_lua_plugin_hooks(plugin), hook, entry);
+		command_free(L, hook);
+	}
+	return 0;
+}
+
+int
+clm_lua_hook_commands(struct clm_lua_plugin *plugin,
+    int (*fn)(const char *name, const char *args, const char *help, void *user),
+    void *user)
+{
+	struct lua_hook *hook;
+
+	if (!clm_lua_plugin_alive(plugin))
+		return 0;
+	TAILQ_FOREACH(hook, clm_lua_plugin_hooks(plugin), entry)
+	{
+		if (hook->kind != LUA_HOOK_COMMAND)
+			continue;
+		if (fn(hook->key, hook->args, hook->help, user) != 0)
+			return 1;
+	}
+	return 0;
+}
+
+struct command_call {
+	struct lua_hook *hook;
+	const char *arg;
+	char *out;
+	char *err;
+};
+
+/* Runs inside the callback's protected call: call run(arg) and keep its
+ * string result, or the error it raised. */
+static int
+command_trampoline(lua_State *L)
+{
+	struct command_call *cc = lua_touserdata(L, 1);
+	const char *s;
+
+	lua_rawgeti(L, LUA_REGISTRYINDEX, cc->hook->fn_ref);
+	lua_pushstring(L, cc->arg);
+	if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+		s = lua_tostring(L, -1);
+		cc->err = strdup(s != NULL ? s : "error");
+		return 0;
+	}
+	s = lua_isstring(L, -1) ? lua_tostring(L, -1) : NULL;
+	if (s != NULL)
+		cc->out = strdup(s);
+	return 0;
+}
+
+static int
+push_command(lua_State *L, void *arg)
+{
+	lua_pushcfunction(L, command_trampoline);
+	lua_pushlightuserdata(L, arg);
+	return 1;
+}
+
+int
+clm_lua_hook_command_run(struct clm_lua_plugin *plugin, const char *name,
+    const char *arg, char **out)
+{
+	struct command_call cc = {0};
+	struct lua_hook *hook;
+	int r;
+
+	*out = NULL;
+	if (!clm_lua_plugin_alive(plugin))
+		return -ENOENT;
+	hook = command_find(plugin, name);
+	if (hook == NULL)
+		return -ENOENT;
+	cc.hook = hook;
+	cc.arg = arg != NULL ? arg : "";
+	r = clm_lua_plugin_callback(plugin, push_command, &cc);
+	if (cc.err != NULL) {
+		free(cc.out);
+		*out = cc.err;
+		return -EIO;
+	}
+	if (r < 0) {
+		free(cc.out);
+		*out = strdup("the command timed out or failed");
+		return -EIO;
+	}
+	*out = cc.out;
+	return 0;
+}
+
 void
 clm_lua_hook_open(lua_State *L, struct clm_lua_plugin *plugin)
 {
+	lua_pushlightuserdata(L, plugin);
+	lua_pushcclosure(L, lua_clm_command_register, 1);
+	lua_setfield(L, -2, "command_register");
+	lua_pushlightuserdata(L, plugin);
+	lua_pushcclosure(L, lua_clm_command_remove, 1);
+	lua_setfield(L, -2, "command_remove");
 	lua_pushlightuserdata(L, plugin);
 	lua_pushcclosure(L, lua_clm_on, 1);
 	lua_setfield(L, -2, "on");
@@ -437,6 +628,13 @@ clm_lua_hook_drop_all(struct clm_lua_plugin *plugin)
 			(void)clm_agent_set_prompt_part(agent, hook->key, NULL);
 			free(hook->key);
 			free(hook);
+			continue;
+		}
+		if (hook->kind == LUA_HOOK_COMMAND) {
+			command_free(clm_lua_plugin_alive(plugin)
+			        ? clm_lua_plugin_state(plugin)
+			        : NULL,
+			    hook);
 			continue;
 		}
 		if (hook->kind == LUA_HOOK_PRE_TOOL)

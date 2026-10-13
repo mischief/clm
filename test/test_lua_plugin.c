@@ -1463,6 +1463,71 @@ test_tools_config_merge(void)
 	unlink(path);
 }
 
+/* clm_lua_commands collects "name|args|help|plugin;" for each command. */
+static void
+collect_command(const char *name, const char *args, const char *help,
+    const char *plugin, void *user)
+{
+	char *buf = user;
+	size_t off = strlen(buf);
+
+	(void)snprintf(
+	    buf + off, 1024 - off, "%s|%s|%s|%s;", name, args, help, plugin);
+}
+
+static void
+test_commands(void)
+{
+	struct clm_cfg cfg = {
+	    .api_key = "test",
+	    .provider = CLM_PROVIDER_OPENAI,
+	    .model = "test",
+	    .base_url = "http://127.0.0.1:1/v1/chat/completions",
+	};
+	struct clm_agent *agent = NULL;
+	struct clm_host *host = NULL;
+	struct clm_lua_env *env = NULL;
+	char list[1024] = "";
+	char *out = NULL;
+
+	CHECK(clm_host_uv_new(uv_default_loop(), &host) == 0, "command host");
+	CHECK(clm_agent_new(&cfg, host, NULL, NULL, &agent) == 0,
+	    "command agent");
+	CHECK(clm_lua_env_new(agent, &env) == 0, "command lua env");
+	CHECK(clm_lua_load_plugins(env, "test/plugins_cmd") == 0,
+	    "command plugins load");
+
+	clm_lua_commands(env, collect_command, list);
+	CHECK(strcmp(list,
+	          "hello|[name]|say hello|a;boom||always fails|a;quiet|||a;"
+	          "dup||from a|a;badname||bad name refused|b;") == 0,
+	    "commands list in load order; a taken name and a removed one "
+	    "are left out");
+
+	CHECK(clm_lua_command_run(env, "hello", "you", &out) == 0 &&
+	        out != NULL && strcmp(out, "hello you") == 0,
+	    "a command gets its argument and returns text");
+	free(out);
+	CHECK(clm_lua_command_run(env, "quiet", "", &out) == 0 && out == NULL,
+	    "a command may return nothing");
+	CHECK(clm_lua_command_run(env, "boom", "", &out) == -EIO &&
+	        out != NULL && strstr(out, "kaboom") != NULL,
+	    "an error in a command comes back with its message");
+	free(out);
+	CHECK(clm_lua_command_run(env, "dup", "", &out) == 0 && out != NULL &&
+	        strcmp(out, "dup from a") == 0,
+	    "the plugin loaded first owns a name");
+	free(out);
+	CHECK(clm_lua_command_run(env, "gone", "", &out) == -ENOENT,
+	    "a removed command is gone");
+	CHECK(clm_lua_command_run(NULL, "hello", "", &out) == -ENOENT,
+	    "no plugin env means no plugin commands");
+
+	clm_lua_env_free(env);
+	clm_agent_free(agent);
+	clm_host_uv_free(host);
+}
+
 static int
 test_lua_plugin_suite(void *arg)
 {
@@ -1484,6 +1549,7 @@ test_lua_plugin_suite(void *arg)
 	test_hook_plugin();
 	test_jev_guard();
 	test_tools_config_merge();
+	test_commands();
 
 	return 0;
 }

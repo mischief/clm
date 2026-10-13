@@ -46,6 +46,24 @@ CLM_API int clm_lua_load_plugin(
     struct clm_lua_env *env, const char *dir, const char *name);
 
 /*
+ * The slash commands plugins added with clm.command_register, in load
+ * order. A name a plugin loaded earlier already took is skipped. The
+ * strings are valid only during the call. Safe to call with NULL.
+ */
+typedef void (*clm_lua_command_fn)(const char *name, const char *args,
+    const char *help, const char *plugin, void *user);
+CLM_API void clm_lua_commands(
+    struct clm_lua_env *env, clm_lua_command_fn fn, void *user);
+
+/*
+ * Run the plugin command name with the text after it. Returns 0 and sets
+ * *out to the text the command returned, or NULL. Returns -ENOENT when no
+ * plugin has the command, or -EIO with the error in *out. Free *out.
+ */
+CLM_API int clm_lua_command_run(
+    struct clm_lua_env *env, const char *name, const char *arg, char **out);
+
+/*
  * Free all Lua states and the environment. Safe to call with NULL.
  */
 CLM_API void clm_lua_env_free(struct clm_lua_env *env);

@@ -198,8 +198,32 @@ list_columns(struct ui *u, const char *const *items, size_t n,
 
 /* ---- first word: slash-command names ---- */
 
-/* Names come from ui_commands; aliases are left out on purpose, so
- * completion offers the name to type, not the shortcuts. */
+/* Plugin command names that match the typed prefix. */
+struct plugin_names {
+	const char *prefix;
+	size_t typed;
+	char (*name)[33];
+	size_t n;
+};
+
+static void
+plugin_name_cb(const char *name, const char *args, const char *help,
+    const char *plugin, void *user)
+{
+	struct plugin_names *pn = user;
+
+	(void)args;
+	(void)help;
+	(void)plugin;
+	if (pn->n == MAX_CANDIDATES ||
+	    ui_command_find(name, strlen(name)) != NULL ||
+	    strncmp(name, pn->prefix, pn->typed) != 0)
+		return;
+	(void)snprintf(pn->name[pn->n++], sizeof(pn->name[0]), "%s", name);
+}
+
+/* Names come from ui_commands and plugins; aliases are left out on
+ * purpose, so completion offers the name to type, not the shortcuts. */
 static void
 complete_command_name(struct ui *u, size_t wstart, size_t wlen)
 {
@@ -207,14 +231,23 @@ complete_command_name(struct ui *u, size_t wstart, size_t wlen)
 	size_t typed = wlen - 1;
 	const char *candidates[MAX_CANDIDATES];
 	size_t ncandidates = 0;
+	struct plugin_names pn = {prefix, typed, NULL, 0};
 
 	for (size_t i = 0; i < ui_ncommands && ncandidates < MAX_CANDIDATES;
 	    i++) {
 		if (strncmp(ui_commands[i].name, prefix, typed) == 0)
 			candidates[ncandidates++] = ui_commands[i].name;
 	}
-	if (ncandidates == 0)
+	/* The names live only during the walk, so they are copied. */
+	pn.name = calloc(MAX_CANDIDATES, sizeof(*pn.name));
+	if (pn.name != NULL)
+		clm_lua_commands(u->lua_env, plugin_name_cb, &pn);
+	for (size_t i = 0; i < pn.n && ncandidates < MAX_CANDIDATES; i++)
+		candidates[ncandidates++] = pn.name[i];
+	if (ncandidates == 0) {
+		free((void *)pn.name);
 		return;
+	}
 
 	if (ncandidates > 1) {
 		autofree char *buf = malloc(512);
@@ -239,6 +272,7 @@ complete_command_name(struct ui *u, size_t wstart, size_t wlen)
 	 * trailing '/' file completion appends after a directory. */
 	apply_insert(u, wstart, wlen, 1 /* skip '/' */, candidates, ncandidates,
 	    typed, ' ');
+	free((void *)pn.name);
 }
 
 /* ---- emoji shortcode names (":sh" -> ":shrug") ---- */

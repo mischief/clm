@@ -1453,6 +1453,81 @@ clm_lua_load_plugin(struct clm_lua_env *env, const char *dir, const char *name)
 	return load_one_plugin(env, path);
 }
 
+struct command_walk {
+	struct clm_lua_env *env;
+	struct clm_lua_plugin *cur;
+	clm_lua_command_fn fn;
+	void *user;
+	char plugin[64];
+};
+
+static int
+command_named(const char *name, const char *args, const char *help, void *u)
+{
+	(void)args;
+	(void)help;
+	return strcmp(name, u) == 0;
+}
+
+/* The plugin that first registered name, or NULL. */
+static struct clm_lua_plugin *
+command_owner(struct clm_lua_env *env, const char *name)
+{
+	struct clm_lua_plugin *p;
+
+	TAILQ_FOREACH(p, &env->plugins, entry)
+	if (clm_lua_hook_commands(p, command_named, (void *)name))
+		return p;
+	return NULL;
+}
+
+static int
+command_each(const char *name, const char *args, const char *help, void *u)
+{
+	struct command_walk *w = u;
+
+	if (command_owner(w->env, name) == w->cur)
+		w->fn(name, args, help, w->plugin, w->user);
+	return 0;
+}
+
+CLM_API void
+clm_lua_commands(struct clm_lua_env *env, clm_lua_command_fn fn, void *user)
+{
+	struct command_walk w = {env, NULL, fn, user, ""};
+	struct clm_lua_plugin *p;
+
+	if (env == NULL || fn == NULL)
+		return;
+	TAILQ_FOREACH(p, &env->plugins, entry)
+	{
+		const char *base = strrchr(p->path, '/');
+		size_t n;
+
+		base = base != NULL ? base + 1 : p->path;
+		n = strcspn(base, ".");
+		(void)snprintf(
+		    w.plugin, sizeof(w.plugin), "%.*s", (int)n, base);
+		w.cur = p;
+		(void)clm_lua_hook_commands(p, command_each, &w);
+	}
+}
+
+CLM_API int
+clm_lua_command_run(
+    struct clm_lua_env *env, const char *name, const char *arg, char **out)
+{
+	struct clm_lua_plugin *p;
+
+	*out = NULL;
+	if (env == NULL || name == NULL)
+		return -ENOENT;
+	p = command_owner(env, name);
+	if (p == NULL)
+		return -ENOENT;
+	return clm_lua_hook_command_run(p, name, arg, out);
+}
+
 CLM_API void
 clm_lua_env_free(struct clm_lua_env *env)
 {

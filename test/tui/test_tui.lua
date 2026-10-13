@@ -1071,6 +1071,35 @@ tests.help_popup = function(url)
 	t:close()
 end
 
+tests.plugin_commands = function(url)
+	-- A plugin's slash commands run, complete, and show in the popup.
+	local t = driver.new(BIN, url, { rows = 40, cols = 100,
+	    args = { "-p", here .. "/../plugins_cmd" } })
+
+	t:wait_for("online", 8)
+	t:send("/hello there\r")
+	check(t:wait_for("hello there", 5),
+	    "plugin commands: /hello runs and prints its text")
+	t:send("/boom\r")
+	check(t:wait_for("kaboom", 5),
+	    "plugin commands: an error shows with its message")
+	t:send("/hel\t")
+	t:pump(0.5)
+	check(has(t:text(), "/help") and has(t:text(), "/hello"),
+	    "plugin commands: TAB offers built-in and plugin names")
+	t:send("\21") -- ^U clears the line
+	t:send("\7")
+	t:pump(0.4)
+	t:send("\27[6~\27[6~") -- PageDown twice: the bottom of the popup
+	t:pump(0.4)
+	local txt = t:text()
+	check(has(txt, "plugin commands") and has(txt, "say hello (a)"),
+	    "plugin commands: the popup lists them with their plugin")
+	check(not has(txt, "from b"),
+	    "plugin commands: a name another plugin took is left out")
+	t:close()
+end
+
 tests.narrow_status = function(url)
 	-- A narrow status bar drops the least useful pieces first, and the
 	-- live status and the gauge stay longest.
@@ -1361,7 +1390,7 @@ local ORDER = { "connection", "offline", "agent", "markdown", "scrollback",
 	"commands", "effort", "queueing", "permission", "cancel",
 	"cancel_tools", "tool_escapes", "paste", "session", "resume_collapse",
 	"session_compact", "clear_gauge", "scratch", "peers", "allow_all",
-	"help_popup", "narrow_status",
+	"help_popup", "narrow_status", "plugin_commands",
 	"mcp_spawn_fail" }
 
 local selected = {}

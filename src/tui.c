@@ -1421,26 +1421,83 @@ help_entry(
 	}
 }
 
+static void help_free(struct help_text *h);
+
+/* Command entries for the popup: the left and right column of each. */
+struct help_cmds {
+	struct help_text left, right;
+};
+
 static void
-help_build(struct help_text *h, int w)
+help_cmd_add(
+    struct help_cmds *c, const char *name, const char *args, const char *right)
 {
-	char left[64], right[192];
+	char left[64];
+
+	(void)snprintf(left, sizeof(left), "/%s%s%s", name,
+	    args[0] != '\0' ? " " : "", args);
+	help_add(&c->left, left, (int)strlen(left), false);
+	help_add(&c->right, right, (int)strlen(right), false);
+	/* Keep the two columns paired if one add ran out of memory. */
+	if (c->left.n != c->right.n) {
+		int n = c->left.n < c->right.n ? c->left.n : c->right.n;
+
+		while (c->left.n > n)
+			free(c->left.line[--c->left.n]);
+		while (c->right.n > n)
+			free(c->right.line[--c->right.n]);
+	}
+}
+
+/* A plugin command; one a built-in name hides is left out. */
+static void
+help_cmd_plugin(const char *name, const char *args, const char *help,
+    const char *plugin, void *user)
+{
+	char right[192];
+
+	if (ui_command_find(name, strlen(name)) != NULL)
+		return;
+	(void)snprintf(right, sizeof(right), "%s%s(%s)", help,
+	    help[0] != '\0' ? " " : "", plugin);
+	help_cmd_add(user, name, args, right);
+}
+
+static void
+help_build(struct ui *u, struct help_text *h, int w)
+{
+	struct help_cmds c = {0};
+	char right[192];
 	size_t off;
-	int lw = 0;
+	int lw = 0, nbuiltin;
+
+	for (size_t i = 0; i < ui_ncommands; i++) {
+		const struct ui_command *cmd = &ui_commands[i];
+
+		off = (size_t)snprintf(right, sizeof(right), "%s", cmd->help);
+		for (const char *a = cmd->aliases; a != NULL && *a != '\0';) {
+			size_t n = strcspn(a, " ");
+
+			if (off < sizeof(right))
+				off += (size_t)snprintf(right + off,
+				    sizeof(right) - off, "%s/%.*s",
+				    a == cmd->aliases ? "; also " : ", ",
+				    (int)n, a);
+			a += n;
+			a += strspn(a, " ");
+		}
+		help_cmd_add(&c, cmd->name, cmd->args, right);
+	}
+	nbuiltin = c.left.n;
+	clm_lua_commands(u->lua_env, help_cmd_plugin, &c);
 
 	/* The left column fits the longest key or command, plus a gap. */
 	for (size_t i = 0; i < sizeof(help_keys) / sizeof(help_keys[0]); i++)
 		if ((int)strlen(help_keys[i][0]) > lw)
 			lw = (int)strlen(help_keys[i][0]);
-	for (size_t i = 0; i < ui_ncommands; i++) {
-		int n = 1 + (int)strlen(ui_commands[i].name) +
-		    (ui_commands[i].args[0] != '\0'
-		            ? 1 + (int)strlen(ui_commands[i].args)
-		            : 0);
-
-		if (n > lw)
-			lw = n;
-	}
+	for (int i = 0; i < c.left.n; i++)
+		if ((int)strlen(c.left.line[i]) > lw)
+			lw = (int)strlen(c.left.line[i]);
 	lw += 2;
 
 	help_add(h, "keys", 4, true);
@@ -1448,25 +1505,15 @@ help_build(struct help_text *h, int w)
 		help_entry(h, help_keys[i][0], help_keys[i][1], w, lw);
 	help_add(h, "", 0, false);
 	help_add(h, "commands", 8, true);
-	for (size_t i = 0; i < ui_ncommands; i++) {
-		const struct ui_command *c = &ui_commands[i];
-
-		(void)snprintf(left, sizeof(left), "/%s%s%s", c->name,
-		    c->args[0] != '\0' ? " " : "", c->args);
-		off = (size_t)snprintf(right, sizeof(right), "%s", c->help);
-		for (const char *a = c->aliases; a != NULL && *a != '\0';) {
-			size_t n = strcspn(a, " ");
-
-			if (off < sizeof(right))
-				off += (size_t)snprintf(right + off,
-				    sizeof(right) - off, "%s/%.*s",
-				    a == c->aliases ? "; also " : ", ", (int)n,
-				    a);
-			a += n;
-			a += strspn(a, " ");
+	for (int i = 0; i < c.left.n; i++) {
+		if (i == nbuiltin) {
+			help_add(h, "", 0, false);
+			help_add(h, "plugin commands", 15, true);
 		}
-		help_entry(h, left, right, w, lw);
+		help_entry(h, c.left.line[i], c.right.line[i], w, lw);
 	}
+	help_free(&c.left);
+	help_free(&c.right);
 }
 
 static void
@@ -1521,7 +1568,7 @@ draw_help(struct ui *u)
 	w = tw < 80 ? tw : 80;
 	if (w < 20 || th < 5)
 		return;
-	help_build(&h, w - 4);
+	help_build(u, &h, w - 4);
 	hh = h.n + 2 < th ? h.n + 2 : th;
 	rows = hh - 2;
 	if (u->help_top > h.n - rows)
@@ -3743,12 +3790,25 @@ command_matches(const struct ui_command *c, const char *word, size_t len)
 	return false;
 }
 
+const struct ui_command *
+ui_command_find(const char *word, size_t len)
+{
+	for (size_t i = 0; i < ui_ncommands; i++)
+		if (command_matches(&ui_commands[i], word, len))
+			return &ui_commands[i];
+	return NULL;
+}
+
 /* A '/word ...' line: run a UI command instead of prompting the model. */
 static void
 run_command(struct ui *u, const char *line)
 {
+	const struct ui_command *cmd;
+	autofree char *out = NULL;
 	const char *arg;
+	char name[40];
 	size_t wlen;
+	int r;
 
 	line++; /* skip '/' */
 	arg = line;
@@ -3758,9 +3818,31 @@ run_command(struct ui *u, const char *line)
 	while (*arg == ' ')
 		arg++;
 
-	for (size_t i = 0; i < ui_ncommands; i++) {
-		if (command_matches(&ui_commands[i], line, wlen)) {
-			ui_commands[i].fn(u, arg);
+	cmd = ui_command_find(line, wlen);
+	if (cmd != NULL) {
+		cmd->fn(u, arg);
+		return;
+	}
+
+	/* Then the commands plugins registered. */
+	if (wlen < sizeof(name)) {
+		memcpy(name, line, wlen);
+		name[wlen] = '\0';
+		r = clm_lua_command_run(u->lua_env, name, arg, &out);
+		if (r == 0) {
+			if (out != NULL && out[0] != '\0') {
+				ui_push(u, ST_META, "\n");
+				ui_push(u, ST_META, out);
+				ui_push(u, ST_META, "\n");
+			}
+			return;
+		}
+		if (r != -ENOENT) {
+			ui_push(u, ST_ERROR, "\n/");
+			ui_push(u, ST_ERROR, name);
+			ui_push(u, ST_ERROR, ": ");
+			ui_push(u, ST_ERROR, out != NULL ? out : "failed");
+			ui_push(u, ST_ERROR, "\n");
 			return;
 		}
 	}

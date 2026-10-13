@@ -354,6 +354,41 @@ Call
 on an agent event.
 See
 .Sx Hooks .
+.It Fn clm.command_register name spec
+Add the slash command
+.No / Ns Ar name
+to the terminal UI.
+.Ar name
+is 1 to 32 lowercase letters, digits,
+.Ql _
+or
+.Ql - ,
+and starts with a letter.
+.Ar spec
+holds
+.Va run ,
+a function that gets the text after the command and may return a
+string to print, and optionally
+.Va args ,
+a synopsis such as
+.Qq [name] ,
+and
+.Va help ,
+one line for the help popup.
+.Va run
+must not yield, and has the same 2 second limit as an event callback;
+start longer work with
+.Fn clm.after
+or
+.Fn clm.spawn .
+An error in
+.Va run
+prints as the command's result.
+A built-in command, or a command of a plugin that loaded earlier, wins
+over a command of the same name.
+Registering a name again replaces it.
+.It Fn clm.command_remove name
+Remove a slash command this plugin added.
 .El
 .Ss Hooks
 .Bd -literal -offset indent

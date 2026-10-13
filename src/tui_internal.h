@@ -73,6 +73,9 @@ struct ui_command {
 extern const struct ui_command ui_commands[];
 extern const size_t ui_ncommands;
 
+/* The built-in command a word of length len names, by name or alias. */
+const struct ui_command *ui_command_find(const char *word, size_t len);
+
 /* One run of rendered text with a resolved curses attribute, ready to draw. */
 struct rseg {
 	int attr;

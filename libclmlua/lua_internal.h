@@ -49,6 +49,16 @@ struct clm_lua_hook_list *clm_lua_plugin_hooks(struct clm_lua_plugin *plugin);
 /* Add clm.on to the clm table at the top of the stack. */
 void clm_lua_hook_open(struct lua_State *L, struct clm_lua_plugin *plugin);
 
+/* Call fn for each slash command the plugin registered; stop when fn
+ * returns nonzero, and return 1 then. */
+int clm_lua_hook_commands(struct clm_lua_plugin *plugin,
+    int (*fn)(const char *name, const char *args, const char *help, void *user),
+    void *user);
+
+/* Run the plugin's command name. See clm_lua_command_run. */
+int clm_lua_hook_command_run(struct clm_lua_plugin *plugin, const char *name,
+    const char *arg, char **out);
+
 /* Take the plugin's hooks off its agent. Call before the state closes. */
 void clm_lua_hook_drop_all(struct clm_lua_plugin *plugin);
 
