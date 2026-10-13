@@ -212,7 +212,8 @@ if have_lua
       'margin', 'editing', 'input_wrap', 'history', 'paste'],
     'tui_scrollback': ['scrollback', 'scroll_stable', 'end_key'],
     'tui_interaction': ['commands', 'effort', 'queueing', 'permission',
-      'allow_all', 'cancel', 'cancel_tools', 'tool_escapes', 'clear_gauge'],
+      'allow_all', 'cancel', 'cancel_tools', 'tool_escapes', 'clear_gauge',
+      'help_popup', 'narrow_status'],
     'tui_session': ['session', 'session_compact', 'resume_collapse',
       'scratch', 'peers', 'mcp_spawn_fail'],
   }

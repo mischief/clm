@@ -47,6 +47,20 @@ input/output, which is also what
 .Fl -oneshot
 uses.
 .Pp
+In the terminal UI,
+.Ic ^G
+or
+.Ic /help
+opens a popup that lists the keys and the slash commands.
+Arrows and PgUp/PgDn scroll it,
+.Ic ^G
+or Escape closes it, and any other key closes it and goes to the input
+line.
+When the terminal is too narrow for the whole status bar, the bar drops
+its least useful parts first: the help hint, the connection state, the
+provider and agent names, then the session id.
+The live state and the context gauge stay longest.
+.Pp
 .Nm Cm setup
 writes a starter
 .Pa config.lua

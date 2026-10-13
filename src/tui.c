@@ -1329,12 +1329,378 @@ fmt_ctx_gauge(struct ui *u, char *buf, size_t len)
 		(void)snprintf(buf + off, len - off, "] %d%%", pct);
 }
 
+/* ---- help popup ---- */
+
+/* Keys for the popup; the slash commands come from ui_commands. */
+static const char *const help_keys[][2] = {
+    {"^G", "open or close this help"},
+    {"Enter", "send the prompt"},
+    {"Esc", "cancel the running turn, else clear the input"},
+    {"^C", "quit"},
+    {"^D", "quit, on an empty line"},
+    {"^R", "show or hide reasoning"},
+    {"^O", "full or short tool output"},
+    {"^L", "redraw the screen"},
+    {"PgUp PgDn wheel", "scroll the transcript"},
+    {"End", "scroll to the bottom, on an empty line"},
+    {"Up Down", "recall earlier prompts"},
+    {"Tab", "complete commands, names and paths"},
+    {"^A ^E ^B ^F", "start, end, back, forward"},
+    {"^U ^K ^Y", "kill to start, kill to end, yank"},
+};
+
+struct help_text {
+	char **line;
+	bool *bold;
+	int n, cap;
+};
+
+static void
+help_add(struct help_text *h, const char *s, int len, bool bold)
+{
+	if (h->n == h->cap) {
+		int cap = h->cap ? h->cap * 2 : 64;
+		char **l =
+		    (char **)realloc((void *)h->line, (size_t)cap * sizeof(*l));
+		bool *b;
+
+		if (l == NULL)
+			return;
+		h->line = l;
+		b = realloc(h->bold, (size_t)cap * sizeof(*b));
+		if (b == NULL)
+			return;
+		h->bold = b;
+		h->cap = cap;
+	}
+	h->line[h->n] = strndup(s, (size_t)len);
+	if (h->line[h->n] == NULL)
+		return;
+	h->bold[h->n++] = bold;
+}
+
+/*
+ * One entry: left in a column of lw cells, right wrapped beside it. When
+ * the popup is too narrow for two columns, right goes below, indented.
+ */
+static void
+help_entry(
+    struct help_text *h, const char *left, const char *right, int w, int lw)
+{
+	char buf[256];
+	int indent, cw;
+	bool first = true;
+
+	if (w < lw + 20) {
+		help_add(h, left, (int)strlen(left), false);
+		indent = 4;
+		first = false;
+	} else {
+		indent = lw;
+	}
+	cw = w - indent;
+	if (cw < 8)
+		cw = 8;
+	while (*right != '\0') {
+		int n = (int)strlen(right);
+
+		if (n > cw) {
+			n = cw;
+			while (n > 0 && right[n] != ' ')
+				n--;
+			if (n == 0)
+				n = cw;
+		}
+		(void)snprintf(buf, sizeof(buf), "%-*.*s%.*s", indent, indent,
+		    first ? left : "", n, right);
+		help_add(h, buf, (int)strlen(buf), false);
+		first = false;
+		right += n;
+		while (*right == ' ')
+			right++;
+	}
+}
+
+static void
+help_build(struct help_text *h, int w)
+{
+	char left[64], right[192];
+	size_t off;
+	int lw = 0;
+
+	/* The left column fits the longest key or command, plus a gap. */
+	for (size_t i = 0; i < sizeof(help_keys) / sizeof(help_keys[0]); i++)
+		if ((int)strlen(help_keys[i][0]) > lw)
+			lw = (int)strlen(help_keys[i][0]);
+	for (size_t i = 0; i < ui_ncommands; i++) {
+		int n = 1 + (int)strlen(ui_commands[i].name) +
+		    (ui_commands[i].args[0] != '\0'
+		            ? 1 + (int)strlen(ui_commands[i].args)
+		            : 0);
+
+		if (n > lw)
+			lw = n;
+	}
+	lw += 2;
+
+	help_add(h, "keys", 4, true);
+	for (size_t i = 0; i < sizeof(help_keys) / sizeof(help_keys[0]); i++)
+		help_entry(h, help_keys[i][0], help_keys[i][1], w, lw);
+	help_add(h, "", 0, false);
+	help_add(h, "commands", 8, true);
+	for (size_t i = 0; i < ui_ncommands; i++) {
+		const struct ui_command *c = &ui_commands[i];
+
+		(void)snprintf(left, sizeof(left), "/%s%s%s", c->name,
+		    c->args[0] != '\0' ? " " : "", c->args);
+		off = (size_t)snprintf(right, sizeof(right), "%s", c->help);
+		for (const char *a = c->aliases; a != NULL && *a != '\0';) {
+			size_t n = strcspn(a, " ");
+
+			if (off < sizeof(right))
+				off += (size_t)snprintf(right + off,
+				    sizeof(right) - off, "%s/%.*s",
+				    a == c->aliases ? "; also " : ", ", (int)n,
+				    a);
+			a += n;
+			a += strspn(a, " ");
+		}
+		help_entry(h, left, right, w, lw);
+	}
+}
+
+static void
+help_free(struct help_text *h)
+{
+	for (int i = 0; i < h->n; i++)
+		free(h->line[i]);
+	free((void *)h->line);
+	free(h->bold);
+}
+
+static void
+help_open(struct ui *u)
+{
+	u->help_shown = true;
+	u->help_top = 0;
+	u->dirty = true;
+}
+
+static void
+help_close(struct ui *u)
+{
+	u->help_shown = false;
+	if (u->help != NULL) {
+		delwin(u->help);
+		u->help = NULL;
+	}
+	u->full_redraw = true;
+	u->dirty = true;
+}
+
+/* Rows of text the popup shows at once, for paging. */
+static int
+help_rows(struct ui *u)
+{
+	return u->help != NULL ? getmaxy(u->help) - 2 : 1;
+}
+
+/* Draw the popup over the transcript. Rebuilt each time: it is small. */
+static void
+draw_help(struct ui *u)
+{
+	struct help_text h = {0};
+	int ty, tx, th, tw, w, hh, rows;
+	char foot[48];
+
+	if (!u->help_shown)
+		return;
+	getbegyx(u->txt, ty, tx);
+	getmaxyx(u->txt, th, tw);
+	(void)tx;
+	w = tw < 80 ? tw : 80;
+	if (w < 20 || th < 5)
+		return;
+	help_build(&h, w - 4);
+	hh = h.n + 2 < th ? h.n + 2 : th;
+	rows = hh - 2;
+	if (u->help_top > h.n - rows)
+		u->help_top = h.n - rows;
+	if (u->help_top < 0)
+		u->help_top = 0;
+
+	if (u->help != NULL)
+		delwin(u->help);
+	u->help = newwin(hh, w, ty + (th - hh) / 2, (COLS - w) / 2);
+	if (u->help == NULL) {
+		help_free(&h);
+		return;
+	}
+	werase(u->help);
+	box(u->help, 0, 0);
+	mvwprintw(u->help, 0, 2, " help ");
+	for (int i = 0; i < rows && u->help_top + i < h.n; i++) {
+		int k = u->help_top + i;
+
+		if (h.bold[k])
+			wattron(u->help, A_BOLD);
+		mvwaddnstr(u->help, i + 1, 2, h.line[k], w - 4);
+		if (h.bold[k])
+			wattroff(u->help, A_BOLD);
+	}
+	if (h.n > rows)
+		(void)snprintf(foot, sizeof(foot), " %d-%d of %d, ^G close ",
+		    u->help_top + 1, u->help_top + rows, h.n);
+	else
+		(void)snprintf(foot, sizeof(foot), " ^G close ");
+	if ((int)strlen(foot) < w - 2)
+		mvwprintw(
+		    u->help, hh - 1, w - 1 - (int)strlen(foot), "%s", foot);
+	wnoutrefresh(u->help);
+	help_free(&h);
+}
+
+/*
+ * A key while the popup is open. Scroll keys move it; ^G and Esc close
+ * it. Any other key closes it and is handled as usual, so typing goes on
+ * without a separate close. Returns true when the key is used up.
+ */
+static bool
+help_key(struct ui *u, int r, wint_t wch)
+{
+	int page = help_rows(u);
+
+	if (r == KEY_CODE_YES) {
+		switch (wch) {
+		case KEY_UP:
+			u->help_top--;
+			break;
+		case KEY_DOWN:
+			u->help_top++;
+			break;
+		case KEY_PPAGE:
+			u->help_top -= page;
+			break;
+		case KEY_NPAGE:
+			u->help_top += page;
+			break;
+		case KEY_HOME:
+			u->help_top = 0;
+			break;
+		case KEY_END:
+			u->help_top = INT_MAX / 2;
+			break;
+		case KEY_MOUSE: {
+			MEVENT ev;
+
+			if (getmouse(&ev) != OK)
+				return true;
+			if (ev.bstate & BUTTON4_PRESSED)
+				u->help_top -= 3;
+			else if (ev.bstate & BUTTON5_PRESSED)
+				u->help_top += 3;
+			break;
+		}
+		case KEY_RESIZE:
+			return false;
+		default:
+			help_close(u);
+			return false;
+		}
+		u->dirty = true;
+		return true;
+	}
+	help_close(u);
+	return wch == 7 || wch == 27;
+}
+
+/*
+ * One piece of the status bar. When the bar is too wide, the piece with
+ * the highest shrink or drop rank goes first: a shrink swaps in the short
+ * text, a drop removes the piece. Rank 0 never goes.
+ */
+struct stat_piece {
+	char text[112];
+	char shrt[80]; /* "" = no short form */
+	int shrink, drop;
+	bool short_on, gone;
+};
+
+/* Cells a UTF-8 string takes; every character in the bar is one cell. */
+static int
+stat_cells(const char *s)
+{
+	int n = 0;
+
+	for (; *s != '\0'; s++)
+		if (((unsigned char)*s & 0xC0) != 0x80)
+			n++;
+	return n;
+}
+
+static int
+stat_width(const struct stat_piece *p, int np)
+{
+	int w = 0;
+
+	for (int i = 0; i < np; i++)
+		if (!p[i].gone)
+			w += 1 +
+			    stat_cells(p[i].short_on ? p[i].shrt : p[i].text);
+	return w;
+}
+
+/* Shrink or drop pieces, highest rank first, until the bar fits in w. */
+static void
+stat_fit(struct stat_piece *p, int np, int w)
+{
+	while (stat_width(p, np) > w) {
+		int best = -1, rank = 0;
+		bool shrink = false;
+
+		for (int i = 0; i < np; i++) {
+			if (p[i].gone)
+				continue;
+			if (!p[i].short_on && p[i].shrt[0] != '\0' &&
+			    p[i].shrink > rank) {
+				best = i;
+				rank = p[i].shrink;
+				shrink = true;
+			}
+			if (p[i].drop > rank) {
+				best = i;
+				rank = p[i].drop;
+				shrink = false;
+			}
+		}
+		if (best < 0)
+			return;
+		if (shrink)
+			p[best].short_on = true;
+		else
+			p[best].gone = true;
+	}
+}
+
+enum {
+	SP_SESSION,
+	SP_MODE,
+	SP_TAG,
+	SP_CONN,
+	SP_INFO,
+	SP_GAUGE,
+	SP_HINT,
+	SP_N,
+};
+
 static void
 draw_status(struct ui *u)
 {
 	static const char spin[] = "|/-\\";
+	struct stat_piece p[SP_N];
 	const char *info;
 	char sp = u->busy ? spin[u->spinner & 3] : ' ';
+	int w = getmaxx(u->stat);
 
 	werase(u->stat);
 	if (u->color) {
@@ -1345,8 +1711,6 @@ draw_status(struct ui *u)
 		wattron(u->stat, A_REVERSE);
 	}
 
-	/* Live status sits on the left, next to the model, so the eye doesn't
-	 * have to travel across the width of the terminal to read it. */
 	/* Rate-limit wait wins over the leftover batch/usage strings: while
 	 * the turn is parked nothing else is in flight, and a stale "N tok/s"
 	 * would hide the only signal that explains the silence. The usage
@@ -1363,88 +1727,102 @@ draw_status(struct ui *u)
 	else
 		info = state_label(u->state);
 
-	mvwprintw(u->stat, 0, 0, " clm");
-	if (u->session_short[0] != '\0')
-		wprintw(u->stat, " %s", u->session_short);
+	memset(p, 0, sizeof(p));
+
+	/* Ranks, first to go: hint, [online], provider and agent, session
+	 * id, offline detail, model, gauge, mode and offline. The live
+	 * status never goes. */
+	(void)snprintf(p[SP_SESSION].text, sizeof(p[SP_SESSION].text), "%s",
+	    u->session_short);
+	p[SP_SESSION].drop = 6;
+	p[SP_SESSION].gone = u->session_short[0] == '\0';
+
 	if (u->allow_all)
-		wprintw(u->stat, " [allow-all]");
+		(void)snprintf(
+		    p[SP_MODE].text, sizeof(p[SP_MODE].text), "[allow-all]");
 	else if (u->auto_mode)
-		wprintw(u->stat, " [auto]");
-	/* One combined "[provider/model:agent]" tag rather than three separate
-	 * bracketed fields -- picking a provider/model without changing agent
-	 * profile is the common case (see /model, /provider), so keeping them
-	 * visually grouped reads better than agent_name winning outright the
-	 * way the old agent-name-or-model fallback did. '/' between
-	 * provider and model matches the "provider/model-id" addressing
-	 * spec /model, -m/--model, and config.lua's top-level `model` key
-	 * all take (see src/model_spec.h); ':' before agent since the agent
-	 * profile is a separate axis, not part of that address. Any part
-	 * not currently known (e.g. no config.lua providers[] entry behind
-	 * a literal model switch) is just omitted, not shown as an empty
-	 * field. */
+		(void)snprintf(
+		    p[SP_MODE].text, sizeof(p[SP_MODE].text), "[auto]");
+	else
+		p[SP_MODE].gone = true;
+	p[SP_MODE].drop = 2;
+
+	/* "[provider/model:agent]": '/' as in the provider/model-id spec
+	 * that -m and /model take, ':' before the agent profile, which is a
+	 * separate axis. The short form is the model alone. */
 	{
-		char tag[160];
+		char tag[96];
 		size_t off = 0;
-		bool any = false;
 
 		tag[0] = '\0';
-		if (u->provider_name != NULL) {
+		if (u->provider_name != NULL)
 			off += (size_t)snprintf(tag + off, sizeof(tag) - off,
 			    "%s", u->provider_name);
-			any = true;
-		}
-		if (u->model != NULL) {
+		if (u->model != NULL && off < sizeof(tag))
 			off += (size_t)snprintf(tag + off, sizeof(tag) - off,
-			    "%s%s", any ? "/" : "", u->model);
-			any = true;
-		}
-		if (u->agent_name != NULL) {
-			off += (size_t)snprintf(tag + off, sizeof(tag) - off,
-			    "%s%s", any ? ":" : "", u->agent_name);
-			any = true;
-		}
-		if (any)
-			wprintw(u->stat, " [%s]", tag);
+			    "%s%s", off > 0 ? "/" : "", u->model);
+		if (u->agent_name != NULL && off < sizeof(tag))
+			(void)snprintf(tag + off, sizeof(tag) - off, "%s%s",
+			    off > 0 ? ":" : "", u->agent_name);
+		(void)snprintf(
+		    p[SP_TAG].text, sizeof(p[SP_TAG].text), "[%s]", tag);
+		if (u->model != NULL)
+			(void)snprintf(p[SP_TAG].shrt, sizeof(p[SP_TAG].shrt),
+			    "[%.*s]", (int)sizeof(p[SP_TAG].shrt) - 3,
+			    u->model);
+		p[SP_TAG].gone = tag[0] == '\0';
+		p[SP_TAG].shrink = 7;
+		p[SP_TAG].drop = 4;
 	}
 
 	switch (u->conn) {
 	case CLM_CONN_CHECKING:
-		wprintw(u->stat, " [connecting]");
+		(void)snprintf(
+		    p[SP_CONN].text, sizeof(p[SP_CONN].text), "[connecting]");
+		p[SP_CONN].drop = 8;
 		break;
 	case CLM_CONN_ONLINE:
-		wprintw(u->stat, " [online]");
+		(void)snprintf(
+		    p[SP_CONN].text, sizeof(p[SP_CONN].text), "[online]");
+		p[SP_CONN].drop = 8;
 		break;
 	case CLM_CONN_OFFLINE:
+		(void)snprintf(
+		    p[SP_CONN].shrt, sizeof(p[SP_CONN].shrt), "[offline]");
 		if (u->conn_detail[0] != '\0')
-			wprintw(u->stat, " [offline: %s]", u->conn_detail);
+			(void)snprintf(p[SP_CONN].text, sizeof(p[SP_CONN].text),
+			    "[offline: %s]", u->conn_detail);
 		else
-			wprintw(u->stat, " [offline]");
+			(void)snprintf(p[SP_CONN].text, sizeof(p[SP_CONN].text),
+			    "[offline]");
+		p[SP_CONN].shrink = 5;
+		p[SP_CONN].drop = 2;
 		break;
 	}
 
 	/* Fixed width so the animated waiting dots don't shift the gauge. */
-	wprintw(u->stat, "  %c %-14s", sp, info);
+	(void)snprintf(
+	    p[SP_INFO].text, sizeof(p[SP_INFO].text), " %c %-14s", sp, info);
 
-	/* Context-window gauge, when the backend reports a window size. */
-	{
-		char gauge[64];
-		fmt_ctx_gauge(u, gauge, sizeof(gauge));
-		if (gauge[0] != '\0')
-			wprintw(u->stat, " %s ", gauge);
+	fmt_ctx_gauge(u, p[SP_GAUGE].text, sizeof(p[SP_GAUGE].text));
+	p[SP_GAUGE].gone = p[SP_GAUGE].text[0] == '\0';
+	p[SP_GAUGE].drop = 3;
+
+	(void)snprintf(p[SP_HINT].text, sizeof(p[SP_HINT].text), "^G help");
+	p[SP_HINT].drop = 9;
+
+	stat_fit(p, SP_N, w - 1);
+
+	wmove(u->stat, 0, 0);
+	for (int i = 0; i < SP_HINT; i++) {
+		if (p[i].gone)
+			continue;
+		wprintw(u->stat, " %s", p[i].short_on ? p[i].shrt : p[i].text);
 	}
-
-	/* Right-aligned key hints, shown only when they fit without colliding
-	 * with the live status on the left. */
-	{
-		static const char hints[] =
-		    "^R reasoning  ^O output  ^L redraw  PgUp/PgDn/End scroll ";
-		int w = getmaxx(u->stat);
-		int used = getcurx(u->stat);
-		int hw = (int)(sizeof(hints) - 1);
-
-		if (w - hw > used + 2)
-			mvwprintw(u->stat, 0, w - hw, "%s", hints);
-	}
+	/* The hint sits at the right edge, apart from the live status. */
+	if (!p[SP_HINT].gone)
+		mvwprintw(u->stat, 0, w - 1 - stat_cells(p[SP_HINT].text), "%s",
+		    p[SP_HINT].text);
 
 	wattroff(u->stat, u->color ? COLOR_PAIR(5) : A_REVERSE);
 	wnoutrefresh(u->stat);
@@ -2348,6 +2726,7 @@ on_repaint(uv_timer_t *t)
 	draw_transcript(u);
 	draw_status(u);
 	draw_input(u);
+	draw_help(u);
 	doupdate();
 	u->dirty = false;
 }
@@ -3203,6 +3582,167 @@ cmd_cd(struct ui *u, const char *arg)
 	}
 }
 
+static void
+cmd_help(struct ui *u, const char *arg)
+{
+	(void)arg;
+	help_open(u);
+}
+
+static void
+cmd_clear(struct ui *u, const char *arg)
+{
+	/* Reset the actual conversation history first -- an agent busy
+	 * mid-turn refuses (-EBUSY) and the on-screen transcript is
+	 * left alone in that case too, rather than looking cleared
+	 * while the backend history it was displaying still isn't. */
+	int rc = clm_agent_clear_history(u->agent);
+
+	(void)arg;
+	if (rc == -EBUSY) {
+		ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+		return;
+	}
+	for (size_t i = 0; i < u->nsegs; i++)
+		free(u->segs[i].text);
+	u->nsegs = 0;
+	u->scroll = 0;
+	u->usage[0] = '\0';
+	u->ctx_used = 0;
+	u->gen++;
+	/* Rotate the session log too: the cleared transcript stays
+	 * resumable under its old id, and what follows is a new
+	 * conversation, so it gets a new file. An empty old session is
+	 * just deleted. */
+	if (u->session != NULL) {
+		if (clm_session_is_empty(u->session))
+			(void)clm_session_discard(u->session);
+		else
+			clm_session_free(u->session);
+		u->session = NULL;
+		if (clm_session_create(NULL, u->model, u->provider_name,
+		        u->agent_name, &u->session) == 0) {
+			set_session_short(u);
+			peer_rebind(u);
+			ui_push(u, ST_META, "[new session ");
+			ui_push(u, ST_META, clm_session_id(u->session));
+			ui_push(u, ST_META, "]\n");
+		}
+	}
+}
+
+static void
+cmd_reasoning(struct ui *u, const char *arg)
+{
+	if (strcmp(arg, "on") == 0)
+		u->show_reasoning = true;
+	else if (strcmp(arg, "off") == 0)
+		u->show_reasoning = false;
+	else
+		u->show_reasoning = !u->show_reasoning;
+	ui_push(u, ST_META,
+	    u->show_reasoning ? "\n[reasoning shown]\n"
+	                      : "\n[reasoning hidden]\n");
+}
+
+static void
+cmd_output(struct ui *u, const char *arg)
+{
+	if (strcmp(arg, "full") == 0)
+		u->expand_output = true;
+	else if (strcmp(arg, "short") == 0)
+		u->expand_output = false;
+	else
+		u->expand_output = !u->expand_output;
+	ui_push(u, ST_META,
+	    u->expand_output ? "\n[output: full]\n" : "\n[output: short]\n");
+}
+
+static void
+cmd_compact(struct ui *u, const char *arg)
+{
+	int rc = clm_agent_compact(u->agent);
+
+	(void)arg;
+	if (rc == 0) {
+		u->busy = true;
+		u->compacting = true;
+		u->usage[0] = '\0';
+		ui_push(u, ST_META, "\n[compacting the conversation...]\n");
+	} else if (rc == -EBUSY) {
+		ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
+	} else {
+		ui_push(u, ST_ERROR, "\ncompaction failed to start\n");
+	}
+}
+
+static void
+cmd_session_line(struct ui *u, const char *arg)
+{
+	(void)arg;
+	cmd_session(u);
+}
+
+static void
+cmd_quit(struct ui *u, const char *arg)
+{
+	(void)arg;
+	u->quit = true;
+}
+
+/*
+ * The slash commands. Dispatch, TAB completion and the help popup all
+ * read this table, so a command added here shows up in all three.
+ */
+const struct ui_command ui_commands[] = {
+    {"help", "h ?", "", "this help; ^G opens it too", cmd_help},
+    {"clear", "cls", "", "clear the transcript; starts a new session log",
+        cmd_clear},
+    {"cd", NULL, "[path]", "change the working directory (no arg: $HOME)",
+        cmd_cd},
+    {"agent", "a", "<name>", "switch agent profile (system prompt + tools)",
+        cmd_agent},
+    {"model", NULL, "[name]",
+        "switch model; no arg lists the models in config.lua", cmd_model},
+    {"provider", NULL, "[name]",
+        "switch provider connection; no arg lists them", cmd_provider},
+    {"effort", NULL, "[level]",
+        "reasoning effort: low, medium, high, xhigh, max, or default; "
+        "no arg shows it",
+        cmd_effort},
+    {"auto", NULL, "[on|off]",
+        "run tool calls without asking, unless a pre_tool hook blocks or "
+        "asks",
+        cmd_auto},
+    {"session", NULL, "", "this session's id, log path and resume command",
+        cmd_session_line},
+    {"reasoning", "think", "[on|off]", "show or hide reasoning (^R)",
+        cmd_reasoning},
+    {"output", NULL, "[full|short]", "tool output detail (^O)", cmd_output},
+    {"compact", NULL, "", "summarize old turns to free context", cmd_compact},
+    {"quit", "exit q", "", "exit", cmd_quit},
+};
+const size_t ui_ncommands = sizeof(ui_commands) / sizeof(ui_commands[0]);
+
+/* True when the word of length len names c or one of its aliases. */
+static bool
+command_matches(const struct ui_command *c, const char *word, size_t len)
+{
+	const char *a = c->aliases;
+
+	if (strlen(c->name) == len && strncmp(c->name, word, len) == 0)
+		return true;
+	while (a != NULL && *a != '\0') {
+		size_t n = strcspn(a, " ");
+
+		if (n == len && strncmp(a, word, len) == 0)
+			return true;
+		a += n;
+		a += strspn(a, " ");
+	}
+	return false;
+}
+
 /* A '/word ...' line: run a UI command instead of prompting the model. */
 static void
 run_command(struct ui *u, const char *line)
@@ -3218,128 +3758,13 @@ run_command(struct ui *u, const char *line)
 	while (*arg == ' ')
 		arg++;
 
-#define CMD(s) (wlen == strlen(s) && strncmp(line, s, wlen) == 0)
-	if (CMD("help") || CMD("h") || CMD("?")) {
-		ui_push(u, ST_META,
-		    "\ncommands:\n"
-		    "  /help              this help\n"
-		    "  /clear             clear the transcript (starts a new "
-		    "session log)\n"
-		    "  /cd [path]         change clm's working directory "
-		    "(no arg: $HOME)\n"
-		    "  /agent <name>      switch agent profile (system prompt "
-		    "+ "
-		    "tools)\n"
-		    "  /model [name]      switch model (config.lua's `models` "
-		    "table); no arg lists what's available\n"
-		    "  /provider [name]   switch provider connection "
-		    "(config.lua's "
-		    "`providers` table); no arg lists what's available\n"
-		    "  /session           this session's id, log path, and "
-		    "resume command\n"
-		    "  /effort [level]    reasoning effort for this session: "
-		    "low, medium, high, xhigh, max, or default; no arg "
-		    "shows the current one\n"
-		    "  /auto [on|off]     run tool calls without asking, "
-		    "unless a pre_tool hook blocks or asks\n"
-		    "  /reasoning [on|off] show/hide the think channel (^R)\n"
-		    "  /output [full|short] tool output detail (^O)\n"
-		    "  /compact           summarize old turns to reclaim "
-		    "context\n"
-		    "  /quit              exit\n"
-		    "keys: ^R reasoning  ^O output  ^L redraw  "
-		    "PgUp/PgDn/wheel/End scroll\n");
-	} else if (CMD("clear") || CMD("cls")) {
-		/* Reset the actual conversation history first -- an agent busy
-		 * mid-turn refuses (-EBUSY) and the on-screen transcript is
-		 * left alone in that case too, rather than looking cleared
-		 * while the backend history it was displaying still isn't. */
-		int rc = clm_agent_clear_history(u->agent);
-		if (rc == -EBUSY) {
-			ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
-		} else {
-			for (size_t i = 0; i < u->nsegs; i++)
-				free(u->segs[i].text);
-			u->nsegs = 0;
-			u->scroll = 0;
-			u->usage[0] = '\0';
-			u->ctx_used = 0;
-			u->gen++;
-			/* Rotate the session log too: the cleared transcript
-			 * stays resumable under its old id, and what follows
-			 * is a new conversation, so it gets a new file. An
-			 * empty old session is just deleted. */
-			if (u->session != NULL) {
-				if (clm_session_is_empty(u->session))
-					(void)clm_session_discard(u->session);
-				else
-					clm_session_free(u->session);
-				u->session = NULL;
-				if (clm_session_create(NULL, u->model,
-				        u->provider_name, u->agent_name,
-				        &u->session) == 0) {
-					set_session_short(u);
-					peer_rebind(u);
-					ui_push(u, ST_META, "[new session ");
-					ui_push(u, ST_META,
-					    clm_session_id(u->session));
-					ui_push(u, ST_META, "]\n");
-				}
-			}
+	for (size_t i = 0; i < ui_ncommands; i++) {
+		if (command_matches(&ui_commands[i], line, wlen)) {
+			ui_commands[i].fn(u, arg);
+			return;
 		}
-	} else if (CMD("reasoning") || CMD("think")) {
-		if (strcmp(arg, "on") == 0)
-			u->show_reasoning = true;
-		else if (strcmp(arg, "off") == 0)
-			u->show_reasoning = false;
-		else
-			u->show_reasoning = !u->show_reasoning;
-		ui_push(u, ST_META,
-		    u->show_reasoning ? "\n[reasoning shown]\n"
-		                      : "\n[reasoning hidden]\n");
-	} else if (CMD("output")) {
-		if (strcmp(arg, "full") == 0)
-			u->expand_output = true;
-		else if (strcmp(arg, "short") == 0)
-			u->expand_output = false;
-		else
-			u->expand_output = !u->expand_output;
-		ui_push(u, ST_META,
-		    u->expand_output ? "\n[output: full]\n"
-		                     : "\n[output: short]\n");
-	} else if (CMD("compact")) {
-		int rc = clm_agent_compact(u->agent);
-		if (rc == 0) {
-			u->busy = true;
-			u->compacting = true;
-			u->usage[0] = '\0';
-			ui_push(
-			    u, ST_META, "\n[compacting the conversation...]\n");
-		} else if (rc == -EBUSY) {
-			ui_push(u, ST_ERROR, "\nbusy; try again when idle\n");
-		} else {
-			ui_push(u, ST_ERROR, "\ncompaction failed to start\n");
-		}
-	} else if (CMD("cd")) {
-		cmd_cd(u, arg);
-	} else if (CMD("agent") || CMD("a")) {
-		cmd_agent(u, arg);
-	} else if (CMD("model")) {
-		cmd_model(u, arg);
-	} else if (CMD("effort")) {
-		cmd_effort(u, arg);
-	} else if (CMD("auto")) {
-		cmd_auto(u, arg);
-	} else if (CMD("session")) {
-		cmd_session(u);
-	} else if (CMD("provider")) {
-		cmd_provider(u, arg);
-	} else if (CMD("quit") || CMD("exit") || CMD("q")) {
-		u->quit = true;
-	} else {
-		ui_push(u, ST_ERROR, "\nunknown command (try /help)\n");
 	}
-#undef CMD
+	ui_push(u, ST_ERROR, "\nunknown command (try /help or ^G)\n");
 }
 
 /*
@@ -3734,6 +4159,9 @@ handle_keys(struct ui *u)
 		 * in tui_internal.h). */
 		u->complete_generation++;
 
+		if (u->help_shown && help_key(u, r, wch))
+			continue;
+
 		/*
 		 * Permission-input mode: while a tool authorization is pending,
 		 * the next key answers it and nothing else is processed.
@@ -3936,6 +4364,9 @@ handle_keys(struct ui *u)
 			break;
 		case 25: /* Ctrl-Y: yank */
 			input_yank(u);
+			break;
+		case 7: /* Ctrl-G: help popup */
+			help_open(u);
 			break;
 		case 12: /* Ctrl-L: redraw the screen */
 			u->full_redraw = true;

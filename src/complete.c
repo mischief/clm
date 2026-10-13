@@ -198,40 +198,20 @@ list_columns(struct ui *u, const char *const *items, size_t n,
 
 /* ---- first word: slash-command names ---- */
 
-/*
- * Kept in sync by hand with run_command()'s CMD() dispatch chain in
- * tui.c; if you add a command there, add its name here too. Aliases
- * (h/?, cls, think, a, exit/q) are intentionally excluded -- completion
- * should offer the canonical name to type out, not the shortcuts that
- * exist for people who already know them.
- */
-static const char *const command_names[] = {
-    "help",
-    "clear",
-    "cd",
-    "agent",
-    "model",
-    "provider",
-    "effort",
-    "session",
-    "reasoning",
-    "output",
-    "compact",
-    "quit",
-};
-#define N_COMMAND_NAMES (sizeof(command_names) / sizeof(command_names[0]))
-
+/* Names come from ui_commands; aliases are left out on purpose, so
+ * completion offers the name to type, not the shortcuts. */
 static void
 complete_command_name(struct ui *u, size_t wstart, size_t wlen)
 {
 	const char *prefix = u->input + wstart + 1; /* skip '/' */
 	size_t typed = wlen - 1;
-	const char *candidates[N_COMMAND_NAMES];
+	const char *candidates[MAX_CANDIDATES];
 	size_t ncandidates = 0;
 
-	for (size_t i = 0; i < N_COMMAND_NAMES; i++) {
-		if (strncmp(command_names[i], prefix, typed) == 0)
-			candidates[ncandidates++] = command_names[i];
+	for (size_t i = 0; i < ui_ncommands && ncandidates < MAX_CANDIDATES;
+	    i++) {
+		if (strncmp(ui_commands[i].name, prefix, typed) == 0)
+			candidates[ncandidates++] = ui_commands[i].name;
 	}
 	if (ncandidates == 0)
 		return;

@@ -59,6 +59,20 @@ struct seg {
 	int cnt[CLM_TALLY_N];
 };
 
+struct ui;
+
+/* One slash command. aliases is space-separated, or NULL. */
+struct ui_command {
+	const char *name;
+	const char *aliases;
+	const char *args;
+	const char *help;
+	void (*fn)(struct ui *u, const char *arg);
+};
+
+extern const struct ui_command ui_commands[];
+extern const size_t ui_ncommands;
+
 /* One run of rendered text with a resolved curses attribute, ready to draw. */
 struct rseg {
 	int attr;
@@ -199,6 +213,11 @@ struct ui {
 	size_t perm_count;
 	size_t perm_cap;
 	bool perm_showing; /* true when a prompt is displayed awaiting input */
+
+	/* Help popup (^G, /help): drawn over the transcript while open. */
+	WINDOW *help;
+	bool help_shown;
+	int help_top; /* first line shown */
 
 	/* Tool-batch tally, for the aggregate summary line. */
 	int n_cmd, n_read, n_write, n_other;

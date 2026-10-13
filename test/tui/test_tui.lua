@@ -97,13 +97,14 @@ local function transcript(t)
 	return table.concat(transcript_lines(t), "\n")
 end
 
--- The status bar: the lowest line naming the binary and its state.
+-- The status bar: the line above the input box, whose first row starts
+-- with the "> " prompt.
 local function status_line(t)
 	local l = t:lines()
 
-	for i = #l, 1, -1 do
-		if has(l[i], " clm ") and has(l[i], "[") then
-			return l[i]
+	for i = #l, 2, -1 do
+		if l[i]:match("^>") then
+			return l[i - 1]
 		end
 	end
 	return ""
@@ -475,6 +476,8 @@ tests.commands = function(url)
 
 	t:wait_for("online", 8)
 	t:send("/help\r")
+	t:pump(0.4)
+	t:send("\27[6~") -- PageDown to the commands
 	t:pump(0.4)
 	check(has(t:text(), "/clear") and has(t:text(), "/reasoning"),
 	    "commands: /help lists commands")
@@ -1038,6 +1041,65 @@ tests.scratch = function(url)
 	end
 end
 
+tests.help_popup = function(url)
+	-- ^G opens a scrollable popup of keys and slash commands.
+	local t = driver.new(BIN, url, { rows = 24, cols = 80 })
+
+	t:wait_for("online", 8)
+	check(has(status_line(t), "^G help"),
+	    "help: the status bar names the help key")
+	t:send("\7")
+	t:pump(0.4)
+	check(has(t:text(), "Esc") and has(t:text(), "^G close"),
+	    "help: ^G opens the popup with the keys")
+	t:send("\27[6~") -- PageDown
+	t:pump(0.4)
+	check(has(t:text(), "/compact") and has(t:text(), "/quit"),
+	    "help: PageDown scrolls to the slash commands")
+	t:send("\7")
+	t:pump(0.4)
+	check(not has(t:text(), "^G close"), "help: ^G closes the popup")
+
+	-- Typing closes the popup and goes to the input line.
+	t:send("/help\r")
+	t:pump(0.4)
+	check(has(t:text(), "^G close"), "help: /help opens the popup")
+	t:send("x")
+	t:pump(0.4)
+	check(not has(t:text(), "^G close") and has(last_line(t), "> x"),
+	    "help: a typed key closes the popup and is kept")
+	t:close()
+end
+
+tests.narrow_status = function(url)
+	-- A narrow status bar drops the least useful pieces first, and the
+	-- live status and the gauge stay longest.
+	local t = driver.new(BIN, url, { rows = 24, cols = 110 })
+
+	t:wait_for("online", 8)
+	t:send("show me fruit\r")
+	must(t:wait_for("Yellow", 15), "no reply")
+	t:pump(1.0)
+	local wide = status_line(t)
+	check(has(wide, "[online]") and has(wide, "%") and
+	    has(wide, "^G help"), "status: a wide bar shows every piece")
+
+	t:resize(24, 50)
+	t:pump(0.8)
+	local mid = status_line(t)
+	check(has(mid, "%") and not has(mid, "[online]") and
+	    not has(mid, "^G help"),
+	    "status: at 50 columns the gauge stays, the hints go")
+	check(utf8.len(mid) <= 50, "status: the bar fits in 50 columns")
+
+	t:resize(24, 30)
+	t:pump(0.8)
+	local narrow = status_line(t)
+	check(narrow ~= "" and utf8.len(narrow) <= 30,
+	    "status: the bar fits in 30 columns")
+	t:close()
+end
+
 tests.allow_all = function(url)
 	-- --allow-all-tools runs tool calls without the permission prompt,
 	-- and says so where it cannot be missed.
@@ -1149,8 +1211,8 @@ tests.peers = function(url)
 	local function short_id(t)
 		local id = nil
 		for _, ln in ipairs(t:lines()) do
-			if has(ln, " clm ") then
-				id = words(ln)[2]
+			if ln:match("^ %x%x%x%x%x%x%x%x ") then
+				id = words(ln)[1]
 			end
 		end
 		return id
@@ -1299,6 +1361,7 @@ local ORDER = { "connection", "offline", "agent", "markdown", "scrollback",
 	"commands", "effort", "queueing", "permission", "cancel",
 	"cancel_tools", "tool_escapes", "paste", "session", "resume_collapse",
 	"session_compact", "clear_gauge", "scratch", "peers", "allow_all",
+	"help_popup", "narrow_status",
 	"mcp_spawn_fail" }
 
 local selected = {}
