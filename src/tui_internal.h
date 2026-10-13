@@ -217,6 +217,12 @@ struct ui {
 	size_t perm_cap;
 	bool perm_showing; /* true when a prompt is displayed awaiting input */
 
+	/* Plugin commands in flight: count, the last name, and a generation
+	 * that Escape bumps to drop their results. */
+	int cmd_live;
+	char cmd_name[48];
+	unsigned cmd_gen;
+
 	/* Help popup (^G, /help): drawn over the transcript while open. */
 	WINDOW *help;
 	bool help_shown;

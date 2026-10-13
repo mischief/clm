@@ -1475,6 +1475,54 @@ collect_command(const char *name, const char *args, const char *help,
 	    buf + off, 1024 - off, "%s|%s|%s|%s;", name, args, help, plugin);
 }
 
+struct cmd_result {
+	int calls;
+	int status;
+	char text[256];
+};
+
+static void
+cmd_result_cb(int status, const char *text, void *user)
+{
+	struct cmd_result *r = user;
+
+	r->calls++;
+	r->status = status;
+	(void)snprintf(r->text, sizeof(r->text), "%s", text ? text : "(null)");
+}
+
+/* Run the loop until r has an answer or ms pass. */
+static int
+cmd_wait_more(struct cmd_result *r, uint64_t ms)
+{
+	uint64_t end;
+
+	uv_update_time(uv_default_loop());
+	end = uv_now(uv_default_loop()) + ms;
+	while (r->calls == 0 && uv_now(uv_default_loop()) < end) {
+		uv_run(uv_default_loop(), UV_RUN_NOWAIT);
+		usleep(2000);
+		uv_update_time(uv_default_loop());
+	}
+	return r->calls;
+}
+
+/* Start a command, then run the loop until it answers or ms pass. */
+static int
+cmd_wait(struct clm_lua_env *env, const char *name, const char *arg,
+    struct cmd_result *r, uint64_t ms)
+{
+	int rc;
+
+	memset(r, 0, sizeof(*r));
+	rc = clm_lua_command_run(env, name, arg, cmd_result_cb, r);
+	if (rc < 0)
+		return rc;
+	if (r->calls != 0)
+		return -EINVAL; /* answered before returning */
+	return cmd_wait_more(r, ms) == 1 ? 0 : -ETIMEDOUT;
+}
+
 static void
 test_commands(void)
 {
@@ -1487,45 +1535,91 @@ test_commands(void)
 	struct clm_agent *agent = NULL;
 	struct clm_host *host = NULL;
 	struct clm_lua_env *env = NULL;
+	struct canned_server *srv;
+	struct cmd_result r, late;
 	char list[1024] = "";
-	char *out = NULL;
+	char tcfg[128];
 
+	srv = canned_start(uv_default_loop());
+	CHECK(srv != NULL, "command canned server");
+	if (srv == NULL)
+		return;
+	(void)snprintf(tcfg, sizeof(tcfg),
+	    "{\"a\":{\"url\":\"http://127.0.0.1:%d/page\"}}", canned_port(srv));
 	CHECK(clm_host_uv_new(uv_default_loop(), &host) == 0, "command host");
 	CHECK(clm_agent_new(&cfg, host, NULL, NULL, &agent) == 0,
 	    "command agent");
 	CHECK(clm_lua_env_new(agent, &env) == 0, "command lua env");
+	CHECK(clm_lua_env_set_config(env, tcfg) == 0, "command config");
 	CHECK(clm_lua_load_plugins(env, "test/plugins_cmd") == 0,
 	    "command plugins load");
 
 	clm_lua_commands(env, collect_command, list);
 	CHECK(strcmp(list,
 	          "hello|[name]|say hello|a;boom||always fails|a;quiet|||a;"
-	          "dup||from a|a;badname||bad name refused|b;") == 0,
+	          "dup||from a|a;fetch||get a page|a;slow|||a;"
+	          "badname||bad name refused|b;") == 0,
 	    "commands list in load order; a taken name and a removed one "
 	    "are left out");
 
-	CHECK(clm_lua_command_run(env, "hello", "you", &out) == 0 &&
-	        out != NULL && strcmp(out, "hello you") == 0,
-	    "a command gets its argument and returns text");
-	free(out);
-	CHECK(clm_lua_command_run(env, "quiet", "", &out) == 0 && out == NULL,
+	CHECK(cmd_wait(env, "hello", "you", &r, 2000) == 0 && r.status == 0 &&
+	        strcmp(r.text, "hello you") == 0,
+	    "a command gets its argument and returns text, after the call");
+	CHECK(cmd_wait(env, "quiet", "", &r, 2000) == 0 && r.status == 0 &&
+	        strcmp(r.text, "(null)") == 0,
 	    "a command may return nothing");
-	CHECK(clm_lua_command_run(env, "boom", "", &out) == -EIO &&
-	        out != NULL && strstr(out, "kaboom") != NULL,
+	CHECK(cmd_wait(env, "boom", "", &r, 2000) == 0 && r.status == -EIO &&
+	        strstr(r.text, "kaboom") != NULL,
 	    "an error in a command comes back with its message");
-	free(out);
-	CHECK(clm_lua_command_run(env, "dup", "", &out) == 0 && out != NULL &&
-	        strcmp(out, "dup from a") == 0,
+	CHECK(cmd_wait(env, "dup", "", &r, 2000) == 0 &&
+	        strcmp(r.text, "dup from a") == 0,
 	    "the plugin loaded first owns a name");
-	free(out);
-	CHECK(clm_lua_command_run(env, "gone", "", &out) == -ENOENT,
+	CHECK(
+	    clm_lua_command_run(env, "gone", "", cmd_result_cb, &r) == -ENOENT,
 	    "a removed command is gone");
-	CHECK(clm_lua_command_run(NULL, "hello", "", &out) == -ENOENT,
+	CHECK(clm_lua_command_run(NULL, "hello", "", cmd_result_cb, &r) ==
+	        -ENOENT,
 	    "no plugin env means no plugin commands");
 
+	/* A request the server holds for 2.5 s: past the callback limit. */
+	canned_pause_next(srv);
+	canned_reply(srv, "PAGE BODY");
+	memset(&r, 0, sizeof(r));
+	CHECK(clm_lua_command_run(env, "fetch", "", cmd_result_cb, &r) == 0,
+	    "fetch starts");
+	(void)cmd_wait_more(&r, 2500);
+	CHECK(r.calls == 0, "fetch is still waiting on the server");
+	canned_resume(srv);
+	(void)cmd_wait_more(&r, 2000);
+	CHECK(r.calls == 1 && r.status == 0 && strcmp(r.text, "PAGE BODY") == 0,
+	    "a command may wait on http longer than 2 s");
+
+	/* timeout_ms answers early; the late reply must not touch the run. */
+	canned_pause_next(srv);
+	canned_reply(srv, "LATE");
+	CHECK(
+	    cmd_wait(env, "slow", "", &r, 2000) == 0 && r.status == -ETIMEDOUT,
+	    "a command past its timeout_ms answers -ETIMEDOUT");
+	canned_resume(srv);
+	(void)cmd_wait_more(&r, 500);
+	CHECK(r.calls == 1, "the late reply is not a second answer");
+
+	/* Unloading the plugin answers a waiting command. */
+	canned_pause_next(srv);
+	canned_reply(srv, "NEVER");
+	memset(&late, 0, sizeof(late));
+	CHECK(clm_lua_command_run(env, "fetch", "", cmd_result_cb, &late) == 0,
+	    "fetch starts again");
+	(void)cmd_wait_more(&late, 200);
 	clm_lua_env_free(env);
+	CHECK(late.calls == 1 && late.status == -ECANCELED,
+	    "unloading the plugin answers -ECANCELED");
+	canned_resume(srv);
+
 	clm_agent_free(agent);
 	clm_host_uv_free(host);
+	canned_stop(srv);
+	uv_run(uv_default_loop(), UV_RUN_NOWAIT);
 }
 
 static int

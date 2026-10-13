@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <sys/queue.h>
 
+#include "clm/lua_plugin.h"
+
 struct clm_lua_pending;
 struct clm_lua_plugin;
 
@@ -55,9 +57,9 @@ int clm_lua_hook_commands(struct clm_lua_plugin *plugin,
     int (*fn)(const char *name, const char *args, const char *help, void *user),
     void *user);
 
-/* Run the plugin's command name. See clm_lua_command_run. */
+/* Start the plugin's command name. See clm_lua_command_run. */
 int clm_lua_hook_command_run(struct clm_lua_plugin *plugin, const char *name,
-    const char *arg, char **out);
+    const char *arg, clm_lua_command_done_fn done, void *user);
 
 /* Take the plugin's hooks off its agent. Call before the state closes. */
 void clm_lua_hook_drop_all(struct clm_lua_plugin *plugin);

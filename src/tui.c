@@ -1746,7 +1746,7 @@ draw_status(struct ui *u)
 	static const char spin[] = "|/-\\";
 	struct stat_piece p[SP_N];
 	const char *info;
-	char sp = u->busy ? spin[u->spinner & 3] : ' ';
+	char sp = u->busy || u->cmd_live > 0 ? spin[u->spinner & 3] : ' ';
 	int w = getmaxx(u->stat);
 
 	werase(u->stat);
@@ -1769,6 +1769,8 @@ draw_status(struct ui *u)
 		info = dots[((unsigned)u->spinner / 4) % 3];
 	} else if (u->batch[0] != '\0')
 		info = u->batch;
+	else if (!u->busy && u->cmd_live > 0)
+		info = u->cmd_name;
 	else if (!u->busy && u->usage[0] != '\0')
 		info = u->usage;
 	else
@@ -2745,10 +2747,10 @@ on_repaint(uv_timer_t *t)
 	 * further keystroke arrives to trigger the stdin poll. */
 	handle_keys(u);
 
-	if (u->busy)
+	if (u->busy || u->cmd_live > 0)
 		u->spinner++;
 
-	if (!u->dirty && !u->busy)
+	if (!u->dirty && !u->busy && u->cmd_live == 0)
 		return;
 
 	/* Grow/shrink the input box to fit what's typed before drawing. */
@@ -3799,12 +3801,55 @@ ui_command_find(const char *word, size_t len)
 	return NULL;
 }
 
+/* A plugin command in flight. A result from before an Escape is dropped. */
+struct cmd_wait {
+	struct ui *u;
+	unsigned gen;
+	char name[40];
+};
+
+static void
+cmd_done(int status, const char *text, void *user)
+{
+	struct cmd_wait *w = user;
+	struct ui *u = w->u;
+
+	if (w->gen == u->cmd_gen) {
+		u->cmd_live--;
+		if (status == 0 && text != NULL && text[0] != '\0') {
+			ui_push(u, ST_META, "\n");
+			ui_push(u, ST_META, text);
+			ui_push(u, ST_META, "\n");
+		} else if (status < 0) {
+			ui_push(u, ST_ERROR, "\n/");
+			ui_push(u, ST_ERROR, w->name);
+			ui_push(u, ST_ERROR, ": ");
+			ui_push(u, ST_ERROR, text != NULL ? text : "failed");
+			ui_push(u, ST_ERROR, "\n");
+		}
+		u->dirty = true;
+	}
+	free(w);
+}
+
+/* Drop the results of the plugin commands still running. */
+static bool
+cmd_cancel_all(struct ui *u)
+{
+	if (u->cmd_live == 0)
+		return false;
+	u->cmd_gen++;
+	u->cmd_live = 0;
+	ui_push(u, ST_META, "\n[command cancelled]\n");
+	return true;
+}
+
 /* A '/word ...' line: run a UI command instead of prompting the model. */
 static void
 run_command(struct ui *u, const char *line)
 {
 	const struct ui_command *cmd;
-	autofree char *out = NULL;
+	struct cmd_wait *w;
 	const char *arg;
 	char name[40];
 	size_t wlen;
@@ -3828,21 +3873,27 @@ run_command(struct ui *u, const char *line)
 	if (wlen < sizeof(name)) {
 		memcpy(name, line, wlen);
 		name[wlen] = '\0';
-		r = clm_lua_command_run(u->lua_env, name, arg, &out);
-		if (r == 0) {
-			if (out != NULL && out[0] != '\0') {
-				ui_push(u, ST_META, "\n");
-				ui_push(u, ST_META, out);
-				ui_push(u, ST_META, "\n");
-			}
+		w = calloc(1, sizeof(*w));
+		if (w == NULL) {
+			ui_push(u, ST_ERROR, "\nout of memory\n");
 			return;
 		}
+		w->u = u;
+		w->gen = u->cmd_gen;
+		(void)snprintf(w->name, sizeof(w->name), "%s", name);
+		r = clm_lua_command_run(u->lua_env, name, arg, cmd_done, w);
+		if (r == 0) {
+			u->cmd_live++;
+			(void)snprintf(
+			    u->cmd_name, sizeof(u->cmd_name), "/%s", name);
+			u->dirty = true;
+			return;
+		}
+		free(w);
 		if (r != -ENOENT) {
 			ui_push(u, ST_ERROR, "\n/");
 			ui_push(u, ST_ERROR, name);
-			ui_push(u, ST_ERROR, ": ");
-			ui_push(u, ST_ERROR, out != NULL ? out : "failed");
-			ui_push(u, ST_ERROR, "\n");
+			ui_push(u, ST_ERROR, ": could not start\n");
 			return;
 		}
 	}
@@ -4467,6 +4518,10 @@ handle_keys(struct ui *u)
 			int cancel_rc = clm_agent_cancel(u->agent);
 			if (cancel_rc == 0) {
 				ui_push(u, ST_META, "\n[cancelled]\n");
+			} else if (cancel_rc != -EALREADY &&
+			    cmd_cancel_all(u)) {
+				/* Nothing else to do: the commands were the
+				 * only thing in flight. */
 			} else if (cancel_rc != -EALREADY) {
 				/* Truly nothing in flight -- treat Escape as
 				 * clear-input instead. -EALREADY means a cancel

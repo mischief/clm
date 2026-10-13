@@ -372,15 +372,19 @@ string to print, and optionally
 .Va args ,
 a synopsis such as
 .Qq [name] ,
-and
 .Va help ,
-one line for the help popup.
+one line for the help popup, and
+.Va timeout_ms ,
+the wall time a run may take, 120000 by default.
 .Va run
-must not yield, and has the same 2 second limit as an event callback;
-start longer work with
-.Fn clm.after
-or
-.Fn clm.spawn .
+runs in its own coroutine, as a tool does, so it may call
+.Fn http.get ,
+.Fn http.post
+and
+.Fn clm.exec .
+Time spent waiting on them does not count against the Lua time limit.
+The terminal UI shows the command in the status bar while it runs, and
+Escape drops its result.
 An error in
 .Va run
 prints as the command's result.

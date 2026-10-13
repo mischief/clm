@@ -1514,18 +1514,17 @@ clm_lua_commands(struct clm_lua_env *env, clm_lua_command_fn fn, void *user)
 }
 
 CLM_API int
-clm_lua_command_run(
-    struct clm_lua_env *env, const char *name, const char *arg, char **out)
+clm_lua_command_run(struct clm_lua_env *env, const char *name, const char *arg,
+    clm_lua_command_done_fn done, void *user)
 {
 	struct clm_lua_plugin *p;
 
-	*out = NULL;
 	if (env == NULL || name == NULL)
 		return -ENOENT;
 	p = command_owner(env, name);
 	if (p == NULL)
 		return -ENOENT;
-	return clm_lua_hook_command_run(p, name, arg, out);
+	return clm_lua_hook_command_run(p, name, arg, done, user);
 }
 
 CLM_API void

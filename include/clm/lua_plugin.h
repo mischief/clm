@@ -56,12 +56,20 @@ CLM_API void clm_lua_commands(
     struct clm_lua_env *env, clm_lua_command_fn fn, void *user);
 
 /*
- * Run the plugin command name with the text after it. Returns 0 and sets
- * *out to the text the command returned, or NULL. Returns -ENOENT when no
- * plugin has the command, or -EIO with the error in *out. Free *out.
+ * The end of a command run. status is 0 (text is what run returned, or
+ * NULL), -EIO (text is the error), -ETIMEDOUT or -ECANCELED (the plugin
+ * unloaded). text is valid only during the call.
  */
-CLM_API int clm_lua_command_run(
-    struct clm_lua_env *env, const char *name, const char *arg, char **out);
+typedef void (*clm_lua_command_done_fn)(
+    int status, const char *text, void *user);
+
+/*
+ * Start the plugin command name with the text after it. Returns 0, then
+ * done is called exactly once, after this returns if the host has timers;
+ * or -ENOENT when no plugin has the command, or another negative errno.
+ */
+CLM_API int clm_lua_command_run(struct clm_lua_env *env, const char *name,
+    const char *arg, clm_lua_command_done_fn done, void *user);
 
 /*
  * Free all Lua states and the environment. Safe to call with NULL.

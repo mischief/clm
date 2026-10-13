@@ -27,3 +27,21 @@ clm.command_register("gone", {
 	end,
 })
 clm.command_remove("gone")
+-- These two read clm.config.url, which test_lua_plugin sets.
+clm.command_register("fetch", {
+	help = "get a page",
+	run = function()
+		local r, err = http.get(clm.config.url)
+		if not r then
+			error(err)
+		end
+		return r.body
+	end,
+})
+clm.command_register("slow", {
+	timeout_ms = 300,
+	run = function()
+		local r = http.get(clm.config.url)
+		return r and r.body
+	end,
+})

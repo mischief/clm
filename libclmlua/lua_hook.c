@@ -40,6 +40,7 @@ struct lua_hook {
 	char *key;  /* LUA_HOOK_PROMPT: the part; LUA_HOOK_COMMAND: the name */
 	char *args; /* LUA_HOOK_COMMAND: argument synopsis */
 	char *help; /* LUA_HOOK_COMMAND: one line of help */
+	uint64_t timeout_ms; /* LUA_HOOK_COMMAND: wall limit of one run */
 };
 
 /* One pre_tool hook run: from the call into the hook to its answer. */
@@ -61,6 +62,8 @@ static const char runner_src[] = "local finish = ...\n"
                                  "end\n";
 
 #define RUNNER_KEY "_clm_hook_runner"
+/* Default wall limit of one slash command run. */
+#define CMD_TIMEOUT_MS 120000u
 
 static void
 gate_run_free(struct lua_gate_run *run)
@@ -477,6 +480,11 @@ lua_clm_command_register(lua_State *L)
 		command_free(L, hook);
 		return luaL_error(L, "clm.command_register: out of memory");
 	}
+	lua_getfield(L, 2, "timeout_ms");
+	hook->timeout_ms = lua_isinteger(L, -1) && lua_tointeger(L, -1) > 0
+	    ? (uint64_t)lua_tointeger(L, -1)
+	    : CMD_TIMEOUT_MS;
+	lua_pop(L, 1);
 	/* Registering a name again replaces it. */
 	old = command_find(plugin, name);
 	if (old != NULL) {
@@ -520,71 +528,233 @@ clm_lua_hook_commands(struct clm_lua_plugin *plugin,
 	return 0;
 }
 
-struct command_call {
-	struct lua_hook *hook;
-	const char *arg;
-	char *out;
-	char *err;
+/*
+ * One run of a slash command, in its own coroutine so http and clm.exec
+ * may yield. After a timeout answer the run stays alive until the
+ * coroutine finishes or the plugin unloads: the coroutine points to it.
+ */
+struct lua_cmd_run {
+	struct clm_lua_pending pending;
+	struct clm_agent *agent;
+	struct clm_timer *timer; /* the wall limit, then the answer */
+	clm_lua_command_done_fn done;
+	void *user;
+	bool answered; /* done was called */
+	int status;
+	char *text;
 };
 
-/* Runs inside the callback's protected call: call run(arg) and keep its
- * string result, or the error it raised. */
-static int
-command_trampoline(lua_State *L)
-{
-	struct command_call *cc = lua_touserdata(L, 1);
-	const char *s;
+#define CMD_RUNNER_KEY "_clm_cmd_runner"
 
-	lua_rawgeti(L, LUA_REGISTRYINDEX, cc->hook->fn_ref);
-	lua_pushstring(L, cc->arg);
-	if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-		s = lua_tostring(L, -1);
-		cc->err = strdup(s != NULL ? s : "error");
+static void
+cmd_run_free(struct lua_cmd_run *run)
+{
+	free(run->text);
+	free(run);
+}
+
+static void
+cmd_timer_stop(struct lua_cmd_run *run)
+{
+	if (run->timer != NULL && run->agent->host->timer_cancel != NULL)
+		run->agent->host->timer_cancel(run->timer);
+	run->timer = NULL;
+}
+
+static void
+cmd_answer(struct lua_cmd_run *run, int status, const char *text)
+{
+	run->answered = true;
+	run->done(status, text, run->user);
+}
+
+/* The answer after the coroutine finished: deliver, and free the run. */
+static void
+cmd_answer_cb(void *arg)
+{
+	struct lua_cmd_run *run = arg;
+
+	cmd_timer_stop(run);
+	(void)clm_lua_pending_remove(&run->pending);
+	cmd_answer(run, run->status, run->text);
+	cmd_run_free(run);
+}
+
+/* The wall limit: answer now, and keep the run for the coroutine. */
+static void
+cmd_timeout_cb(void *arg)
+{
+	struct lua_cmd_run *run = arg;
+
+	cmd_timer_stop(run);
+	cmd_answer(run, -ETIMEDOUT, "timed out");
+}
+
+/* The plugin is going away while the command runs. */
+static void
+cmd_run_teardown(struct clm_lua_pending *pending)
+{
+	struct lua_cmd_run *run = (struct lua_cmd_run *)pending;
+
+	cmd_timer_stop(run);
+	if (!run->answered)
+		cmd_answer(run, -ECANCELED, "plugin unloaded");
+	cmd_run_free(run);
+}
+
+/*
+ * finish(run, ok, r), called by the runner when run(arg) returns. The
+ * answer goes out from a timer, so the frontend never runs inside this
+ * coroutine.
+ */
+static int
+lua_cmd_finish(lua_State *L)
+{
+	struct lua_cmd_run *run = lua_touserdata(L, 1);
+	struct clm_host *host;
+	const char *s =
+	    lua_type(L, 3) == LUA_TSTRING ? lua_tostring(L, 3) : NULL;
+
+	if (run == NULL)
+		return 0;
+	if (run->answered) {
+		/* Timed out before; the frontend has its answer. */
+		cmd_timer_stop(run);
+		(void)clm_lua_pending_remove(&run->pending);
+		cmd_run_free(run);
 		return 0;
 	}
-	s = lua_isstring(L, -1) ? lua_tostring(L, -1) : NULL;
+	cmd_timer_stop(run);
+	run->status = lua_toboolean(L, 2) ? 0 : -EIO;
 	if (s != NULL)
-		cc->out = strdup(s);
+		run->text = strdup(s);
+	else if (run->status < 0)
+		run->text = strdup("error");
+	host = run->agent->host;
+	if (host->timer_set != NULL &&
+	    host->timer_set(host->ctx, 0, cmd_answer_cb, run, &run->timer) == 0)
+		return 0;
+	run->timer = NULL;
+	cmd_answer_cb(run);
 	return 0;
 }
 
+struct cmd_start {
+	struct lua_hook *hook;
+	struct lua_cmd_run *run;
+	const char *arg;
+	lua_State *co;
+	int co_ref;
+};
+
+/* Build the coroutine under lua_pcall, as hook_prepare does. */
 static int
-push_command(lua_State *L, void *arg)
+cmd_prepare(lua_State *L)
 {
-	lua_pushcfunction(L, command_trampoline);
-	lua_pushlightuserdata(L, arg);
-	return 1;
+	struct cmd_start *cs = lua_touserdata(L, 1);
+
+	cs->co = lua_newthread(L);
+	cs->co_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	lua_getfield(cs->co, LUA_REGISTRYINDEX, CMD_RUNNER_KEY);
+	lua_rawgeti(cs->co, LUA_REGISTRYINDEX, cs->hook->fn_ref);
+	lua_pushstring(cs->co, cs->arg);
+	lua_pushlightuserdata(cs->co, cs->run);
+
+	/* The async bindings read these, as in a tool call. */
+	lua_pushinteger(cs->co, cs->co_ref);
+	lua_setfield(cs->co, LUA_REGISTRYINDEX, "_clm_co_ref");
+	lua_pushfstring(cs->co, "/%s", cs->hook->key);
+	lua_setfield(cs->co, LUA_REGISTRYINDEX, "_clm_tool_name");
+	lua_pushnil(cs->co);
+	lua_setfield(cs->co, LUA_REGISTRYINDEX, "_clm_inv");
+	clm_lua_mark_invocation_thread(L, cs->co, 1);
+	return 0;
 }
 
 int
 clm_lua_hook_command_run(struct clm_lua_plugin *plugin, const char *name,
-    const char *arg, char **out)
+    const char *arg, clm_lua_command_done_fn done, void *user)
 {
-	struct command_call cc = {0};
+	lua_State *L = clm_lua_plugin_state(plugin);
+	struct cmd_start cs = {0};
+	struct lua_cmd_run *run;
 	struct lua_hook *hook;
-	int r;
+	struct clm_host *host;
+	int nres = 0, rc;
 
-	*out = NULL;
 	if (!clm_lua_plugin_alive(plugin))
 		return -ENOENT;
 	hook = command_find(plugin, name);
 	if (hook == NULL)
 		return -ENOENT;
-	cc.hook = hook;
-	cc.arg = arg != NULL ? arg : "";
-	r = clm_lua_plugin_callback(plugin, push_command, &cc);
-	if (cc.err != NULL) {
-		free(cc.out);
-		*out = cc.err;
-		return -EIO;
+	run = calloc(1, sizeof(*run));
+	if (run == NULL)
+		return -ENOMEM;
+	run->agent = clm_lua_plugin_agent(plugin);
+	run->done = done;
+	run->user = user;
+	if (clm_lua_pending_add(plugin, &run->pending, cmd_run_teardown) < 0) {
+		cmd_run_free(run);
+		return -ECANCELED;
 	}
-	if (r < 0) {
-		free(cc.out);
-		*out = strdup("the command timed out or failed");
-		return -EIO;
+	host = run->agent->host;
+	if (host->timer_set != NULL)
+		(void)host->timer_set(host->ctx, hook->timeout_ms,
+		    cmd_timeout_cb, run, &run->timer);
+
+	cs.hook = hook;
+	cs.run = run;
+	cs.arg = arg != NULL ? arg : "";
+	lua_pushcfunction(L, cmd_prepare);
+	lua_pushlightuserdata(L, &cs);
+	if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+		clm_debug("lua command /%s: %s", name, lua_tostring(L, -1));
+		lua_pop(L, 1);
+		if (cs.co != NULL) {
+			clm_lua_mark_invocation_thread(L, cs.co, 0);
+			luaL_unref(L, LUA_REGISTRYINDEX, cs.co_ref);
+		}
+		cmd_timer_stop(run);
+		(void)clm_lua_pending_remove(&run->pending);
+		cmd_run_free(run);
+		return -ENOMEM;
 	}
-	*out = cc.out;
+
+	rc = clm_lua_resume_with_deadline(plugin, cs.co, L, 3, &nres, 0);
+	if (rc == LUA_YIELD)
+		return 0; /* an async binding resumes it */
+	if (rc != LUA_OK)
+		clm_debug("lua command /%s: %s", name, lua_tostring(cs.co, -1));
+	clm_lua_mark_invocation_thread(L, cs.co, 0);
+	luaL_unref(L, LUA_REGISTRYINDEX, cs.co_ref);
+	clm_lua_clear_invocation_registry(L);
+	/* The runner calls finish; an error before it leaves the run
+	 * waiting, so answer it here, from a timer too. */
+	if (rc != LUA_OK && run->text == NULL && !run->answered) {
+		cmd_timer_stop(run);
+		run->status = -EIO;
+		run->text = strdup("the command failed");
+		if (host->timer_set == NULL ||
+		    host->timer_set(
+		        host->ctx, 0, cmd_answer_cb, run, &run->timer) != 0)
+			cmd_answer_cb(run);
+	}
 	return 0;
+}
+
+/* Store the runner, closed over finish, in the registry under key. */
+static void
+runner_open(lua_State *L, lua_CFunction finish, const char *key)
+{
+	if (luaL_loadstring(L, runner_src) == LUA_OK) {
+		lua_pushcfunction(L, finish);
+		if (lua_pcall(L, 1, 1, 0) == LUA_OK) {
+			lua_setfield(L, LUA_REGISTRYINDEX, key);
+			return;
+		}
+	}
+	clm_debug("lua: runner %s: %s", key, lua_tostring(L, -1));
+	lua_pop(L, 1);
 }
 
 void
@@ -603,16 +773,8 @@ clm_lua_hook_open(lua_State *L, struct clm_lua_plugin *plugin)
 	lua_pushcclosure(L, lua_clm_prompt_set, 1);
 	lua_setfield(L, -2, "prompt_set");
 
-	/* The runner, closed over finish. */
-	if (luaL_loadstring(L, runner_src) == LUA_OK) {
-		lua_pushcfunction(L, lua_hook_finish);
-		if (lua_pcall(L, 1, 1, 0) == LUA_OK) {
-			lua_setfield(L, LUA_REGISTRYINDEX, RUNNER_KEY);
-			return;
-		}
-	}
-	clm_debug("lua: hook runner: %s", lua_tostring(L, -1));
-	lua_pop(L, 1);
+	runner_open(L, lua_hook_finish, RUNNER_KEY);
+	runner_open(L, lua_cmd_finish, CMD_RUNNER_KEY);
 }
 
 void
