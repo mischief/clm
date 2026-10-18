@@ -492,8 +492,8 @@ static void
 tally_tool(int cnt[CLM_TALLY_N], const char *name)
 {
 	if (name == NULL)
-		cnt[3]++;
-	else if (strcmp(name, "shell_exec") == 0)
+		name = ""; /* unnamed call falls to the "other" slot below */
+	if (strcmp(name, "shell_exec") == 0)
 		cnt[0]++;
 	else if (strcmp(name, "read_file") == 0)
 		cnt[1]++;
@@ -934,7 +934,8 @@ cb_permission(const struct clm_permission_req *req, void *user)
 	if (u->perm_count >= u->perm_cap) {
 		size_t ncap = u->perm_cap ? u->perm_cap * 2 : 16;
 		const struct clm_permission_req **nq =
-		    realloc(u->perm_queue, ncap * sizeof(*nq));
+		    (const struct clm_permission_req **)realloc(
+		        (void *)u->perm_queue, ncap * sizeof(*nq));
 		if (nq == NULL)
 			return; /* drop on OOM; tool will time out */
 		u->perm_queue = nq;
@@ -973,7 +974,7 @@ echo_note(struct ui *u, const char *text)
 		return;
 	if (u->n_echoed == sizeof(u->echoed) / sizeof(u->echoed[0])) {
 		free(u->echoed[0]);
-		memmove(u->echoed, u->echoed + 1,
+		memmove((void *)u->echoed, (void *)(u->echoed + 1),
 		    (u->n_echoed - 1) * sizeof(u->echoed[0]));
 		u->n_echoed--;
 	}
@@ -988,7 +989,7 @@ echo_take(struct ui *u, const char *text)
 		if (strcmp(u->echoed[i], text) != 0)
 			continue;
 		free(u->echoed[i]);
-		memmove(u->echoed + i, u->echoed + i + 1,
+		memmove((void *)(u->echoed + i), (void *)(u->echoed + i + 1),
 		    (u->n_echoed - i - 1) * sizeof(u->echoed[0]));
 		u->n_echoed--;
 		return true;
@@ -1193,7 +1194,6 @@ seg_attr(struct ui *u, enum ui_style style)
 	} else {
 		switch (style) {
 		case ST_USER:
-			return A_BOLD;
 		case ST_LABEL:
 			return A_BOLD;
 		case ST_PERM:
@@ -2864,7 +2864,8 @@ enqueue_steering(struct ui *u, const char *prompt)
 		return;
 	if (u->steering_nqueue == u->steering_cap) {
 		size_t ncap = u->steering_cap ? u->steering_cap * 2 : 8;
-		char **p = realloc(u->steering_queue, ncap * sizeof(*p));
+		char **p = (char **)realloc(
+		    (void *)u->steering_queue, ncap * sizeof(*p));
 		if (p == NULL) {
 			free(dup);
 			return;
@@ -2905,7 +2906,7 @@ drain_steering_one(struct ui *u)
 		return;
 	/* Idle or mid-turn: clm_agent_notify below handles both. */
 	prompt = u->steering_queue[0];
-	memmove(u->steering_queue, u->steering_queue + 1,
+	memmove((void *)u->steering_queue, (void *)(u->steering_queue + 1),
 	    (u->steering_nqueue - 1) * sizeof(*u->steering_queue));
 	u->steering_nqueue--;
 	/* Render exactly like any other submitted prompt: no separate
@@ -3018,7 +3019,7 @@ list_config_names(
 	size_t n = 0;
 	while (names[n] != NULL)
 		n++;
-	qsort(names, n, sizeof(*names), strp_cmp);
+	qsort((void *)names, n, sizeof(*names), strp_cmp);
 
 	/* snprintf's return value is how much it WOULD have written, which
 	 * can exceed the remaining space on truncation -- clamp off after
@@ -3949,7 +3950,7 @@ run_command(struct ui *u, const char *line)
  * line by the caller after submit.
  */
 /* Bounds on what Up/Down recall keeps: total text, and entry count. */
-#define HIST_MAX_BYTES (256 * 1024)
+#define HIST_MAX_BYTES (256UL * 1024)
 #define HIST_MAX_ENTRIES 500
 
 static void
@@ -3965,7 +3966,7 @@ hist_add(struct ui *u, const char *line)
 
 	if (u->nhist == u->cap_hist) {
 		size_t ncap = u->cap_hist ? u->cap_hist * 2 : 16;
-		char **h = realloc(u->hist, ncap * sizeof(*h));
+		char **h = (char **)realloc((void *)u->hist, ncap * sizeof(*h));
 		if (h == NULL)
 			return; /* history is best-effort */
 		u->hist = h;
@@ -3983,8 +3984,8 @@ hist_add(struct ui *u, const char *line)
 	    (u->hist_bytes > HIST_MAX_BYTES || u->nhist > HIST_MAX_ENTRIES)) {
 		u->hist_bytes -= strlen(u->hist[0]);
 		free(u->hist[0]);
-		memmove(
-		    u->hist, u->hist + 1, (u->nhist - 1) * sizeof(*u->hist));
+		memmove((void *)u->hist, (void *)(u->hist + 1),
+		    (u->nhist - 1) * sizeof(*u->hist));
 		u->nhist--;
 	}
 }
@@ -4500,8 +4501,7 @@ handle_keys(struct ui *u)
 				}
 				break;
 			}
-			case KEY_RESIZE:
-				break; /* handled via SIGWINCH */
+			case KEY_RESIZE: /* handled via SIGWINCH */
 			default:
 				break;
 			}
@@ -5104,7 +5104,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	for (size_t i = 0; i < u->nsegs; i++)
 		free(u->segs[i].text);
 	free(u->segs);
-	free(u->perm_queue);
+	free((void *)u->perm_queue);
 	for (size_t i = 0; i < u->nrsegs; i++) {
 		if (u->rsegs[i].owned)
 			free(u->rsegs[i].text);
@@ -5114,12 +5114,12 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	free(u->wrap_col);
 	for (size_t i = 0; i < u->steering_nqueue; i++)
 		free(u->steering_queue[i]);
-	free(u->steering_queue);
+	free((void *)u->steering_queue);
 	for (size_t i = 0; i < u->n_echoed; i++)
 		free(u->echoed[i]);
 	for (size_t i = 0; i < u->nhist; i++)
 		free(u->hist[i]);
-	free(u->hist);
+	free((void *)u->hist);
 	free(u->input);
 	free(u->kill);
 	free(u->hist_saved);
