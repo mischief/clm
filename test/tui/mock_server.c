@@ -305,6 +305,15 @@ script_tool_call(struct conn *c, const char *text)
 		cJSON_AddBoolToObject(args, "replace_all", 0);
 		cJSON_AddStringToObject(args, "old_str", "before text");
 		cJSON_AddStringToObject(args, "path", "/tmp/x");
+	} else if (has_ci(text, "longtest")) {
+		/* One very long command line: the collapsed summary clamps it
+		 * with a "...", and ^O must show the whole thing. */
+		char cmd[700];
+		memset(cmd, 'x', sizeof(cmd) - 1);
+		cmd[sizeof(cmd) - 1] = '\0';
+		memcpy(cmd, "true #", 6); /* a comment: runs, prints nothing */
+		memcpy(cmd + sizeof(cmd) - 4, "END", 4);
+		cJSON_AddStringToObject(args, "command", cmd);
 	} else if (has_ci(text, "multilinetest")) {
 		cJSON_AddStringToObject(
 		    args, "command", "printf one\ncat /tmp/x\ndoas true");
@@ -428,7 +437,7 @@ static bool
 wants_tool(const cJSON *msgs)
 {
 	static const char *const words[] = {"shelltest", "multilinetest",
-	    "manytest", "escapetest", "edittest", "readtest"};
+	    "manytest", "escapetest", "edittest", "readtest", "longtest"};
 	const cJSON *m;
 	const char *last = NULL;
 	int i = 0;

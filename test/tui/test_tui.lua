@@ -704,6 +704,25 @@ tests.tool_escapes = function(url)
 	t:close()
 end
 
+tests.expand_command = function(url)
+	-- A long shell command is clamped in the collapsed view and shown
+	-- whole once ^O expands tool detail.
+	local t = driver.new(BIN, url,
+	    { rows = 40, cols = 80, args = { "--allow-all-tools" } })
+
+	t:wait_for("online", 8)
+	t:send("longtest please\r")
+	must(t:wait_for("executing shell command", 15), "no tool call")
+	t:pump(0.5)
+	check(has(t:text(), "...") and not has(t:text(), "xEND"),
+	    "command: the long command is clamped with an ellipsis")
+	t:send("\15") -- ^O
+	t:pump(0.5)
+	check(has(t:text(), "xEND"),
+	    "command: ^O expands the clamped command in full")
+	t:close()
+end
+
 tests.paste = function(url)
 	-- A pasted multi-line block must land as one submitted turn, not one
 	-- per embedded newline.

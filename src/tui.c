@@ -80,7 +80,7 @@ ui_push(struct ui *u, enum ui_style style, const char *text)
 	 * span count small under streaming (many tiny chunks) and, crucially,
 	 * rejoins a multibyte char that was split across two stream chunks. */
 	if (u->nsegs > 0 && u->segs[u->nsegs - 1].style == style &&
-	    style != ST_EVENT) {
+	    style != ST_EVENT && style != ST_TOOL) {
 		char *old = u->segs[u->nsegs - 1].text;
 		size_t oldlen = strlen(old);
 		size_t addlen = strlen(text);
@@ -226,80 +226,29 @@ json_field(cJSON *obj, const char *key)
 /* Lines of a multi-line tool argument shown before the rest is elided. */
 #define TOOL_SUMMARY_MAX_LINES 8
 
-/* One "  verb: detail" line, tabs escaped so they cannot smear the column. */
-static void
-push_tool_summary_line(struct ui *u, const char *verb, const char *detail)
-{
-	char line[200];
-	size_t n = 0;
-	size_t cap = sizeof(line) - 5; /* room for "...\n\0" */
-
-	line[n++] = ' ';
-	line[n++] = ' ';
-	for (const char *p = verb; *p != '\0' && n < cap; p++)
-		line[n++] = *p;
-	if (detail != NULL && *detail != '\0' && n < cap) {
-		const char *p = detail;
-		line[n++] = ':';
-		line[n++] = ' ';
-		while (*p != '\0' && n < cap) {
-			if (*p == '\t') {
-				if (n + 1 >= cap)
-					break;
-				line[n++] = '\\';
-				line[n++] = 't';
-			} else {
-				line[n++] = *p;
-			}
-			p++;
-		}
-		if (*p != '\0') { /* truncated */
-			line[n++] = '.';
-			line[n++] = '.';
-			line[n++] = '.';
-		}
-	}
-	line[n++] = '\n';
-	line[n] = '\0';
-	ui_push(u, ST_TOOL, line);
-}
+/* Field separator between the packed verb and detail of an ST_TOOL segment. */
+#define TOOL_SUMMARY_SEP '\x1f'
 
 /*
- * Summarize a tool call. A value spanning several lines (a shell command
- * running three things, a heredoc) is drawn as an indented block rather than
- * squeezed onto one line, matching how the permission prompt shows the same
- * argument. Long blocks are elided after TOOL_SUMMARY_MAX_LINES.
+ * Record a tool call. The verb and full detail are packed into one ST_TOOL
+ * segment (verb, separator, detail); emit_tool_summary re-formats it at
+ * render time, so ^O can expand the whole command, not the stored preview.
  */
 static void
 push_tool_summary(struct ui *u, const char *verb, const char *detail)
 {
-	const char *p, *nl;
-	size_t shown = 0;
+	size_t vn = strlen(verb);
+	size_t dn = detail != NULL ? strlen(detail) : 0;
+	char *packed = malloc(vn + 2 + dn);
 
-	if (detail == NULL || strchr(detail, '\n') == NULL) {
-		push_tool_summary_line(u, verb, detail);
+	if (packed == NULL)
 		return;
-	}
-
-	push_tool_summary_line(u, verb, NULL);
-	for (p = detail; *p != '\0'; p = nl + 1) {
-		char buf[200];
-		size_t len;
-
-		nl = strchr(p, '\n');
-		len = nl != NULL ? (size_t)(nl - p) : strlen(p);
-		if (shown == TOOL_SUMMARY_MAX_LINES) {
-			ui_push(u, ST_TOOL, "      ...\n");
-			return;
-		}
-		if (len >= sizeof(buf) - 8)
-			len = sizeof(buf) - 8;
-		(void)snprintf(buf, sizeof(buf), "    %.*s\n", (int)len, p);
-		ui_push(u, ST_TOOL, buf);
-		shown++;
-		if (nl == NULL)
-			return;
-	}
+	memcpy(packed, verb, vn);
+	packed[vn] = TOOL_SUMMARY_SEP;
+	memcpy(packed + vn + 1, detail != NULL ? detail : "", dn);
+	packed[vn + 1 + dn] = '\0';
+	ui_push(u, ST_TOOL, packed);
+	free(packed);
 }
 
 /* Render every field of a tool-call args object (except skip_key, if
@@ -1339,7 +1288,7 @@ static const char *const help_keys[][2] = {
     {"^C", "quit"},
     {"^D", "quit, on an empty line"},
     {"^R", "show or hide reasoning"},
-    {"^O", "full or short tool output"},
+    {"^O", "full or short tool output and commands"},
     {"^L", "redraw the screen"},
     {"PgUp PgDn wheel", "scroll the transcript"},
     {"End", "scroll to the bottom, on an empty line"},
@@ -2214,6 +2163,97 @@ count_lines(const char *s, size_t len)
 	return lines;
 }
 
+/* Emit a single-line tool detail: tabs escaped, clamped to one row with a
+ * trailing "..." unless expanded, where it is emitted whole in chunks. */
+static void
+emit_tool_detail_inline(struct ui *u, int attr, const char *detail, bool expand)
+{
+	char buf[512];
+	size_t n = 0, cap = sizeof(buf) - 5; /* room for "...\n" + a tab pair */
+	const char *p = detail;
+
+	for (; *p != '\0'; p++) {
+		if (!expand && n >= cap)
+			break;
+		if (expand && n >= cap) {
+			rseg_push(u, attr, buf, n);
+			n = 0;
+		}
+		if (*p == '\t') {
+			buf[n++] = '\\';
+			buf[n++] = 't';
+		} else {
+			buf[n++] = *p;
+		}
+	}
+	if (!expand && *p != '\0') {
+		buf[n++] = '.';
+		buf[n++] = '.';
+		buf[n++] = '.';
+	}
+	buf[n++] = '\n';
+	rseg_push(u, attr, buf, n);
+}
+
+/* Emit a multi-line tool detail as an indented block, elided after
+ * TOOL_SUMMARY_MAX_LINES unless expanded. */
+static void
+emit_tool_detail_block(struct ui *u, int attr, const char *detail, bool expand)
+{
+	const char *p = detail, *nl;
+	size_t shown = 0;
+
+	for (; *p != '\0'; p = nl + 1) {
+		char buf[512];
+		size_t len;
+
+		nl = strchr(p, '\n');
+		len = nl != NULL ? (size_t)(nl - p) : strlen(p);
+		if (expand) {
+			rseg_push(u, attr, "    ", 4);
+			rseg_push(u, attr, p, len);
+			rseg_push(u, attr, "\n", 1);
+		} else if (shown == TOOL_SUMMARY_MAX_LINES) {
+			rseg_push(u, attr, "      ...\n", 10);
+			return;
+		} else {
+			if (len >= sizeof(buf) - 8)
+				len = sizeof(buf) - 8;
+			int w = snprintf(
+			    buf, sizeof(buf), "    %.*s\n", (int)len, p);
+			rseg_push(u, attr, buf, (size_t)w);
+		}
+		shown++;
+		if (nl == NULL)
+			return;
+	}
+}
+
+/* Render a packed "verb<sep>detail" ST_TOOL segment. A single-line detail
+ * follows the verb on one row; a multi-line one becomes an indented block.
+ * ^O (expand) keeps the whole detail instead of the elided preview. */
+static void
+emit_tool_summary(struct ui *u, const char *packed, bool expand)
+{
+	const char *sep = strchr(packed, TOOL_SUMMARY_SEP);
+	size_t verblen = sep != NULL ? (size_t)(sep - packed) : strlen(packed);
+	const char *detail = sep != NULL ? sep + 1 : "";
+	int attr = seg_attr(u, ST_TOOL);
+	bool multiline = strchr(detail, '\n') != NULL;
+	bool has_detail = *detail != '\0';
+	char head[128];
+
+	(void)snprintf(head, sizeof(head), "  %.*s%s", (int)verblen, packed,
+	    has_detail && !multiline ? ": " : "\n");
+	rseg_push(u, attr, head, strlen(head));
+	if (!has_detail)
+		return;
+	if (multiline)
+		emit_tool_detail_block(u, attr, detail, expand);
+	else
+		emit_tool_detail_inline(u, attr, detail, expand);
+}
+
 /* Emit a tool-output body: full when expanded, else the first few lines plus a
  * dim "+N lines" hint the user can toggle open with ^O. Older tool output
  * (is_latest false) collapses further still, down to a single hint line with
@@ -2402,6 +2442,8 @@ rebuild_render(struct ui *u, int w)
 		else if (g->style == ST_REASON && w >= 4)
 			render_markdown(u, g->text, w,
 			    u->color ? COLOR_PAIR(6) : A_DIM, true);
+		else if (g->style == ST_TOOL)
+			emit_tool_summary(u, g->text, u->expand_output);
 		else if (g->style == ST_TOOL_OUT)
 			push_tool_output(u, g->text, i == last_tool_out);
 		else if (g->style == ST_EVENT)
@@ -3767,7 +3809,8 @@ const struct ui_command ui_commands[] = {
         cmd_session_line},
     {"reasoning", "think", "[on|off]", "show or hide reasoning (^R)",
         cmd_reasoning},
-    {"output", NULL, "[full|short]", "tool output detail (^O)", cmd_output},
+    {"output", NULL, "[full|short]", "tool output/command detail (^O)",
+        cmd_output},
     {"compact", NULL, "", "summarize old turns to free context", cmd_compact},
     {"quit", "exit q", "", "exit", cmd_quit},
 };
