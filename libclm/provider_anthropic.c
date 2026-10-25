@@ -256,6 +256,49 @@ convert_content(const cJSON *content)
 	return blocks;
 }
 
+/* Last item of a JSON array, or NULL. */
+static cJSON *
+last_item(const cJSON *arr)
+{
+	return cJSON_GetArrayItem(arr, cJSON_GetArraySize(arr) - 1);
+}
+
+/* Append a text block to blocks. NULL or empty text adds nothing, since the
+ * API rejects empty text blocks. Returns -1 on OOM. */
+static int
+append_text_block(cJSON *blocks, const char *text)
+{
+	cJSON *b;
+
+	if (text == NULL || text[0] == '\0')
+		return 0;
+	b = cJSON_CreateObject();
+	if (b == NULL || cJSON_AddStringToObject(b, "type", "text") == NULL ||
+	    cJSON_AddStringToObject(b, "text", text) == NULL) {
+		cJSON_Delete(b);
+		return -1;
+	}
+	cJSON_AddItemToArray(blocks, b);
+	return 0;
+}
+
+/* Add a user message's content (string or parts) to carrier as text blocks
+ * after its tool_result blocks, behind a lead-in that says it was typed
+ * while the tools ran. The blocks sit in the user turn itself, never inside
+ * a tool_result, so tool output cannot forge them. Returns -1 on OOM. */
+static int
+append_queued_user(cJSON *carrier, const cJSON *content)
+{
+	cJSON *blocks = cJSON_GetObjectItemCaseSensitive(carrier, "content");
+
+	if (append_text_block(blocks,
+	        "The user sent this message while the tools above ran:") < 0)
+		return -1;
+	if (cJSON_IsArray(content))
+		return append_part_blocks(blocks, content);
+	return append_text_block(blocks, cJSON_GetStringValue(content));
+}
+
 static cJSON *
 convert_messages(cJSON *messages, char **system_out)
 {
@@ -279,6 +322,7 @@ convert_messages(cJSON *messages, char **system_out)
 		    cJSON_IsString(jrole) ? jrole->valuestring : "";
 		const char *content =
 		    cJSON_IsString(jcontent) ? jcontent->valuestring : NULL;
+		cJSON *last = last_item(out);
 
 		if (strcmp(role, "system") == 0) {
 			if (content != NULL &&
@@ -294,10 +338,8 @@ convert_messages(cJSON *messages, char **system_out)
 			    cJSON_GetObjectItemCaseSensitive(m, "tool_call_id");
 			cJSON *carrier, *carr_content, *block;
 
-			carrier = cJSON_GetArrayItem(
-			    out, cJSON_GetArraySize(out) - 1);
-			if (carrier == NULL ||
-			    !is_tool_result_carrier(carrier)) {
+			carrier = last;
+			if (!is_tool_result_carrier(carrier)) {
 				carrier = cJSON_CreateObject();
 				if (carrier == NULL) {
 					cJSON_Delete(out);
@@ -336,45 +378,18 @@ convert_messages(cJSON *messages, char **system_out)
 		}
 
 		/*
-		 * A user message right after a batch of tool results (a
-		 * message injected mid-turn, see clm_agent_notify) rides in
-		 * the carrier as one more text block. Two user messages in a
-		 * row is not a shape this API takes.
+		 * A user message right after tool results (see
+		 * clm_agent_notify) rides in the carrier as text blocks after
+		 * the tool_result blocks: the API takes no two user messages
+		 * in a row. Never fold it into a tool_result, where the model
+		 * rightly treats it as untrusted tool output.
 		 */
-		if (strcmp(role, "user") == 0) {
-			cJSON *carrier = cJSON_GetArrayItem(
-			    out, cJSON_GetArraySize(out) - 1);
-
-			if (carrier != NULL &&
-			    is_tool_result_carrier(carrier) &&
-			    cJSON_IsArray(jcontent)) {
-				if (append_part_blocks(
-				        cJSON_GetObjectItemCaseSensitive(
-				            carrier, "content"),
-				        jcontent) < 0) {
-					cJSON_Delete(out);
-					return NULL;
-				}
-				continue;
+		if (strcmp(role, "user") == 0 && is_tool_result_carrier(last)) {
+			if (append_queued_user(last, jcontent) < 0) {
+				cJSON_Delete(out);
+				return NULL;
 			}
-			if (carrier != NULL &&
-			    is_tool_result_carrier(carrier)) {
-				cJSON *carr_content =
-				    cJSON_GetObjectItemCaseSensitive(
-				        carrier, "content");
-				cJSON *tblock = cJSON_CreateObject();
-
-				if (tblock == NULL) {
-					cJSON_Delete(out);
-					return NULL;
-				}
-				cJSON_AddItemToObject(
-				    tblock, "type", cJSON_CreateString("text"));
-				cJSON_AddItemToObject(tblock, "text",
-				    cJSON_CreateString(content ? content : ""));
-				cJSON_AddItemToArray(carr_content, tblock);
-				continue;
-			}
+			continue;
 		}
 
 		/* user / assistant. */

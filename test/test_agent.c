@@ -2906,6 +2906,103 @@ test_anthropic_tool_call(uv_loop_t *loop)
 	teardown(&st, srv);
 }
 
+/* Queue a message while the tool runs, like a background job notice. */
+static void
+notify_hello(struct clm_tool_invocation *inv, void *user)
+{
+	(void)clm_agent_notify(user, "steer");
+	clm_tool_complete(inv, "hello");
+}
+
+/* (g3e) Anthropic: a message queued during a tool rides after the
+ * tool_result blocks, and an empty reply leaves an assistant turn in history so
+ * the next prompt is a turn of its own. */
+static void
+test_anthropic_empty_after_tool(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	struct clm_tool_def def = {0};
+	cJSON *body, *msgs, *m, *blocks, *trc;
+	char *s;
+	int n;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\","
+	    "\"name\":\"notify_hello\",\"input\":{}}],"
+	    "\"stop_reason\":\"tool_use\","
+	    "\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}");
+	canned_reply(srv,
+	    "{\"id\":\"msg_2\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[],\"stop_reason\":\"end_turn\","
+	    "\"usage\":{\"input_tokens\":8,\"output_tokens\":1}}");
+	canned_reply(srv,
+	    "{\"id\":\"msg_3\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"text\",\"text\":\"done\"}],"
+	    "\"stop_reason\":\"end_turn\","
+	    "\"usage\":{\"input_tokens\":9,\"output_tokens\":2}}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	def.name = "notify_hello";
+	def.description = "notify and echo hello";
+	def.params_schema = "{\"type\":\"object\",\"properties\":{}}";
+	def.invoke = notify_hello;
+	def.user = st.agent;
+	CHECK(clm_tool_add(st.agent, &def) == 0, "clm_tool_add");
+
+	CHECK(clm_agent_submit(st.agent, "use the tool") == 0, "submit");
+	run_until_done(&st);
+	CHECK(st.turn_status == 0, "empty reply: turn ok");
+	CHECK(st.finish == CLM_FINISH_EMPTY, "empty reply: finish is empty");
+
+	body = request_json(canned_last_request(srv));
+	msgs = cJSON_GetObjectItemCaseSensitive(body, "messages");
+	m = cJSON_GetArrayItem(msgs, cJSON_GetArraySize(msgs) - 1);
+	blocks = cJSON_GetObjectItemCaseSensitive(m, "content");
+	n = cJSON_GetArraySize(blocks);
+	trc = cJSON_GetObjectItemCaseSensitive(
+	    cJSON_GetArrayItem(blocks, 0), "content");
+	CHECK(n == 3, "queued: tool_result, lead-in, message");
+	CHECK(cJSON_IsString(trc) && strcmp(trc->valuestring, "hello") == 0,
+	    "queued: tool output stays alone inside the tool_result");
+	CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
+	                 cJSON_GetArrayItem(blocks, 2), "text")),
+	          "steer") == 0,
+	    "queued: message is a text block of the user turn");
+	cJSON_Delete(body);
+
+	st.turn_done = 0;
+	CHECK(clm_agent_submit(st.agent, "continue") == 0, "submit continue");
+	run_until_done(&st);
+	CHECK(
+	    strstr(st.assistant, "done") != NULL, "continue: answer delivered");
+
+	body = request_json(canned_last_request(srv));
+	msgs = cJSON_GetObjectItemCaseSensitive(body, "messages");
+	n = cJSON_GetArraySize(msgs);
+	m = cJSON_GetArrayItem(msgs, n - 2);
+	s = cJSON_PrintUnformatted(m);
+	CHECK(strcmp(cJSON_GetStringValue(
+	                 cJSON_GetObjectItemCaseSensitive(m, "role")),
+	          "assistant") == 0 &&
+	        strstr(s, "[empty response]") != NULL,
+	    "continue: placeholder assistant turn before the prompt");
+	free(s);
+	s = cJSON_PrintUnformatted(cJSON_GetArrayItem(msgs, n - 1));
+	CHECK(strstr(s, "continue") != NULL && strstr(s, "tool_result") == NULL,
+	    "continue: prompt is a user turn of its own");
+	free(s);
+	cJSON_Delete(body);
+
+	teardown(&st, srv);
+}
+
 /* (g4) Anthropic streaming: text deltas, a tool_use block assembled across
  * content_block_start/content_block_delta events, and message_delta usage. */
 static void
@@ -4357,6 +4454,7 @@ test_agent_suite(void *arg)
 	test_anthropic_ctx_max(&loop);
 	test_anthropic_text_reply(&loop);
 	test_anthropic_tool_call(&loop);
+	test_anthropic_empty_after_tool(&loop);
 	test_anthropic_stream(&loop);
 	test_recover_after_error(&loop);
 	test_set_provider_after_error(&loop);

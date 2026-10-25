@@ -190,6 +190,7 @@ enum clm_finish_reason {
 	CLM_FINISH_TOOL_CALLS,     /* stopped to call tools */
 	CLM_FINISH_CONTENT_FILTER, /* filtered */
 	CLM_FINISH_OTHER,
+	CLM_FINISH_EMPTY, /* no text and no tool calls */
 };
 
 /* Token accounting for a model response, when the server reports it.
@@ -413,7 +414,8 @@ struct clm_callbacks {
 
 	/* Why the most recent model response ended. Fired once per response
 	 * (a tool turn reports CLM_FINISH_TOOL_CALLS; the final answer reports
-	 * CLM_FINISH_STOP, or CLM_FINISH_LENGTH if truncated). */
+	 * CLM_FINISH_STOP, or CLM_FINISH_LENGTH if truncated). A response with
+	 * no text and no tool calls then also reports CLM_FINISH_EMPTY. */
 	void (*on_finish_reason)(enum clm_finish_reason reason, void *user);
 
 	/* Token usage for a model response, when the server reports it. */

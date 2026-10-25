@@ -187,6 +187,8 @@ cb_finish_reason(enum clm_finish_reason reason, void *user)
 		    esc_reset);
 	else if (reason == CLM_FINISH_CONTENT_FILTER)
 		printf("\n%s[stopped: content filter]%s\n", esc_err, esc_reset);
+	else if (reason == CLM_FINISH_EMPTY)
+		printf("\n%s[empty response]%s\n", esc_warn, esc_reset);
 	fflush(stdout);
 }
 

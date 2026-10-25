@@ -529,6 +529,8 @@ cb_finish_reason(enum clm_finish_reason reason, void *user)
 		ui_push(u, ST_META, "\n[truncated: hit token limit]\n");
 	else if (reason == CLM_FINISH_CONTENT_FILTER)
 		ui_push(u, ST_META, "\n[stopped: content filter]\n");
+	else if (reason == CLM_FINISH_EMPTY)
+		ui_push(u, ST_META, "\n[empty response]\n");
 }
 
 /*

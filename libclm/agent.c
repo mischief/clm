@@ -1975,7 +1975,23 @@ agent_finish(struct clm_agent *agent, cJSON *tool_calls, const char *content,
 		return;
 	}
 
-	if (content != NULL) {
+	/* An empty reply still gets an assistant turn in history. Without it,
+	 * the next user message joins the previous one, the model sees the
+	 * same prompt again, and it gives the same empty reply. */
+	if (content == NULL || content[0] == '\0') {
+		struct clm_message *m;
+
+		if (agent->cb_on_finish_reason)
+			agent->cb_on_finish_reason(
+			    CLM_FINISH_EMPTY, agent->cb_user);
+		m = clm_history_add_assistant_text(
+		    &agent->history, "[empty response]", agent->compressor);
+		if (m == NULL) {
+			agent_fail(agent, "out of memory", -ENOMEM);
+			return;
+		}
+		clm_agent_emit_message(agent, m);
+	} else {
 		struct clm_message *m;
 		clm_debug("[think] %.*s",
 		    (int)(strlen(content) > 200 ? 200 : strlen(content)),
