@@ -2968,11 +2968,11 @@ test_anthropic_empty_after_tool(uv_loop_t *loop)
 	n = cJSON_GetArraySize(blocks);
 	trc = cJSON_GetObjectItemCaseSensitive(
 	    cJSON_GetArrayItem(blocks, 0), "content");
-	CHECK(n == 3, "queued: tool_result, lead-in, message");
+	CHECK(n == 2, "queued: tool_result, then the message");
 	CHECK(cJSON_IsString(trc) && strcmp(trc->valuestring, "hello") == 0,
 	    "queued: tool output stays alone inside the tool_result");
 	CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(
-	                 cJSON_GetArrayItem(blocks, 2), "text")),
+	                 cJSON_GetArrayItem(blocks, 1), "text")),
 	          "steer") == 0,
 	    "queued: message is a text block of the user turn");
 	cJSON_Delete(body);

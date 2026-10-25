@@ -282,18 +282,14 @@ append_text_block(cJSON *blocks, const char *text)
 	return 0;
 }
 
-/* Add a user message's content (string or parts) to carrier as text blocks
- * after its tool_result blocks, behind a lead-in that says it was typed
- * while the tools ran. The blocks sit in the user turn itself, never inside
- * a tool_result, so tool output cannot forge them. Returns -1 on OOM. */
+/* Add a user message's content (string or parts) to carrier as blocks after
+ * its tool_result blocks. They sit in the user turn itself, never inside a
+ * tool_result, so tool output cannot forge them. Returns -1 on OOM. */
 static int
 append_queued_user(cJSON *carrier, const cJSON *content)
 {
 	cJSON *blocks = cJSON_GetObjectItemCaseSensitive(carrier, "content");
 
-	if (append_text_block(blocks,
-	        "The user sent this message while the tools above ran:") < 0)
-		return -1;
 	if (cJSON_IsArray(content))
 		return append_part_blocks(blocks, content);
 	return append_text_block(blocks, cJSON_GetStringValue(content));
