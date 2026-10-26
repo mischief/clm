@@ -537,16 +537,28 @@ Section order within a source file:
 - Floating-point formatting is locale-dependent. Use `strtod`/`snprintf`
   with `LC_NUMERIC=C` when parsing or serializing floating-point values
   portably.
-- The following functions are banned; use the indicated replacements.
-  `banned.h` is force-included by the build system and poisons these identifiers
-  at compile time via `#pragma GCC poison`:
+- **No buffered stdio for files or terminals.** A buffered write reports
+  success while the data is still in the buffer, so `ENOSPC`, quota, and NFS
+  errors surface only at an often-unchecked `fclose`; reads tempt silent
+  truncation. Use raw `open`/`read`/`write`/`close` and check the write and
+  the close. `include/fileio.h` has the shared helpers: `clm_read_file`
+  (slurp a whole file; split lines in memory), `clm_write_file`,
+  `clm_write_all`, `clm_write_str`, and `clm_dprintf` (formatted write to an
+  fd). `snprintf`/`vsnprintf`/`sscanf` stay -- they format or parse buffers,
+  with no file and no hidden buffering. Lua plugins may still do their own
+  file I/O; this rule is for C.
+- The following functions are banned; use the indicated replacements. Every
+  library and `src` translation unit includes `banned.h` last, which poisons
+  these identifiers at compile time via `#pragma GCC poison`:
 
   | Banned | Replacement | Reason |
   |--------|-------------|--------|
   | `strcpy`, `strcat` | `strlcpy`, `strlcat` (POSIX.1-2024) | no length limit |
   | `strncpy`, `strncat` | `strlcpy`, `strlcat` | `strncpy` does not NUL-terminate; `strncat` size arg is confusing |
   | `sprintf`, `vsprintf` | `snprintf`, `vsnprintf` | no length limit |
-  | `gets` | `fgets` or `getline` | no length limit |
+  | `gets`, `fgets`, `fgetc`, `fread`, `getline` | raw `read` (see `fileio.h`) | buffered stdio reads; silent truncation |
+  | `fopen`, `fdopen`, `freopen`, `fwrite`, `fputs`, `fprintf`, `fclose`, `FILE` | raw `open`/`write`/`close` (see `fileio.h`) | buffered writes hide errors until an unchecked close |
+  | `printf`, `fflush`, `perror` | `clm_dprintf` / `clm_write_str` to an fd | terminal output via stdio streams |
   | `strtok` | `strtok_r` | not reentrant |
   | `atoi`, `atol`, `atoll` | `strtol`, `strtoll`, `strtoimax` | no error detection |
   | `alloca` | fixed-size array or `malloc` | unbounded stack allocation |

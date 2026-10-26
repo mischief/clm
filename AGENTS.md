@@ -58,5 +58,12 @@ cppcheck.
 
 See [CODING_STYLE.md](CODING_STYLE.md) for the full coding standard.
 
+No buffered stdio in C: `banned.h` poisons `FILE`, `fopen`, `fread`,
+`fwrite`, `getline`, `fprintf`, `printf`, and the rest at compile time
+(`snprintf`/`vsnprintf`/`sscanf` stay). Use raw `open`/`read`/`write`/`close`
+and the helpers in `include/fileio.h` (`clm_read_file`, `clm_write_file`,
+`clm_dprintf`, ...). Keep file I/O minimal and in the right places. Lua
+plugins may do their own file I/O.
+
 Tests live in `test/`, fuzz corpora in `fuzz/corpus/`. Fuzz targets are
 AFL++ persistent-mode binaries; see README.md for how to build and run them.
