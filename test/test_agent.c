@@ -1468,6 +1468,42 @@ test_file_tools(uv_loop_t *loop)
 }
 
 /*
+ * write_file to /dev/full must report a failure, not a false success. A
+ * buffered stdio write would succeed into the buffer and only fail at an
+ * unchecked close; the raw write hits ENOSPC and reports it.
+ */
+static void
+test_file_write_full(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+
+	if (access("/dev/full", W_OK) != 0) {
+		CHECK(1, "/dev/full unavailable; enospc check skipped");
+		return;
+	}
+	st.loop = loop;
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_tool_call(
+	    srv, "write_file", "{\"path\":\"/dev/full\",\"content\":\"data\"}");
+	canned_reply(srv, final_reply);
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(
+	    clm_agent_submit(st.agent, "write to a full disk") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.last_outcome == CLM_TOOL_FAILED,
+	    "write to /dev/full fails, not a false success");
+	CHECK(strstr(st.tool_content, "cannot write") != NULL,
+	    "failure names the write error");
+
+	teardown(&st, srv);
+}
+
+/*
  * (b4) monitor_start: the model watches a command that prints lines and
  * exits. Its lines must arrive as automatic follow-up turns via
  * clm_agent_notify, the same chain bg_exec uses, except that a monitor
@@ -4421,6 +4457,7 @@ test_agent_suite(void *arg)
 	test_compact_http_error_detail(&loop);
 	test_tools_unsupported_retry(&loop);
 	test_file_tools(&loop);
+	test_file_write_full(&loop);
 	test_monitor_start(&loop);
 	test_agent_free_during_monitor(&loop);
 	test_shell_exec(&loop);

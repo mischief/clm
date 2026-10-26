@@ -11,6 +11,8 @@
 
 #include "clm/internal.h"
 #include "useful.h"
+#include "banned.h"
+#include "useful.h"
 
 void
 clm_tool_result_free(struct clm_tool_result *r)

@@ -45,6 +45,8 @@
 #include "tui_internal.h"
 #include "sysinfo.h"
 #include "xdg.h"
+#include "fileio.h"
+#include "banned.h"
 
 /*
  * Custom key codes for bracketed paste (xterm/most terminal emulators,
@@ -4817,14 +4819,14 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 
 	u = calloc(1, sizeof(*u)); /* too large for the stack frame limit */
 	if (u == NULL) {
-		fprintf(stderr, "error: out of memory\n");
+		clm_dprintf(STDERR_FILENO, "error: out of memory\n");
 		return 1;
 	}
 	u->last_total = -1; /* draw_transcript hasn't painted yet */
 	u->allow_all = allow_all;
 	u->auto_mode = auto_mode;
 	if (!ui_input_reserve(u, 1024)) {
-		fprintf(stderr, "error: out of memory\n");
+		clm_dprintf(STDERR_FILENO, "error: out of memory\n");
 		free(u);
 		return 1;
 	}
@@ -4861,14 +4863,16 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 
 	r = clm_host_uv_new(loop, &u->host);
 	if (r < 0) {
-		fprintf(stderr, "error: failed to create host (%d)\n", r);
+		clm_dprintf(
+		    STDERR_FILENO, "error: failed to create host (%d)\n", r);
 		free(u);
 		return 1;
 	}
 
 	r = clm_agent_new(cfg, u->host, &tui_callbacks, u, &u->agent);
 	if (r < 0) {
-		fprintf(stderr, "error: failed to create agent (%d)\n", r);
+		clm_dprintf(
+		    STDERR_FILENO, "error: failed to create agent (%d)\n", r);
 		clm_host_uv_free(u->host);
 		free(u);
 		return 1;
@@ -4909,7 +4913,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	 * delscreen it and leave nothing of curses outstanding. */
 	u->screen = newterm(NULL, stdout, stdin);
 	if (u->screen == NULL) {
-		fprintf(stderr, "error: cannot initialize the terminal\n");
+		clm_dprintf(
+		    STDERR_FILENO, "error: cannot initialize the terminal\n");
 		return 1;
 	}
 	def_prog_mode();
@@ -4938,8 +4943,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	 */
 	define_key("\033[200~", UI_KEY_PASTE_START);
 	define_key("\033[201~", UI_KEY_PASTE_END);
-	fputs("\033[?2004h", stdout);
-	fflush(stdout);
+	clm_write_str(STDOUT_FILENO, "\033[?2004h");
 
 	ui_push(u, ST_META,
 	    "clm -- type a prompt, /help for commands, /quit to exit.\n");
@@ -5005,7 +5009,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		}
 	}
 
-	uv_poll_init(loop, &u->stdin_poll, fileno(stdin));
+	uv_poll_init(loop, &u->stdin_poll, STDIN_FILENO);
 	u->stdin_poll.data = u;
 	uv_poll_start(&u->stdin_poll, UV_READABLE, on_stdin);
 
@@ -5046,8 +5050,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 
 	/* Leave the terminal as we found it, and curses with nothing of ours
 	 * still allocated: the windows first, then the screen behind them. */
-	fputs("\033[?2004l", stdout);
-	fflush(stdout);
+	clm_write_str(STDOUT_FILENO, "\033[?2004l");
 	delwin(u->txt);
 	delwin(u->stat);
 	delwin(u->in);
@@ -5075,20 +5078,23 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 				 * doesn't identify a connection, so prefix it
 				 * with provider_name when known. */
 				if (u->provider_name != NULL)
-					printf("session: %s, resume it with:\n"
-					       "  clm --resume %s -m %s/%s\n",
+					clm_dprintf(STDOUT_FILENO,
+					    "session: %s, resume it with:\n"
+					    "  clm --resume %s -m %s/%s\n",
 					    clm_session_id(u->session),
 					    clm_session_id(u->session),
 					    u->provider_name, u->model);
 				else
-					printf("session: %s, resume it with:\n"
-					       "  clm --resume %s -m %s\n",
+					clm_dprintf(STDOUT_FILENO,
+					    "session: %s, resume it with:\n"
+					    "  clm --resume %s -m %s\n",
 					    clm_session_id(u->session),
 					    clm_session_id(u->session),
 					    u->model);
 			} else {
-				printf("session: %s, resume it with:\n"
-				       "  clm --resume %s\n",
+				clm_dprintf(STDOUT_FILENO,
+				    "session: %s, resume it with:\n"
+				    "  clm --resume %s\n",
 				    clm_session_id(u->session),
 				    clm_session_id(u->session));
 			}

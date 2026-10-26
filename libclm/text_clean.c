@@ -8,6 +8,8 @@
 #include <stdint.h>
 
 #include "clm/internal.h"
+#include "banned.h"
+#include "clm/internal.h"
 
 /* Drop the last code point already written to out[0..n). */
 static size_t

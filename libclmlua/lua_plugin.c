@@ -23,6 +23,7 @@
 #include "clm/lua_plugin.h"
 #include "clm/log.h"
 #include "lua_internal.h"
+#include "fileio.h"
 #include "useful.h"
 #include "banned.h"
 
@@ -908,23 +909,17 @@ static int
 lua_clm_read_file(lua_State *L)
 {
 	const char *path = luaL_checkstring(L, 1);
-	FILE *fp = fopen(path, "re");
-	if (fp == NULL) {
+	char *buf = NULL;
+	size_t len = 0;
+	int rc = clm_read_file(path, &buf, &len);
+
+	if (rc != 0) {
 		lua_pushnil(L);
-		lua_pushstring(L, strerror(errno));
+		lua_pushstring(L, strerror(-rc));
 		return 2;
 	}
-
-	luaL_Buffer B;
-	luaL_buffinit(L, &B);
-	char *buf = luaL_prepbuffer(&B);
-	size_t n;
-	while ((n = fread(buf, 1, LUAL_BUFFERSIZE, fp)) > 0) {
-		luaL_addsize(&B, n);
-		buf = luaL_prepbuffer(&B);
-	}
-	fclose(fp);
-	luaL_pushresult(&B);
+	lua_pushlstring(L, buf, len);
+	free(buf);
 	return 1;
 }
 
@@ -937,19 +932,13 @@ lua_clm_write_file(lua_State *L)
 	const char *path = luaL_checkstring(L, 1);
 	size_t len;
 	const char *content = luaL_checklstring(L, 2, &len);
-	FILE *fp = fopen(path, "we");
-	if (fp == NULL) {
+	int rc = clm_write_file(path, content, len);
+
+	if (rc != 0) {
 		lua_pushnil(L);
-		lua_pushstring(L, strerror(errno));
+		lua_pushstring(L, strerror(-rc));
 		return 2;
 	}
-	if (fwrite(content, 1, len, fp) != len) {
-		fclose(fp);
-		lua_pushnil(L);
-		lua_pushstring(L, "write failed");
-		return 2;
-	}
-	fclose(fp);
 	lua_pushboolean(L, 1);
 	return 1;
 }

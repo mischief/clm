@@ -18,6 +18,7 @@
 #include "clm/internal.h"
 #include "clm/log.h"
 #include "clm/cleanup.h"
+#include "fileio.h"
 #include "useful.h"
 #include "banned.h"
 
@@ -1633,11 +1634,10 @@ tool_file_read(struct clm_tool_invocation *inv, void *user)
 {
 	json_cleanup cJSON *args = inv_args(inv);
 	autofree char *path = NULL;
-	autoclosefile FILE *fp = NULL;
-	autofree char *line = NULL;
+	autofree char *data = NULL;
 	autofree char *out = NULL;
-	size_t out_len = 0, out_cap = 0, line_cap = 0, cap;
-	int offset, limit, cur = 0, shown = 0, total = 0;
+	size_t dlen = 0, out_len = 0, out_cap = 0, cap, pos;
+	int offset, limit, cur = 0, shown = 0, total = 0, rc;
 	char footer[160];
 
 	(void)user;
@@ -1666,28 +1666,30 @@ tool_file_read(struct clm_tool_invocation *inv, void *user)
 		limit = CLM_READ_DEFAULT_LIMIT;
 	cap = inv->output_cap;
 
-	fp = fopen(path, "re");
-	if (fp == NULL) {
+	rc = clm_read_file(path, &data, &dlen);
+	if (rc != 0) {
 		char buf[256];
 		(void)snprintf(buf, sizeof(buf), "cannot open '%s': %s", path,
-		    strerror(errno));
+		    strerror(-rc));
 		clm_tool_fail(inv, buf);
 		return;
 	}
 
-	for (;;) {
-		ssize_t n = getline(&line, &line_cap, fp);
-		if (n < 0)
-			break;
+	for (pos = 0; pos < dlen;) {
+		const char *cur_line = data + pos;
+		const char *nl = memchr(cur_line, '\n', dlen - pos);
+		size_t n =
+		    nl != NULL ? (size_t)(nl - cur_line) + 1 : dlen - pos;
+		pos += n;
 		cur++;
 		total = cur;
 		if (cur < offset || shown >= limit)
 			continue;
 
-		if (out_len + (size_t)n + 1 > out_cap) {
+		if (out_len + n + 1 > out_cap) {
 			size_t ncap = out_cap ? out_cap * 2 : 4096;
 			char *p;
-			while (ncap < out_len + (size_t)n + 1)
+			while (ncap < out_len + n + 1)
 				ncap *= 2;
 			if (ncap > cap)
 				ncap = cap;
@@ -1699,10 +1701,10 @@ tool_file_read(struct clm_tool_invocation *inv, void *user)
 			out = p;
 			out_cap = ncap;
 		}
-		if (out_len + (size_t)n + 1 > cap)
+		if (out_len + n + 1 > cap)
 			break;
-		memcpy(out + out_len, line, (size_t)n);
-		out_len += (size_t)n;
+		memcpy(out + out_len, cur_line, n);
+		out_len += n;
 		out[out_len] = '\0';
 		shown++;
 	}
@@ -1739,7 +1741,9 @@ tool_file_write(struct clm_tool_invocation *inv, void *user)
 	json_cleanup cJSON *args = inv_args(inv);
 	autofree char *path = NULL;
 	autofree char *content = NULL;
-	autoclosefile FILE *fp = NULL;
+	const char *p;
+	size_t left;
+	int fd;
 
 	(void)user;
 	if (args == NULL || !cJSON_IsObject(args)) {
@@ -1761,16 +1765,39 @@ tool_file_write(struct clm_tool_invocation *inv, void *user)
 		}
 	}
 
-	fp = fopen(path, "we");
-	if (fp == NULL) {
+	/* Raw write()/close(), not stdio: buffered fputs reports success for a
+	 * small write that is still in the buffer, so ENOSPC/quota/NFS errors
+	 * would surface only at a close the caller must then check. */
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+	if (fd < 0) {
 		char buf[256];
 		(void)snprintf(buf, sizeof(buf), "cannot write '%s': %s", path,
 		    strerror(errno));
 		clm_tool_fail(inv, buf);
 		return;
 	}
-	if (fputs(content, fp) == EOF) {
-		clm_tool_fail(inv, "write failed");
+	p = content;
+	left = strlen(content);
+	while (left > 0) {
+		ssize_t n = write(fd, p, left);
+		if (n < 0) {
+			char buf[256];
+			if (errno == EINTR)
+				continue;
+			(void)snprintf(buf, sizeof(buf),
+			    "cannot write '%s': %s", path, strerror(errno));
+			(void)close(fd);
+			clm_tool_fail(inv, buf);
+			return;
+		}
+		p += n;
+		left -= (size_t)n;
+	}
+	if (close(fd) != 0) {
+		char buf[256];
+		(void)snprintf(buf, sizeof(buf), "cannot write '%s': %s", path,
+		    strerror(errno));
+		clm_tool_fail(inv, buf);
 		return;
 	}
 	clm_tool_complete(inv, "ok: file written");

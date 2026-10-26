@@ -14,6 +14,13 @@
 /* Unsafe integer parsers: no error detection */
 #pragma GCC poison atoi atol atoll
 
+/*
+ * Buffered stdio file I/O: a write reports success from the buffer, so
+ * ENOSPC/quota errors surface only at an often-unchecked close. Use raw
+ * open/read/write/close. snprintf/vsnprintf/sscanf stay (buffers, no file).
+ */
+#pragma GCC poison FILE fopen fdopen freopen fclose fflush fileno fread fwrite fgets fgetc getc getchar ungetc fputs fputc putc putchar puts getline getdelim fprintf vfprintf printf vprintf fscanf scanf fseek ftell fsetpos fgetpos rewind setvbuf setbuf perror popen pclose tmpfile clearerr feof ferror
+
 /* Stack smashing hazards */
 #ifdef alloca
 #undef alloca

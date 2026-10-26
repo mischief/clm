@@ -14,6 +14,8 @@
 
 #include "clm/internal.h"
 #include "clm/cleanup.h"
+#include "banned.h"
+#include "clm/cleanup.h"
 
 char **
 clm_parse_models_list(const char *body)

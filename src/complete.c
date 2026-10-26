@@ -22,6 +22,8 @@
 #include "emoji.h"
 #include "model_spec.h"
 #include "tui_internal.h"
+#include "banned.h"
+#include "tui_internal.h"
 
 /* Generous but bounded: completion candidate sets are all small in
  * practice (the largest today, freellmapi's live catalog, is ~65). */

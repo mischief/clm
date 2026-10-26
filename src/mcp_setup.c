@@ -11,6 +11,8 @@
 #include "clm/mcp.h"
 #include "clm/lua_plugin.h"
 #include "mcp_setup.h"
+#include "fileio.h"
+#include "banned.h"
 
 /*
  * config.lua shape:
@@ -43,7 +45,7 @@ emit_status(
 	if (status_cb != NULL)
 		status_cb(msg, error, user);
 	else
-		fprintf(stderr, "%s\n", msg);
+		clm_dprintf(STDERR_FILENO, "%s\n", msg);
 }
 
 static void

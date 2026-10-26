@@ -31,6 +31,7 @@
 #include "clm/cleanup.h"
 #include "clm/peer.h"
 #include "clm/tools.h"
+#include "fileio.h"
 #include "banned.h"
 
 /* Longest message a peer may deliver. */
@@ -350,17 +351,11 @@ static cJSON *
 read_meta(const char *dir, const char *id)
 {
 	char path[400];
-	char buf[1024];
-	FILE *f;
-	size_t n;
+	autofree char *buf = NULL;
 
 	(void)snprintf(path, sizeof(path), "%s/%s.json", dir, id);
-	f = fopen(path, "r");
-	if (f == NULL)
+	if (clm_read_file(path, &buf, NULL) != 0)
 		return NULL;
-	n = fread(buf, 1, sizeof(buf) - 1, f);
-	(void)fclose(f);
-	buf[n] = '\0';
 	return cJSON_Parse(buf);
 }
 
@@ -660,7 +655,8 @@ write_meta(struct clm_peer *p, const char *model)
 	json_cleanup cJSON *meta = cJSON_CreateObject();
 	autofree char *text = NULL;
 	char cwd[256];
-	FILE *f;
+	size_t tlen;
+	char *nt;
 
 	if (meta == NULL)
 		return;
@@ -675,11 +671,14 @@ write_meta(struct clm_peer *p, const char *model)
 	text = cJSON_PrintUnformatted(meta);
 	if (text == NULL)
 		return;
-	f = fopen(p->meta_path, "w");
-	if (f == NULL)
+	tlen = strlen(text);
+	nt = realloc(text, tlen + 2); /* room for a trailing newline */
+	if (nt == NULL)
 		return;
-	(void)fprintf(f, "%s\n", text);
-	(void)fclose(f);
+	text = nt;
+	text[tlen] = '\n';
+	text[tlen + 1] = '\0';
+	(void)clm_write_file(p->meta_path, text, tlen + 1);
 	(void)chmod(p->meta_path, 0600);
 }
 

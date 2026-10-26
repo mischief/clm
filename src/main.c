@@ -33,11 +33,13 @@
 #include "model_spec.h"
 #include "templates.h"
 #include "xdg.h"
+#include "fileio.h"
+#include "banned.h"
 
 static void
 usage(const char *prog)
 {
-	fprintf(stderr,
+	clm_dprintf(STDERR_FILENO,
 	    "usage: %s setup\n"
 	    "       %s [-o|--oneshot PROMPT] [-f|--forever PROMPT] "
 	    "[-H|--headless] [-D|--daemon PROMPT] [-u|--url BASE] "
@@ -47,7 +49,7 @@ usage(const char *prog)
 	    "[-r|--resume [ID]] "
 	    "[-V|--version] [-h|--help]\n",
 	    prog, prog);
-	fprintf(stderr,
+	clm_dprintf(STDERR_FILENO,
 	    "  setup                 write a starter config.lua and seed "
 	    "builtin plugins\n"
 	    "  -o, --oneshot PROMPT  run one prompt headless and exit\n"
@@ -155,7 +157,7 @@ cb_mcp_status(const char *msg, bool error, void *user)
 {
 	(void)error;
 	(void)user;
-	fprintf(stderr, "%s\n", msg);
+	clm_dprintf(STDERR_FILENO, "%s\n", msg);
 }
 
 static void
@@ -164,18 +166,16 @@ cb_assistant_text(const char *text, void *user)
 	struct cli_state *state = (struct cli_state *)user;
 	/* Streaming delivers a reply in many pieces: prefix only the first. */
 	if (!state->oneshot && !state->mid_reply)
-		printf("assistant> ");
+		clm_dprintf(STDOUT_FILENO, "assistant> ");
 	state->mid_reply = 1;
-	printf("%s", text);
-	fflush(stdout);
+	clm_dprintf(STDOUT_FILENO, "%s", text);
 }
 
 static void
 cb_reasoning(const char *text, void *user)
 {
 	(void)user;
-	printf("%s%s%s", esc_dim, text, esc_reset);
-	fflush(stdout);
+	clm_dprintf(STDOUT_FILENO, "%s%s%s", esc_dim, text, esc_reset);
 }
 
 static void
@@ -183,35 +183,37 @@ cb_finish_reason(enum clm_finish_reason reason, void *user)
 {
 	(void)user;
 	if (reason == CLM_FINISH_LENGTH)
-		printf("\n%s[truncated: hit token limit]%s\n", esc_warn,
+		clm_dprintf(STDOUT_FILENO,
+		    "\n%s[truncated: hit token limit]%s\n", esc_warn,
 		    esc_reset);
 	else if (reason == CLM_FINISH_CONTENT_FILTER)
-		printf("\n%s[stopped: content filter]%s\n", esc_err, esc_reset);
+		clm_dprintf(STDOUT_FILENO, "\n%s[stopped: content filter]%s\n",
+		    esc_err, esc_reset);
 	else if (reason == CLM_FINISH_EMPTY)
-		printf("\n%s[empty response]%s\n", esc_warn, esc_reset);
-	fflush(stdout);
+		clm_dprintf(STDOUT_FILENO, "\n%s[empty response]%s\n", esc_warn,
+		    esc_reset);
 }
 
 static void
 cb_usage(const struct clm_usage *usage, void *user)
 {
 	((struct cli_state *)user)->mid_reply = 0;
-	printf("%s[%d+%d tok", esc_dim, usage->prompt_tokens,
-	    usage->completion_tokens);
+	clm_dprintf(STDOUT_FILENO, "%s[%d+%d tok", esc_dim,
+	    usage->prompt_tokens, usage->completion_tokens);
 	if (usage->cache_read_tokens > 0)
-		printf(", %d cached", usage->cache_read_tokens);
+		clm_dprintf(
+		    STDOUT_FILENO, ", %d cached", usage->cache_read_tokens);
 	if (usage->tokens_per_sec > 0)
-		printf(", %.1f tok/s", usage->tokens_per_sec);
-	printf("]%s\n", esc_reset);
-	fflush(stdout);
+		clm_dprintf(
+		    STDOUT_FILENO, ", %.1f tok/s", usage->tokens_per_sec);
+	clm_dprintf(STDOUT_FILENO, "]%s\n", esc_reset);
 }
 
 static void
 cb_tool_begin(const char *name, const char *args, void *user)
 {
 	((struct cli_state *)user)->mid_reply = 0;
-	printf("[tool: %s %s]\n", name, args ? args : "");
-	fflush(stdout);
+	clm_dprintf(STDOUT_FILENO, "[tool: %s %s]\n", name, args ? args : "");
 }
 
 static void
@@ -221,26 +223,25 @@ cb_tool_result(const char *name, const char *content,
 	(void)user;
 	switch (outcome) {
 	case CLM_TOOL_OK:
-		printf("[result: %s]\n%s\n", name, content ? content : "");
+		clm_dprintf(STDOUT_FILENO, "[result: %s]\n%s\n", name,
+		    content ? content : "");
 		break;
 	case CLM_TOOL_FAILED:
-		printf("%s[x %s]%s %s\n", esc_err, name, esc_reset,
-		    content ? content : "");
+		clm_dprintf(STDOUT_FILENO, "%s[x %s]%s %s\n", esc_err, name,
+		    esc_reset, content ? content : "");
 		break;
 	case CLM_TOOL_TIMEDOUT:
-		printf("%s[timeout %s]%s %s\n", esc_warn, name, esc_reset,
-		    content ? content : "");
+		clm_dprintf(STDOUT_FILENO, "%s[timeout %s]%s %s\n", esc_warn,
+		    name, esc_reset, content ? content : "");
 		break;
 	}
-	fflush(stdout);
 }
 
 static void
 cb_tool_batch(size_t completed, size_t total, void *user)
 {
 	(void)user;
-	printf("[tools %zu/%zu]\n", completed, total);
-	fflush(stdout);
+	clm_dprintf(STDOUT_FILENO, "[tools %zu/%zu]\n", completed, total);
 }
 
 /*
@@ -270,7 +271,8 @@ cb_message(const struct clm_message *msg, void *user)
 	if (state->session == NULL)
 		return;
 	if (clm_session_append(state->session, msg, NULL) < 0) {
-		fprintf(stderr, "warning: session logging failed; disabled\n");
+		clm_dprintf(STDERR_FILENO,
+		    "warning: session logging failed; disabled\n");
 		clm_session_free(state->session);
 		state->session = NULL;
 	}
@@ -286,7 +288,8 @@ session_after_compact(struct cli_state *state)
 		return;
 	h = clm_agent_get_history(state->agent);
 	if (h != NULL && clm_session_rewrite(state->session, h, NULL) < 0) {
-		fprintf(stderr, "warning: session rewrite failed; disabled\n");
+		clm_dprintf(STDERR_FILENO,
+		    "warning: session rewrite failed; disabled\n");
 		clm_session_free(state->session);
 		state->session = NULL;
 	}
@@ -307,7 +310,7 @@ static void
 cb_notice(const char *text, void *user)
 {
 	(void)user;
-	fprintf(stderr, "notice: %s\n", text ? text : "");
+	clm_dprintf(STDERR_FILENO, "notice: %s\n", text ? text : "");
 }
 
 static void
@@ -316,7 +319,7 @@ cb_turn_done(int status, void *user)
 	struct cli_state *state = (struct cli_state *)user;
 	state->mid_reply = 0;
 	if (status != 0 && !state->stopping) {
-		fprintf(stderr, "error: %s\n",
+		clm_dprintf(STDERR_FILENO, "error: %s\n",
 		    clm_agent_get_last_error(state->agent));
 	}
 	if (state->oneshot || state->batch) {
@@ -338,12 +341,10 @@ cb_turn_done(int status, void *user)
 		    clm_agent_compact(state->agent) == 0) {
 			state->compacting = 1;
 		}
-		printf("\n");
-		fflush(stdout);
+		clm_dprintf(STDOUT_FILENO, "\n");
 		return;
 	}
-	printf("\nuser> ");
-	fflush(stdout);
+	clm_dprintf(STDOUT_FILENO, "\nuser> ");
 }
 
 /*
@@ -388,26 +389,67 @@ on_alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 	buf->len = suggested_size;
 }
 
+/* One byte from stdin, buffered in a file-scoped buffer, or -1 at EOF/error. */
+static int
+stdin_getc(void)
+{
+	static char rb[4096];
+	static size_t len, pos;
+
+	if (pos >= len) {
+		ssize_t n;
+		do {
+			n = read(STDIN_FILENO, rb, sizeof(rb));
+		} while (n < 0 && errno == EINTR);
+		if (n <= 0)
+			return -1;
+		len = (size_t)n;
+		pos = 0;
+	}
+	return (unsigned char)rb[pos++];
+}
+
+/* A line into buf (NUL-terminated, may keep the '\n'). Returns the length,
+ * or 0 at EOF with nothing read. Replaces fgets over a raw stdin fd. */
+static size_t
+stdin_getline(char *buf, size_t size)
+{
+	size_t out = 0;
+	int c = -1;
+
+	while (size > 0 && out < size - 1) {
+		c = stdin_getc();
+		if (c < 0)
+			break;
+		buf[out++] = (char)c;
+		if (c == '\n')
+			break;
+	}
+	if (size > 0)
+		buf[out] = '\0';
+	return out;
+}
+
 /*
  * Line-at-a-time REPL over a stdin that epoll cannot watch: a regular file,
  * /dev/null, anything uv_guess_handle() reports as UV_FILE. uv_pipe_open()
  * takes such a descriptor, then libuv aborts the process when the kernel
- * refuses to poll it. Read with stdio, run the loop only during a turn.
+ * refuses to poll it. Read raw, run the loop only during a turn.
  */
 static void
 run_stdin_batch(struct cli_state *state, uv_loop_t *loop)
 {
 	state->batch = 1;
 
-	while (fgets(state->prompt_line, sizeof(state->prompt_line), stdin) !=
-	    NULL) {
+	while (
+	    stdin_getline(state->prompt_line, sizeof(state->prompt_line)) > 0) {
 		size_t n = strcspn(state->prompt_line, "\r\n");
 
 		/* Longer than the buffer: submit what fits and drop the
 		 * rest of the line, as the streaming path does. */
 		if (state->prompt_line[n] == '\0') {
 			int c;
-			while ((c = fgetc(stdin)) != EOF && c != '\n')
+			while ((c = stdin_getc()) >= 0 && c != '\n')
 				;
 		}
 		state->prompt_line[n] = '\0';
@@ -420,7 +462,7 @@ run_stdin_batch(struct cli_state *state, uv_loop_t *loop)
 
 		state->turn_done = 0;
 		if (clm_agent_submit(state->agent, state->prompt_line) < 0) {
-			fprintf(stderr, "error: %s\n",
+			clm_dprintf(STDERR_FILENO, "error: %s\n",
 			    clm_agent_get_last_error(state->agent));
 			continue;
 		}
@@ -428,8 +470,7 @@ run_stdin_batch(struct cli_state *state, uv_loop_t *loop)
 			uv_run(loop, UV_RUN_ONCE);
 	}
 
-	printf("\n");
-	fflush(stdout);
+	clm_dprintf(STDOUT_FILENO, "\n");
 }
 
 static void
@@ -437,7 +478,7 @@ on_stop_signal(uv_signal_t *handle, int signum)
 {
 	struct cli_state *state = (struct cli_state *)handle->data;
 
-	fprintf(stderr, "clm: signal %d, stopping\n", signum);
+	clm_dprintf(STDERR_FILENO, "clm: signal %d, stopping\n", signum);
 	state->stopping = 1;
 	uv_stop(state->loop);
 }
@@ -459,12 +500,12 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 			return;
 		if (n_read == UV_EOF) {
 			free(buf->base);
-			printf("\n");
-			fflush(stdout);
+			clm_dprintf(STDOUT_FILENO, "\n");
 			uv_close((uv_handle_t *)stream, on_stdin_close);
 			return;
 		}
-		fprintf(stderr, "read error: %s\n", uv_err_name(n_read));
+		clm_dprintf(
+		    STDERR_FILENO, "read error: %s\n", uv_err_name(n_read));
 		uv_close((uv_handle_t *)stream, on_stdin_close);
 		return;
 	}
@@ -499,7 +540,8 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 				int r = clm_agent_submit(
 				    state->agent, state->prompt_line);
 				if (r < 0) {
-					fprintf(stderr, "error: %s\n",
+					clm_dprintf(STDERR_FILENO,
+					    "error: %s\n",
 					    clm_agent_get_last_error(
 					        state->agent));
 				}
@@ -623,15 +665,17 @@ resolve_session_prefix(const char *frag)
 			match = strdup(infos[i].id);
 	}
 	if (hits > 1) {
-		fprintf(
-		    stderr, "error: %s matches %zu sessions:\n", frag, hits);
+		clm_dprintf(STDERR_FILENO, "error: %s matches %zu sessions:\n",
+		    frag, hits);
 		for (i = 0; i < n; i++)
 			if (strstr(infos[i].id, frag) != NULL)
-				fprintf(stderr, "  %s\n", infos[i].id);
+				clm_dprintf(
+				    STDERR_FILENO, "  %s\n", infos[i].id);
 		free(match);
 		match = NULL;
 	} else if (hits == 0) {
-		fprintf(stderr, "error: no session matching %s\n", frag);
+		clm_dprintf(
+		    STDERR_FILENO, "error: no session matching %s\n", frag);
 	}
 	clm_session_list_free(infos, n);
 	return match;
@@ -648,11 +692,12 @@ pick_session(void)
 
 	r = clm_session_list(NULL, &infos, &n);
 	if (r < 0) {
-		fprintf(stderr, "error: listing sessions: %s\n", strerror(-r));
+		clm_dprintf(STDERR_FILENO, "error: listing sessions: %s\n",
+		    strerror(-r));
 		return NULL;
 	}
 	if (n == 0) {
-		fprintf(stderr, "no saved sessions\n");
+		clm_dprintf(STDERR_FILENO, "no saved sessions\n");
 		return NULL;
 	}
 
@@ -664,22 +709,22 @@ pick_session(void)
 		if (created > 0 && localtime_r(&created, &tm) != NULL)
 			(void)strftime(
 			    when, sizeof(when), "%Y-%m-%d %H:%M", &tm);
-		printf("%3zu) %s  %s  %s\n     %s\n", i + 1, infos[i].id, when,
+		clm_dprintf(STDOUT_FILENO, "%3zu) %s  %s  %s\n     %s\n", i + 1,
+		    infos[i].id, when,
 		    infos[i].model != NULL ? infos[i].model : "",
 		    infos[i].first_user != NULL ? infos[i].first_user
 		                                : "(empty)");
 	}
-	printf("resume which session? [1-%zu] ", n);
-	fflush(stdout);
+	clm_dprintf(STDOUT_FILENO, "resume which session? [1-%zu] ", n);
 
-	if (fgets(line, sizeof(line), stdin) == NULL) {
+	if (stdin_getline(line, sizeof(line)) == 0) {
 		clm_session_list_free(infos, n);
 		return NULL;
 	}
 	errno = 0;
 	choice = strtoul(line, &end, 10);
 	if (errno != 0 || end == line || choice < 1 || choice > n) {
-		fprintf(stderr, "no such session\n");
+		clm_dprintf(STDERR_FILENO, "no such session\n");
 		clm_session_list_free(infos, n);
 		return NULL;
 	}
@@ -703,7 +748,7 @@ run_setup(void)
 
 	if (cfg_path == NULL || secrets_path == NULL || agents_dir == NULL ||
 	    plugins_dir == NULL) {
-		fprintf(stderr,
+		clm_dprintf(STDERR_FILENO,
 		    "setup: could not determine config path "
 		    "($XDG_CONFIG_HOME or $HOME not set)\n");
 		return 1;
@@ -712,37 +757,39 @@ run_setup(void)
 	/* Also creates the parent clm/ dir. */
 	int sr = clm_seed_default_plugins(plugins_dir);
 	if (sr < 0) {
-		fprintf(stderr, "setup: seeding %s: %s\n", plugins_dir,
-		    strerror(-sr));
+		clm_dprintf(STDERR_FILENO, "setup: seeding %s: %s\n",
+		    plugins_dir, strerror(-sr));
 		return 1;
 	}
-	printf("plugins in %s\n", plugins_dir);
+	clm_dprintf(STDOUT_FILENO, "plugins in %s\n", plugins_dir);
 
 	if (mkdir(agents_dir, 0755) != 0 && errno != EEXIST) {
-		fprintf(stderr, "setup: mkdir %s: %s\n", agents_dir,
+		clm_dprintf(STDERR_FILENO, "setup: mkdir %s: %s\n", agents_dir,
 		    strerror(errno));
 		return 1;
 	}
-	printf("agent profiles in %s\n", agents_dir);
+	clm_dprintf(STDOUT_FILENO, "agent profiles in %s\n", agents_dir);
 
 	/* 0600: secrets.lua holds API keys, unlike config.lua. */
 	int xr = write_new_file(
 	    secrets_path, (const char *)secrets_lua_tpl_data, 0600);
 	if (xr < 0) {
-		fprintf(stderr, "setup: writing %s: %s\n", secrets_path,
-		    strerror(-xr));
+		clm_dprintf(STDERR_FILENO, "setup: writing %s: %s\n",
+		    secrets_path, strerror(-xr));
 		return 1;
 	}
-	printf("%s %s\n", xr == 1 ? "kept existing" : "wrote", secrets_path);
+	clm_dprintf(STDOUT_FILENO, "%s %s\n",
+	    xr == 1 ? "kept existing" : "wrote", secrets_path);
 
 	int cr =
 	    write_new_file(cfg_path, (const char *)config_lua_tpl_data, 0644);
 	if (cr < 0) {
-		fprintf(
-		    stderr, "setup: writing %s: %s\n", cfg_path, strerror(-cr));
+		clm_dprintf(STDERR_FILENO, "setup: writing %s: %s\n", cfg_path,
+		    strerror(-cr));
 		return 1;
 	}
-	printf("%s %s\n", cr == 1 ? "kept existing" : "wrote", cfg_path);
+	clm_dprintf(STDOUT_FILENO, "%s %s\n",
+	    cr == 1 ? "kept existing" : "wrote", cfg_path);
 	return 0;
 }
 
@@ -756,16 +803,17 @@ run_peers(int argc, char *argv[])
 	cJSON *e;
 
 	if (text == NULL) {
-		fprintf(stderr, "peers: cannot read the peer directory\n");
+		clm_dprintf(
+		    STDERR_FILENO, "peers: cannot read the peer directory\n");
 		return 1;
 	}
 	if (argc >= 3 && strcmp(argv[2], "--json") == 0) {
-		printf("%s\n", text);
+		clm_dprintf(STDOUT_FILENO, "%s\n", text);
 		return 0;
 	}
 	peers = cJSON_Parse(text);
 	if (cJSON_GetArraySize(peers) == 0) {
-		printf("no clm agents are running\n");
+		clm_dprintf(STDOUT_FILENO, "no clm agents are running\n");
 		return 0;
 	}
 	cJSON_ArrayForEach(e, peers)
@@ -783,8 +831,8 @@ run_peers(int argc, char *argv[])
 		    ? (long)(now - (time_t)cJSON_GetNumberValue(started)) / 60
 		    : -1;
 
-		printf("%-8s  %-12s  %-24s  %5ldm  %s\n", id ? id : "?",
-		    name ? name : "?", model ? model : "?", mins,
+		clm_dprintf(STDOUT_FILENO, "%-8s  %-12s  %-24s  %5ldm  %s\n",
+		    id ? id : "?", name ? name : "?", model ? model : "?", mins,
 		    cwd ? cwd : "?");
 	}
 	return 0;
@@ -804,18 +852,31 @@ run_send(int argc, char *argv[])
 	int r;
 
 	if (argc < 3) {
-		fprintf(stderr, "usage: clm send TARGET [TEXT... | -]\n");
+		clm_dprintf(
+		    STDERR_FILENO, "usage: clm send TARGET [TEXT... | -]\n");
 		return 2;
 	}
 	text = malloc(TEXT_MAX);
 	if (text == NULL) {
-		perror("send");
+		clm_dprintf(STDERR_FILENO, "send: %s\n", strerror(errno));
 		return 1;
 	}
 	if (argc == 3 || (argc == 4 && strcmp(argv[3], "-") == 0)) {
-		len = fread(text, 1, TEXT_MAX - 1, stdin);
+		len = 0;
+		while (len < TEXT_MAX - 1) {
+			ssize_t rd =
+			    read(STDIN_FILENO, text + len, TEXT_MAX - 1 - len);
+			if (rd < 0) {
+				if (errno == EINTR)
+					continue;
+				break;
+			}
+			if (rd == 0)
+				break;
+			len += (size_t)rd;
+		}
 		if (len == TEXT_MAX - 1) {
-			fprintf(stderr, "send: message too long\n");
+			clm_dprintf(STDERR_FILENO, "send: message too long\n");
 			return 1;
 		}
 	} else {
@@ -824,17 +885,20 @@ run_send(int argc, char *argv[])
 			    i > 3 ? " " : "", argv[i]);
 
 			if (n < 0 || (size_t)n >= TEXT_MAX - len) {
-				fprintf(stderr, "send: message too long\n");
+				clm_dprintf(
+				    STDERR_FILENO, "send: message too long\n");
 				return 1;
 			}
 			len += (size_t)n;
 		}
 	}
+	if (len >= TEXT_MAX) /* unreachable; the read/format loops cap at -1 */
+		len = TEXT_MAX - 1;
 	text[len] = '\0';
 	while (len > 0 && text[len - 1] == '\n')
 		text[--len] = '\0';
 	if (len == 0) {
-		fprintf(stderr, "send: empty message\n");
+		clm_dprintf(STDERR_FILENO, "send: empty message\n");
 		return 2;
 	}
 	/* The command line cannot take a reply, so the name says so. */
@@ -844,21 +908,22 @@ run_send(int argc, char *argv[])
 	r = clm_peer_send(argv[2], CLM_PEER_CLI_ID, from_name, text, to,
 	    sizeof(to), err, sizeof(err));
 	if (r == -ENOENT) {
-		fprintf(stderr, "send: no running agent matches %s\n", argv[2]);
+		clm_dprintf(STDERR_FILENO,
+		    "send: no running agent matches %s\n", argv[2]);
 		return 1;
 	}
 	if (r == -EEXIST) {
-		fprintf(stderr,
+		clm_dprintf(STDERR_FILENO,
 		    "send: %s matches more than one agent; see clm peers\n",
 		    argv[2]);
 		return 1;
 	}
 	if (r < 0) {
-		fprintf(
-		    stderr, "send: %s\n", err[0] != '\0' ? err : strerror(-r));
+		clm_dprintf(STDERR_FILENO, "send: %s\n",
+		    err[0] != '\0' ? err : strerror(-r));
 		return 1;
 	}
-	printf("delivered to %s\n", to);
+	clm_dprintf(STDOUT_FILENO, "delivered to %s\n", to);
 	return 0;
 }
 
@@ -981,7 +1046,8 @@ main(int argc, char *argv[])
 			    opt_plugins, (nopt_plugins + 2) * sizeof(*np));
 
 			if (np == NULL) {
-				fprintf(stderr, "error: out of memory\n");
+				clm_dprintf(
+				    STDERR_FILENO, "error: out of memory\n");
 				return 1;
 			}
 			opt_plugins = np;
@@ -997,7 +1063,7 @@ main(int argc, char *argv[])
 			headless = 1;
 			break;
 		case 'V':
-			printf("clm %s\n", CLM_VERSION);
+			clm_dprintf(STDOUT_FILENO, "clm %s\n", CLM_VERSION);
 			return 0;
 		case 'S':
 			stream = 0;
@@ -1029,8 +1095,9 @@ main(int argc, char *argv[])
 	 * absent. Surfaced here loudly (headless paths only -- the TUI path
 	 * shows its own banner once curses is up, see tui_run). */
 	if (lcfg == NULL && config_load_err != NULL)
-		fprintf(stderr, "%serror: config.lua failed to load: %s%s\n",
-		    esc_err, config_load_err, esc_reset);
+		clm_dprintf(STDERR_FILENO,
+		    "%serror: config.lua failed to load: %s%s\n", esc_err,
+		    config_load_err, esc_reset);
 	if (lcfg != NULL) {
 		autofree char *adir = xdg_config_path("clm/agents");
 		const char *perm;
@@ -1151,18 +1218,20 @@ main(int argc, char *argv[])
 	 * through to the plain stdio path (works for pipes and --oneshot).
 	 */
 	if (oneshot != NULL && daemon_prompt != NULL) {
-		fprintf(stderr, "error: --oneshot and --daemon conflict\n");
+		clm_dprintf(
+		    STDERR_FILENO, "error: --oneshot and --daemon conflict\n");
 		return 1;
 	}
 	if (resume &&
 	    (oneshot != NULL || (headless && daemon_prompt == NULL))) {
-		fprintf(stderr,
+		clm_dprintf(STDERR_FILENO,
 		    "error: --resume needs the interactive TUI or "
 		    "--daemon (not --oneshot/--headless)\n");
 		return 1;
 	}
 	if (resume && daemon_prompt != NULL && resume_id == NULL) {
-		fprintf(stderr, "error: --daemon --resume needs an id\n");
+		clm_dprintf(
+		    STDERR_FILENO, "error: --daemon --resume needs an id\n");
 		return 1;
 	}
 
@@ -1210,8 +1279,9 @@ main(int argc, char *argv[])
 			if (r == 0)
 				r = clm_session_open(NULL, resume_id, &sess);
 			if (r < 0) {
-				fprintf(stderr, "error: resuming %s: %s\n",
-				    resume_id, strerror(-r));
+				clm_dprintf(STDERR_FILENO,
+				    "error: resuming %s: %s\n", resume_id,
+				    strerror(-r));
 				clm_history_free(&restore);
 				return 1;
 			}
@@ -1235,7 +1305,7 @@ main(int argc, char *argv[])
 			r = clm_session_create(NULL, model_name,
 			    cfg.provider_name, agent_name, &sess);
 			if (r < 0)
-				fprintf(stderr,
+				clm_dprintf(STDERR_FILENO,
 				    "warning: session logging "
 				    "disabled: %s\n",
 				    strerror(-r));
@@ -1276,8 +1346,8 @@ main(int argc, char *argv[])
 			    cfg.provider_name, agent_name, &dsess);
 		}
 		if (r < 0) {
-			fprintf(stderr, "error: session %s: %s\n", resume_id,
-			    strerror(-r));
+			clm_dprintf(STDERR_FILENO, "error: session %s: %s\n",
+			    resume_id, strerror(-r));
 			clm_history_free(&drestore);
 			return 1;
 		}
@@ -1287,7 +1357,7 @@ main(int argc, char *argv[])
 	 */
 	state = calloc(1, sizeof(*state));
 	if (state == NULL) {
-		fprintf(stderr, "error: out of memory\n");
+		clm_dprintf(STDERR_FILENO, "error: out of memory\n");
 		clm_session_free(dsess);
 		clm_history_free(&drestore);
 		return 1;
@@ -1320,7 +1390,8 @@ main(int argc, char *argv[])
 
 	r = clm_host_uv_new(loop, &state->host);
 	if (r < 0) {
-		fprintf(stderr, "error: failed to create host (%d)\n", r);
+		clm_dprintf(
+		    STDERR_FILENO, "error: failed to create host (%d)\n", r);
 		free(state);
 		return 1;
 	}
@@ -1328,7 +1399,8 @@ main(int argc, char *argv[])
 	r = clm_agent_new(
 	    &cfg, state->host, &cli_callbacks, state, &state->agent);
 	if (r < 0) {
-		fprintf(stderr, "error: failed to create agent (%d)\n", r);
+		clm_dprintf(
+		    STDERR_FILENO, "error: failed to create agent (%d)\n", r);
 		clm_host_uv_free(state->host);
 		(void)clm_drain_loop(loop);
 		free(state);
@@ -1336,17 +1408,17 @@ main(int argc, char *argv[])
 	}
 	clm_agent_set_spool(state->agent, cb_spool, state);
 	if (effort != NULL && clm_agent_set_effort(state->agent, effort) < 0)
-		fprintf(
-		    stderr, "warning: could not set effort \"%s\"\n", effort);
+		clm_dprintf(STDERR_FILENO,
+		    "warning: could not set effort \"%s\"\n", effort);
 	(void)clm_agent_set_compact_effort(state->agent, compact_effort);
 	if (!TAILQ_EMPTY(&drestore)) {
 		if (clm_agent_restore_history(state->agent, &drestore) < 0)
-			fprintf(stderr,
+			clm_dprintf(STDERR_FILENO,
 			    "warning: could not restore session %s; "
 			    "starting fresh\n",
 			    resume_id);
 		else
-			fprintf(stderr,
+			clm_dprintf(STDERR_FILENO,
 			    "resumed session %s (%d dangling tool calls "
 			    "repaired)\n",
 			    resume_id, drepaired);
@@ -1381,7 +1453,7 @@ main(int argc, char *argv[])
 	}
 	/* Auto mode without a hook would be plain allow-all. */
 	if (auto_mode && clm_agent_pre_tool_hook_count(state->agent) == 0) {
-		fprintf(stderr,
+		clm_dprintf(STDERR_FILENO,
 		    "error: auto mode needs a plugin with a pre_tool "
 		    "hook, such as jev_guard\n");
 		clm_lua_env_free(state->lua_env);
@@ -1404,7 +1476,7 @@ main(int argc, char *argv[])
 	if (oneshot != NULL) {
 		r = clm_agent_submit(state->agent, oneshot);
 		if (r < 0) {
-			fprintf(stderr, "error: %s\n",
+			clm_dprintf(STDERR_FILENO, "error: %s\n",
 			    clm_agent_get_last_error(state->agent));
 			clm_lua_env_free(state->lua_env);
 			clm_cli_free_mcp_servers(
@@ -1420,7 +1492,7 @@ main(int argc, char *argv[])
 		while (!state->turn_done)
 			uv_run(loop, UV_RUN_ONCE);
 
-		printf("\n");
+		clm_dprintf(STDOUT_FILENO, "\n");
 		clm_lua_env_free(state->lua_env);
 		clm_cli_free_mcp_servers(
 		    state->mcp_clients, state->mcp_client_count);
@@ -1441,8 +1513,7 @@ main(int argc, char *argv[])
 	if (daemon_prompt != NULL) {
 		/* No stdin: monitor events drive every turn after the first.
 		 * The signal handles keep the loop alive while none run. */
-		printf("clm daemon. api: %s\n", endpoint);
-		fflush(stdout);
+		clm_dprintf(STDOUT_FILENO, "clm daemon. api: %s\n", endpoint);
 		uv_signal_init(loop, &state->sigint);
 		uv_signal_init(loop, &state->sigterm);
 		state->sigint.data = state;
@@ -1451,7 +1522,7 @@ main(int argc, char *argv[])
 		uv_signal_start(&state->sigterm, on_stop_signal, SIGTERM);
 
 		if (clm_agent_submit(state->agent, daemon_prompt) < 0)
-			fprintf(stderr, "error: %s\n",
+			clm_dprintf(STDERR_FILENO, "error: %s\n",
 			    clm_agent_get_last_error(state->agent));
 		else
 			uv_run(loop, UV_RUN_DEFAULT);
@@ -1459,20 +1530,20 @@ main(int argc, char *argv[])
 		clm_settle_turn(state->agent, loop);
 		uv_close((uv_handle_t *)&state->sigint, NULL);
 		uv_close((uv_handle_t *)&state->sigterm, NULL);
-	} else if (uv_guess_handle(fileno(stdin)) == UV_FILE) {
-		printf("clm agent. api: %s\n", endpoint);
-		printf("type 'quit' or 'exit' to stop.\n\n");
-		printf("user> ");
-		fflush(stdout);
+	} else if (uv_guess_handle(STDIN_FILENO) == UV_FILE) {
+		clm_dprintf(STDOUT_FILENO, "clm agent. api: %s\n", endpoint);
+		clm_dprintf(
+		    STDOUT_FILENO, "type 'quit' or 'exit' to stop.\n\n");
+		clm_dprintf(STDOUT_FILENO, "user> ");
 		run_stdin_batch(state, loop);
 		run_stdin_batch(state, loop);
 	} else {
-		printf("clm agent. api: %s\n", endpoint);
-		printf("type 'quit' or 'exit' to stop.\n\n");
-		printf("user> ");
-		fflush(stdout);
+		clm_dprintf(STDOUT_FILENO, "clm agent. api: %s\n", endpoint);
+		clm_dprintf(
+		    STDOUT_FILENO, "type 'quit' or 'exit' to stop.\n\n");
+		clm_dprintf(STDOUT_FILENO, "user> ");
 		uv_pipe_init(loop, &state->stdin_pipe, 0);
-		uv_pipe_open(&state->stdin_pipe, fileno(stdin));
+		uv_pipe_open(&state->stdin_pipe, STDIN_FILENO);
 		state->stdin_pipe.data = (uv_handle_t *)state;
 		uv_read_start((uv_stream_t *)&state->stdin_pipe,
 		    on_alloc_buffer, on_stdin_read);

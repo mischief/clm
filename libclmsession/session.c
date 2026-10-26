@@ -14,6 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "fileio.h"
 #include "useful.h"
 #include "session_internal.h"
 #include "banned.h"
@@ -489,21 +490,38 @@ store_attachments(const char *log_path, const struct clm_message *m, cJSON *obj)
 static uint8_t *
 blob_read(const char *path, size_t *len)
 {
-	autoclosefile FILE *f = fopen(path, "re");
-	uint8_t *buf;
 	struct stat st;
+	uint8_t *buf;
+	size_t want, off = 0;
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
 
-	if (f == NULL || fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode) ||
-	    st.st_size <= 0 || st.st_size > SESSION_BLOB_MAX)
+	if (fd < 0)
 		return NULL;
-	buf = malloc((size_t)st.st_size);
-	if (buf == NULL)
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+	    st.st_size > SESSION_BLOB_MAX) {
+		(void)close(fd);
 		return NULL;
-	if (fread(buf, 1, (size_t)st.st_size, f) != (size_t)st.st_size) {
+	}
+	want = (size_t)st.st_size;
+	buf = malloc(want);
+	if (buf == NULL) {
+		(void)close(fd);
+		return NULL;
+	}
+	while (off < want) {
+		ssize_t n = read(fd, buf + off, want - off);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		off += (size_t)n;
+	}
+	(void)close(fd);
+	if (off != want) {
 		free(buf);
 		return NULL;
 	}
-	*len = (size_t)st.st_size;
+	*len = want;
 	return buf;
 }
 
@@ -512,29 +530,24 @@ blob_read(const char *path, size_t *len)
 static void
 blob_refs_from(const char *path, cJSON *refs)
 {
-	autoclosefile FILE *f = fopen(path, "re");
-	autofree char *line = NULL;
-	size_t cap = 0;
+	autofree char *data = NULL;
+	const char *p;
 	static const char key[] = "\"sha256\":\"";
 
-	if (f == NULL)
+	if (clm_read_file(path, &data, NULL) != 0)
 		return;
-	while (getline(&line, &cap, f) >= 0) {
-		const char *p = line;
+	p = data;
+	while ((p = strstr(p, key)) != NULL) {
+		char sha[65];
 
-		while ((p = strstr(p, key)) != NULL) {
-			char sha[65];
-
-			p += sizeof(key) - 1;
-			if (strlen(p) < 64)
-				break;
-			memcpy(sha, p, 64);
-			sha[64] = '\0';
-			if (sha_valid(sha))
-				cJSON_AddItemToArray(
-				    refs, cJSON_CreateString(sha));
-			p += 64;
-		}
+		p += sizeof(key) - 1;
+		if (strlen(p) < 64)
+			break;
+		memcpy(sha, p, 64);
+		sha[64] = '\0';
+		if (sha_valid(sha))
+			cJSON_AddItemToArray(refs, cJSON_CreateString(sha));
+		p += 64;
 	}
 }
 
@@ -664,26 +677,29 @@ system_text(const struct clm_message *m, const struct clm_compressor *cz)
 static uint64_t
 last_prompt_hash(const char *path)
 {
-	autoclosefile FILE *f = fopen(path, "re");
-	autofree char *line = NULL;
-	size_t cap = 0;
+	autofree char *data = NULL;
+	char *line, *nl;
 	uint64_t h = 0;
+	static const char pre[] = "{\"type\":\"prompt\"";
 
-	if (f == NULL)
+	if (clm_read_file(path, &data, NULL) != 0)
 		return 0;
-	while (getline(&line, &cap, f) >= 0) {
+	for (line = data; *line != '\0'; line = nl + 1) {
 		json_cleanup cJSON *obj = NULL;
 		const char *hex;
 
-		static const char pre[] = "{\"type\":\"prompt\"";
-
-		if (strncmp(line, pre, sizeof(pre) - 1) != 0)
-			continue;
-		obj = cJSON_Parse(line);
-		hex = cJSON_GetStringValue(
-		    cJSON_GetObjectItemCaseSensitive(obj, "hash"));
-		if (hex != NULL)
-			h = strtoull(hex, NULL, 16);
+		nl = strchr(line, '\n');
+		if (nl != NULL)
+			*nl = '\0';
+		if (strncmp(line, pre, sizeof(pre) - 1) == 0) {
+			obj = cJSON_Parse(line);
+			hex = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(obj, "hash"));
+			if (hex != NULL)
+				h = strtoull(hex, NULL, 16);
+		}
+		if (nl == NULL)
+			break;
 	}
 	return h;
 }
@@ -727,21 +743,19 @@ clm_session_append(struct clm_session *s, const struct clm_message *m,
 static char *
 read_meta_line(const char *path)
 {
-	FILE *f = fopen(path, "r");
-	char *line = NULL;
-	size_t cap = 0;
-	ssize_t n;
+	autofree char *data = NULL;
+	char *line, *nl;
+	size_t len;
 
-	if (f == NULL)
+	if (clm_read_file(path, &data, NULL) != 0 || data[0] == '\0')
 		return NULL;
-	n = getline(&line, &cap, f);
-	(void)fclose(f);
-	if (n <= 0) {
-		free(line);
+	nl = strchr(data, '\n');
+	len = nl != NULL ? (size_t)(nl - data) : strlen(data);
+	line = malloc(len + 1);
+	if (line == NULL)
 		return NULL;
-	}
-	if (line[n - 1] == '\n')
-		line[n - 1] = '\0';
+	memcpy(line, data, len);
+	line[len] = '\0';
 	return line;
 }
 
@@ -1066,10 +1080,8 @@ clm_session_load(
 {
 	autofree char *path = NULL;
 	autofree char *bdir = NULL;
-	autoclosefile FILE *f = NULL;
-	autofree char *line = NULL;
-	size_t cap = 0;
-	ssize_t n;
+	autofree char *data = NULL;
+	size_t dlen = 0, pos;
 	int r;
 
 	ASSERT_RETURN(hist != NULL, -EINVAL);
@@ -1082,19 +1094,21 @@ clm_session_load(
 	if (r < 0)
 		return r;
 
-	f = fopen(path, "re");
-	if (f == NULL)
-		return -errno;
+	r = clm_read_file(path, &data, &dlen); /* -errno on open/read failure */
+	if (r != 0)
+		return r;
 
 	bdir = blob_dir_of(path);
-	while ((n = getline(&line, &cap, f)) >= 0) {
-		r = session_parse_line(hist, line, (size_t)n, out_meta, bdir);
+	for (pos = 0; pos < dlen;) {
+		const char *line = data + pos;
+		const char *nl = memchr(line, '\n', dlen - pos);
+		size_t len = nl != NULL ? (size_t)(nl - line) + 1 : dlen - pos;
+
+		pos += len;
+		r = session_parse_line(hist, line, len, out_meta, bdir);
 		if (r < 0)
 			return r;
 	}
-	if (ferror(f))
-		return -EIO;
-
 	return 0;
 }
 

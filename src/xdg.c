@@ -12,6 +12,8 @@
 #include <unistd.h>
 
 #include "xdg.h"
+#include "banned.h"
+#include "xdg.h"
 
 char *
 xdg_config_path(const char *suffix)
