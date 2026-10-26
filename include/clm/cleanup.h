@@ -38,13 +38,6 @@ autofreev_fn(void *p)
 }
 
 static inline void
-autoclosefile_fn(FILE **fp)
-{
-	if (*fp != NULL)
-		fclose(*fp);
-}
-
-static inline void
 autoclosedir_fn(DIR **d)
 {
 	if (*d != NULL)
@@ -61,7 +54,6 @@ cJSON_Delete_fn(cJSON **obj)
 #define autofree __attribute__((cleanup(autofree_fn)))
 #define autofreev __attribute__((cleanup(autofreev_fn)))
 #define autoclose __attribute__((cleanup(autoclose_fn)))
-#define autoclosefile __attribute__((cleanup(autoclosefile_fn)))
 #define autoclosedir __attribute__((cleanup(autoclosedir_fn)))
 
 /*
