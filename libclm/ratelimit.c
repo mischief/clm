@@ -24,20 +24,40 @@ now_usec(void)
 static void
 refill(struct clm_ratelimit *rl)
 {
-	uint64_t now, elapsed, added;
+	uint64_t now, elapsed, added, used;
 
 	if (rl->rate == 0)
 		return;
 
 	now = now_usec();
 	elapsed = now - rl->last_usec;
-	rl->last_usec = now;
+	if (elapsed == 0)
+		return;
 
-	/* tokens += rate * elapsed / 1e6 */
-	added = rl->rate * elapsed / 1000000ULL;
-	rl->tokens += added;
-	if (rl->tokens > rl->burst)
+	/* rate * elapsed would overflow, or already dwarfs a full burst:
+	 * the bucket is full and the exact count no longer matters. */
+	if (elapsed >= UINT64_MAX / rl->rate) {
 		rl->tokens = rl->burst;
+		rl->last_usec = now;
+		return;
+	}
+
+	/* tokens += rate * elapsed / 1e6. Integer division drops the
+	 * sub-token remainder; advancing last_usec to now would discard that
+	 * time, so a limiter polled faster than one token interval would
+	 * never refill. Advance only by the time the whole tokens account
+	 * for, carrying the remainder forward. */
+	added = rl->rate * elapsed / 1000000ULL;
+	if (added == 0)
+		return; /* keep last_usec; let the remainder accumulate */
+	if (added >= rl->burst - rl->tokens) {
+		rl->tokens = rl->burst;
+		rl->last_usec = now; /* full: no fractional credit to carry */
+		return;
+	}
+	rl->tokens += added;
+	used = added * 1000000ULL / rl->rate;
+	rl->last_usec += used;
 }
 
 int
