@@ -19,6 +19,7 @@
 #include "clm/clm.h"
 #include "clm/history.h"
 #include "clm/host_uv.h"
+#include "clm/lua_plugin.h"
 #include "proc.h"
 
 #define AGENT_META "clm.agent"
@@ -41,6 +42,12 @@ struct cctx {
 	struct clm_host *post_host;
 	int in_loop; /* uv_run calls under way; uv_run must not nest */
 	TAILQ_HEAD(, lexec) execs; /* clm.exec calls still running */
+	/* Parsed config.lua + secrets.lua, so a script need not spell out a
+	 * url and key. Loaded once, lazily, from the path clm.config set or
+	 * the default location. cfg_tried guards a second attempt. */
+	struct clm_lua_cfg *cfg;
+	char *cfg_path;
+	bool cfg_tried;
 };
 
 static struct cctx *
@@ -230,7 +237,19 @@ struct lagent {
 	char *text;
 	struct wait waiter;
 	bool sync_wait;
+	bool want_json;  /* the current turn set a schema; decode its reply */
+	int last_finish; /* last clm_finish_reason, or -1 for none yet */
 };
+
+/* clm_finish_reason as a short string. */
+static const char *
+finish_name(int r)
+{
+	static const char *const n[] = {
+	    "stop", "length", "tool_calls", "content_filter", "other", "empty"};
+
+	return (unsigned)r < sizeof(n) / sizeof(n[0]) ? n[r] : "other";
+}
 
 /* Push the agent's store table, {opts, hooks, tools}, on L. */
 static void
@@ -339,6 +358,19 @@ cb_tool_result(const char *name, const char *content,
 }
 
 static void
+cb_finish(enum clm_finish_reason reason, void *user)
+{
+	struct lagent *la = user;
+	lua_State *mainL = la->c->L;
+
+	la->last_finish = (int)reason;
+	if (!push_cb(la, "on_finish"))
+		return;
+	lua_pushstring(mainL, finish_name((int)reason));
+	call_cb(mainL, "on_finish", 1);
+}
+
+static void
 cb_notice(const char *text, void *user)
 {
 	lua_State *mainL = ((struct lagent *)user)->c->L;
@@ -407,7 +439,18 @@ push_result(struct lagent *la)
 {
 	lua_State *mainL = la->c->L;
 
-	if (la->status == 0) {
+	if (la->status == 0 && la->want_json) {
+		cJSON *j = la->text != NULL ? cJSON_Parse(la->text) : NULL;
+
+		if (j != NULL) {
+			clm_lua_push_json_value(mainL, j);
+			cJSON_Delete(j);
+			lua_pushinteger(mainL, 0);
+		} else {
+			lua_pushnil(mainL);
+			lua_pushstring(mainL, "clm: reply was not valid JSON");
+		}
+	} else if (la->status == 0) {
 		lua_pushstring(mainL, la->text != NULL ? la->text : "");
 		lua_pushinteger(mainL, 0);
 	} else {
@@ -444,6 +487,7 @@ static const struct clm_callbacks callbacks = {
     .on_permission = cb_permission,
     .on_tool_result = cb_tool_result,
     .on_usage = cb_usage,
+    .on_finish_reason = cb_finish,
     .on_turn_done = cb_turn_done,
     .on_notice = cb_notice,
 };
@@ -476,6 +520,11 @@ turn_hook(const struct clm_turn_info *info, void *user)
 			if (info->text != NULL) {
 				lua_pushstring(mainL, info->text);
 				lua_setfield(mainL, -2, "text");
+			}
+			if (la->last_finish >= 0) {
+				lua_pushstring(
+				    mainL, finish_name(la->last_finish));
+				lua_setfield(mainL, -2, "stop_reason");
 			}
 		}
 		call_cb(mainL, ev, 1);
@@ -671,21 +720,104 @@ agent_close(struct lagent *la)
 	la->text = NULL;
 }
 
+/* Default config.lua path: $XDG_CONFIG_HOME/clm/config.lua or
+ * ~/.config/clm/config.lua. Returns a malloc'd string, or NULL. */
+static char *
+default_config_path(void)
+{
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	const char *home = getenv("HOME");
+	char *out = NULL;
+	int n = -1;
+
+	if (xdg != NULL && xdg[0] != '\0')
+		n = asprintf(&out, "%s/clm/config.lua", xdg);
+	else if (home != NULL && home[0] != '\0')
+		n = asprintf(&out, "%s/.config/clm/config.lua", home);
+	return n < 0 ? NULL : out;
+}
+
+/* The parsed config, loaded once on first use. NULL when no config.lua is
+ * found; a config.lua that fails to parse raises a Lua error. secrets.lua
+ * beside it loads automatically (see clm_lua_cfg_load). */
+static struct clm_lua_cfg *
+config_get(struct cctx *c, lua_State *L)
+{
+	char *err = NULL;
+
+	if (c->cfg_tried)
+		return c->cfg;
+	c->cfg_tried = true;
+	if (c->cfg_path == NULL)
+		c->cfg_path = default_config_path();
+	if (c->cfg_path == NULL)
+		return NULL;
+	c->cfg = clm_lua_cfg_load(c->cfg_path, &err);
+	if (c->cfg == NULL && err != NULL) {
+		lua_pushfstring(L, "clm: config.lua: %s", err);
+		free(err);
+		lua_error(L);
+	}
+	return c->cfg;
+}
+
+/* Split "provider/model-id" into its halves. *prov borrows the head (NUL
+ * at the slash is not written; length via *provlen), *model borrows the
+ * tail. A bare id (no slash) leaves *prov NULL and *model the whole spec. */
+static void
+split_spec(
+    const char *spec, const char **prov, size_t *provlen, const char **model)
+{
+	const char *slash = spec != NULL ? strchr(spec, '/') : NULL;
+
+	if (slash == NULL) {
+		*prov = NULL;
+		*provlen = 0;
+		*model = spec;
+	} else {
+		*prov = spec;
+		*provlen = (size_t)(slash - spec);
+		*model = slash + 1;
+	}
+}
+
+/* clm.config(path): use config.lua at path (secrets.lua beside it) instead
+ * of the default location. Resets any config already loaded. */
+static int
+l_config(lua_State *L)
+{
+	struct cctx *c = ctx_of(L);
+	const char *path = luaL_checkstring(L, 1);
+
+	if (c->cfg != NULL) {
+		clm_lua_cfg_free(c->cfg);
+		c->cfg = NULL;
+	}
+	free(c->cfg_path);
+	c->cfg_path = strdup(path);
+	c->cfg_tried = false;
+	return 0;
+}
+
 /* clm.agent{url=, model=, provider=, api_key=, system_prompt=, stream=,
- * effort=, compact_effort=, context_size=, max_iterations=,
- * tools={"shell",...}, permission="allow"|"deny"|fn, on_text=fn, ...} */
+ * effort=, compact_effort=, context_size=, max_iterations=, tools=, ...}.
+ * With no url, the connection resolves from config.lua: model is a
+ * "provider/model-id" spec (or config's top-level model), and url, api_key,
+ * wire kind, effort and rate limits come from config.providers[provider].
+ * Options given in the call override config. */
 static int
 l_agent(lua_State *L)
 {
 	struct lagent *la;
 	struct clm_cfg cfg = {0};
-	const char *url, *kind, *effort, *compact_effort;
+	const char *url, *kind, *effort, *compact_effort, *model_opt;
 	char endpoint[512];
 	int r;
 
 	luaL_checktype(L, 1, LUA_TTABLE);
 	la = lua_newuserdatauv(L, sizeof(*la), 1);
 	memset(la, 0, sizeof(*la));
+	la->last_finish = -1;
 	la->c = ctx_of(L);
 	luaL_setmetatable(L, AGENT_META);
 	lua_createtable(L, 0, 3);
@@ -702,25 +834,74 @@ l_agent(lua_State *L)
 	lua_pop(L, 1);
 
 	url = keep_str(la, L, 1, "url");
-	if (url == NULL)
-		return luaL_error(L, "clm.agent: url is required");
 	kind = keep_str(la, L, 1, "provider");
+	cfg.api_key = keep_str(la, L, 1, "api_key");
+	effort = keep_str(la, L, 1, "effort");
+	compact_effort = keep_str(la, L, 1, "compact_effort");
+	model_opt = keep_str(la, L, 1, "model");
+
+	/* No url: resolve the connection from config.lua. Options already set
+	 * above stand; anything still NULL comes from the provider entry. The
+	 * returned strings borrow the cfg, which outlives every agent. */
+	if (url == NULL) {
+		struct clm_lua_cfg *lcfg = config_get(la->c, L);
+		const char *prov, *model_id, *me;
+		size_t provlen;
+		char provbuf[128];
+
+		if (lcfg == NULL)
+			return luaL_error(
+			    L, "clm.agent: no url and no config.lua found");
+		if (model_opt == NULL)
+			model_opt = clm_lua_cfg_get_str(lcfg, "model");
+		split_spec(model_opt, &prov, &provlen, &model_id);
+		if (prov == NULL || provlen >= sizeof(provbuf))
+			return luaL_error(L,
+			    "clm.agent: model must be \"provider/model-id\" "
+			    "when no url is given");
+		memcpy(provbuf, prov, provlen);
+		provbuf[provlen] = '\0';
+		url = clm_lua_cfg_provider_str(lcfg, provbuf, "url");
+		if (url == NULL)
+			return luaL_error(L,
+			    "clm.agent: no provider \"%s\" in config.lua",
+			    provbuf);
+		if (kind == NULL)
+			kind = clm_lua_cfg_provider_str(lcfg, provbuf, "kind");
+		if (cfg.api_key == NULL)
+			cfg.api_key =
+			    clm_lua_cfg_provider_str(lcfg, provbuf, "api_key");
+		if (effort == NULL)
+			effort =
+			    clm_lua_cfg_provider_str(lcfg, provbuf, "effort");
+		if (compact_effort == NULL)
+			compact_effort = clm_lua_cfg_provider_str(
+			    lcfg, provbuf, "compact_effort");
+		me = clm_lua_cfg_provider_model_str(
+		    lcfg, provbuf, model_id, "effort");
+		if (me != NULL)
+			effort = me;
+		cfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(
+		    lcfg, provbuf, "rate_tokens_per_sec", 0);
+		cfg.rate_burst =
+		    clm_lua_cfg_provider_int(lcfg, provbuf, "rate_burst", 0);
+		cfg.context_size = clm_lua_cfg_provider_model_int(
+		    lcfg, provbuf, model_id, "context_size", 0);
+		model_opt = model_id;
+	}
 	cfg.provider = clm_provider_from_str(kind);
 	clm_provider_build_url(endpoint, sizeof(endpoint), url, cfg.provider);
 	cfg.base_url = la->nstrs < MAX_STRS
 	    ? (la->strs[la->nstrs++] = strdup(endpoint))
 	    : url;
-	cfg.model = keep_str(la, L, 1, "model");
-	cfg.api_key = keep_str(la, L, 1, "api_key");
+	cfg.model = model_opt;
 	if (cfg.api_key == NULL)
 		cfg.api_key = ""; /* a local server needs none */
 	cfg.system_prompt = keep_str(la, L, 1, "system_prompt");
-	effort = keep_str(la, L, 1, "effort");
-	compact_effort = keep_str(la, L, 1, "compact_effort");
 	lua_getfield(L, 1, "stream");
 	cfg.stream = lua_isnil(L, -1) ? true : lua_toboolean(L, -1);
 	lua_pop(L, 1);
-	cfg.context_size = opt_int(L, 1, "context_size", 0);
+	cfg.context_size = opt_int(L, 1, "context_size", cfg.context_size);
 	cfg.max_iterations = (size_t)opt_int(L, 1, "max_iterations", 0);
 
 	r = clm_host_uv_new(&la->c->loop, &la->host);
@@ -804,6 +985,31 @@ l_turn(lua_State *L)
 	const char *prompt = luaL_checkstring(L, 2);
 	int r;
 
+	/* Optional opts table. schema (a JSON Schema) constrains the reply
+	 * and makes turn return the decoded object in place of text. A turn
+	 * with no schema clears any a prior turn left set. */
+	la->want_json = false;
+	if (lua_istable(L, 3)) {
+		lua_getfield(L, 3, "schema");
+		if (lua_istable(L, -1)) {
+			cJSON *j = clm_lua_to_cjson(L, -1);
+			char *s = j != NULL ? cJSON_PrintUnformatted(j) : NULL;
+
+			cJSON_Delete(j);
+			if (s == NULL)
+				return luaL_error(L, "clm: bad schema");
+			r = clm_agent_set_response_schema(la->agent, s);
+			free(s);
+			if (r < 0)
+				return luaL_error(
+				    L, "clm: schema: %s", strerror(-r));
+			la->want_json = true;
+		}
+		lua_pop(L, 1);
+	}
+	if (!la->want_json)
+		(void)clm_agent_set_response_schema(la->agent, NULL);
+
 	if (la->busy) {
 		lua_pushnil(L);
 		lua_pushstring(L, "a turn is already running");
@@ -816,6 +1022,7 @@ l_turn(lua_State *L)
 		    "loop runs; call it from clm.run's function");
 	free(la->text);
 	la->text = NULL;
+	la->last_finish = -1;
 	la->busy = true;
 	r = clm_agent_submit(la->agent, prompt);
 	if (r < 0) {
@@ -985,6 +1192,20 @@ l_clear(lua_State *L)
 		return 2;
 	}
 	lua_pushboolean(L, 1);
+	return 1;
+}
+
+/* agent:stop_reason(): why the last turn's final response ended, as a
+ * string ("stop", "length", ...), or nil before any turn. */
+static int
+l_stop_reason(lua_State *L)
+{
+	struct lagent *la = check_agent(L, 1);
+
+	if (la->last_finish < 0)
+		lua_pushnil(L);
+	else
+		lua_pushstring(L, finish_name(la->last_finish));
 	return 1;
 }
 
@@ -1382,6 +1603,7 @@ static const luaL_Reg agent_methods[] = {
     {"history", l_history},
     {"clear", l_clear},
     {"state", l_state},
+    {"stop_reason", l_stop_reason},
     {"error", l_error},
     {"close", l_close},
     {NULL, NULL},
@@ -1389,6 +1611,7 @@ static const luaL_Reg agent_methods[] = {
 
 static const luaL_Reg module_fns[] = {
     {"agent", l_agent},
+    {"config", l_config},
     {"run", l_run},
     {"spawn", l_spawn},
     {"sleep", l_sleep},
@@ -1427,11 +1650,60 @@ ctx_gc(lua_State *L)
 		clm_host_uv_free(c->post_host);
 		c->post_host = NULL;
 	}
+	if (c->cfg != NULL) {
+		clm_lua_cfg_free(c->cfg);
+		c->cfg = NULL;
+	}
+	free(c->cfg_path);
+	c->cfg_path = NULL;
 	uv_walk(&c->loop, close_handle, NULL);
 	uv_run(&c->loop, UV_RUN_DEFAULT);
 	(void)uv_loop_close(&c->loop);
 	c->L = NULL;
 	return 0;
+}
+
+/*
+ * clm.complete, written in Lua over clm.agent + turn: one request, no
+ * history, no tools. Receives the module table as its vararg so it can
+ * reach clm.agent. Returns a result table (text or json, usage,
+ * stop_reason), or nil and an error. Runs inside clm.run like a turn.
+ */
+static const char complete_src[] =
+    "local M = ...\n"
+    "return function(opts)\n"
+    "  assert(type(opts) == 'table', 'clm.complete: expected a table')\n"
+    "  assert(opts.prompt ~= nil, 'clm.complete: prompt is required')\n"
+    "  local usage\n"
+    "  local a = M.agent{\n"
+    "    url = opts.url, model = opts.model, provider = opts.provider,\n"
+    "    api_key = opts.api_key, effort = opts.effort,\n"
+    "    system_prompt = opts.system, stream = opts.stream == true,\n"
+    "    builtins = false, max_iterations = 1,\n"
+    "    on_usage = function(u) usage = u end,\n"
+    "  }\n"
+    "  local turn_opts = opts.schema and { schema = opts.schema } or nil\n"
+    "  local val, info = a:turn(opts.prompt, turn_opts)\n"
+    "  if val == nil then a:close(); return nil, info end\n"
+    "  local r = { usage = usage, stop_reason = a:stop_reason() }\n"
+    "  if opts.schema then r.json = val else r.text = val end\n"
+    "  a:close()\n"
+    "  return r\n"
+    "end\n";
+
+/* Install clm.complete onto the module table at the top of the stack. */
+static void
+install_complete(lua_State *L)
+{
+	if (luaL_loadstring(L, complete_src) != LUA_OK) {
+		lua_pop(L, 1);
+		return;
+	}
+	lua_pushvalue(L, -2);
+	if (lua_pcall(L, 1, 1, 0) != LUA_OK)
+		lua_pop(L, 1);
+	else
+		lua_setfield(L, -2, "complete");
 }
 
 int luaopen_clm(lua_State *L);
@@ -1473,5 +1745,6 @@ luaopen_clm(lua_State *L)
 	}
 	lua_pop(L, 1);
 	luaL_newlib(L, module_fns);
+	install_complete(L);
 	return 1;
 }

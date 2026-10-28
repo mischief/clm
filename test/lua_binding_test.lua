@@ -144,6 +144,64 @@ clm.run(function()
 end)
 check(not pcall(clm.run, function() error("boom") end), "clm.run raises")
 
+-- stop_reason reports why the last turn ended.
+local sr = agent{ stream = false }
+clm.run(function() sr:turn("hi") end)
+check(sr:stop_reason() == "stop", "stop_reason after a turn")
+sr:close()
+
+-- A schema turn decodes the reply as JSON; a non-JSON reply fails cleanly
+-- (the mock returns markdown, not JSON).
+local sc = agent{ stream = false }
+clm.run(function()
+    local obj, err = sc:turn("hi", { schema = { type = "object" } })
+    check(obj == nil and type(err) == "string",
+        "a schema turn on a non-JSON reply returns nil and why")
+    local text = sc:turn("hi")
+    check(type(text) == "string", "a plain turn after a schema turn returns text")
+end)
+sc:close()
+
+-- clm.complete runs one request and returns text, usage and stop_reason.
+clm.run(function()
+    local r = clm.complete{ url = url, model = "mock", prompt = "hi" }
+    check(r ~= nil and type(r.text) == "string" and #r.text > 0,
+        "clm.complete returns the text")
+    check(r.stop_reason == "stop", "clm.complete reports stop_reason")
+    check(r.usage and r.usage.prompt == 11, "clm.complete reports usage")
+    local none, cerr = clm.complete{
+        url = "http://127.0.0.1:1/v1", model = "m", prompt = "x" }
+    check(none == nil and type(cerr) == "string",
+        "clm.complete failure returns nil and why")
+end)
+
+-- A url-less agent resolves its connection from config.lua + secrets.lua.
+do
+    local dir
+    clm.run(function()
+        local _, out = clm.exec("mktemp -d")
+        dir = (out:gsub("%s+$", ""))
+    end)
+    local function spit(p, s)
+        local f = assert(io.open(p, "w"))
+        f:write(s)
+        f:close()
+    end
+    spit(dir .. "/secrets.lua", "return { k = 'sk-test' }\n")
+    spit(dir .. "/config.lua", string.format("return { model = 'mockp/mock', "
+        .. "providers = { mockp = { url = %q, kind = 'openai', "
+        .. "api_key = clm.secrets.k } } }\n", url))
+    clm.config(dir .. "/config.lua")
+    local cc = clm.agent{ stream = false } -- no url, no model: all from config
+    clm.run(function()
+        local text, st = cc:turn("hi")
+        check(st == 0 and #text > 0,
+            "an agent resolved from config.lua runs a turn")
+    end)
+    cc:close()
+    clm.run(function() clm.exec("rm -rf " .. dir) end)
+end
+
 -- An agent its own callbacks and tools capture is still collected.
 local weak = setmetatable({}, { __mode = "v" })
 do

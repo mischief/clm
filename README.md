@@ -15,6 +15,8 @@ ISC License — see [LICENSE](LICENSE)
   [`clm-config(5)`](docs/clm-config.md)'s `kind` field
 - Built-in tools: shell exec, file read/write
 - Lua 5.4 plugin system for custom tools (sandboxed, async HTTP)
+- Lua scripts can drive agents from outside the program with
+  `require("clm")`; see [`lua/README.md`](lua/README.md)
 - [MCP](https://modelcontextprotocol.io) client: pull in tools from external
   stdio or HTTP servers
 - Agent profiles: named personas (system prompt + tool set) under

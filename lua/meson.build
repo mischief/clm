@@ -6,7 +6,7 @@ if have_lua
     files('clm_lua.c', '../libclmlua/lua_json.c'),
     name_prefix: '',
     c_args: clm_hardening_args,
-    dependencies: [lua_dep, clm_dep, clmuv_dep, cjson_dep],
+    dependencies: [lua_dep, clm_dep, clmlua_dep, clmuv_dep, cjson_dep],
     include_directories: [clm_inc, include_directories('..')],
     install_rpath: clm_lua_rpath,
     install: true,

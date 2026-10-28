@@ -195,9 +195,9 @@ test('md', test_md, protocol: 'tap', suite: 'md')
 # were never built.
 if have_lua
   lua_binding = executable('lua_binding',
-    files('lua_binding.c', 'tui/mock_server.c', '../lua/clm_lua.c',
-      '../libclmlua/lua_json.c'),
-    dependencies: [dependency('threads'), lua_dep, clmuv_deps, clm_dep, clmuv_dep],
+    files('lua_binding.c', 'tui/mock_server.c', '../lua/clm_lua.c'),
+    dependencies: [dependency('threads'), lua_dep, clmuv_deps, clm_dep,
+      clmlua_dep, clmuv_dep],
     include_directories: [include_directories('tui'),
       include_directories('..'), include_directories('../include')],
     c_args: test_hardening_args,

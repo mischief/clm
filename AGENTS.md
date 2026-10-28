@@ -17,6 +17,9 @@ read/write) and integrates with OpenAI-compatible chat completion APIs.
 - Meson build system with hardening flags and UBSan
 - Shared library (`libclm`) with versioned symbol map and pkg-config
 - CLI binary (`clm`) with interactive REPL and oneshot mode
+- Lua module (`require("clm")`) to drive agents from host scripts, with
+  connection and credentials resolved from the same `config.lua` /
+  `secrets.lua` the CLI uses; see [lua/README.md](lua/README.md)
 
 ### Build
 

@@ -32,10 +32,32 @@ clm.run(function()
 end)
 ```
 
+## Config and credentials
+
+With no `url`, an agent resolves its connection from the same `config.lua`
+and `secrets.lua` the `clm` command uses, so a script never spells out a
+URL or key:
+
+```lua
+local a = clm.agent{ model = "anthropic/claude-haiku-5-5" }
+```
+
+`model` is a `provider/model-id` spec: the provider half names an entry in
+`config.providers`, which supplies the URL, API key, wire kind, effort and
+rate limits. With no `model` at all, config's top-level `model` is used.
+Options passed in the call override the config (`api_key`, `provider`,
+`effort`, and so on). Pass a `url` to skip config entirely and configure the
+agent by hand.
+
+- `clm.config(path)` reads `config.lua` at `path` (and `secrets.lua` beside
+  it) instead of the default `$XDG_CONFIG_HOME/clm/config.lua` or
+  `~/.config/clm/config.lua`. Call it before making an agent.
+
 ## Module
 
 - `clm.agent(opts)` makes an agent. `opts`:
-  - `url` (required): the base URL, such as `http://host/v1`.
+  - `url`: the base URL, such as `http://host/v1`. Omit it to resolve the
+    connection from config (see above).
   - `provider`: `openai` (default), `openai-responses`, `anthropic` or
     `ollama`.
   - `model`, `api_key`, `system_prompt`, `effort`, `context_size`,
@@ -54,8 +76,9 @@ end)
     still denies a call that a `pre_tool` hook asked about.
   - Callbacks: `on_text(s)`, `on_reasoning(s)`,
     `on_tool_begin(name, args)`, `on_tool(name, output, how)` where `how`
-    is `ok`, `failed` or `timedout`, `on_notice(s)`, and `on_usage(t)`
-    with `prompt`, `completion`, `cached` and `cache_written`.
+    is `ok`, `failed` or `timedout`, `on_notice(s)`, `on_usage(t)`
+    with `prompt`, `completion`, `cached` and `cache_written`, and
+    `on_finish(reason)` with the finish reason string.
 - `clm.run(fn, ...)` runs `fn` in a coroutine and drives the event loop
   until `fn` returns. An error in `fn` is raised again.
 - `clm.spawn(fn, ...)` starts `fn` in its own coroutine. Its errors are
@@ -75,12 +98,22 @@ end)
   `CLM_SHELL_KILL_GRACE_MS`). Commands still running when the Lua state
   closes are killed. Plugins cannot call it.
 - `clm.step()` runs ready work once, without waiting.
+- `clm.complete(opts)` runs one request with no agent loop, no tools and
+  no history, for batch and structured-output jobs. `opts`: `prompt`
+  (required), `model`/`url`/`provider`/`api_key`/`effort` (resolved from
+  config like `clm.agent`), `system`, `schema` and `stream` (default
+  false). Returns a table with `text` (or `json` when `schema` is set),
+  `usage` and `stop_reason`, or nil and a message. Call it inside
+  `clm.run`, so several can run at once with `clm.spawn`.
 
 ## Agent
 
-- `a:turn(prompt)` returns `text, 0`, or `nil, err, status`. Inside a
-  coroutine it waits there while other coroutines run; outside one it
-  runs the loop until the turn ends.
+- `a:turn(prompt[, opts])` returns `text, 0`, or `nil, err, status`.
+  Inside a coroutine it waits there while other coroutines run; outside
+  one it runs the loop until the turn ends. `opts.schema` is a JSON
+  Schema (a Lua table) the reply must match; the turn then returns the
+  decoded object in place of `text`, or `nil` and a message if the reply
+  is not valid JSON. The schema applies to that turn only.
 - `a:tool{name, description, params, invoke, no_prompt, timeout_ms}`.
   `invoke(args)` runs in a coroutine, so it may call `clm.sleep` or
   another agent's `turn`. Its return value is the result; an error fails
@@ -89,12 +122,16 @@ end)
   returns nil, or a table with `allow`, `deny` or `ask` (a reason) and
   `args` (new arguments). It runs in a coroutine. One per agent.
 - `a:on("turn_start", fn)` with `info.prompt`, and `a:on("turn_end", fn)`
-  with `info.status` and `info.text`. These run as plain calls.
+  with `info.status`, `info.text` and `info.stop_reason`. These run as
+  plain calls.
 - `a:prompt_set(key, text)` sets a system prompt part; nil removes it.
 - `a:notify(text)` delivers an event: it starts a turn when the agent is
   idle, or joins the running one.
 - `a:clear()` starts a fresh conversation with the same settings. It
   fails while a turn runs.
+- `a:stop_reason()` is why the last turn's final response ended, as a
+  string (`"stop"`, `"length"`, `"tool_calls"`, ...), or nil before any
+  turn.
 - `a:cancel()`, `a:history()` (the messages as tables), `a:state()`,
   `a:error()`, `a:close()`. Closing ends a turn that waits on the agent.
 
