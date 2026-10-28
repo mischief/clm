@@ -198,6 +198,28 @@ openai_build_request(
 			cJSON_AddItemToObject(req, "reasoning_effort", je);
 	}
 
+	/* Structured output: constrain the reply to a JSON Schema. Backends
+	 * without the feature ignore the field. */
+	if (llm->response_schema != NULL) {
+		cJSON *schema = cJSON_Parse(llm->response_schema);
+		cJSON *fmt = cJSON_CreateObject();
+		cJSON *js = cJSON_CreateObject();
+
+		if (schema != NULL && fmt != NULL && js != NULL) {
+			cJSON_AddItemToObject(
+			    js, "name", cJSON_CreateString("response"));
+			cJSON_AddItemToObject(js, "schema", schema);
+			cJSON_AddItemToObject(
+			    fmt, "type", cJSON_CreateString("json_schema"));
+			cJSON_AddItemToObject(fmt, "json_schema", js);
+			cJSON_AddItemToObject(req, "response_format", fmt);
+		} else {
+			cJSON_Delete(schema);
+			cJSON_Delete(fmt);
+			cJSON_Delete(js);
+		}
+	}
+
 	/* Ask the server to include token usage in the final stream chunk. */
 	if (stream) {
 		cJSON *so = cJSON_CreateObject();

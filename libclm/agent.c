@@ -3044,6 +3044,13 @@ clm_agent_set_effort(struct clm_agent *agent, const char *effort)
 	return clm_llm_set_effort(agent->llm, effort);
 }
 
+int
+clm_agent_set_response_schema(struct clm_agent *agent, const char *schema)
+{
+	ASSERT_RETURN(agent != NULL && agent->llm != NULL, -EINVAL);
+	return clm_llm_set_response_schema(agent->llm, schema);
+}
+
 const char *
 clm_agent_get_effort(const struct clm_agent *agent)
 {

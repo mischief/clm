@@ -683,6 +683,15 @@ CLM_API int clm_agent_set_effort(struct clm_agent *agent, const char *effort);
 CLM_API const char *clm_agent_get_effort(const struct clm_agent *agent);
 
 /*
+ * Constrain replies to a JSON Schema (structured output). `schema` is the
+ * schema object as a JSON string, or NULL to clear it, and applies to every
+ * turn until changed. Sent as response_format (OpenAI) or
+ * output_config.format (Anthropic). Returns 0, -EINVAL, or -ENOMEM.
+ */
+CLM_API int clm_agent_set_response_schema(
+    struct clm_agent *agent, const char *schema);
+
+/*
  * Set the effort of compaction requests. NULL picks it: "none" when the
  * session sends an effort, except on Anthropic. "session" keeps the session
  * effort. Returns 0, -EINVAL, or -ENOMEM.

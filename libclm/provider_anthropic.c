@@ -665,15 +665,33 @@ anthropic_build_request(
 	    req, "max_tokens", cJSON_CreateNumber(CLM_ANTHROPIC_MAX_TOKENS));
 	cJSON_AddItemToObject(req, "stream", cJSON_CreateBool(stream));
 
-	/* Reasoning effort rides in output_config here, and only when the
-	 * caller asked for one: omitting it leaves the model's own default
-	 * (currently "high"). */
-	if (llm->effort != NULL) {
+	/* Reasoning effort and a structured-output schema both ride in
+	 * output_config. Effort is sent only when asked for; omitting it
+	 * leaves the model's own default (currently "high"). */
+	if (llm->effort != NULL || llm->response_schema != NULL) {
 		cJSON *oc = cJSON_CreateObject();
 
 		if (oc != NULL) {
-			cJSON_AddItemToObject(
-			    oc, "effort", cJSON_CreateString(llm->effort));
+			if (llm->effort != NULL)
+				cJSON_AddItemToObject(oc, "effort",
+				    cJSON_CreateString(llm->effort));
+			if (llm->response_schema != NULL) {
+				cJSON *schema =
+				    cJSON_Parse(llm->response_schema);
+				cJSON *fmt = cJSON_CreateObject();
+
+				if (schema != NULL && fmt != NULL) {
+					cJSON_AddItemToObject(fmt, "type",
+					    cJSON_CreateString("json_schema"));
+					cJSON_AddItemToObject(
+					    fmt, "schema", schema);
+					cJSON_AddItemToObject(
+					    oc, "format", fmt);
+				} else {
+					cJSON_Delete(schema);
+					cJSON_Delete(fmt);
+				}
+			}
 			cJSON_AddItemToObject(req, "output_config", oc);
 		}
 	}

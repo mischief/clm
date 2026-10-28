@@ -70,6 +70,22 @@ clm_llm_set_effort(struct clm_llm *llm, const char *effort)
 	return 0;
 }
 
+int
+clm_llm_set_response_schema(struct clm_llm *llm, const char *schema)
+{
+	char *dup = NULL;
+
+	ASSERT_RETURN(llm != NULL, -EINVAL);
+	if (schema != NULL && schema[0] != '\0') {
+		dup = strdup(schema);
+		if (dup == NULL)
+			return -ENOMEM;
+	}
+	free(llm->response_schema);
+	llm->response_schema = dup;
+	return 0;
+}
+
 void
 clm_llm_free(struct clm_llm *llm)
 {
@@ -79,5 +95,6 @@ clm_llm_free(struct clm_llm *llm)
 	free(llm->base_url);
 	free(llm->model);
 	free(llm->effort);
+	free(llm->response_schema);
 	free(llm);
 }

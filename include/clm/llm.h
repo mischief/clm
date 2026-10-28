@@ -23,6 +23,11 @@ struct clm_llm {
 	/* Responses API only: send the leading system prompt as a developer
 	 * message with an explicit cache breakpoint at its end. */
 	bool cache_system;
+	/* A JSON Schema (the schema object itself, as a JSON string) the
+	 * reply must match, or NULL. Sent as response_format (OpenAI) or
+	 * output_config.format (Anthropic). Set through
+	 * clm_llm_set_response_schema(). */
+	char *response_schema;
 };
 
 int clm_llm_new(struct clm_llm **ret, enum clm_provider provider,
@@ -32,5 +37,9 @@ void clm_llm_free(struct clm_llm *llm);
 
 /* Replace llm->effort with a copy of `effort` (NULL clears it). */
 int clm_llm_set_effort(struct clm_llm *llm, const char *effort);
+
+/* Replace llm->response_schema with a copy of `schema` (NULL clears it).
+ * `schema` is the JSON Schema object as a JSON string. */
+int clm_llm_set_response_schema(struct clm_llm *llm, const char *schema);
 
 #endif /* CLM_LLM_H */
