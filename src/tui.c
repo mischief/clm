@@ -2984,6 +2984,17 @@ set_current_provider(struct ui *u, const char *provider)
 	u->provider_name = dup;
 }
 
+/* Record a live model/provider switch in the session log, so a resume and
+ * the session list show the model in use, not just the startup one. Call
+ * it after set_current_model/set_current_provider update the display. */
+static void
+note_model_switch(struct ui *u)
+{
+	if (u->session != NULL)
+		(void)clm_session_log_model(
+		    u->session, u->model, u->provider_name);
+}
+
 static int
 strp_cmp(const void *a, const void *b)
 {
@@ -3396,6 +3407,7 @@ cmd_agent(struct ui *u, const char *arg)
 				u->agent_name = strdup(arg);
 				set_current_model(u, newcfg.model);
 				set_current_provider(u, prov);
+				note_model_switch(u);
 				/* New agent, empty history: the old
 				 * reading describes a conversation this
 				 * agent never saw. */
@@ -3475,6 +3487,7 @@ cmd_model(struct ui *u, const char *arg)
 				    clm_agent_set_provider(u->agent, &litcfg);
 				if (rc == 0) {
 					set_current_model(u, litcfg.model);
+					note_model_switch(u);
 					(void)snprintf(msg, sizeof(msg),
 					    "\n[switched to model: %s "
 					    "(literal, not in config.lua)]\n",
@@ -3525,6 +3538,7 @@ cmd_model(struct ui *u, const char *arg)
 			if (rc == 0) {
 				set_current_model(u, newcfg.model);
 				set_current_provider(u, spec_provider);
+				note_model_switch(u);
 				char msg[128];
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to model: %s]\n", arg);
@@ -3590,6 +3604,7 @@ cmd_provider(struct ui *u, const char *arg)
 			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {
 				set_current_provider(u, arg);
+				note_model_switch(u);
 				char msg[128];
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to provider: %s]\n", arg);
