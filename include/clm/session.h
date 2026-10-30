@@ -84,6 +84,15 @@ CLM_API int clm_session_append(struct clm_session *s,
     const struct clm_message *m, const struct clm_compressor *cz);
 
 /*
+ * Record a live model/provider switch as a "model" line. The meta line
+ * keeps the model the session started with; clm_session_load and the
+ * listing report the last switch instead, so a resume shows the model
+ * actually in use. model or provider_name may be NULL. 0 or negative errno.
+ */
+CLM_API int clm_session_log_model(
+    struct clm_session *s, const char *model, const char *provider_name);
+
+/*
  * Replace the log with `h`, keeping the original meta line. Written to a
  * temp file and renamed, so a crash leaves the old log or the new one.
  * For use after a compaction, which an append-only log cannot represent.

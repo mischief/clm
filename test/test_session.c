@@ -198,6 +198,77 @@ test_session_file_roundtrip(const char *dir)
 	clm_history_free(&out);
 }
 
+/* A model switch is recorded, reported by load over the meta's origin, and
+ * kept across a compaction (rewrite). */
+static void
+test_model_switch(const char *dir)
+{
+	struct clm_session *s = NULL;
+	struct clm_history h, out;
+	struct clm_message *m;
+	cJSON *meta = NULL;
+	const char *mm, *pp;
+	char id[128];
+
+	clm_history_init(&h);
+	clm_history_init(&out);
+	fill_history(&h);
+
+	CHECK(
+	    clm_session_create(dir, "start-model", "start-prov", NULL, &s) == 0,
+	    "switch: create");
+	TAILQ_FOREACH(m, &h, entries)
+	{
+		if (m->role == CLM_ROLE_SYSTEM)
+			continue;
+		CHECK(clm_session_append(s, m, NULL) == 0, "switch: append");
+	}
+	CHECK(clm_session_log_model(s, "switched-model", "switched-prov") == 0,
+	    "switch: log model");
+	(void)snprintf(id, sizeof(id), "%s", clm_session_id(s));
+	clm_session_free(s);
+
+	CHECK(clm_session_load(dir, id, &out, &meta) == 0, "switch: load");
+	mm = meta != NULL ? cJSON_GetStringValue(
+	                        cJSON_GetObjectItemCaseSensitive(meta, "model"))
+	                  : NULL;
+	pp = meta != NULL
+	    ? cJSON_GetStringValue(
+	          cJSON_GetObjectItemCaseSensitive(meta, "provider"))
+	    : NULL;
+	CHECK(mm != NULL && strcmp(mm, "switched-model") == 0,
+	    "switch: load reports the switched model");
+	CHECK(pp != NULL && strcmp(pp, "switched-prov") == 0,
+	    "switch: load reports the switched provider");
+	cJSON_Delete(meta);
+	meta = NULL;
+
+	/* A compaction keeps the switch even with no live switch this run:
+	 * the rewrite reads the last model record from the old log. */
+	s = NULL;
+	CHECK(clm_session_open(dir, id, &s) == 0, "switch: reopen");
+	CHECK(clm_session_rewrite(s, &out, NULL) == 0, "switch: rewrite");
+	clm_session_free(s);
+	clm_history_free(&out);
+
+	clm_history_init(&out);
+	CHECK(clm_session_load(dir, id, &out, &meta) == 0,
+	    "switch: load after rewrite");
+	mm = meta != NULL ? cJSON_GetStringValue(
+	                        cJSON_GetObjectItemCaseSensitive(meta, "model"))
+	                  : NULL;
+	CHECK(mm != NULL && strcmp(mm, "switched-model") == 0,
+	    "switch: model survives compaction");
+	cJSON_Delete(meta);
+
+	s = NULL;
+	CHECK(clm_session_open(dir, id, &s) == 0, "switch: reopen to discard");
+	CHECK(clm_session_discard(s) == 0, "switch: discard");
+
+	clm_history_free(&h);
+	clm_history_free(&out);
+}
+
 static void
 append_raw(const char *dir, const char *id, const char *bytes)
 {
@@ -941,6 +1012,7 @@ test_session_suite(void *arg)
 	test_message_roundtrip();
 	test_from_json_rejects_garbage();
 	test_session_file_roundtrip(dir);
+	test_model_switch(dir);
 	test_crash_tolerance(dir);
 	test_dangling_tool_call_repair(dir);
 	test_id_validation(dir);

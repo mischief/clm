@@ -29,6 +29,8 @@ struct clm_session {
 	char *path;
 	bool has_msgs;        /* a user/assistant message exists, ever */
 	uint64_t prompt_hash; /* of the last prompt record; 0 if none */
+	char *cur_model;      /* last model switch, re-emitted on rewrite */
+	char *cur_provider;
 };
 
 static uint64_t last_prompt_hash(const char *path);
@@ -704,6 +706,44 @@ last_prompt_hash(const char *path)
 	return h;
 }
 
+/* The model and provider of the last "model" record in the file, each
+ * malloc'd or left NULL. Lets a rewrite keep a switch read from a resumed
+ * log, not only one made live this run. */
+static void
+last_model_line(const char *path, char **model, char **provider)
+{
+	autofree char *data = NULL;
+	char *line, *nl;
+
+	*model = NULL;
+	*provider = NULL;
+	if (clm_read_file(path, &data, NULL) != 0)
+		return;
+	for (line = data; *line != '\0'; line = nl + 1) {
+		json_cleanup cJSON *obj = NULL;
+		const char *type, *m, *p;
+
+		nl = strchr(line, '\n');
+		if (nl != NULL)
+			*nl = '\0';
+		obj = cJSON_Parse(line);
+		type = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(obj, "type"));
+		if (type != NULL && strcmp(type, "model") == 0) {
+			m = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(obj, "model"));
+			p = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(obj, "provider"));
+			free(*model);
+			free(*provider);
+			*model = m != NULL ? strdup(m) : NULL;
+			*provider = p != NULL ? strdup(p) : NULL;
+		}
+		if (nl == NULL)
+			break;
+	}
+}
+
 int
 clm_session_append(struct clm_session *s, const struct clm_message *m,
     const struct clm_compressor *cz)
@@ -736,6 +776,44 @@ clm_session_append(struct clm_session *s, const struct clm_message *m,
 
 	if (m->role == CLM_ROLE_USER || m->role == CLM_ROLE_ASSISTANT)
 		s->has_msgs = true;
+	return 0;
+}
+
+/* Write one "model" record to fd. Shared by the live log and a rewrite. */
+static int
+write_model_line(int fd, const char *model, const char *provider_name)
+{
+	json_cleanup cJSON *obj = cJSON_CreateObject();
+
+	if (obj == NULL ||
+	    cJSON_AddStringToObject(obj, "type", "model") == NULL ||
+	    cJSON_AddNumberToObject(obj, "ts", (double)time(NULL)) == NULL)
+		return -ENOMEM;
+	if (model != NULL &&
+	    cJSON_AddStringToObject(obj, "model", model) == NULL)
+		return -ENOMEM;
+	if (provider_name != NULL &&
+	    cJSON_AddStringToObject(obj, "provider", provider_name) == NULL)
+		return -ENOMEM;
+	return write_line(fd, obj);
+}
+
+int
+clm_session_log_model(
+    struct clm_session *s, const char *model, const char *provider_name)
+{
+	int r;
+
+	ASSERT_RETURN(s != NULL, -EINVAL);
+	r = write_model_line(s->fd, model, provider_name);
+	if (r < 0)
+		return r;
+	/* Remembered so a rewrite re-emits it: compaction keeps only the
+	 * meta, which still names the model the session started with. */
+	free(s->cur_model);
+	free(s->cur_provider);
+	s->cur_model = model != NULL ? strdup(model) : NULL;
+	s->cur_provider = provider_name != NULL ? strdup(provider_name) : NULL;
 	return 0;
 }
 
@@ -784,6 +862,22 @@ clm_session_rewrite(struct clm_session *s, const struct clm_history *h,
 	if (dprintf(fd, "%s\n", meta) < 0) {
 		r = -EIO;
 		goto fail;
+	}
+	/* Keep the active model across the rewrite; the meta is the origin.
+	 * Prefer this run's switch, else the last one in the log being
+	 * rewritten, so a resumed session keeps its model too. */
+	{
+		autofree char *lm = NULL, *lp = NULL;
+		const char *em = s->cur_model, *ep = s->cur_provider;
+
+		if (em == NULL && ep == NULL) {
+			last_model_line(s->path, &lm, &lp);
+			em = lm;
+			ep = lp;
+		}
+		if ((em != NULL || ep != NULL) &&
+		    (r = write_model_line(fd, em, ep)) < 0)
+			goto fail;
 	}
 	TAILQ_FOREACH(m, h, entries)
 	{
@@ -957,6 +1051,8 @@ clm_session_free(struct clm_session *s)
 		close(s->fd);
 	free(s->id);
 	free(s->path);
+	free(s->cur_model);
+	free(s->cur_provider);
 	free(s);
 }
 
@@ -1069,6 +1165,25 @@ session_parse_line(struct clm_history *hist, const char *line, size_t len,
 		/* A malformed message line is skipped like any other bad
 		 * line; only allocation failure is fatal. */
 		return r == -ENOMEM ? -ENOMEM : 0;
+	}
+
+	/* A model switch updates the meta the caller reads, so the last
+	 * model used wins over the one the session started with. */
+	if (strcmp(type, "model") == 0 && out_meta != NULL &&
+	    *out_meta != NULL) {
+		static const char *const keys[] = {"model", "provider"};
+
+		for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+			const char *v = cJSON_GetStringValue(
+			    cJSON_GetObjectItemCaseSensitive(obj, keys[i]));
+
+			if (v == NULL)
+				continue;
+			cJSON_DeleteItemFromObjectCaseSensitive(
+			    *out_meta, keys[i]);
+			(void)cJSON_AddStringToObject(*out_meta, keys[i], v);
+		}
+		return 0;
 	}
 
 	return 0; /* unknown type: forward compatibility */
