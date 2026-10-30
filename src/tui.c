@@ -46,6 +46,7 @@
 #include "sysinfo.h"
 #include "xdg.h"
 #include "fileio.h"
+#include "proc.h"
 #include "banned.h"
 
 /*
@@ -183,7 +184,8 @@ ui_set_state(struct ui *u, enum clm_agent_state st)
 }
 
 static void drain_steering_queue(struct ui *u); /* injects at decision point */
-static void enqueue_steering(struct ui *u, const char *prompt);
+static void enqueue_steering(
+    struct ui *u, const char *prompt, const char *prefix);
 static bool do_submit(struct ui *u, const char *prompt, bool echo);
 static void session_after_compact(struct ui *u);
 
@@ -2736,8 +2738,8 @@ draw_transcript(struct ui *u)
 		char line[600];
 
 		rseg_push(u, seg_attr(u, ST_USER), "\nyou> ", 6);
-		rseg_push(u, seg_attr(u, ST_USER), u->steering_queue[i],
-		    strlen(u->steering_queue[i]));
+		rseg_push(u, seg_attr(u, ST_USER), u->steering_queue[i].text,
+		    strlen(u->steering_queue[i].text));
 		(void)snprintf(line, sizeof(line), "  (queued)\n");
 		rseg_push(u, seg_attr(u, ST_META), line, strlen(line));
 	}
@@ -2861,23 +2863,31 @@ do_submit(struct ui *u, const char *prompt, bool echo)
 }
 
 static void
-enqueue_steering(struct ui *u, const char *prompt)
+enqueue_steering(struct ui *u, const char *prompt, const char *prefix)
 {
 	char *dup = strdup(prompt);
-	if (dup == NULL)
+	char *pfx = prefix != NULL ? strdup(prefix) : NULL;
+
+	if (dup == NULL || (prefix != NULL && pfx == NULL)) {
+		free(dup);
+		free(pfx);
 		return;
+	}
 	if (u->steering_nqueue == u->steering_cap) {
 		size_t ncap = u->steering_cap ? u->steering_cap * 2 : 8;
-		char **p = (char **)realloc(
-		    (void *)u->steering_queue, ncap * sizeof(*p));
+		struct steering_item *p =
+		    realloc(u->steering_queue, ncap * sizeof(*p));
 		if (p == NULL) {
 			free(dup);
+			free(pfx);
 			return;
 		}
 		u->steering_queue = p;
 		u->steering_cap = ncap;
 	}
-	u->steering_queue[u->steering_nqueue++] = dup;
+	u->steering_queue[u->steering_nqueue].text = dup;
+	u->steering_queue[u->steering_nqueue].prefix = pfx;
+	u->steering_nqueue++;
 	/* Don't push into the transcript source here: a turn is in flight and
 	 * streaming into the same segs array, so anything appended now would
 	 * land wherever the stream happens to be, not at the end of the
@@ -2902,24 +2912,35 @@ drain_steering_queue(struct ui *u)
 static void
 drain_steering_one(struct ui *u)
 {
-	char *prompt;
+	struct steering_item item;
+	char *send;
 	enum clm_agent_state prev_state;
 	int r;
 
 	if (u->steering_nqueue == 0)
 		return;
 	/* Idle or mid-turn: clm_agent_notify below handles both. */
-	prompt = u->steering_queue[0];
+	item = u->steering_queue[0];
 	memmove((void *)u->steering_queue, (void *)(u->steering_queue + 1),
 	    (u->steering_nqueue - 1) * sizeof(*u->steering_queue));
 	u->steering_nqueue--;
+
+	/* A "! <cmd>" result rides ahead of the prompt to the model, but the
+	 * transcript already showed it, so echo only the typed text. */
+	send = item.text;
+	if (item.prefix != NULL &&
+	    asprintf(&send, "%s\n%s", item.prefix, item.text) < 0)
+		send = item.text;
+
 	/* Render exactly like any other submitted prompt: no separate
 	 * "[steering: ...]" treatment, so the transcript doesn't distinguish
 	 * a mid-turn nudge from a normal turn-start prompt once it lands. */
 	ui_push(u, ST_USER, "\nyou> ");
-	ui_push(u, ST_USER, prompt);
+	ui_push(u, ST_USER, item.text);
 	ui_push(u, ST_USER, "\n");
-	echo_note(u, prompt);
+	/* echo_note keys on exact content, so record what actually lands in
+	 * history (the prefixed text) to keep cb_message from re-showing it. */
+	echo_note(u, send);
 
 	/*
 	 * clm_agent_notify(), not clm_agent_submit(): two of the three
@@ -2934,7 +2955,7 @@ drain_steering_one(struct ui *u)
 	 * (THINKING->COMPLETE), where the agent is actually free.
 	 */
 	prev_state = clm_agent_get_state(u->agent);
-	r = clm_agent_notify(u->agent, prompt);
+	r = clm_agent_notify(u->agent, send);
 	if (r < 0) {
 		ui_push(u, ST_ERROR, "\nerror: ");
 		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->agent));
@@ -2946,7 +2967,10 @@ drain_steering_one(struct ui *u)
 		u->usage[0] = '\0';
 		u->busy = true;
 	}
-	free(prompt);
+	if (send != item.text)
+		free(send);
+	free(item.text);
+	free(item.prefix);
 	u->dirty = true;
 }
 
@@ -4059,6 +4083,114 @@ hist_recall(struct ui *u, int dir)
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* The "! <cmd>" shell escape: the user runs a command locally and its     */
+/* output rides with the next prompt as context, so the model sees it.     */
+/* ------------------------------------------------------------------ */
+
+#define SHELL_ESCAPE_MAX 65536 /* output bytes kept */
+#define SHELL_ESCAPE_TIMEOUT_MS 120000
+
+/* Append src to *dst, growing it. Best effort: a failed grow drops the add
+ * and keeps what is already there. */
+static void
+str_grow(char **dst, const char *src)
+{
+	size_t a = *dst != NULL ? strlen(*dst) : 0;
+	size_t b = strlen(src);
+	char *p = realloc(*dst, a + b + 1);
+
+	if (p == NULL)
+		return;
+	memcpy(p + a, src, b + 1);
+	*dst = p;
+}
+
+/* How the command ended, as a one-line "[! ...]" tag. */
+static void
+shell_status_line(const struct clm_proc_result *r, char *buf, size_t n)
+{
+	if (r->timed_out)
+		(void)snprintf(buf, n, "[! timed out]\n");
+	else if (r->term_signal != 0)
+		(void)snprintf(
+		    buf, n, "[! killed by signal %d]\n", r->term_signal);
+	else
+		(void)snprintf(
+		    buf, n, "[! exit %lld]\n", (long long)r->exit_status);
+}
+
+static void
+shell_escape_done(
+    struct clm_proc *p, const struct clm_proc_result *r, void *user)
+{
+	struct ui *u = user;
+	char tag[64];
+
+	(void)p;
+	u->shell_proc = NULL;
+	shell_status_line(r, tag, sizeof(tag));
+
+	/* Show it ran, with its output, in the transcript. */
+	ui_push(u, ST_META, "\n");
+	if (r->output != NULL && r->len > 0) {
+		ui_push(u, ST_META, r->output);
+		if (r->output[r->len - 1] != '\n')
+			ui_push(u, ST_META, "\n");
+	}
+	if (r->dropped > 0)
+		ui_push(u, ST_META, "[! output truncated]\n");
+	ui_push(u, ST_META, tag);
+
+	/* Keep it for the next prompt, shaped like the shell tool's result so
+	 * the model reads a form it already knows. */
+	str_grow(&u->shell_pending, "[shell] $ ");
+	str_grow(&u->shell_pending, u->shell_cmd != NULL ? u->shell_cmd : "");
+	str_grow(&u->shell_pending, "\n");
+	if (r->output != NULL && r->len > 0) {
+		str_grow(&u->shell_pending, r->output);
+		if (r->output[r->len - 1] != '\n')
+			str_grow(&u->shell_pending, "\n");
+	}
+	str_grow(&u->shell_pending, tag);
+	u->dirty = true;
+}
+
+/* Run "! <cmd>": one at a time, output captured for the next prompt. */
+static void
+run_shell_escape(struct ui *u, const char *cmd)
+{
+	struct clm_proc_opts o = {0};
+	int r;
+
+	while (*cmd == ' ' || *cmd == '\t')
+		cmd++;
+	if (*cmd == '\0')
+		return;
+	if (u->shell_proc != NULL) {
+		ui_push(u, ST_ERROR, "\na ! command is still running\n");
+		return;
+	}
+	free(u->shell_cmd);
+	u->shell_cmd = strdup(cmd);
+	ui_push(u, ST_META, "\n! ");
+	ui_push(u, ST_META, cmd);
+	ui_push(u, ST_META, "\n");
+
+	o.command = u->shell_cmd != NULL ? u->shell_cmd : cmd;
+	o.timeout_ms = SHELL_ESCAPE_TIMEOUT_MS;
+	o.exit_grace_ms = clm_proc_grace_ms();
+	o.max = SHELL_ESCAPE_MAX;
+	o.done = shell_escape_done;
+	o.user = u;
+	r = clm_proc_spawn(u->loop, &o, &u->shell_proc);
+	if (r < 0) {
+		u->shell_proc = NULL;
+		ui_push(u, ST_ERROR, "\nfailed to run ! command\n");
+	}
+	u->dirty = true;
+}
+
 static void
 submit_line(struct ui *u)
 {
@@ -4068,15 +4200,21 @@ submit_line(struct ui *u)
 
 	hist_add(u, u->input);
 
-	if (u->input[0] == '/')
+	if (u->input[0] == '!')
+		run_shell_escape(u, u->input + 1);
+	else if (u->input[0] == '/')
 		run_command(u, u->input);
 	else if (strcmp(u->input, "quit") == 0 || strcmp(u->input, "exit") == 0)
 		u->quit = true;
 	else {
-		/* Always queue, never submit straight through: the drain
-		 * hands it to the agent the moment the agent will take it,
-		 * and that keeps one path for idle and mid-turn input. */
-		enqueue_steering(u, u->input);
+		/* A pending "! <cmd>" result rides in front of this prompt to
+		 * the model as context, but is not echoed again (it showed
+		 * when the command ran). Always queue, never submit straight
+		 * through: the drain hands it to the agent the moment the
+		 * agent will take it, one path for idle and mid-turn input. */
+		enqueue_steering(u, u->input, u->shell_pending);
+		free(u->shell_pending);
+		u->shell_pending = NULL;
 		if (!u->busy)
 			drain_steering_queue(u);
 	}
@@ -4895,6 +5033,17 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	apply_effort(u, cfg->provider_name, cfg->model);
 	clm_agent_set_spool(u->agent, cb_spool, u);
 
+	/* Tell the model about the "! <cmd>" escape, so it can hand a command
+	 * back to the user to run instead of running a risky one itself. */
+	(void)clm_agent_set_prompt_part(u->agent, "shell_escape",
+	    "This is an interactive terminal. The user can run a shell "
+	    "command by typing \"! <command>\"; its output is then added to "
+	    "the conversation as a \"[shell] $ ...\" block. When you want a "
+	    "command run that is destructive, needs the user's judgement, or "
+	    "that you should not run yourself, ask the user to run it with "
+	    "\"! <command>\" and read the result from the block they send "
+	    "back.");
+
 	/* Peer messaging is optional: a bind failure (no runtime dir, a
 	 * hostile /tmp) costs the socket, not the session. */
 	if (u->session != NULL &&
@@ -5118,6 +5267,11 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		u->session = NULL;
 	}
 	clm_lua_env_free(u->lua_env);
+	/* A "! <cmd>" still running must not call back into a freed ui. */
+	if (u->shell_proc != NULL) {
+		clm_proc_detach(u->shell_proc);
+		clm_proc_kill(u->shell_proc);
+	}
 	clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
 	clm_peer_free(u->peer);
 	clm_agent_free(u->agent);
@@ -5135,9 +5289,11 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	free(u->rsegs);
 	free(u->wrap_row);
 	free(u->wrap_col);
-	for (size_t i = 0; i < u->steering_nqueue; i++)
-		free(u->steering_queue[i]);
-	free((void *)u->steering_queue);
+	for (size_t i = 0; i < u->steering_nqueue; i++) {
+		free(u->steering_queue[i].text);
+		free(u->steering_queue[i].prefix);
+	}
+	free(u->steering_queue);
 	for (size_t i = 0; i < u->n_echoed; i++)
 		free(u->echoed[i]);
 	for (size_t i = 0; i < u->nhist; i++)
@@ -5149,6 +5305,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	free(u->model);
 	free(u->agent_name);
 	free(u->provider_name);
+	free(u->shell_cmd);
+	free(u->shell_pending);
 	/*
 	 * A drain that timed out left a handle of ours still closing, and
 	 * libuv holds a pointer to it inside `u`. Freeing the struct now is

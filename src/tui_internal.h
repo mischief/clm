@@ -19,6 +19,8 @@
 #include "clm/clm.h"
 #include "clm/session.h"
 
+struct clm_proc; /* libclmproc, used by the "! <cmd>" shell escape */
+
 struct clm_host;
 struct clm_lua_env;
 struct clm_lua_cfg;
@@ -83,6 +85,14 @@ struct rseg {
 	/* False when text points into the source span it was built from,
 	 * which is the common case for anything rendered verbatim. */
 	bool owned;
+};
+
+/* A queued steering prompt. prefix, when set, is sent to the model ahead of
+ * text (a "! <cmd>" result) but not echoed in the transcript, which already
+ * showed it when the command ran. */
+struct steering_item {
+	char *text;
+	char *prefix;
 };
 
 struct ui {
@@ -242,8 +252,15 @@ struct ui {
 	 * the next decision point (tool batch done, thinking done), instead of
 	 * waiting for turn completion. Drained ASAP when agent reaches a pause
 	 * point. */
-	char **steering_queue;
+	struct steering_item *steering_queue;
 	size_t steering_nqueue, steering_cap;
+
+	/* The "! <cmd>" shell escape: one command may be in flight, and its
+	 * finished output waits here to ride with the next prompt as context.
+	 * shell_cmd keeps the command text for the done callback. */
+	struct clm_proc *shell_proc;
+	char *shell_cmd;
+	char *shell_pending;
 
 	/* Prompts the transcript already shows as "you>", so cb_message
 	 * does not show them again as events. */
