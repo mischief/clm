@@ -513,15 +513,17 @@ mcp_append(char **buf, size_t *len, const char *s)
 
 /*
  * Complete inv from a tools/call result. The text of all text blocks goes to
- * the model, one block per line. isError makes it a failure the model sees.
- * A result with no text blocks goes as raw JSON.
+ * the model, one block per line. The first image block goes with it; a note
+ * counts the rest. isError makes it a failure the model sees. A result with
+ * no text or image blocks goes as raw JSON.
  */
 static void
 mcp_complete(struct clm_tool_invocation *inv, cJSON *result)
 {
-	cJSON *content, *block;
+	cJSON *content, *block, *image = NULL;
 	autofree char *text = NULL;
 	size_t len = 0;
+	int more_images = 0;
 
 	if (!cJSON_IsObject(result)) {
 		clm_tool_fail(inv, "malformed MCP response");
@@ -537,6 +539,13 @@ mcp_complete(struct clm_tool_invocation *inv, cJSON *result)
 		const char *s = cJSON_GetStringValue(
 		    cJSON_GetObjectItemCaseSensitive(block, "text"));
 
+		if (type != NULL && strcmp(type, "image") == 0) {
+			if (image == NULL)
+				image = block;
+			else
+				more_images++;
+			continue;
+		}
 		if (s == NULL || (type != NULL && strcmp(type, "text") != 0))
 			continue;
 		if (mcp_append(&text, &len, s) != 0) {
@@ -548,6 +557,24 @@ mcp_complete(struct clm_tool_invocation *inv, cJSON *result)
 		clm_tool_fail(inv,
 		    text != NULL && len > 0 ? text
 		                            : "MCP server reported an error");
+		return;
+	}
+	if (more_images > 0) {
+		char note[64];
+
+		(void)snprintf(note, sizeof(note), "[%d more image%s omitted]",
+		    more_images, more_images > 1 ? "s" : "");
+		if (mcp_append(&text, &len, note) != 0) {
+			clm_tool_fail(inv, "out of memory");
+			return;
+		}
+	}
+	if (image != NULL) {
+		const char *data = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(image, "data"));
+
+		clm_tool_complete_image_base64(inv, text != NULL ? text : "",
+		    data, data != NULL ? strlen(data) : 0);
 		return;
 	}
 	if (text == NULL) {

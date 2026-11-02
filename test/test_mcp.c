@@ -423,6 +423,47 @@ test_is_error(uv_loop_t *loop)
 	    "isError with no text");
 }
 
+/* A PNG header for a 640x480 image: enough for clm_image_sniff. */
+#define PNG_B64 "iVBORw0KGgoAAAANSUhEUgAAAoAAAAHg"
+#define IMAGE_BLOCK(data)                                                      \
+	"{\"type\":\"image\",\"mimeType\":\"image/png\","                      \
+	"\"data\":\"" data "\"}"
+#define PNG_BLOCK IMAGE_BLOCK(PNG_B64)
+
+static void
+test_image_blocks(uv_loop_t *loop)
+{
+	static const char one[] =
+	    "{\"content\":[{\"type\":\"text\","
+	    "\"text\":\"640x480 screenshot\"}," PNG_BLOCK "]}";
+	static const char three[] =
+	    "{\"content\":[" PNG_BLOCK "," PNG_BLOCK "," PNG_BLOCK "]}";
+	static const char bad[] =
+	    "{\"content\":[{\"type\":\"text\","
+	    "\"text\":\"shot\"}," IMAGE_BLOCK("iVBOR!==") "]}";
+	struct state st;
+	char req[8192];
+
+	for (int stdio = 0; stdio < 2; stdio++) {
+		run_call(loop, stdio, one, &st, req, sizeof(req));
+		check(st.outcome == CLM_TOOL_OK &&
+		        strcmp(st.content, "640x480 screenshot") == 0 &&
+		        strstr(req, "data:image/png;base64," PNG_B64) != NULL,
+		    stdio ? "stdio: image reaches model"
+		          : "http: image reaches model");
+	}
+	run_call(loop, false, three, &st, req, sizeof(req));
+	check(st.outcome == CLM_TOOL_OK &&
+	        strcmp(st.content, "[2 more images omitted]") == 0 &&
+	        strstr(req, "data:image/png;base64," PNG_B64) != NULL,
+	    "extra images get a note");
+	run_call(loop, false, bad, &st, req, sizeof(req));
+	check(st.outcome == CLM_TOOL_OK &&
+	        strcmp(st.content, "shot\n[image omitted: bad base64]") == 0 &&
+	        strstr(req, "data:image/") == NULL,
+	    "bad image data gets a note");
+}
+
 static int
 test_mcp_suite(void *arg)
 {
@@ -434,6 +475,7 @@ test_mcp_suite(void *arg)
 	test_stdio_timeout(&loop);
 	test_text_blocks(&loop);
 	test_is_error(&loop);
+	test_image_blocks(&loop);
 	check(uv_loop_close(&loop) == 0, "close loop");
 
 	return 0;

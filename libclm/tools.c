@@ -26,6 +26,9 @@
 #define CLM_TOOL_OUTPUT_CAP_MAX (60 * 1024) /* below the 64 KiB message cap */
 #define CLM_TOOL_TIMEOUT_MAX_MS 600000u     /* 10 minutes */
 #define CLM_READ_DEFAULT_LIMIT 200          /* lines */
+/* Larger images are refused, not scaled: clm has no image decoder. The
+ * Anthropic API takes about 5 MB per image. */
+#define CLM_IMAGE_MAX_BYTES ((size_t)5 * 1024 * 1024)
 
 /*
  * One in-flight tool call. Owned by its batch. Completed exactly once via
@@ -1143,6 +1146,42 @@ clm_tool_complete_image(struct clm_tool_invocation *inv, const char *text,
 }
 
 void
+clm_tool_complete_image_base64(struct clm_tool_invocation *inv,
+    const char *text, const char *b64, size_t b64len)
+{
+	autofree uint8_t *img = NULL;
+	autofree char *note = NULL;
+	const char *mt = NULL, *why = NULL;
+	size_t n = 0, cap = b64len / 4 * 3;
+
+	if (inv == NULL || inv->completed)
+		return;
+	if (text == NULL)
+		text = "";
+	if (b64 == NULL || b64len == 0)
+		why = "no data";
+	else if (cap > CLM_IMAGE_MAX_BYTES)
+		why = "too large";
+	if (why == NULL) {
+		img = malloc(cap);
+		if (img == NULL)
+			why = "out of memory";
+	}
+	if (why == NULL && clm_base64_decode(b64, b64len, img, &n) != 0)
+		why = "bad base64";
+	if (why == NULL && clm_image_sniff(img, n, &mt, NULL, NULL) != 0)
+		why = "not a PNG, JPEG, GIF or WebP image";
+	if (why == NULL) {
+		clm_tool_complete_image(inv, text, mt, img, n);
+		return;
+	}
+	if (asprintf(&note, "%s%s[image omitted: %s]", text,
+	        *text != '\0' ? "\n" : "", why) < 0)
+		note = NULL;
+	clm_tool_complete(inv, note != NULL ? note : text);
+}
+
+void
 clm_tool_complete(struct clm_tool_invocation *inv, const char *content)
 {
 	struct clm_buffer buf;
@@ -1949,9 +1988,6 @@ tool_list_dir(struct clm_tool_invocation *inv, void *user)
 /* read_image needs a buffer as large as an image, which a microcontroller
  * does not have, so ESP-IDF builds leave it out. */
 #ifndef ESP_PLATFORM
-/* Larger images are refused, not scaled: clm has no image decoder. The
- * Anthropic API takes about 5 MB per image. */
-#define CLM_IMAGE_MAX_BYTES (5 * 1024 * 1024)
 
 /*
  * Read at most max + 1 bytes of a regular file from one descriptor, so a

@@ -827,6 +827,14 @@ CLM_API void clm_tool_complete_buf(
  */
 CLM_API void clm_tool_complete_image(struct clm_tool_invocation *inv,
     const char *text, const char *media_type, const uint8_t *data, size_t len);
+
+/*
+ * Complete with text and one image given as padded base64. The image type
+ * comes from its bytes. Bad data, an unknown type or an image over 5 MB
+ * completes with the text and a note in place of the image.
+ */
+CLM_API void clm_tool_complete_image_base64(struct clm_tool_invocation *inv,
+    const char *text, const char *b64, size_t b64len);
 CLM_API void clm_tool_fail(struct clm_tool_invocation *inv, const char *msg);
 
 CLM_API void clm_agent_free_ptr(struct clm_agent **agent);
