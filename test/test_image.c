@@ -28,6 +28,38 @@ test_base64(void)
 	}
 }
 
+static void
+test_base64_decode(void)
+{
+	static const char *const in[] = {
+	    "", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy"};
+	static const char *const want[] = {
+	    "", "f", "fo", "foo", "foob", "fooba", "foobar"};
+	static const char *const bad[] = {"Zg=", "Zg",
+	    "Z===", "Zg==Zg==", "Zm=v", "Zm9v\n", "Zm 9", "Zm9-", "=Zm9",
+	    "Zm\0v", "Zh==", "Zm9="};
+	static const uint8_t bin[] = {0x00, 0xff, 0x80, 0x7f, 0xfe};
+	uint8_t out[16];
+	char enc[16];
+	size_t len;
+
+	for (size_t i = 0; i < sizeof(in) / sizeof(in[0]); i++) {
+		len = 99;
+		CHECK(clm_base64_decode(in[i], strlen(in[i]), out, &len) == 0 &&
+		        len == strlen(want[i]) &&
+		        memcmp(out, want[i], len) == 0,
+		    "base64 decode RFC 4648 vector");
+	}
+	for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+		CHECK(clm_base64_decode(bad[i], i == 9 ? 4 : strlen(bad[i]),
+		          out, &len) == -EINVAL,
+		    "base64 decode rejects bad input");
+	clm_base64_encode(bin, sizeof(bin), enc);
+	CHECK(clm_base64_decode(enc, strlen(enc), out, &len) == 0 &&
+	        len == sizeof(bin) && memcmp(out, bin, len) == 0,
+	    "base64 round trip of high bytes");
+}
+
 static int
 sniff(const uint8_t *d, size_t n, const char *mt, uint32_t w, uint32_t h)
 {
@@ -114,6 +146,7 @@ test_image_suite(void *arg)
 {
 	(void)arg;
 	test_base64();
+	test_base64_decode();
 	test_png();
 	test_jpeg();
 	test_gif();

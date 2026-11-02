@@ -267,6 +267,11 @@ size_t clm_clean_text(uint8_t *data, size_t len);
 size_t clm_base64_len(size_t n);
 void clm_base64_encode(const uint8_t *in, size_t n, char *out);
 
+/* Decode n bytes of padded base64. out needs n / 4 * 3 bytes. Returns 0 and
+ * sets *outlen, or -EINVAL for bad length, bad characters, misplaced
+ * padding or nonzero padding bits. Whitespace is bad input. */
+int clm_base64_decode(const char *in, size_t n, uint8_t *out, size_t *outlen);
+
 /*
  * Recognize a PNG, JPEG, GIF or WebP image by its first bytes and read its
  * width and height from the header. Returns 0 and sets the out values

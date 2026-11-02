@@ -47,6 +47,62 @@ clm_base64_encode(const uint8_t *in, size_t n, char *out)
 	out[o] = '\0';
 }
 
+static int
+b64val(unsigned char c)
+{
+	if (c >= 'A' && c <= 'Z')
+		return c - 'A';
+	if (c >= 'a' && c <= 'z')
+		return c - 'a' + 26;
+	if (c >= '0' && c <= '9')
+		return c - '0' + 52;
+	if (c == '+')
+		return 62;
+	if (c == '/')
+		return 63;
+	return -1;
+}
+
+int
+clm_base64_decode(const char *in, size_t n, uint8_t *out, size_t *outlen)
+{
+	size_t i, o = 0;
+
+	if (n % 4 != 0)
+		return -EINVAL;
+	for (i = 0; i < n; i += 4) {
+		int a = b64val((unsigned char)in[i]);
+		int b = b64val((unsigned char)in[i + 1]);
+		int c = b64val((unsigned char)in[i + 2]);
+		int d = b64val((unsigned char)in[i + 3]);
+		int last = i + 4 == n;
+		int pad = c < 0 ? 2 : d < 0 ? 1 : 0;
+		uint32_t v;
+
+		if (a < 0 || b < 0)
+			return -EINVAL;
+		/* Padding goes only in the last quantum: "xx==" or "xxx=". */
+		if (c < 0 && !(last && in[i + 2] == '=' && in[i + 3] == '='))
+			return -EINVAL;
+		if (d < 0 && !(last && in[i + 3] == '='))
+			return -EINVAL;
+		v = (uint32_t)a << 18u | (uint32_t)b << 12u |
+		    (uint32_t)(c < 0 ? 0 : c) << 6u | (uint32_t)(d < 0 ? 0 : d);
+		/* Bits that padding drops must be zero, so each byte string
+		 * has exactly one encoding. */
+		if ((pad == 2 && (v & 0xffffu) != 0) ||
+		    (pad == 1 && (v & 0xffu) != 0))
+			return -EINVAL;
+		out[o++] = (uint8_t)(v >> 16u);
+		if (pad < 2)
+			out[o++] = (uint8_t)(v >> 8u);
+		if (pad < 1)
+			out[o++] = (uint8_t)v;
+	}
+	*outlen = o;
+	return 0;
+}
+
 static uint32_t
 be16(const uint8_t *p)
 {

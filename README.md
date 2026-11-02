@@ -406,7 +406,8 @@ is how you replay a crash:
 
 Targets: `fuzz_tool_dispatch` (and `fuzz_tool_dispatch_lua`) for adversarial
 tool-call JSON, `fuzz_session` for the session log loader, `fuzz_text_clean`
-for captured tool output, `fuzz_md` for the markdown renderer.
+for captured tool output, `fuzz_md` for the markdown renderer, `fuzz_base64`
+for the base64 decoder.
 
 ## Tooling
 

@@ -70,6 +70,18 @@ fuzz_text_clean_exe = executable(
   install: false,
 )
 
+# fuzz_base64: fuzz the base64 decoder (external input: image data from an
+# MCP server).
+fuzz_base64_exe = executable(
+  'fuzz_base64',
+  files('fuzz_base64.c', '../libclm/image.c'),
+  include_directories: [fuzz_inc, clm_inc, include_directories('../include')],
+  dependencies: [cjson_dep],
+  c_args: ['-DCLM_BUILDING'],
+  build_by_default: false,
+  install: false,
+)
+
 # fuzz_md: fuzz md_render() with arbitrary markdown input. It compiles
 # md_render.c rather than linking md_render_lib, so the parser is built with
 # the same instrumentation as the harness.
