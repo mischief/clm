@@ -115,7 +115,7 @@ test('mcp_ready', test_mcp_ready, protocol: 'tap', timeout: 15)
 # malformed urls complete in curl's initial socket action. this checks that
 # completion does not publish a dead cancellation handle.
 test_http_async = executable('test_http_async',
-  files('test_http_async.c') + tap_src,
+  files('test_http_async.c', 'canned.c') + tap_src,
   dependencies: [clmuv_dep],
   include_directories: [tap_inc, clm_inc, include_directories('../include')],
   c_args: test_hardening_args,

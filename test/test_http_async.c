@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: ISC
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <uv.h>
 
 #include "clm/http_async.h"
+#include "canned.h"
 #include "tap.h"
 
 static int callbacks;
@@ -134,6 +137,53 @@ test_double_free_while_closing(void *arg)
 	return 0;
 }
 
+/* curl caps a string option at 8 MB, and a request with many images in its
+ * history can pass that. The whole body must still reach the server. */
+static int
+test_large_body(void *arg)
+{
+	static const size_t n = 9 * 1024 * 1024;
+	struct canned_server *srv;
+	struct clm_http_mux *mux;
+	char url[64], *body;
+	const char *got;
+	uv_loop_t loop;
+
+	(void)arg;
+	callbacks = 0;
+	CHECK(uv_loop_init(&loop) == 0, "loop init");
+	mux = clm_http_mux_new(&loop);
+	srv = canned_start(&loop);
+	body = malloc(n + 1);
+	CHECK(mux != NULL && srv != NULL && body != NULL, "set up");
+	if (mux == NULL || srv == NULL || body == NULL)
+		return 1;
+	memset(body, 'a', n);
+	body[0] = '"';
+	body[n - 1] = '"';
+	body[n] = '\0';
+	canned_reply(srv, "{}");
+	(void)snprintf(
+	    url, sizeof(url), "http://127.0.0.1:%d/", canned_port(srv));
+	CHECK(clm_http_async_post(mux, url, NULL, body, NULL, on_success,
+	          on_error, NULL, NULL, NULL, NULL) == 0,
+	    "post a 9 MB body");
+	while (callbacks == 0)
+		uv_run(&loop, UV_RUN_ONCE);
+	/* The canned server keeps the raw request: headers, then body. */
+	got = canned_last_request(srv);
+	got = got != NULL ? strstr(got, "\r\n\r\n") : NULL;
+	CHECK(got != NULL && strlen(got + 4) == n &&
+	        memcmp(got + 4, body, n) == 0,
+	    "the server got the whole body");
+	free(body);
+	canned_stop(srv);
+	clm_http_mux_free(mux);
+	uv_run(&loop, UV_RUN_DEFAULT);
+	CHECK(uv_loop_close(&loop) == 0, "loop close");
+	return 0;
+}
+
 int
 main(void)
 {
@@ -141,5 +191,6 @@ main(void)
 	TAP_ADD("overlapping muxes", test_overlapping_muxes, NULL);
 	TAP_ADD("a second free while the timer is closing",
 	    test_double_free_while_closing, NULL);
+	TAP_ADD("large body", test_large_body, NULL);
 	return tap_run();
 }

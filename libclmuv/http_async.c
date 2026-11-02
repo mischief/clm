@@ -626,9 +626,18 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 		 * callers (eg mcp_http_send) free their body buffer right
 		 * after this call returns -- a use-after-free that sent
 		 * garbage bytes as the request body instead of the caller's
-		 * JSON. */
-		curl_easy_setopt(
-		    req->easy_handle, CURLOPT_COPYPOSTFIELDS, json_body);
+		 * JSON. Set the size first: without it, curl refuses a body
+		 * over 8 MB and the POST goes out empty. */
+		curl_easy_setopt(req->easy_handle, CURLOPT_POSTFIELDSIZE_LARGE,
+		    (curl_off_t)strlen(json_body));
+		if (curl_easy_setopt(req->easy_handle, CURLOPT_COPYPOSTFIELDS,
+		        json_body) != CURLE_OK) {
+			clm_debug("request body copy failed");
+			curl_slist_free_all(req->headers);
+			curl_easy_cleanup(req->easy_handle);
+			free(req);
+			return -ENOMEM;
+		}
 	} else {
 		curl_easy_setopt(req->easy_handle, CURLOPT_HTTPGET, 1L);
 	}
