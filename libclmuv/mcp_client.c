@@ -493,6 +493,72 @@ mcp_register_tools(struct clm_mcp_client *client, cJSON *tools)
 		client->on_ready(0, registered, client->user);
 }
 
+/* --- tools/call results -------------------------------------------------- */
+
+static int
+mcp_append(char **buf, size_t *len, const char *s)
+{
+	size_t n = strlen(s), sep = *buf != NULL ? 1 : 0;
+	char *p = realloc(*buf, *len + sep + n + 1);
+
+	if (p == NULL)
+		return -ENOMEM;
+	if (sep)
+		p[(*len)++] = '\n';
+	memcpy(p + *len, s, n + 1);
+	*len += n;
+	*buf = p;
+	return 0;
+}
+
+/*
+ * Complete inv from a tools/call result. The text of all text blocks goes to
+ * the model, one block per line. isError makes it a failure the model sees.
+ * A result with no text blocks goes as raw JSON.
+ */
+static void
+mcp_complete(struct clm_tool_invocation *inv, cJSON *result)
+{
+	cJSON *content, *block;
+	autofree char *text = NULL;
+	size_t len = 0;
+
+	if (!cJSON_IsObject(result)) {
+		clm_tool_fail(inv, "malformed MCP response");
+		return;
+	}
+	content = cJSON_GetObjectItemCaseSensitive(result, "content");
+	if (!cJSON_IsArray(content))
+		content = NULL;
+	cJSON_ArrayForEach(block, content)
+	{
+		const char *type = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(block, "type"));
+		const char *s = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(block, "text"));
+
+		if (s == NULL || (type != NULL && strcmp(type, "text") != 0))
+			continue;
+		if (mcp_append(&text, &len, s) != 0) {
+			clm_tool_fail(inv, "out of memory");
+			return;
+		}
+	}
+	if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(result, "isError"))) {
+		clm_tool_fail(inv,
+		    text != NULL && len > 0 ? text
+		                            : "MCP server reported an error");
+		return;
+	}
+	if (text == NULL) {
+		autofree char *printed = cJSON_PrintUnformatted(result);
+
+		clm_tool_complete(inv, printed != NULL ? printed : "{}");
+		return;
+	}
+	clm_tool_complete(inv, text);
+}
+
 /* --- HTTP transport ------------------------------------------------------ */
 
 static void
@@ -568,28 +634,12 @@ mcp_http_success(struct clm_http_response *resp, void *user)
 			hctx->client->on_ready(-EPROTO, 0, hctx->client->user);
 		break;
 	}
-	case MCP_HTTP_CALL: {
-		cJSON *content = NULL, *first = NULL, *text = NULL;
-		if (err_msg != NULL) {
+	case MCP_HTTP_CALL:
+		if (err_msg != NULL)
 			clm_tool_fail(hctx->inv, err_msg);
-		} else if (result != NULL &&
-		    (content = cJSON_GetObjectItemCaseSensitive(
-		         result, "content")) != NULL &&
-		    cJSON_IsArray(content) && cJSON_GetArraySize(content) > 0 &&
-		    (first = cJSON_GetArrayItem(content, 0)) != NULL &&
-		    (text = cJSON_GetObjectItemCaseSensitive(first, "text")) !=
-		        NULL) {
-			clm_tool_complete(
-			    hctx->inv, cJSON_GetStringValue(text));
-		} else if (result != NULL) {
-			autofree char *printed = cJSON_PrintUnformatted(result);
-			clm_tool_complete(
-			    hctx->inv, printed != NULL ? printed : "{}");
-		} else {
-			clm_tool_fail(hctx->inv, "malformed MCP response");
-		}
+		else
+			mcp_complete(hctx->inv, result);
 		break;
-	}
 	}
 
 finish:
@@ -805,28 +855,12 @@ mcp_handle_result(struct clm_mcp_client *client, struct mcp_pending *pend,
 			client->on_ready(-EPROTO, 0, client->user);
 		break;
 	}
-	case MCP_PEND_CALL: {
-		cJSON *content = NULL, *first = NULL, *text = NULL;
-		if (err != NULL) {
+	case MCP_PEND_CALL:
+		if (err != NULL)
 			clm_tool_fail(pend->inv, err);
-		} else if (result != NULL &&
-		    (content = cJSON_GetObjectItemCaseSensitive(
-		         result, "content")) != NULL &&
-		    cJSON_IsArray(content) && cJSON_GetArraySize(content) > 0 &&
-		    (first = cJSON_GetArrayItem(content, 0)) != NULL &&
-		    (text = cJSON_GetObjectItemCaseSensitive(first, "text")) !=
-		        NULL) {
-			clm_tool_complete(
-			    pend->inv, cJSON_GetStringValue(text));
-		} else if (result != NULL) {
-			autofree char *printed = cJSON_PrintUnformatted(result);
-			clm_tool_complete(
-			    pend->inv, printed != NULL ? printed : "{}");
-		} else {
-			clm_tool_fail(pend->inv, "malformed MCP response");
-		}
+		else
+			mcp_complete(pend->inv, result);
 		break;
-	}
 	}
 }
 
