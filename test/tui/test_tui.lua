@@ -704,6 +704,26 @@ tests.tool_escapes = function(url)
 	t:close()
 end
 
+tests.shell_escape = function(url)
+	-- "! <cmd>" runs the command and sends its output to the model at
+	-- once, with no prompt typed and no "you>" echo.
+	local reqlog = STATE_HOME .. "/shell-requests.jsonl"
+
+	mock.request_log(reqlog)
+	local t = driver.new(BIN, url, { rows = 30, cols = 80 })
+	t:wait_for("online", 8)
+	t:send("! echo shellmark\r")
+	check(t:wait_for("Yellow", 15),
+	    "shell_escape: the model answers the output unprompted")
+	check(has(t:text(), "[! exit 0]") and not has(t:text(), "you>"),
+	    "shell_escape: output shows once, with no you> line")
+	t:close()
+	mock.request_log(nil)
+	check(has(read_file(reqlog) or "", "[shell] $ echo shellmark\\n"
+	    .. "shellmark\\n[! exit 0]"),
+	    "shell_escape: the request holds the [shell] block")
+end
+
 tests.expand_command = function(url)
 	-- A long shell command is clamped in the collapsed view and shown
 	-- whole once ^O expands tool detail.
@@ -1407,7 +1427,8 @@ end
 local ORDER = { "connection", "offline", "agent", "markdown", "scrollback",
 	"scroll_stable", "end_key", "resize", "margin", "editing", "history",
 	"commands", "effort", "queueing", "permission", "cancel",
-	"cancel_tools", "tool_escapes", "paste", "session", "resume_collapse",
+	"cancel_tools", "tool_escapes", "shell_escape", "paste", "session",
+	"resume_collapse",
 	"session_compact", "clear_gauge", "scratch", "peers", "allow_all",
 	"help_popup", "narrow_status", "plugin_commands",
 	"mcp_spawn_fail" }

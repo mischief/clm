@@ -2737,9 +2737,17 @@ draw_transcript(struct ui *u)
 	for (size_t i = 0; i < u->steering_nqueue; i++) {
 		char line[600];
 
+		const char *text = u->steering_queue[i].text;
+
+		if (text[0] == '\0') {
+			/* A "! <cmd>" result: the output already shows. */
+			(void)snprintf(
+			    line, sizeof(line), "[! output queued]\n");
+			rseg_push(u, seg_attr(u, ST_META), line, strlen(line));
+			continue;
+		}
 		rseg_push(u, seg_attr(u, ST_USER), "\nyou> ", 6);
-		rseg_push(u, seg_attr(u, ST_USER), u->steering_queue[i].text,
-		    strlen(u->steering_queue[i].text));
+		rseg_push(u, seg_attr(u, ST_USER), text, strlen(text));
 		(void)snprintf(line, sizeof(line), "  (queued)\n");
 		rseg_push(u, seg_attr(u, ST_META), line, strlen(line));
 	}
@@ -2925,19 +2933,23 @@ drain_steering_one(struct ui *u)
 	    (u->steering_nqueue - 1) * sizeof(*u->steering_queue));
 	u->steering_nqueue--;
 
-	/* A "! <cmd>" result rides ahead of the prompt to the model, but the
-	 * transcript already showed it, so echo only the typed text. */
+	/* The prefix goes to the model, but the transcript already showed it,
+	 * so echo only the typed text. A "! <cmd>" result has none. */
 	send = item.text;
-	if (item.prefix != NULL &&
+	if (item.prefix != NULL && item.text[0] == '\0')
+		send = item.prefix;
+	else if (item.prefix != NULL &&
 	    asprintf(&send, "%s\n%s", item.prefix, item.text) < 0)
 		send = item.text;
 
 	/* Render exactly like any other submitted prompt: no separate
 	 * "[steering: ...]" treatment, so the transcript doesn't distinguish
 	 * a mid-turn nudge from a normal turn-start prompt once it lands. */
-	ui_push(u, ST_USER, "\nyou> ");
-	ui_push(u, ST_USER, item.text);
-	ui_push(u, ST_USER, "\n");
+	if (item.text[0] != '\0') {
+		ui_push(u, ST_USER, "\nyou> ");
+		ui_push(u, ST_USER, item.text);
+		ui_push(u, ST_USER, "\n");
+	}
 	/* echo_note keys on exact content, so record what actually lands in
 	 * history (the prefixed text) to keep cb_message from re-showing it. */
 	echo_note(u, send);
@@ -2967,7 +2979,7 @@ drain_steering_one(struct ui *u)
 		u->usage[0] = '\0';
 		u->busy = true;
 	}
-	if (send != item.text)
+	if (send != item.text && send != item.prefix)
 		free(send);
 	free(item.text);
 	free(item.prefix);
@@ -4085,7 +4097,7 @@ hist_recall(struct ui *u, int dir)
 
 /* ------------------------------------------------------------------ */
 /* The "! <cmd>" shell escape: the user runs a command locally and its     */
-/* output rides with the next prompt as context, so the model sees it.     */
+/* output goes to the model as a message of its own.                       */
 /* ------------------------------------------------------------------ */
 
 #define SHELL_ESCAPE_MAX 65536 /* output bytes kept */
@@ -4125,6 +4137,7 @@ shell_escape_done(
     struct clm_proc *p, const struct clm_proc_result *r, void *user)
 {
 	struct ui *u = user;
+	autofree char *block = NULL;
 	char tag[64];
 
 	(void)p;
@@ -4142,21 +4155,26 @@ shell_escape_done(
 		ui_push(u, ST_META, "[! output truncated]\n");
 	ui_push(u, ST_META, tag);
 
-	/* Keep it for the next prompt, shaped like the shell tool's result so
-	 * the model reads a form it already knows. */
-	str_grow(&u->shell_pending, "[shell] $ ");
-	str_grow(&u->shell_pending, u->shell_cmd != NULL ? u->shell_cmd : "");
-	str_grow(&u->shell_pending, "\n");
+	/* Send it to the model now, shaped like the shell tool's result so the
+	 * model reads a form it already knows. Mid-turn, it lands at the next
+	 * round trip like any other queued message. */
+	str_grow(&block, "[shell] $ ");
+	str_grow(&block, u->shell_cmd != NULL ? u->shell_cmd : "");
+	str_grow(&block, "\n");
 	if (r->output != NULL && r->len > 0) {
-		str_grow(&u->shell_pending, r->output);
+		str_grow(&block, r->output);
 		if (r->output[r->len - 1] != '\n')
-			str_grow(&u->shell_pending, "\n");
+			str_grow(&block, "\n");
 	}
-	str_grow(&u->shell_pending, tag);
+	str_grow(&block, tag);
+	if (block != NULL)
+		enqueue_steering(u, "", block);
+	if (!u->busy)
+		drain_steering_queue(u);
 	u->dirty = true;
 }
 
-/* Run "! <cmd>": one at a time, output captured for the next prompt. */
+/* Run "! <cmd>": one at a time, output sent to the model when it ends. */
 static void
 run_shell_escape(struct ui *u, const char *cmd)
 {
@@ -4207,14 +4225,10 @@ submit_line(struct ui *u)
 	else if (strcmp(u->input, "quit") == 0 || strcmp(u->input, "exit") == 0)
 		u->quit = true;
 	else {
-		/* A pending "! <cmd>" result rides in front of this prompt to
-		 * the model as context, but is not echoed again (it showed
-		 * when the command ran). Always queue, never submit straight
-		 * through: the drain hands it to the agent the moment the
-		 * agent will take it, one path for idle and mid-turn input. */
-		enqueue_steering(u, u->input, u->shell_pending);
-		free(u->shell_pending);
-		u->shell_pending = NULL;
+		/* Always queue, never submit straight through: the drain
+		 * hands it to the agent the moment the agent will take it,
+		 * one path for idle and mid-turn input. */
+		enqueue_steering(u, u->input, NULL);
 		if (!u->busy)
 			drain_steering_queue(u);
 	}
@@ -4626,7 +4640,7 @@ handle_keys(struct ui *u)
 				break;
 			}
 			case KEY_NPAGE: { /* PageDown: scroll toward the bottom
-				           */
+			                   */
 				int page = getmaxy(u->txt) - 1;
 				if (page < 1)
 					page = 1;
@@ -4714,7 +4728,7 @@ handle_keys(struct ui *u)
 			u->dirty = true;
 			break;
 		case 27: { /* Escape: cancel a running turn, else clear the
-			      input */
+		              input */
 			int cancel_rc = clm_agent_cancel(u->agent);
 			if (cancel_rc == 0) {
 				ui_push(u, ST_META, "\n[cancelled]\n");
@@ -5037,12 +5051,11 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	 * back to the user to run instead of running a risky one itself. */
 	(void)clm_agent_set_prompt_part(u->agent, "shell_escape",
 	    "This is an interactive terminal. The user can run a shell "
-	    "command by typing \"! <command>\"; its output is then added to "
-	    "the conversation as a \"[shell] $ ...\" block. When you want a "
+	    "command by typing \"! <command>\"; its output then comes to you "
+	    "as a message that starts with \"[shell] $ \". When you want a "
 	    "command run that is destructive, needs the user's judgement, or "
 	    "that you should not run yourself, ask the user to run it with "
-	    "\"! <command>\" and read the result from the block they send "
-	    "back.");
+	    "\"! <command>\" and read the result from that message.");
 
 	/* Peer messaging is optional: a bind failure (no runtime dir, a
 	 * hostile /tmp) costs the socket, not the session. */
@@ -5306,7 +5319,6 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	free(u->agent_name);
 	free(u->provider_name);
 	free(u->shell_cmd);
-	free(u->shell_pending);
 	/*
 	 * A drain that timed out left a handle of ours still closing, and
 	 * libuv holds a pointer to it inside `u`. Freeing the struct now is

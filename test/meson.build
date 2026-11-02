@@ -220,7 +220,8 @@ if have_lua
     'tui_scrollback': ['scrollback', 'scroll_stable', 'end_key'],
     'tui_interaction': ['commands', 'effort', 'queueing', 'permission',
       'allow_all', 'cancel', 'cancel_tools', 'tool_escapes', 'clear_gauge',
-      'help_popup', 'narrow_status', 'plugin_commands', 'expand_command'],
+      'help_popup', 'narrow_status', 'plugin_commands', 'expand_command',
+      'shell_escape'],
     'tui_session': ['session', 'session_compact', 'resume_collapse',
       'scratch', 'peers', 'mcp_spawn_fail'],
   }

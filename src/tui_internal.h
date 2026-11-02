@@ -88,8 +88,8 @@ struct rseg {
 };
 
 /* A queued steering prompt. prefix, when set, is sent to the model ahead of
- * text (a "! <cmd>" result) but not echoed in the transcript, which already
- * showed it when the command ran. */
+ * text but not echoed in the transcript. A "! <cmd>" result is a prefix with
+ * empty text: the transcript showed it when the command ran. */
 struct steering_item {
 	char *text;
 	char *prefix;
@@ -255,12 +255,10 @@ struct ui {
 	struct steering_item *steering_queue;
 	size_t steering_nqueue, steering_cap;
 
-	/* The "! <cmd>" shell escape: one command may be in flight, and its
-	 * finished output waits here to ride with the next prompt as context.
-	 * shell_cmd keeps the command text for the done callback. */
+	/* The "! <cmd>" shell escape: one command may be in flight. shell_cmd
+	 * keeps the command text for the done callback. */
 	struct clm_proc *shell_proc;
 	char *shell_cmd;
-	char *shell_pending;
 
 	/* Prompts the transcript already shows as "you>", so cb_message
 	 * does not show them again as events. */
