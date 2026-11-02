@@ -511,11 +511,52 @@ mcp_append(char **buf, size_t *len, const char *s)
 	return 0;
 }
 
+static const char *
+mcp_str(cJSON *obj, const char *key, const char *dflt)
+{
+	const char *s =
+	    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(obj, key));
+
+	return s != NULL ? s : dflt;
+}
+
+/*
+ * Text for a block clm cannot pass on as it is. An embedded text resource
+ * gives its text. Other blocks give a short note, so the model knows the
+ * block was there. Returns NULL when out of memory.
+ */
+static char *
+mcp_block_note(cJSON *block, const char *type)
+{
+	cJSON *res = cJSON_GetObjectItemCaseSensitive(block, "resource");
+	char *s = NULL;
+	int r;
+
+	if (type == NULL)
+		r = asprintf(&s, "[untyped block omitted]");
+	else if (strcmp(type, "audio") == 0)
+		r = asprintf(&s, "[audio omitted: %s]",
+		    mcp_str(block, "mimeType", "unknown type"));
+	else if (strcmp(type, "resource_link") == 0)
+		r = asprintf(
+		    &s, "[resource link: %s]", mcp_str(block, "uri", "?"));
+	else if (strcmp(type, "resource") == 0 &&
+	    mcp_str(res, "text", NULL) != NULL)
+		r = asprintf(&s, "[resource %s]\n%s", mcp_str(res, "uri", "?"),
+		    mcp_str(res, "text", ""));
+	else if (strcmp(type, "resource") == 0)
+		r = asprintf(
+		    &s, "[resource omitted: %s]", mcp_str(res, "uri", "?"));
+	else
+		r = asprintf(&s, "[%s block omitted]", type);
+	return r < 0 ? NULL : s;
+}
+
 /*
  * Complete inv from a tools/call result. The text of all text blocks goes to
  * the model, one block per line. The first image block goes with it; a note
- * counts the rest. isError makes it a failure the model sees. A result with
- * no text or image blocks goes as raw JSON.
+ * counts the rest. Other blocks become notes in their place. isError makes
+ * it a failure the model sees. A result with no blocks goes as raw JSON.
  */
 static void
 mcp_complete(struct clm_tool_invocation *inv, cJSON *result)
@@ -536,8 +577,8 @@ mcp_complete(struct clm_tool_invocation *inv, cJSON *result)
 	{
 		const char *type = cJSON_GetStringValue(
 		    cJSON_GetObjectItemCaseSensitive(block, "type"));
-		const char *s = cJSON_GetStringValue(
-		    cJSON_GetObjectItemCaseSensitive(block, "text"));
+		const char *s = mcp_str(block, "text", NULL);
+		autofree char *note = NULL;
 
 		if (type != NULL && strcmp(type, "image") == 0) {
 			if (image == NULL)
@@ -546,9 +587,10 @@ mcp_complete(struct clm_tool_invocation *inv, cJSON *result)
 				more_images++;
 			continue;
 		}
+		/* A block with text and no type passes as text. */
 		if (s == NULL || (type != NULL && strcmp(type, "text") != 0))
-			continue;
-		if (mcp_append(&text, &len, s) != 0) {
+			s = note = mcp_block_note(block, type);
+		if (s == NULL || mcp_append(&text, &len, s) != 0) {
 			clm_tool_fail(inv, "out of memory");
 			return;
 		}

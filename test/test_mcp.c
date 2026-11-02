@@ -464,6 +464,32 @@ test_image_blocks(uv_loop_t *loop)
 	    "bad image data gets a note");
 }
 
+static void
+test_other_blocks(uv_loop_t *loop)
+{
+	static const char result[] =
+	    "{\"content\":[{\"type\":\"text\",\"text\":\"a\"},"
+	    "{\"type\":\"audio\",\"mimeType\":\"audio/wav\",\"data\":\"AA==\"},"
+	    "{\"type\":\"resource_link\",\"uri\":\"file:///x\",\"name\":\"x\"},"
+	    "{\"type\":\"resource\",\"resource\":{\"uri\":\"file:///t\","
+	    "\"text\":\"body\"}},"
+	    "{\"type\":\"resource\",\"resource\":{\"uri\":\"file:///b\","
+	    "\"blob\":\"AA==\"}},"
+	    "{\"type\":\"video\"}]}";
+	struct state st;
+	char req[8192];
+
+	run_call(loop, false, result, &st, req, sizeof(req));
+	check(st.outcome == CLM_TOOL_OK &&
+	        strcmp(st.content,
+	            "a\n[audio omitted: audio/wav]\n"
+	            "[resource link: file:///x]\n"
+	            "[resource file:///t]\nbody\n"
+	            "[resource omitted: file:///b]\n"
+	            "[video block omitted]") == 0,
+	    "other blocks become notes");
+}
+
 static int
 test_mcp_suite(void *arg)
 {
@@ -476,6 +502,7 @@ test_mcp_suite(void *arg)
 	test_text_blocks(&loop);
 	test_is_error(&loop);
 	test_image_blocks(&loop);
+	test_other_blocks(&loop);
 	check(uv_loop_close(&loop) == 0, "close loop");
 
 	return 0;
