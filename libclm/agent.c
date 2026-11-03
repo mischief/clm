@@ -284,6 +284,23 @@ clm_agent_remove_pre_tool_hook(
 }
 
 int
+clm_agent_set_system_prompt_suffix(struct clm_agent *agent, const char *suffix)
+{
+	char *s = NULL;
+
+	ASSERT_RETURN(agent != NULL, -EINVAL);
+	if (suffix != NULL) {
+		s = strdup(suffix);
+		if (s == NULL)
+			return -ENOMEM;
+	}
+	free(agent->system_prompt_suffix);
+	agent->system_prompt_suffix = s;
+	agent->facts_pending = s != NULL;
+	return 0;
+}
+
+int
 clm_agent_set_prompt_part(
     struct clm_agent *agent, const char *key, const char *text)
 {

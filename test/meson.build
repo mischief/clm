@@ -223,7 +223,7 @@ if have_lua
       'help_popup', 'narrow_status', 'plugin_commands', 'expand_command',
       'shell_escape'],
     'tui_session': ['session', 'session_compact', 'resume_collapse',
-      'scratch', 'peers', 'mcp_spawn_fail'],
+      'scratch', 'scratch_clear', 'peers', 'mcp_spawn_fail'],
   }
   foreach name, cases : tui_groups
     test(name,

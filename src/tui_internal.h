@@ -106,6 +106,9 @@ struct ui {
 	struct clm_mcp_client **mcp_clients;
 	size_t mcp_client_count;
 	struct clm_session *session; /* NULL = session logging disabled */
+	/* The agent's system prompt suffix: host facts, the scratch dir and
+	 * the session id. It follows the session. */
+	char *host_block;
 
 	uv_poll_t stdin_poll;
 	uv_timer_t repaint;

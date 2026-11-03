@@ -617,37 +617,6 @@ sweep_scratch(int64_t keep_days)
 	clm_session_list_free(infos, n);
 }
 
-/*
- * Give the agent a private directory for throwaway files: exported to tools
- * as CLM_SCRATCH and named in the system prompt, since a model that is not
- * told where to put scratch files puts them in the user's tree.
- */
-static char *
-attach_scratch(
-    const char *key, const char *sysinfo, bool is_session, char **dir_out)
-{
-	char *dir = clm_cli_scratch_dir(key);
-	char *block = NULL;
-
-	*dir_out = NULL;
-	if (dir == NULL)
-		return NULL;
-	(void)setenv("CLM_SCRATCH", dir, 1);
-	if (asprintf(&block,
-	        "%s\n\nscratch directory for this session: %s\n"
-	        "Put working files, downloads, and intermediate output there "
-	        "rather than in the user's tree or /tmp. It is also "
-	        "$CLM_SCRATCH in any command you run.%s%s",
-	        sysinfo != NULL ? sysinfo : "", dir,
-	        is_session ? "\n\nthis session's id: " : "",
-	        is_session ? key : "") < 0) {
-		free(dir);
-		return NULL;
-	}
-	*dir_out = dir;
-	return block;
-}
-
 static char *
 resolve_session_prefix(const char *frag)
 {
@@ -1314,7 +1283,7 @@ main(int argc, char *argv[])
 		/* Named after the session so the sweep below can tell a
 		 * directory whose session is gone from one still in use. */
 		if (sess != NULL) {
-			host_block = attach_scratch(
+			host_block = clm_cli_scratch_attach(
 			    clm_session_id(sess), sysinfo, true, &scratch);
 			if (host_block != NULL)
 				cfg.system_prompt_suffix = host_block;
@@ -1375,7 +1344,7 @@ main(int argc, char *argv[])
 	 * prompt cache still matches. Otherwise key it by pid; the empty ones
 	 * are removed on the way out and the sweep takes the rest. */
 	if (dsess != NULL) {
-		host_block = attach_scratch(
+		host_block = clm_cli_scratch_attach(
 		    clm_session_id(dsess), sysinfo, true, &scratch);
 		if (host_block != NULL)
 			cfg.system_prompt_suffix = host_block;
@@ -1383,7 +1352,8 @@ main(int argc, char *argv[])
 		char key[32];
 
 		(void)snprintf(key, sizeof(key), "run-%ld", (long)getpid());
-		host_block = attach_scratch(key, sysinfo, false, &scratch);
+		host_block =
+		    clm_cli_scratch_attach(key, sysinfo, false, &scratch);
 		if (host_block != NULL)
 			cfg.system_prompt_suffix = host_block;
 	}

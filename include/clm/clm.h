@@ -755,6 +755,14 @@ CLM_API int clm_agent_remove_pre_tool_hook(
 CLM_API int clm_agent_set_prompt_part(
     struct clm_agent *agent, const char *key, const char *text);
 
+/*
+ * Replace the host facts that clm_cfg.system_prompt_suffix set, or remove
+ * them when suffix is NULL. The next turn sends them in a context update.
+ * Returns 0, or negative errno.
+ */
+CLM_API int clm_agent_set_system_prompt_suffix(
+    struct clm_agent *agent, const char *suffix);
+
 /* How many pre_tool hooks the agent has. */
 CLM_API size_t clm_agent_pre_tool_hook_count(const struct clm_agent *agent);
 CLM_API int clm_agent_add_turn_hook(

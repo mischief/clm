@@ -1080,6 +1080,42 @@ tests.scratch = function(url)
 	end
 end
 
+tests.scratch_clear = function(url)
+	-- /clear starts a new session, so the scratch dir, CLM_SCRATCH and
+	-- the id in the prompt move to it.
+	local root = STATE_HOME .. "/cache/clm/scratch"
+	local reqlog = STATE_HOME .. "/scratch-clear-requests.jsonl"
+
+	mock.request_log(reqlog)
+	local t = driver.new(BIN, url, { rows = 30, cols = 120 })
+	t:wait_for("online", 8)
+	t:send("say something\r")
+	t:pump(1.5)
+	t:send("/clear\r")
+	must(t:wait_for("[new session ", 5), "no new session")
+	local sid = t:text():match("%[new session ([%w%-]+)%]")
+	must(sid ~= nil, "no new session id")
+	t:send("! echo SCR=$CLM_SCRATCH\r")
+	must(t:wait_for("[! exit 0]", 10), "the ! command never ended")
+	check(has(t:text(), "SCR=" .. root .. "/" .. sid),
+	    "scratch_clear: CLM_SCRATCH names the new session's dir")
+	t:pump(1.5)
+	t:send("/quit\r")
+	t:pump(0.8)
+	t:close()
+	mock.request_log(nil)
+
+	local last = nil
+	for ln in (read_file(reqlog) or ""):gmatch("[^\n]+") do
+		last = ln
+	end
+	check(last ~= nil and has(last, "this session's id: " .. sid) and
+	    has(last, "scratch directory for this session: " .. root .. "/" ..
+	    sid), "scratch_clear: the prompt names the new session and dir")
+	local st = sys.stat(root .. "/" .. sid)
+	check(st ~= nil and st.dir, "scratch_clear: the new dir exists")
+end
+
 tests.help_popup = function(url)
 	-- ^G opens a scrollable popup of keys and slash commands.
 	local t = driver.new(BIN, url, { rows = 24, cols = 80 })
@@ -1429,7 +1465,8 @@ local ORDER = { "connection", "offline", "agent", "markdown", "scrollback",
 	"commands", "effort", "queueing", "permission", "cancel",
 	"cancel_tools", "tool_escapes", "shell_escape", "paste", "session",
 	"resume_collapse",
-	"session_compact", "clear_gauge", "scratch", "peers", "allow_all",
+	"session_compact", "clear_gauge", "scratch", "scratch_clear", "peers",
+	"allow_all",
 	"help_popup", "narrow_status", "plugin_commands",
 	"mcp_spawn_fail" }
 

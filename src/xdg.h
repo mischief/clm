@@ -3,6 +3,9 @@
 #ifndef CLM_XDG_H
 #define CLM_XDG_H
 
+#include <stdbool.h>
+#include <stddef.h>
+
 /*
  * Build a path under the XDG config dir: $XDG_CONFIG_HOME/<suffix> or
  * ~/.config/<suffix>. Returns a malloc'd string, or NULL.
@@ -22,6 +25,14 @@ char *xdg_cache_path(const char *suffix);
  * RAM. Returns a malloc'd path, or NULL if it could not be created.
  */
 char *clm_cli_scratch_dir(const char *key);
+
+/*
+ * Make the scratch directory for key, export it as CLM_SCRATCH, and return
+ * sysinfo plus a block that names it (and key, for a session), for the
+ * system prompt suffix. Sets *dir_out. Returns NULL on failure.
+ */
+char *clm_cli_scratch_attach(
+    const char *key, const char *sysinfo, bool is_session, char **dir_out);
 
 /*
  * Delete scratch directories whose key is not in `live` (n entries) or that

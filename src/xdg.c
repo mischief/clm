@@ -97,6 +97,32 @@ clm_cli_scratch_dir(const char *key)
 	return dir;
 }
 
+char *
+clm_cli_scratch_attach(
+    const char *key, const char *sysinfo, bool is_session, char **dir_out)
+{
+	char *dir = clm_cli_scratch_dir(key);
+	char *block = NULL;
+
+	*dir_out = NULL;
+	if (dir == NULL)
+		return NULL;
+	(void)setenv("CLM_SCRATCH", dir, 1);
+	if (asprintf(&block,
+	        "%s\n\nscratch directory for this session: %s\n"
+	        "Put working files, downloads, and intermediate output there "
+	        "rather than in the user's tree or /tmp. It is also "
+	        "$CLM_SCRATCH in any command you run.%s%s",
+	        sysinfo != NULL ? sysinfo : "", dir,
+	        is_session ? "\n\nthis session's id: " : "",
+	        is_session ? key : "") < 0) {
+		free(dir);
+		return NULL;
+	}
+	*dir_out = dir;
+	return block;
+}
+
 /* Remove a directory and the plain files directly inside it. */
 static void
 rmdir_shallow(const char *path)

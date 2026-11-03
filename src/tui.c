@@ -1157,6 +1157,26 @@ peer_rebind(struct ui *u)
 	    cb_peer_message, u, &u->peer);
 }
 
+/* Move the scratch dir and the session id in the prompt onto the current
+ * session. The old dir stays with the old session, for a resume. */
+static void
+scratch_rebind(struct ui *u)
+{
+	autofree char *sysinfo = clm_cli_sysinfo();
+	autofree char *dir = NULL;
+	char *block;
+
+	if (u->session == NULL)
+		return;
+	block = clm_cli_scratch_attach(
+	    clm_session_id(u->session), sysinfo, true, &dir);
+	if (block == NULL)
+		return;
+	(void)clm_agent_set_system_prompt_suffix(u->agent, block);
+	free(u->host_block);
+	u->host_block = block;
+}
+
 static const struct clm_callbacks tui_callbacks = {
     .on_assistant_text = cb_assistant_text,
     .on_reasoning = cb_reasoning,
@@ -3372,7 +3392,8 @@ cmd_agent(struct ui *u, const char *arg)
 			 * copies it, so this frees at the end of the switch. */
 			autofree char *sysinfo = clm_cli_sysinfo();
 
-			newcfg.system_prompt_suffix = sysinfo;
+			newcfg.system_prompt_suffix =
+			    u->host_block != NULL ? u->host_block : sysinfo;
 			newcfg.provider = clm_provider_from_str(pkind);
 			newcfg.stream = 1;
 			clm_cfg_apply_tuning(
@@ -3771,6 +3792,7 @@ cmd_clear(struct ui *u, const char *arg)
 		        u->agent_name, &u->session) == 0) {
 			set_session_short(u);
 			peer_rebind(u);
+			scratch_rebind(u);
 			ui_push(u, ST_META, "[new session ");
 			ui_push(u, ST_META, clm_session_id(u->session));
 			ui_push(u, ST_META, "]\n");
@@ -5044,6 +5066,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		free(u);
 		return 1;
 	}
+	/* Kept for a profile switch, which builds a new agent. */
+	if (cfg->system_prompt_suffix != NULL)
+		u->host_block = strdup(cfg->system_prompt_suffix);
 	apply_effort(u, cfg->provider_name, cfg->model);
 	clm_agent_set_spool(u->agent, cb_spool, u);
 
@@ -5319,6 +5344,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	free(u->agent_name);
 	free(u->provider_name);
 	free(u->shell_cmd);
+	free(u->host_block);
 	/*
 	 * A drain that timed out left a handle of ours still closing, and
 	 * libuv holds a pointer to it inside `u`. Freeing the struct now is
