@@ -16,8 +16,8 @@ static int callbacks;
 static void
 on_success(struct clm_http_response *resp, void *user)
 {
-	(void)resp;
 	(void)user;
+	free(resp->body); /* the callback owns the body */
 	callbacks++;
 }
 
