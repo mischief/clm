@@ -130,7 +130,9 @@ esp32_http_post(void *ctx, const struct clm_http_req *req,
 
 	/* Open the connection and stream the request/response by hand so body
 	 * chunks can be delivered incrementally. */
-	int blen = req->body != NULL ? (int)strlen(req->body) : 0;
+	int blen = req->body == NULL ? 0
+	    : req->body_len != 0     ? (int)req->body_len
+	                             : (int)strlen(req->body);
 	esp_err_t err = esp_http_client_open(c, blen);
 	if (err != ESP_OK) {
 		ESP_LOGW(TAG, "open failed: %s", esp_err_to_name(err));

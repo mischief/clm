@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include <curl/curl.h>
 #include <uv.h>
@@ -539,6 +540,28 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
     clm_http_error_cb error_cb, clm_http_data_cb data_cb,
     const char *client_suffix, void *user, struct clm_http_request **out_req)
 {
+	return clm_http_async_post_len(mux, url, api_key, json_body,
+	    json_body != NULL ? strlen(json_body) : 0, extra_headers,
+	    success_cb, error_cb, data_cb, client_suffix, user, out_req);
+}
+
+/* True when the list sets its own Content-Type. */
+static bool
+has_content_type(const struct curl_slist *h)
+{
+	for (; h != NULL; h = h->next)
+		if (strncasecmp(h->data, "Content-Type:", 13) == 0)
+			return true;
+	return false;
+}
+
+int
+clm_http_async_post_len(struct clm_http_mux *mux, const char *url,
+    const char *api_key, const char *json_body, size_t body_len,
+    struct curl_slist *extra_headers, clm_http_success_cb success_cb,
+    clm_http_error_cb error_cb, clm_http_data_cb data_cb,
+    const char *client_suffix, void *user, struct clm_http_request **out_req)
+{
 	struct clm_http_request *req;
 	char *auth_header;
 	size_t auth_header_len;
@@ -587,9 +610,11 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 	 * (e.g. secrets.lua's llm7 = "", a real "no key needed" free-tier
 	 * entry, not an unconfigured one) sent no Content-Type at all, and
 	 * more than one backend (llm7.io included) 400s a JSON POST with no
-	 * Content-Type rather than inferring it from the body. */
-	req->headers =
-	    curl_slist_append(NULL, "Content-Type: application/json");
+	 * Content-Type rather than inferring it from the body. A caller
+	 * header replaces it, for a body that is not JSON. */
+	if (!has_content_type(extra_headers))
+		req->headers =
+		    curl_slist_append(NULL, "Content-Type: application/json");
 	if (api_key != NULL && api_key[0] != '\0') {
 		auth_header_len =
 		    sizeof("Authorization: Bearer ") + strlen(api_key);
@@ -629,7 +654,7 @@ clm_http_async_post(struct clm_http_mux *mux, const char *url,
 		 * JSON. Set the size first: without it, curl refuses a body
 		 * over 8 MB and the POST goes out empty. */
 		curl_easy_setopt(req->easy_handle, CURLOPT_POSTFIELDSIZE_LARGE,
-		    (curl_off_t)strlen(json_body));
+		    (curl_off_t)body_len);
 		if (curl_easy_setopt(req->easy_handle, CURLOPT_COPYPOSTFIELDS,
 		        json_body) != CURLE_OK) {
 			clm_debug("request body copy failed");

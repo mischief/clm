@@ -39,6 +39,10 @@ struct clm_http_req {
 	const char *const *headers; /* NULL-terminated extra headers, or NULL */
 	const char
 	    *client_suffix; /* User-Agent "(tool: <suffix>)" tag, or NULL */
+	/* Length of body. 0 means strlen(body). Set it for a binary body,
+	 * which can hold NUL bytes. A Content-Type entry in headers replaces
+	 * the default application/json. */
+	size_t body_len;
 };
 
 /* One-shot timer callback. */

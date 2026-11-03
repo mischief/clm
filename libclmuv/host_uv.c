@@ -157,7 +157,11 @@ host_uv_http_post(void *ctx, const struct clm_http_req *req,
 		}
 	}
 
-	rc = clm_http_async_post(hctx->mux, req->url, req->api_key, req->body,
+	rc = clm_http_async_post_len(hctx->mux, req->url, req->api_key,
+	    req->body,
+	    req->body == NULL        ? 0
+	        : req->body_len != 0 ? req->body_len
+	                             : strlen(req->body),
 	    hdrs, host_uv_http_success, host_uv_http_error,
 	    data != NULL ? host_uv_http_data : NULL, req->client_suffix, call,
 	    &r);
