@@ -153,11 +153,12 @@ is_tool_result_carrier(const cJSON *msg)
  * OOM/malformed input (in which case *system_out is left untouched).
  */
 /*
- * An image_url part in Anthropic's shape. A data URL splits into media
- * type and base64 data; any other URL becomes a url source.
+ * An image_url part in Anthropic's shape. An uploaded image becomes a file
+ * source. A data URL splits into media type and base64 data; any other URL
+ * becomes a url source.
  */
 static cJSON *
-image_block(const char *url)
+image_block(const char *url, const char *file_id)
 {
 	cJSON *block = cJSON_CreateObject();
 	cJSON *src = cJSON_CreateObject();
@@ -166,7 +167,11 @@ image_block(const char *url)
 
 	if (block == NULL || src == NULL)
 		goto fail;
-	if (strncmp(url, "data:", 5) == 0 && semi != NULL &&
+	if (file_id != NULL) {
+		if (cJSON_AddStringToObject(src, "type", "file") == NULL ||
+		    cJSON_AddStringToObject(src, "file_id", file_id) == NULL)
+			goto fail;
+	} else if (strncmp(url, "data:", 5) == 0 && semi != NULL &&
 	    comma == semi + 7) {
 		char *mt = strndup(url + 5, (size_t)(semi - (url + 5)));
 
@@ -220,15 +225,17 @@ append_part_blocks(cJSON *blocks, const cJSON *parts)
 				return -1;
 			}
 		} else if (type != NULL && strcmp(type, "image_url") == 0) {
+			const cJSON *iu =
+			    cJSON_GetObjectItemCaseSensitive(p, "image_url");
 			const char *url = cJSON_GetStringValue(
-			    cJSON_GetObjectItemCaseSensitive(
-			        cJSON_GetObjectItemCaseSensitive(
-			            p, "image_url"),
-			        "url"));
+			    cJSON_GetObjectItemCaseSensitive(iu, "url"));
 
 			if (url == NULL)
 				continue;
-			b = image_block(url);
+			b = image_block(url,
+			    cJSON_GetStringValue(
+			        cJSON_GetObjectItemCaseSensitive(
+			            iu, "file_id")));
 			if (b == NULL)
 				return -1;
 		} else {

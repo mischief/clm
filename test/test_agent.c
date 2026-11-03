@@ -25,6 +25,7 @@ struct tstate {
 	int stream;
 	enum clm_provider provider;
 	int vision;
+	int file_uploads; /* also points base_url at /v1/messages */
 	const char *system_prompt;
 	const char *system_prompt_suffix;
 	const char *effort;
@@ -226,12 +227,13 @@ make_agent(struct tstate *st, int port)
 	struct clm_cfg cfg = {0};
 	int r;
 
-	(void)snprintf(
-	    url, sizeof(url), "http://127.0.0.1:%d/v1/chat/completions", port);
+	(void)snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/%s", port,
+	    st->file_uploads ? "messages" : "chat/completions");
 	cfg.api_key = "test";
 	cfg.base_url = url;
 	cfg.provider = st->provider;
 	cfg.vision = st->vision;
+	cfg.file_uploads = st->file_uploads;
 	cfg.model = "test-model";
 	cfg.stream = st->stream;
 	cfg.system_prompt = st->system_prompt;
@@ -604,6 +606,232 @@ test_read_image_anthropic(uv_loop_t *loop)
 	            "iVBORw0KGgo", 11) == 0,
 	    "read_image anthropic: base64 image source");
 	cJSON_Delete(body);
+	teardown(&st, srv);
+	unlink(img);
+}
+
+static const char anth_done[] =
+    "{\"id\":\"m2\",\"type\":\"message\",\"role\":\"assistant\","
+    "\"content\":[{\"type\":\"text\",\"text\":\"done\"}],"
+    "\"stop_reason\":\"end_turn\","
+    "\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}";
+
+/* Queue an Anthropic reply that calls read_image on path. */
+static void
+queue_read_image(struct canned_server *srv, const char *path)
+{
+	char reply[512];
+
+	(void)snprintf(reply, sizeof(reply),
+	    "{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":"
+	    "\"read_image\",\"input\":{\"path\":\"%s\"}}],\"stop_reason\":"
+	    "\"tool_use\",\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}",
+	    path);
+	canned_reply(srv, reply);
+}
+
+/* Then the upload reply, then a final text reply. */
+static void
+queue_image_turn(
+    struct canned_server *srv, const char *path, int status, const char *up)
+{
+	queue_read_image(srv, path);
+	canned_reply_status(srv, status, up);
+	canned_reply(srv, anth_done);
+}
+
+/* The image source of the last tool_result in an Anthropic request. */
+static cJSON *
+last_image_source(cJSON *body)
+{
+	cJSON *msgs = cJSON_GetObjectItemCaseSensitive(body, "messages");
+
+	for (int i = cJSON_GetArraySize(msgs) - 1; i >= 0; i--) {
+		cJSON *tr = cJSON_GetArrayItem(
+		    cJSON_GetObjectItemCaseSensitive(
+		        cJSON_GetArrayItem(msgs, i), "content"),
+		    0);
+		cJSON *parts = cJSON_GetObjectItemCaseSensitive(tr, "content");
+
+		if (cJSON_IsArray(parts))
+			return cJSON_GetObjectItemCaseSensitive(
+			    cJSON_GetArrayItem(parts, 1), "source");
+	}
+	return NULL;
+}
+
+/* (b1f) An image goes up to /v1/files once; the request and every later
+ * one name it by file id. */
+static void
+test_file_upload(uv_loop_t *loop)
+{
+	static const uint8_t png_magic[] = {0x89, 'P', 'N', 'G'};
+	char img[] = "/tmp/clm-test-image-XXXXXX";
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *up;
+	size_t uplen = 0;
+	cJSON *body, *src;
+	const char *sent;
+
+	CHECK(write_test_png(img), "file upload: temp png");
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	st.file_uploads = 1;
+	srv = canned_start(loop);
+	queue_image_turn(srv, img, 200,
+	    "{\"id\":\"file_abc\",\"type\":\"file\",\"mime_type\":"
+	    "\"image/png\"}");
+	canned_reply(srv, anth_done);
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+	run_until_done(&st);
+	CHECK(st.turn_status == 0, "file upload: turn ok");
+	CHECK(canned_request_count(srv) == 3, "file upload: three requests");
+
+	up = canned_request(srv, 1, &uplen);
+	CHECK(up != NULL && strncmp(up, "POST /v1/files ", 15) == 0,
+	    "file upload: posted to /v1/files");
+	CHECK(up != NULL &&
+	        strstr(up, "multipart/form-data; boundary=clm-") != NULL &&
+	        strstr(up, "application/json") == NULL,
+	    "file upload: multipart content type only");
+	CHECK(up != NULL && strstr(up, "x-api-key: test") != NULL &&
+	        strstr(up, "anthropic-version:") != NULL &&
+	        strstr(up, "Authorization:") == NULL,
+	    "file upload: anthropic auth headers");
+	CHECK(up != NULL &&
+	        memmem(up, uplen, png_magic, sizeof(png_magic)) != NULL &&
+	        memmem(up, uplen, "expires_in_seconds", 18) != NULL,
+	    "file upload: raw image bytes and expiry");
+
+	body = request_json(canned_request(srv, 2, NULL));
+	src = last_image_source(body);
+	CHECK(src != NULL &&
+	        strcmp(cJSON_GetStringValue(
+	                   cJSON_GetObjectItemCaseSensitive(src, "type")),
+	            "file") == 0 &&
+	        strcmp(cJSON_GetStringValue(
+	                   cJSON_GetObjectItemCaseSensitive(src, "file_id")),
+	            "file_abc") == 0,
+	    "file upload: image sent as file source");
+	sent = canned_request(srv, 2, NULL);
+	CHECK(sent != NULL && strstr(sent, "iVBORw0KGgo") == NULL,
+	    "file upload: no inline image bytes");
+	cJSON_Delete(body);
+
+	st.turn_done = 0;
+	CHECK(clm_agent_submit(st.agent, "again") == 0, "submit again");
+	run_until_done(&st);
+	CHECK(canned_request_count(srv) == 4, "file upload: no second upload");
+	sent = canned_last_request(srv);
+	CHECK(sent != NULL &&
+	        strstr(sent, "\"file_id\":\"file_abc\"") != NULL &&
+	        strstr(sent, "iVBORw0KGgo") == NULL,
+	    "file upload: later turn reuses the file id");
+	teardown(&st, srv);
+	unlink(img);
+}
+
+/* (b1g) A failed upload sends the image inline and is not tried again. */
+static void
+test_file_upload_fails(uv_loop_t *loop)
+{
+	char img[] = "/tmp/clm-test-image-XXXXXX";
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *sent;
+
+	CHECK(write_test_png(img), "upload fails: temp png");
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	st.file_uploads = 1;
+	srv = canned_start(loop);
+	queue_image_turn(srv, img, 500, "{\"type\":\"error\"}");
+	canned_reply(srv, anth_done);
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+	run_until_done(&st);
+	CHECK(st.turn_status == 0, "upload fails: turn ok");
+	sent = canned_request(srv, 2, NULL);
+	CHECK(sent != NULL && strstr(sent, "iVBORw0KGgo") != NULL &&
+	        strstr(sent, "file_id") == NULL,
+	    "upload fails: image sent inline");
+
+	st.turn_done = 0;
+	CHECK(clm_agent_submit(st.agent, "again") == 0, "submit again");
+	run_until_done(&st);
+	CHECK(canned_request_count(srv) == 4, "upload fails: no retry");
+	teardown(&st, srv);
+	unlink(img);
+}
+
+/* (b1l) The server lost an uploaded file: upload again and resend. */
+static void
+test_file_upload_lost(uv_loop_t *loop)
+{
+	char img[] = "/tmp/clm-test-image-XXXXXX";
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *sent;
+
+	CHECK(write_test_png(img), "upload lost: temp png");
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	st.file_uploads = 1;
+	srv = canned_start(loop);
+	queue_read_image(srv, img);
+	canned_reply(srv, "{\"id\":\"file_abc\"}");
+	canned_reply_status(srv, 404,
+	    "{\"type\":\"error\",\"error\":{\"type\":\"not_found_error\","
+	    "\"message\":\"File `file_abc` not found.\"}}");
+	canned_reply(srv, "{\"id\":\"file_def\"}");
+	canned_reply(srv, anth_done);
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+	run_until_done(&st);
+	CHECK(st.turn_status == 0, "upload lost: turn ok");
+	CHECK(canned_request_count(srv) == 5, "upload lost: five requests");
+	sent = canned_request(srv, 3, NULL);
+	CHECK(sent != NULL && strncmp(sent, "POST /v1/files ", 15) == 0,
+	    "upload lost: uploaded again");
+	sent = canned_last_request(srv);
+	CHECK(sent != NULL && strstr(sent, "\"file_id\":\"file_def\"") != NULL,
+	    "upload lost: resent with the new id");
+	teardown(&st, srv);
+	unlink(img);
+}
+
+/* (b1h) A cancel while an upload is in flight ends the turn as cancelled. */
+static void
+test_file_upload_cancel(uv_loop_t *loop)
+{
+	char img[] = "/tmp/clm-test-image-XXXXXX";
+	struct tstate st = {0};
+	struct canned_server *srv;
+	int spins = 0;
+
+	CHECK(write_test_png(img), "upload cancel: temp png");
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	st.file_uploads = 1;
+	srv = canned_start(loop);
+	queue_image_turn(srv, img, 200, "{\"id\":\"file_abc\"}");
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "look") == 0, "submit");
+	while (canned_request_count(srv) < 1 && spins++ < 10000)
+		uv_run(loop, UV_RUN_ONCE);
+	canned_pause_next(srv);
+	while (canned_request_count(srv) < 2 && spins++ < 10000)
+		uv_run(loop, UV_RUN_ONCE);
+	CHECK(canned_request_count(srv) == 2, "upload cancel: upload sent");
+	CHECK(clm_agent_cancel(st.agent) == 0, "upload cancel: cancel ok");
+	run_until_done(&st);
+	CHECK(st.turn_status == -ECANCELED, "upload cancel: turn cancelled");
+	CHECK(clm_agent_get_state(st.agent) == CLM_STATE_COMPLETE,
+	    "upload cancel: agent idle");
+	canned_resume(srv);
 	teardown(&st, srv);
 	unlink(img);
 }
@@ -4441,6 +4669,10 @@ test_agent_suite(void *arg)
 	test_read_image(&loop);
 	test_read_image_responses(&loop);
 	test_read_image_anthropic(&loop);
+	test_file_upload(&loop);
+	test_file_upload_fails(&loop);
+	test_file_upload_lost(&loop);
+	test_file_upload_cancel(&loop);
 	test_read_image_no_vision(&loop);
 	test_binary_tool_output(&loop);
 	test_bg_exec(&loop);

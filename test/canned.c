@@ -25,6 +25,9 @@ struct canned_server {
 
 	char *last_request;
 	size_t request_count;
+	/* The first CANNED_KEEP requests, raw: a body can hold NUL bytes. */
+	char *kept[CANNED_KEEP];
+	size_t kept_len[CANNED_KEEP];
 	bool pause_next;
 	struct conn *paused;
 	bool hold_next;
@@ -210,6 +213,14 @@ respond(struct conn *c)
 
 	free(srv->last_request);
 	srv->last_request = strdup(c->buf ? c->buf : "");
+	if (srv->request_count < CANNED_KEEP && c->buf != NULL) {
+		srv->kept[srv->request_count] = malloc(c->len + 1);
+		if (srv->kept[srv->request_count] != NULL) {
+			memcpy(
+			    srv->kept[srv->request_count], c->buf, c->len + 1);
+			srv->kept_len[srv->request_count] = c->len;
+		}
+	}
 	srv->request_count++;
 	c->request_seen = true;
 
@@ -368,6 +379,16 @@ canned_last_request(const struct canned_server *s)
 	return s->last_request;
 }
 
+const char *
+canned_request(const struct canned_server *s, size_t i, size_t *len)
+{
+	if (i >= CANNED_KEEP || s->kept[i] == NULL)
+		return NULL;
+	if (len != NULL)
+		*len = s->kept_len[i];
+	return s->kept[i];
+}
+
 static void
 on_listener_close(uv_handle_t *handle)
 {
@@ -378,6 +399,8 @@ on_listener_close(uv_handle_t *handle)
 	free(srv->replies);
 	free(srv->statuses);
 	free(srv->last_request);
+	for (i = 0; i < CANNED_KEEP; i++)
+		free(srv->kept[i]);
 	free(srv);
 }
 

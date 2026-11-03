@@ -350,6 +350,13 @@ struct clm_cfg {
 	 * zero-value default is false.
 	 */
 	bool disable_parallel_tool_calls;
+
+	/*
+	 * Upload images to the provider's files endpoint and send each one by
+	 * file id: 1 yes, -1 no, 0 only for an Anthropic provider at
+	 * api.anthropic.com. An image whose upload fails goes inline.
+	 */
+	int file_uploads;
 };
 
 /*

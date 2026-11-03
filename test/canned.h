@@ -48,6 +48,13 @@ size_t canned_request_count(const struct canned_server *s);
 /* The body of the most recent request (NUL-terminated), or NULL. */
 const char *canned_last_request(const struct canned_server *s);
 
+/* Request i (from 0), headers and body as received, NUL-terminated. Sets
+ * *len to its length, which counts NUL bytes in a binary body. NULL past
+ * the first CANNED_KEEP requests. */
+#define CANNED_KEEP 8
+const char *canned_request(
+    const struct canned_server *s, size_t i, size_t *len);
+
 /* Close the server. Run the loop afterwards so the close completes. */
 void canned_stop(struct canned_server *s);
 

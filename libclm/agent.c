@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 #include <cjson/cJSON.h>
@@ -178,6 +179,19 @@ clm_derive_props_url(const char *base_url)
 	memcpy(out, base_url, prefix);
 	memcpy(out + prefix, props, sizeof(props));
 	return out;
+}
+
+/* Whether images go to the files endpoint; see clm_cfg.file_uploads. */
+static bool
+agent_wants_file_uploads(const struct clm_agent *agent)
+{
+	static const char api[] = "https://api.anthropic.com/";
+
+	if (agent->llm->provider != CLM_PROVIDER_ANTHROPIC ||
+	    agent->file_uploads_cfg < 0)
+		return false;
+	return agent->file_uploads_cfg > 0 ||
+	    strncmp(agent->llm->base_url, api, sizeof(api) - 1) == 0;
 }
 
 /*
@@ -586,6 +600,8 @@ clm_agent_new(const struct clm_cfg *cfg, struct clm_host *host,
 	if (cfg->context_size > 0)
 		agent->ctx_max = cfg->context_size;
 	agent->vision = agent->vision_cfg = cfg->vision;
+	agent->file_uploads_cfg = cfg->file_uploads;
+	agent->file_uploads = agent_wants_file_uploads(agent);
 	if (cfg->autocompact_pct > 0)
 		agent->autocompact_pct = cfg->autocompact_pct;
 	agent->autocompact_tokens = cfg->autocompact_tokens;
@@ -659,6 +675,7 @@ clm_agent_free(struct clm_agent *agent)
 	free(agent->last_error);
 	free(agent->models_url);
 	free(agent->props_url);
+	clm_files_clear(agent);
 	free(agent->compact_body);
 	free(agent->compact_effort);
 	for (size_t i = 0; i < agent->n_prompt_parts; i++) {
@@ -1734,7 +1751,10 @@ compact_build(struct clm_agent *agent, const char *effort)
 	char target[64];
 
 	messages = clm_history_to_json(&agent->history, agent->compressor);
-	if (messages == NULL || apply_prompt_parts(agent, messages) < 0) {
+	/* Images uploaded already go by id; the rest go inline. */
+	if (messages == NULL || apply_prompt_parts(agent, messages) < 0 ||
+	    (agent->file_uploads &&
+	        clm_files_apply(agent, messages, NULL) < 0)) {
 		cJSON_Delete(messages);
 		return -ENOMEM;
 	}
@@ -2203,6 +2223,20 @@ clm_http_success_cb_wrapper(struct clm_http_response *resp, void *user)
 		    strstr(resp->body, "No tool output found") != NULL &&
 		    clm_history_repair_dangling_tool_calls(&agent->history) >
 		        0) {
+			clm_http_response_free(resp);
+			clm_async_turn_free(turn);
+			clm_agent_start_turn(agent);
+			return;
+		}
+
+		/* A file the request names is gone (deleted or expired). Upload
+		 * again once; after a second loss, send images inline. */
+		if (status == 404 && agent->nfiles > 0 && resp != NULL &&
+		    resp->body != NULL &&
+		    strstr(resp->body, "File `file_") != NULL) {
+			clm_files_clear(agent);
+			if (++agent->files_lost > 1)
+				agent->file_uploads = false;
 			clm_http_response_free(resp);
 			clm_async_turn_free(turn);
 			clm_agent_start_turn(agent);
@@ -3272,6 +3306,11 @@ clm_agent_set_provider(struct clm_agent *agent, const struct clm_cfg *cfg)
 	agent->vision = agent->vision_cfg = cfg->vision;
 	agent->autocompact_pct =
 	    cfg->autocompact_pct > 0 ? cfg->autocompact_pct : 0;
+	/* File ids belong to one account's workspace. */
+	clm_files_clear(agent);
+	agent->files_lost = 0;
+	agent->file_uploads_cfg = cfg->file_uploads;
+	agent->file_uploads = agent_wants_file_uploads(agent);
 
 	/* Only rebuild the LLM rate limiter if the new provider actually
 	 * overrides it; otherwise keep the bucket (and its accumulated
@@ -3420,6 +3459,152 @@ agent_flush_pending_notify(struct clm_agent *agent)
 		clm_agent_emit_message(agent, m);
 }
 
+/* One image upload in flight. url is the data URL it sends. */
+struct file_upload {
+	struct clm_agent *agent;
+	char *url;
+};
+
+/* Record the result, then send the turn the upload held back. */
+static void
+file_upload_finish(struct file_upload *up, const char *file_id)
+{
+	struct clm_agent *agent = up->agent;
+
+	/* Without an entry the next pass would try this image again. */
+	if (clm_files_add(agent, up->url, file_id) < 0)
+		agent->file_uploads = false;
+	free(up->url);
+	free(up);
+	clm_agent_start_turn(agent);
+}
+
+static void
+file_upload_success(struct clm_http_response *resp, void *user)
+{
+	struct file_upload *up = user;
+	autofree char *id = NULL;
+
+	up->agent->inflight = NULL;
+	if (resp->status_code >= 200 && resp->status_code < 300)
+		id = clm_files_parse_id(resp->body);
+	else
+		clm_debug("upload: HTTP %d: %s", resp->status_code,
+		    resp->body != NULL ? resp->body : "");
+	/* No files endpoint here: stop trying. */
+	if (resp->status_code == 404 || resp->status_code == 405)
+		up->agent->file_uploads = false;
+	clm_http_response_free(resp);
+	file_upload_finish(up, id);
+}
+
+static void
+file_upload_error(int error_code, const char *error_msg, void *user)
+{
+	struct file_upload *up = user;
+	struct clm_agent *agent = up->agent;
+
+	agent->inflight = NULL;
+	if (error_code != -ECANCELED) {
+		clm_debug("upload: %s", error_msg != NULL ? error_msg : "");
+		file_upload_finish(up, NULL);
+		return;
+	}
+	free(up->url);
+	free(up);
+	agent->state = CLM_STATE_COMPLETE;
+	if (agent->cb_on_state)
+		agent->cb_on_state(agent->state, agent->cb_user);
+	agent_turn_done(agent, -ECANCELED);
+}
+
+/*
+ * The headers for an upload: the provider's auth plus the multipart type.
+ * ret_auth tells whether the provider's own auth headers are in the list.
+ */
+static char **
+file_upload_headers(
+    const struct clm_agent *agent, const char *boundary, bool *ret_auth)
+{
+	const struct clm_provider_ops *ops =
+	    clm_provider_ops_get(agent->llm->provider);
+	char **auth = ops->build_auth_headers
+	    ? ops->build_auth_headers(agent->llm)
+	    : NULL;
+	size_t n = 0;
+	char **out;
+
+	*ret_auth = auth != NULL;
+	/* Keep all but the provider's JSON Content-Type. */
+	for (size_t i = 0; auth != NULL && auth[i] != NULL; i++) {
+		if (strncasecmp(auth[i], "Content-Type:", 13) == 0)
+			free(auth[i]);
+		else
+			auth[n++] = auth[i];
+	}
+	out = (char **)reallocarray((void *)auth, n + 2, sizeof(*out));
+	if (out == NULL)
+		out = auth;
+	else if (asprintf(&out[n],
+	             "Content-Type: multipart/form-data; boundary=%s",
+	             boundary) >= 0) {
+		out[n + 1] = NULL;
+		return out;
+	}
+	for (size_t i = 0; out != NULL && i < n; i++)
+		free(out[i]);
+	free((void *)out);
+	return NULL;
+}
+
+/*
+ * Upload the image in url. True when the upload is in flight, and its
+ * completion starts the turn again. False when the image goes inline.
+ */
+static bool
+file_upload_start(struct clm_agent *agent, const char *url)
+{
+	autofree char *files_url = clm_files_url(agent->llm->base_url);
+	char boundary[CLM_FILE_BOUNDARY_LEN];
+	size_t len = 0;
+	autofree char *body = NULL;
+	autofreev char **headers = NULL;
+	struct file_upload *up;
+	struct clm_http_req req = {0};
+	bool auth = false;
+
+	if (files_url == NULL) {
+		agent->file_uploads = false;
+		return false;
+	}
+	body = clm_files_multipart(url, boundary, &len);
+	headers =
+	    body != NULL ? file_upload_headers(agent, boundary, &auth) : NULL;
+	up = headers != NULL ? calloc(1, sizeof(*up)) : NULL;
+	if (up != NULL)
+		up->url = strdup(url);
+	if (up == NULL || up->url == NULL) {
+		free(up);
+		if (clm_files_add(agent, url, NULL) < 0)
+			agent->file_uploads = false;
+		return false;
+	}
+	up->agent = agent;
+	req.url = files_url;
+	req.body = body;
+	req.body_len = len;
+	req.headers = (const char *const *)headers;
+	req.api_key = auth ? NULL : agent->llm->api_key;
+	if (agent->host->http_post(agent->host->ctx, &req, file_upload_success,
+	        file_upload_error, NULL, up, &agent->inflight) < 0) {
+		free(up->url);
+		free(up);
+		agent->file_uploads = false;
+		return false;
+	}
+	return true;
+}
+
 static void
 clm_agent_start_turn(struct clm_agent *agent)
 {
@@ -3445,6 +3630,19 @@ clm_agent_start_turn(struct clm_agent *agent)
 	if (messages != NULL && apply_prompt_parts(agent, messages) < 0) {
 		cJSON_Delete(messages);
 		messages = NULL;
+	}
+	if (messages != NULL && agent->file_uploads) {
+		const char *missing;
+
+		if (clm_files_apply(agent, messages, &missing) < 0) {
+			cJSON_Delete(messages);
+			messages = NULL;
+		} else if (missing != NULL &&
+		    file_upload_start(agent, missing)) {
+			/* The upload's completion starts this turn again. */
+			cJSON_Delete(messages);
+			return;
+		}
 	}
 	/* Skip building/attaching "tools" entirely once this model/provider
 	 * has told us it doesn't support them (see clm_http_success_cb_wrapper)

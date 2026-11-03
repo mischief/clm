@@ -3,7 +3,10 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include <cjson/cJSON.h>
 
 #include "clm/internal.h"
 #include "tap.h"
@@ -141,10 +144,132 @@ test_rejects(void)
 	CHECK(clm_image_sniff(NULL, 0, NULL, NULL, NULL) == -EINVAL, "NULL");
 }
 
+static void
+test_files_url(void)
+{
+	char *u = clm_files_url("https://api.anthropic.com/v1/messages");
+
+	CHECK(u != NULL && strcmp(u, "https://api.anthropic.com/v1/files") == 0,
+	    "files url from messages url");
+	free(u);
+	CHECK(clm_files_url("http://h/v1/chat/completions") == NULL,
+	    "no files url for another endpoint");
+	CHECK(
+	    clm_files_url("messages") == NULL, "no files url for a bare word");
+}
+
+static void
+test_files_parse_id(void)
+{
+	char *id =
+	    clm_files_parse_id("{\"id\":\"file_01Ab-9\",\"type\":\"file\"}");
+
+	CHECK(id != NULL && strcmp(id, "file_01Ab-9") == 0, "upload id parsed");
+	free(id);
+	CHECK(clm_files_parse_id("{\"id\":\"file\\\"x\"}") == NULL,
+	    "id with a quote is refused");
+	CHECK(clm_files_parse_id("{\"id\":\"\"}") == NULL, "empty id refused");
+	CHECK(clm_files_parse_id("{\"type\":\"file\"}") == NULL, "no id");
+	CHECK(clm_files_parse_id("not json") == NULL, "bad json");
+	CHECK(clm_files_parse_id(NULL) == NULL, "NULL body");
+}
+
+static void
+test_files_multipart(void)
+{
+	static const char head_end[] = "Content-Type: image/png\r\n\r\nhi!";
+	char boundary[CLM_FILE_BOUNDARY_LEN];
+	char tail[128];
+	size_t len = 0;
+	char *b =
+	    clm_files_multipart("data:image/png;base64,aGkh", boundary, &len);
+
+	CHECK(b != NULL, "multipart built");
+	if (b == NULL)
+		return;
+	CHECK(strncmp(b, "--clm-", 6) == 0 &&
+	        strncmp(b + 2, boundary, strlen(boundary)) == 0,
+	    "multipart starts with the boundary");
+	CHECK(strstr(b, "name=\"file\"") != NULL && strstr(b, head_end) != NULL,
+	    "file part holds the decoded bytes");
+	(void)snprintf(tail, sizeof(tail), "\r\n--%s--\r\n", boundary);
+	CHECK(len == strlen(b) && len > strlen(tail) &&
+	        strcmp(b + len - strlen(tail), tail) == 0,
+	    "multipart ends with the closing boundary");
+	CHECK(
+	    strstr(b, "name=\"expires_in_seconds\"\r\n\r\n2592000\r\n") != NULL,
+	    "expiry field");
+	free(b);
+	CHECK(clm_files_multipart(
+	          "data:image/png;base64,a=b!", boundary, &len) == NULL,
+	    "bad base64 refused");
+	CHECK(clm_files_multipart("https://x/y.png", boundary, &len) == NULL,
+	    "not a data URL");
+}
+
+static void
+test_files_apply(void)
+{
+	static const char json[] =
+	    "[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\","
+	    "\"image_url\":{\"url\":\"data:image/png;base64,QUFB\"}},"
+	    "{\"type\":\"image_url\",\"image_url\":{\"url\":"
+	    "\"data:image/png;base64,QkJC\"}}]}]";
+	struct clm_agent *a = calloc(1, sizeof(*a));
+	cJSON *m = cJSON_Parse(json);
+	const char *missing = NULL;
+	char url[64];
+	int r = 0;
+
+	CHECK(a != NULL && m != NULL, "apply: setup");
+	if (a == NULL || m == NULL)
+		goto done;
+	CHECK(clm_files_add(a, "data:image/png;base64,QUFB", "file_a") == 0,
+	    "add first");
+	CHECK(clm_files_apply(a, m, &missing) == 0 && missing != NULL &&
+	        strcmp(missing, "data:image/png;base64,QkJC") == 0,
+	    "second image needs an upload");
+	{
+		char *s = cJSON_PrintUnformatted(m);
+
+		CHECK(s != NULL && strstr(s, "\"file_id\":\"file_a\"") != NULL,
+		    "first image named by id");
+		free(s);
+	}
+	CHECK(clm_files_add(a, "data:image/png;base64,QkJC", NULL) == 0,
+	    "record a failed upload");
+	cJSON_Delete(m);
+	m = cJSON_Parse(json);
+	CHECK(clm_files_apply(a, m, &missing) == 0 && missing == NULL,
+	    "a failed upload is not tried again");
+	a->files[0].when -= CLM_FILE_REUSE_SECS + 1;
+	cJSON_Delete(m);
+	m = cJSON_Parse(json);
+	CHECK(clm_files_apply(a, m, &missing) == 0 && missing != NULL &&
+	        strcmp(missing, "data:image/png;base64,QUFB") == 0,
+	    "an old upload goes up again");
+	clm_files_clear(a);
+	for (int i = 0; i < CLM_FILES_MAX && r == 0; i++) {
+		(void)snprintf(url, sizeof(url), "data:image/png;base64,%d", i);
+		r = clm_files_add(a, url, "file_x");
+	}
+	CHECK(r == 0 && clm_files_add(a, "data:x;base64,", NULL) == -ENOSPC,
+	    "the cache is capped");
+done:
+	if (a != NULL)
+		clm_files_clear(a);
+	free(a);
+	cJSON_Delete(m);
+}
+
 static int
 test_image_suite(void *arg)
 {
 	(void)arg;
+	test_files_url();
+	test_files_parse_id();
+	test_files_multipart();
+	test_files_apply();
 	test_base64();
 	test_base64_decode();
 	test_png();

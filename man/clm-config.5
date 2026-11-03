@@ -193,7 +193,7 @@ Set a value such as
 for a backend that refuses
 .Qq none .
 A per-model entry overrides this provider-wide value.
-.It Va context_size , Va autocompact_pct , Va autocompact_tokens , Va vision
+.It Va context_size , Va autocompact_pct , Va autocompact_tokens , Va vision , Va file_uploads
 Context tuning for every model on this connection; see the
 .Va models
 entries of the same name below, which override these per model.
@@ -249,6 +249,25 @@ When it is known to be false, the
 tool is not offered to the model.
 When nothing says either way, images are sent, and an error from the
 server on such a turn names this key.
+.It Va file_uploads
+Whether to upload each image once to the provider's
+.Pa /v1/files
+endpoint and send it by file id:
+.Dv true
+or
+.Dv false .
+This keeps the request small, and a long session full of screenshots
+stays under the server's request size limit.
+Only an
+.Qq anthropic
+provider can do this.
+Unset, it is on for
+.Pa https://api.anthropic.com/
+and off for other servers.
+Uploaded files expire after 30 days.
+An image whose upload fails is sent inline.
+The session log keeps each image itself, so a resumed session uploads
+its images again.
 .It Va effort
 Reasoning effort for this model, overriding the provider-wide
 .Va effort .

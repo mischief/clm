@@ -211,6 +211,15 @@ struct clm_agent {
 	int vision;     /* 1 takes images, -1 does not, 0 unknown */
 	int vision_cfg; /* the configured value; nonzero wins over servers */
 
+	/* Images uploaded through the provider's files endpoint, so a
+	 * request names each one by id instead of carrying its bytes. The
+	 * cache lives only in memory: a resumed session uploads again. */
+	int file_uploads_cfg; /* 1 on, -1 off, 0 decided by the URL */
+	bool file_uploads;
+	unsigned files_lost; /* times the server lost a file clm named */
+	struct clm_file_ent *files;
+	size_t nfiles, cap_files;
+
 	/* Event callbacks */
 	void (*cb_on_assistant_text)(const char *, void *);
 	void (*cb_on_reasoning)(const char *, void *);
@@ -279,6 +288,55 @@ int clm_base64_decode(const char *in, size_t n, uint8_t *out, size_t *outlen);
  */
 int clm_image_sniff(const uint8_t *data, size_t len, const char **media_type,
     uint32_t *width, uint32_t *height);
+
+/*
+ * One image data URL sent to the provider's files endpoint. file_id is NULL
+ * when the upload failed: that image goes inline from then on. The key is a
+ * 64-bit FNV-1a hash of the URL plus its length.
+ */
+struct clm_file_ent {
+	uint64_t hash;
+	size_t len;
+	char *file_id;
+	time_t when;
+};
+
+/* Seconds an uploaded file lives on the server, and how long clm uses one. */
+#define CLM_FILE_EXPIRES_SECS (30 * 24 * 60 * 60)
+#define CLM_FILE_REUSE_SECS (29 * 24 * 60 * 60)
+/* Most uploads one agent remembers. Images past this go inline. */
+#define CLM_FILES_MAX 1024
+#define CLM_FILE_BOUNDARY_LEN 40
+
+/*
+ * Record an upload result for url, replacing an older one. file_id may be
+ * NULL. Returns 0, -ENOSPC when the cache is full, or -ENOMEM.
+ */
+int clm_files_add(
+    struct clm_agent *agent, const char *url, const char *file_id);
+void clm_files_clear(struct clm_agent *agent);
+
+/*
+ * Add "file_id" to each image_url object in messages whose data URL has a
+ * live upload. If ret_missing is not NULL, set it to the first data URL that
+ * needs an upload (borrowed from messages), or NULL. 0 or -ENOMEM.
+ */
+int clm_files_apply(
+    struct clm_agent *agent, struct cJSON *messages, const char **ret_missing);
+
+/*
+ * A multipart/form-data body that uploads the image in data_url as "file",
+ * with an expires_in_seconds field. Returns a malloc'd body, and sets
+ * ret_boundary and ret_len. NULL for a bad URL or no memory.
+ */
+char *clm_files_multipart(const char *data_url,
+    char ret_boundary[CLM_FILE_BOUNDARY_LEN], size_t *ret_len);
+
+/* The "id" of an upload response, malloc'd, or NULL. */
+char *clm_files_parse_id(const char *body);
+
+/* base_url with its final "/messages" replaced by "/files", or NULL. */
+char *clm_files_url(const char *base_url);
 
 int clm_parse_props(const char *body, int64_t *ctx_out);
 int clm_parse_model_ctx(const char *body, int64_t *ctx_out);

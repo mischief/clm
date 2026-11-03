@@ -82,6 +82,18 @@ fuzz_base64_exe = executable(
   install: false,
 )
 
+# fuzz_files: fuzz the upload reply parser and the multipart builder
+# (external input: a server reply, and image data from a tool).
+fuzz_files_exe = executable(
+  'fuzz_files',
+  files('fuzz_files.c', '../libclm/files.c', '../libclm/image.c'),
+  include_directories: [fuzz_inc, clm_inc, include_directories('../include')],
+  dependencies: [cjson_dep],
+  c_args: ['-DCLM_BUILDING'],
+  build_by_default: false,
+  install: false,
+)
+
 # fuzz_md: fuzz md_render() with arbitrary markdown input. It compiles
 # md_render.c rather than linking md_render_lib, so the parser is built with
 # the same instrumentation as the harness.
