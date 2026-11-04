@@ -3790,6 +3790,13 @@ cmd_clear(struct ui *u, const char *arg)
 		u->session = NULL;
 		if (clm_session_create(NULL, u->model, u->provider_name,
 		        u->agent_name, &u->session) == 0) {
+			/* The cleared history emitted its system message to
+			 * the old session. Give the new one its prompt. */
+			const struct clm_message *sys =
+			    TAILQ_FIRST(clm_agent_get_history(u->agent));
+
+			if (sys != NULL && sys->role == CLM_ROLE_SYSTEM)
+				(void)clm_session_append(u->session, sys, NULL);
 			set_session_short(u);
 			peer_rebind(u);
 			scratch_rebind(u);
