@@ -43,7 +43,7 @@ usage(const char *prog)
 	    "usage: %s setup\n"
 	    "       %s [-o|--oneshot PROMPT] [-f|--forever PROMPT] "
 	    "[-H|--headless] [-D|--daemon PROMPT] [-u|--url BASE] "
-	    "[-m|--model PROVIDER/MODEL-ID] [--provider NAME] "
+	    "[-m|--model PROVIDER/MODEL-ID] [--provider NAME] [--effort LEVEL] "
 	    "[-p|--plugins DIR] [-P|--plugin NAME] [-S|--no-stream] "
 	    "[--allow-all-tools] [--auto] "
 	    "[-r|--resume [ID]] "
@@ -80,6 +80,10 @@ usage(const char *prog)
 	    "`providers` table,\n"
 	    "                        overriding the connection --model's "
 	    "provider half names\n"
+	    "      --effort LEVEL    reasoning effort, passed to the provider "
+	    "as is:\n"
+	    "                        none, low, medium, high, xhigh, or max;\n"
+	    "                        overrides config.lua's effort\n"
 	    "  -p, --plugins DIR     plugin directory "
 	    "(default $XDG_CONFIG_HOME/clm/plugins)\n"
 	    "  -P, --plugin NAME     also load opt-in plugin "
@@ -703,6 +707,58 @@ pick_session(void)
 	return id;
 }
 
+/* The agent profile a saved session ran under, malloc'd, or NULL. */
+static char *
+session_agent(const char *id)
+{
+	struct clm_history h;
+	cJSON *meta = NULL;
+	char *agent = NULL;
+	const char *a;
+
+	clm_history_init(&h);
+	if (clm_session_load(NULL, id, &h, &meta) == 0) {
+		a = cJSON_GetStringValue(
+		    cJSON_GetObjectItemCaseSensitive(meta, "agent"));
+		if (a != NULL)
+			agent = strdup(a);
+	}
+	cJSON_Delete(meta);
+	clm_history_free(&h);
+	return agent;
+}
+
+/*
+ * Turn a --resume argument into a full session id: pick from a list when
+ * there is none, else expand a fragment. Returns 0, or -1 after it tells
+ * the user why.
+ */
+static int
+resume_resolve(const char **resume_id, char **ret_picked)
+{
+	struct clm_history h;
+	int r;
+
+	*ret_picked = NULL;
+	if (*resume_id == NULL) {
+		*ret_picked = pick_session();
+		if (*ret_picked == NULL)
+			return -1;
+		*resume_id = *ret_picked;
+		return 0;
+	}
+	clm_history_init(&h);
+	r = clm_session_load(NULL, *resume_id, &h, NULL);
+	clm_history_free(&h);
+	if (r == 0)
+		return 0;
+	*ret_picked = resolve_session_prefix(*resume_id);
+	if (*ret_picked == NULL)
+		return -1;
+	*resume_id = *ret_picked;
+	return 0;
+}
+
 /* `clm setup`: writes a starter config.lua and secrets.lua, and seeds the
  * builtin plugins, without silently doing any of that on a normal run.
  * Safe to re-run: never overwrites a config, secrets, or plugin file
@@ -950,13 +1006,18 @@ main(int argc, char *argv[])
 	int resume = 0;
 	const char *resume_id = NULL;
 
-	enum { OPT_PROVIDER = 256, OPT_ALLOW_ALL, OPT_AUTO };
+	autofree char *picked = NULL;
+	autofree char *resumed_agent = NULL;
+	const char *cli_effort = NULL;
+
+	enum { OPT_PROVIDER = 256, OPT_ALLOW_ALL, OPT_AUTO, OPT_EFFORT };
 	const struct option opts[] = {
 	    {"oneshot", required_argument, NULL, 'o'},
 	    {"forever", required_argument, NULL, 'f'},
 	    {"url", required_argument, NULL, 'u'},
 	    {"model", required_argument, NULL, 'm'},
 	    {"provider", required_argument, NULL, OPT_PROVIDER},
+	    {"effort", required_argument, NULL, OPT_EFFORT},
 	    {"plugins", required_argument, NULL, 'p'},
 	    {"plugin", required_argument, NULL, 'P'},
 	    {"agent", required_argument, NULL, 'a'},
@@ -1007,6 +1068,9 @@ main(int argc, char *argv[])
 		case OPT_PROVIDER:
 			provider_name = optarg;
 			break;
+		case OPT_EFFORT:
+			cli_effort = optarg;
+			break;
 		case 'p':
 			plugin_dir = optarg;
 			break;
@@ -1044,6 +1108,17 @@ main(int argc, char *argv[])
 			usage(argv[0]);
 			return 1;
 		}
+	}
+
+	/* Find the session before the agent profile loads: a resumed session
+	 * keeps the agent it ran under, unless -a names another. */
+	if (resume && daemon_prompt == NULL && oneshot == NULL && !headless &&
+	    isatty(STDIN_FILENO) && isatty(STDOUT_FILENO) &&
+	    resume_resolve(&resume_id, &picked) < 0)
+		return 1;
+	if (resume && resume_id != NULL && agent_name == NULL) {
+		resumed_agent = session_agent(resume_id);
+		agent_name = resumed_agent;
 	}
 
 	/* Load config early so agent profile + model/provider inform cfg. */
@@ -1138,6 +1213,10 @@ main(int argc, char *argv[])
 		}
 	}
 
+	/* --effort wins over config. */
+	if (cli_effort != NULL)
+		effort = cli_effort;
+
 	/* Defaults for anything not set by config or CLI. */
 	if (api_base == NULL)
 		api_base = "http://127.0.0.1:8081/v1";
@@ -1209,33 +1288,12 @@ main(int argc, char *argv[])
 		struct clm_session *sess = NULL;
 		struct clm_history restore;
 		struct clm_history *restorep = NULL;
-		autofree char *picked = NULL;
 		int rc;
 		int repaired_tool_calls = 0;
 
 		clm_history_init(&restore);
 		if (resume) {
-			if (resume_id == NULL) {
-				picked = pick_session();
-				if (picked == NULL)
-					return 1;
-				resume_id = picked;
-			}
-			/* Accept a tail of the id ("8ed1d645", or any
-			 * unambiguous piece of one) so nobody has to type
-			 * the whole timestamp. */
-			if (clm_session_load(NULL, resume_id, &restore, NULL) !=
-			    0) {
-				autofree char *full =
-				    resolve_session_prefix(resume_id);
-
-				if (full == NULL)
-					return 1;
-				free(picked);
-				picked = full;
-				full = NULL;
-				resume_id = picked;
-			}
+			/* resume_resolve() above already found the id. */
 			r = clm_session_load(NULL, resume_id, &restore, NULL);
 			/* Patch any dangling tool call left by a crash before
 			 * it reaches a provider (see clm_history_repair_
@@ -1272,7 +1330,8 @@ main(int argc, char *argv[])
 			/* Session logging is best-effort: a read-only HOME
 			 * shouldn't keep the TUI from running at all. */
 			r = clm_session_create(NULL, model_name,
-			    cfg.provider_name, agent_name, &sess);
+			    cfg.provider_name, clm_lua_cfg_get_agent_name(lcfg),
+			    &sess);
 			if (r < 0)
 				clm_dprintf(STDERR_FILENO,
 				    "warning: session logging "
@@ -1291,7 +1350,7 @@ main(int argc, char *argv[])
 
 		rc = tui_run(&cfg, plugin_dir, opt_plugins, lcfg,
 		    config_load_err, forever_prompt, sess, restorep,
-		    repaired_tool_calls, allow_all, auto_mode);
+		    repaired_tool_calls, cli_effort, allow_all, auto_mode);
 		clm_history_free(&restore);
 		clm_lua_cfg_free_str_list(volatile_tools);
 		clm_lua_cfg_free(lcfg);
@@ -1312,7 +1371,8 @@ main(int argc, char *argv[])
 			r = clm_session_open(NULL, resume_id, &dsess);
 		} else if (r == -ENOENT) {
 			r = clm_session_create_id(NULL, resume_id, model_name,
-			    cfg.provider_name, agent_name, &dsess);
+			    cfg.provider_name, clm_lua_cfg_get_agent_name(lcfg),
+			    &dsess);
 		}
 		if (r < 0) {
 			clm_dprintf(STDERR_FILENO, "error: session %s: %s\n",

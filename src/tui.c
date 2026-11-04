@@ -3300,6 +3300,8 @@ cmd_effort(struct ui *u, const char *arg)
 	ui_push(u, ST_META, msg);
 }
 
+static void session_rotate(struct ui *u);
+
 static void
 cmd_agent(struct ui *u, const char *arg)
 {
@@ -3416,8 +3418,14 @@ cmd_agent(struct ui *u, const char *arg)
 			    (const char *const *)clm_lua_cfg_get_str_list(
 			        u->lcfg, "volatile_tools");
 
+			/* The new agent's prompt belongs in the new log
+			 * that session_rotate() starts, not the old one. */
+			struct clm_session *old = u->session;
+
+			u->session = NULL;
 			r = clm_agent_new(
 			    &newcfg, u->host, &tui_callbacks, u, &u->agent);
+			u->session = old;
 			if (r < 0) {
 				ui_push(
 				    u, ST_ERROR, "\nfailed to create agent\n");
@@ -3464,6 +3472,7 @@ cmd_agent(struct ui *u, const char *arg)
 				u->agent_name = strdup(arg);
 				set_current_model(u, newcfg.model);
 				set_current_provider(u, prov);
+				session_rotate(u);
 				note_model_switch(u);
 				/* New agent, empty history: the old
 				 * reading describes a conversation this
@@ -3757,6 +3766,38 @@ cmd_help(struct ui *u, const char *arg)
 	help_open(u);
 }
 
+/*
+ * Start a new session log for a new conversation. The old transcript stays
+ * resumable under its old id; an empty one is deleted. The new log gets the
+ * agent's system prompt, because the agent emitted it before the log
+ * existed.
+ */
+static void
+session_rotate(struct ui *u)
+{
+	const struct clm_message *sys;
+
+	if (u->session == NULL)
+		return;
+	if (clm_session_is_empty(u->session))
+		(void)clm_session_discard(u->session);
+	else
+		clm_session_free(u->session);
+	u->session = NULL;
+	if (clm_session_create(NULL, u->model, u->provider_name, u->agent_name,
+	        &u->session) != 0)
+		return;
+	sys = TAILQ_FIRST(clm_agent_get_history(u->agent));
+	if (sys != NULL && sys->role == CLM_ROLE_SYSTEM)
+		(void)clm_session_append(u->session, sys, NULL);
+	set_session_short(u);
+	peer_rebind(u);
+	scratch_rebind(u);
+	ui_push(u, ST_META, "[new session ");
+	ui_push(u, ST_META, clm_session_id(u->session));
+	ui_push(u, ST_META, "]\n");
+}
+
 static void
 cmd_clear(struct ui *u, const char *arg)
 {
@@ -3778,33 +3819,7 @@ cmd_clear(struct ui *u, const char *arg)
 	u->usage[0] = '\0';
 	u->ctx_used = 0;
 	u->gen++;
-	/* Rotate the session log too: the cleared transcript stays
-	 * resumable under its old id, and what follows is a new
-	 * conversation, so it gets a new file. An empty old session is
-	 * just deleted. */
-	if (u->session != NULL) {
-		if (clm_session_is_empty(u->session))
-			(void)clm_session_discard(u->session);
-		else
-			clm_session_free(u->session);
-		u->session = NULL;
-		if (clm_session_create(NULL, u->model, u->provider_name,
-		        u->agent_name, &u->session) == 0) {
-			/* The cleared history emitted its system message to
-			 * the old session. Give the new one its prompt. */
-			const struct clm_message *sys =
-			    TAILQ_FIRST(clm_agent_get_history(u->agent));
-
-			if (sys != NULL && sys->role == CLM_ROLE_SYSTEM)
-				(void)clm_session_append(u->session, sys, NULL);
-			set_session_short(u);
-			peer_rebind(u);
-			scratch_rebind(u);
-			ui_push(u, ST_META, "[new session ");
-			ui_push(u, ST_META, clm_session_id(u->session));
-			ui_push(u, ST_META, "]\n");
-		}
-	}
+	session_rotate(u);
 }
 
 static void
@@ -3883,7 +3898,7 @@ const struct ui_command ui_commands[] = {
     {"provider", NULL, "[name]",
         "switch provider connection; no arg lists them", cmd_provider},
     {"effort", NULL, "[level]",
-        "reasoning effort: low, medium, high, xhigh, max, or default; "
+        "reasoning effort: none, low, medium, high, xhigh, max, or default; "
         "no arg shows it",
         cmd_effort},
     {"auto", NULL, "[on|off]",
@@ -5004,7 +5019,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     const char *const *opt_plugins, struct clm_lua_cfg *lcfg,
     const char *config_load_err, const char *forever_prompt,
     struct clm_session *session, const struct clm_history *restore,
-    int repaired_tool_calls, bool allow_all, bool auto_mode)
+    int repaired_tool_calls, const char *effort, bool allow_all, bool auto_mode)
 {
 	struct ui *u;
 	uv_loop_t *loop;
@@ -5033,6 +5048,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	set_current_model(u, cfg->model);
 	set_current_provider(u, cfg->provider_name);
 	u->forever_prompt = forever_prompt;
+	if (effort != NULL)
+		(void)snprintf(u->effort_override, sizeof(u->effort_override),
+		    "%s", effort);
 	if (lcfg != NULL) {
 		const char *aname = clm_lua_cfg_get_agent_name(lcfg);
 		if (aname != NULL)

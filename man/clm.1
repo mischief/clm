@@ -24,6 +24,7 @@
 .Op Fl f Ar prompt | Fl -forever Ar prompt
 .Op Fl m Ar provider/model-id | Fl -model Ar provider/model-id
 .Op Fl -provider Ar name
+.Op Fl -effort Ar level
 .Op Fl o Ar prompt | Fl -oneshot Ar prompt
 .Op Fl p Ar dir | Fl -plugins Ar dir
 .Op Fl P Ar name | Fl -plugin Ar name
@@ -167,6 +168,21 @@ overriding which provider connection (endpoint, key, wire dialect)
 backs the selected model, independent of
 .Fl m .
 Useful for failing over to a backup endpoint for the current model.
+.It Fl -effort Ar level
+Reasoning effort to ask of the model, such as
+.Cm none , low , medium , high , xhigh ,
+or
+.Cm max .
+The level goes to the provider as is, so the server, not clm, rejects a
+level its model does not accept.
+Overrides the
+.Va effort
+setting in
+.Pa config.lua
+.Pq Xr clm-config 5 .
+In the interactive UI it acts as an
+.Ic /effort
+override.
 .It Fl o Ar prompt , Fl -oneshot Ar prompt
 Run a single prompt headlessly and exit, printing only the assistant's
 reply (plus any tool-call/error lines) to standard output.
@@ -196,6 +212,11 @@ command.
 With no
 .Ar id ,
 present a numbered list of saved sessions to pick from.
+The session keeps the agent profile it ran under, unless
+.Fl a
+names another.
+The system prompt is built again from that profile and the current
+configuration.
 Sessions are logged automatically to
 .Ev XDG_STATE_HOME Ns Pa /clm
 .Po default

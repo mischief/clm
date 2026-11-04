@@ -44,11 +44,14 @@ struct clm_lua_cfg; /* opaque; NULL if no config.lua was found or loading it
  * restore before this call (0 if restore is NULL or nothing needed
  * repair); the TUI mentions it in the "[resumed session ...]" banner so a
  * crash-recovered resume is visible, not silent.
+ * effort, when not NULL, is a --effort level that acts as a /effort
+ * override for the whole run.
  */
 int tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     const char *const *opt_plugins, struct clm_lua_cfg *lcfg,
     const char *config_load_err, const char *forever_prompt,
     struct clm_session *session, const struct clm_history *restore,
-    int repaired_tool_calls, bool allow_all, bool auto_mode);
+    int repaired_tool_calls, const char *effort, bool allow_all,
+    bool auto_mode);
 
 #endif /* CLM_FRONTEND_H */
