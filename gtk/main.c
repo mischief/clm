@@ -57,7 +57,8 @@ struct app {
 	bool busy;
 	bool stick;
 	bool list_stale;
-	const char *effort; /* the header's choice; NULL takes config.lua's */
+	bool sessions_quiet; /* the chat list selection is being set by code */
+	const char *effort;  /* the header's choice; NULL takes config.lua's */
 };
 
 static void sessions_refresh(struct app *a);
@@ -248,24 +249,54 @@ session_resume(struct app *a, const char *id)
 	return r;
 }
 
+/* Put the chat list's selection back on the session in use. */
 static void
-on_session_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user)
+sessions_select_current(struct app *a)
+{
+	const char *cur = a->session != NULL ? clm_session_id(a->session) : "";
+	GtkWidget *row;
+
+	a->sessions_quiet = true;
+	gtk_list_box_unselect_all(a->sessions);
+	for (row = gtk_widget_get_first_child(GTK_WIDGET(a->sessions));
+	    row != NULL; row = gtk_widget_get_next_sibling(row)) {
+		const char *id = g_object_get_data(G_OBJECT(row), "id");
+
+		if (id != NULL && strcmp(id, cur) == 0) {
+			gtk_list_box_select_row(
+			    a->sessions, GTK_LIST_BOX_ROW(row));
+			break;
+		}
+	}
+	a->sessions_quiet = false;
+}
+
+/*
+ * Open the chosen session. A selection, not an activation: a click selects
+ * and activates, and a screen reader or test can only select.
+ */
+static void
+on_session_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user)
 {
 	struct app *a = user;
-	const char *id = g_object_get_data(G_OBJECT(row), "id");
+	const char *id =
+	    row != NULL ? g_object_get_data(G_OBJECT(row), "id") : NULL;
 	bool was_empty;
 
 	(void)box;
-	if (id == NULL ||
+	if (a->sessions_quiet || id == NULL ||
 	    (a->session != NULL && strcmp(clm_session_id(a->session), id) == 0))
 		return;
 	if (a->busy) {
 		notice(a, "busy; stop the turn first");
+		sessions_select_current(a);
 		return;
 	}
 	was_empty = clm_session_is_empty(a->session);
-	if (session_resume(a, id) < 0)
+	if (session_resume(a, id) < 0) {
 		notice(a, "could not open that session");
+		sessions_select_current(a);
+	}
 	if (was_empty)
 		sessions_refresh(a);
 }
@@ -313,6 +344,9 @@ session_row(const struct clm_session_info *in)
 	gtk_box_append(GTK_BOX(box), title);
 	gtk_box_append(GTK_BOX(box), subl);
 	gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
+	gtk_accessible_update_property(GTK_ACCESSIBLE(row),
+	    GTK_ACCESSIBLE_PROPERTY_LABEL,
+	    in->first_user != NULL ? in->first_user : "(empty)", -1);
 	g_object_set_data_full(G_OBJECT(row), "id", g_strdup(in->id), g_free);
 	return row;
 }
@@ -325,9 +359,12 @@ sessions_refresh(struct app *a)
 	size_t n = 0;
 
 	a->list_stale = false;
+	a->sessions_quiet = true;
 	gtk_list_box_remove_all(a->sessions);
-	if (clm_session_list(NULL, &infos, &n) != 0)
+	if (clm_session_list(NULL, &infos, &n) != 0) {
+		a->sessions_quiet = false;
 		return;
+	}
 	for (size_t i = 0; i < n && i < SESSIONS_MAX; i++) {
 		GtkWidget *row;
 
@@ -341,6 +378,7 @@ sessions_refresh(struct app *a)
 			    a->sessions, GTK_LIST_BOX_ROW(row));
 	}
 	clm_session_list_free(infos, n);
+	a->sessions_quiet = false;
 }
 
 /* Agent callbacks */
@@ -654,6 +692,20 @@ strp_cmp(const void *x, const void *y)
 	return strcmp(*(char *const *)x, *(char *const *)y);
 }
 
+/*
+ * A dropdown names itself after the choice it shows, so a screen reader or a
+ * test would see "default", not "Effort". Point it at a label that says what
+ * the control is. With no caption on screen, the label stays unparented.
+ */
+static void
+name_dropdown(GtkWidget *dd, GtkWidget *label)
+{
+	gtk_accessible_update_relation(GTK_ACCESSIBLE(dd),
+	    GTK_ACCESSIBLE_RELATION_LABELLED_BY, label, NULL, -1);
+	g_object_set_data_full(G_OBJECT(dd), "name-label",
+	    g_object_ref_sink(label), g_object_unref);
+}
+
 /* A dropdown of config.lua's models, the one in use selected. */
 static GtkWidget *
 model_selector(struct app *a)
@@ -690,6 +742,7 @@ model_selector(struct app *a)
 	    gtk_property_expression_new(
 	        GTK_TYPE_STRING_OBJECT, NULL, "string"));
 	gtk_widget_set_tooltip_text(dd, "Model");
+	name_dropdown(dd, gtk_label_new("Model"));
 	gtk_widget_set_sensitive(dd, cur != NULL);
 	if (cur != NULL)
 		gtk_drop_down_set_selected(GTK_DROP_DOWN(dd), a->model_idx);
@@ -726,6 +779,7 @@ effort_selector(struct app *a)
 	GtkWidget *dd = gtk_drop_down_new_from_strings(efforts);
 
 	gtk_widget_add_css_class(cap, "dim-label");
+	name_dropdown(dd, cap);
 	gtk_widget_set_tooltip_text(dd,
 	    "Reasoning effort; default takes config.lua's. "
 	    "A server rejects a level its model does not take.");
@@ -789,11 +843,15 @@ sidebar_page(struct app *a)
 	adw_header_bar_set_title_widget(
 	    ADW_HEADER_BAR(hb), adw_window_title_new("Chats", ""));
 	gtk_widget_set_tooltip_text(add, "New chat");
+	gtk_accessible_update_property(
+	    GTK_ACCESSIBLE(add), GTK_ACCESSIBLE_PROPERTY_LABEL, "New chat", -1);
 	g_signal_connect(add, "clicked", G_CALLBACK(on_new_chat), a);
 	adw_header_bar_pack_start(ADW_HEADER_BAR(hb), add);
 	gtk_widget_add_css_class(list, "navigation-sidebar");
+	gtk_accessible_update_property(GTK_ACCESSIBLE(list),
+	    GTK_ACCESSIBLE_PROPERTY_LABEL, "Saved chats", -1);
 	g_signal_connect(
-	    list, "row-activated", G_CALLBACK(on_session_activated), a);
+	    list, "row-selected", G_CALLBACK(on_session_selected), a);
 	a->sessions = GTK_LIST_BOX(list);
 	adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), hb);
 	adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), scrolled(list));
@@ -810,6 +868,13 @@ composer(struct app *a)
 
 	a->stop = gtk_button_new_from_icon_name("media-playback-stop-symbolic");
 	gtk_widget_set_tooltip_text(a->stop, "Stop");
+	gtk_accessible_update_property(
+	    GTK_ACCESSIBLE(a->stop), GTK_ACCESSIBLE_PROPERTY_LABEL, "Stop", -1);
+	gtk_widget_set_tooltip_text(send, "Send");
+	gtk_accessible_update_property(
+	    GTK_ACCESSIBLE(send), GTK_ACCESSIBLE_PROPERTY_LABEL, "Send", -1);
+	gtk_accessible_update_property(GTK_ACCESSIBLE(entry),
+	    GTK_ACCESSIBLE_PROPERTY_LABEL, "Message", -1);
 	gtk_widget_set_visible(a->stop, FALSE);
 	gtk_widget_add_css_class(a->stop, "circular");
 	gtk_widget_add_css_class(a->stop, "destructive-action");
@@ -851,16 +916,22 @@ chat_page(struct app *a)
 	adw_header_bar_pack_end(ADW_HEADER_BAR(hb), effort_selector(a));
 	gtk_button_set_icon_name(GTK_BUTTON(reveal), "view-reveal-symbolic");
 	gtk_widget_set_tooltip_text(reveal, "Show thinking");
+	gtk_accessible_update_property(GTK_ACCESSIBLE(reveal),
+	    GTK_ACCESSIBLE_PROPERTY_LABEL, "Show thinking", -1);
 	g_signal_connect(reveal, "toggled", G_CALLBACK(on_reveal_toggled), a);
 	adw_header_bar_pack_end(ADW_HEADER_BAR(hb), reveal);
 	gtk_button_set_icon_name(GTK_BUTTON(side), "sidebar-show-symbolic");
 	gtk_widget_set_tooltip_text(side, "Chats");
+	gtk_accessible_update_property(
+	    GTK_ACCESSIBLE(side), GTK_ACCESSIBLE_PROPERTY_LABEL, "Chats", -1);
 	g_object_bind_property(side, "active", a->split, "show-sidebar",
 	    G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
 	adw_header_bar_pack_start(ADW_HEADER_BAR(hb), side);
 	gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
 	gtk_widget_set_valign(list, GTK_ALIGN_END);
 	a->chat = GTK_LIST_BOX(list);
+	gtk_accessible_update_property(GTK_ACCESSIBLE(list),
+	    GTK_ACCESSIBLE_PROPERTY_LABEL, "Conversation", -1);
 	/* Hidden unless config.lua says otherwise, as in the TUI. */
 	if (a->lcfg != NULL &&
 	    g_strcmp0(clm_lua_cfg_get_str(a->lcfg, "show_thinking"), "true") ==
