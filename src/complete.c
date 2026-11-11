@@ -23,6 +23,9 @@
 #include "model_spec.h"
 #include "tui_internal.h"
 #include "banned.h"
+#ifdef CLM_OAUTH
+#include "oauth.h"
+#endif
 #include "tui_internal.h"
 
 /* Generous but bounded: completion candidate sets are all small in
@@ -660,6 +663,41 @@ source_model_names(
 			const char *api_key = clm_lua_cfg_provider_str(
 			    u->lcfg, spec_provider, "api_key");
 			char url_buf[512];
+			bool oauth_failed = false;
+#ifdef CLM_OAUTH
+			/* A subscription-OAuth provider (oauth_store instead of
+			 * api_key) must resolve a fresh access token before the
+			 * probe, exactly like the startup and /model-switch
+			 * paths -- otherwise the probe sends no auth and 401s.
+			 */
+			char *oauth_tok = NULL;
+			if (api_key == NULL) {
+				const char *store = clm_lua_cfg_provider_str(
+				    u->lcfg, spec_provider, "oauth_store");
+				if (store != NULL && store[0] != '\0') {
+					char *path = clm_oauth_expand(store);
+					char *err = NULL;
+					const char *cid =
+					    clm_lua_cfg_provider_str(u->lcfg,
+					        spec_provider,
+					        "oauth_client_id");
+					if (clm_oauth_resolve(path, cid,
+					        &oauth_tok, &err) == 0)
+						api_key = oauth_tok;
+					else
+						oauth_failed = true;
+					free(path);
+					free(err);
+				}
+			}
+#endif
+			if (oauth_failed) {
+				model_complete_req_free(req);
+#ifdef CLM_OAUTH
+				free(oauth_tok);
+#endif
+				return;
+			}
 
 			clm_provider_build_url(
 			    url_buf, sizeof(url_buf), purl, provider);
@@ -667,6 +705,9 @@ source_model_names(
 			        provider, api_key, model_live_result,
 			        model_live_error, req) != 0)
 				model_complete_req_free(req);
+#ifdef CLM_OAUTH
+			free(oauth_tok);
+#endif
 		} else if (u->provider_name != NULL &&
 		    strcmp(spec_provider, u->provider_name) == 0) {
 			/* Not in config, but it's the connection we're already
