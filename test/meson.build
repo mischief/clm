@@ -87,11 +87,11 @@ test_peer = executable('test_peer',
 test('peer', test_peer, protocol: 'tap')
 
 # The frontends' exit path: teardown schedules uv closes, and the drain in
-# src/loop_drain.h is what settles them.
+# libclmfront/loop_drain.h is what settles them.
 test_drain = executable('test_drain',
   files('test_drain.c', 'canned.c') + tap_src,
   dependencies: [clmuv_dep],
-  include_directories: [tap_inc, include_directories('.'), include_directories('../src'), clm_inc, include_directories('../include')],
+  include_directories: [tap_inc, include_directories('.'), clmfront_inc, clm_inc, include_directories('../include')],
   c_args: test_hardening_args,
 )
 test('drain', test_drain, protocol: 'tap')
@@ -169,7 +169,7 @@ if have_lua
     files('test_lua_plugin.c', 'canned.c') + tap_src,
     dependencies: [clmuv_dep, clmlua_dep],
     include_directories: [tap_inc, clm_inc, include_directories('../include'),
-      include_directories('../src')],
+      clmfront_inc],
     c_args: test_hardening_args,
   )
   test('lua_plugin', test_lua, protocol: 'tap', workdir: meson.project_source_root())

@@ -173,7 +173,7 @@ CLM_API int64_t clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg,
  * future string-valued per-model field.
  *
  * A model is always addressed as an explicit (provider_name, model_id)
- * pair -- see src/model_spec.h's split_provider_model(), which every
+ * pair -- see libclmfront/model_spec.h's split_provider_model(), which every
  * model-taking call site (config.lua's top-level `model`, -m/--model,
  * /model) uses to split a "provider/model-id" spec into these two
  * arguments before calling here. There is deliberately no "look up a
@@ -201,7 +201,7 @@ CLM_API int64_t clm_lua_cfg_provider_model_int(struct clm_lua_cfg *cfg,
  * flattened into one list of "provider/model-id" compound strings (the
  * same addressed spec format clm_lua_cfg_provider_model_str/int and every
  * model-taking call site expect -- see split_provider_model() in
- * src/model_spec.h), since a bare model id alone doesn't uniquely name
+ * libclmfront/model_spec.h), since a bare model id alone doesn't uniquely name
  * anything once more than one provider is configured. Names are returned
  * in Lua's (unspecified) iteration order; the caller should sort if a
  * stable display order matters.

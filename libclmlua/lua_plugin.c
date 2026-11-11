@@ -2043,7 +2043,7 @@ clm_lua_cfg_provider_int(struct clm_lua_cfg *cfg, const char *provider_name,
  * Model entries live nested under their owning provider
  * (config.providers[X].models[model_id]), keyed by the literal wire model
  * id -- see clm-config(5). A model is therefore always addressed as a
- * "provider/model-id" pair (split by src/model_spec.h's
+ * "provider/model-id" pair (split by libclmfront/model_spec.h's
  * split_provider_model() at every call site that takes a model spec:
  * config.lua's top-level `model`, -m/--model, /model), never looked up by
  * name alone, so there is no ambiguity to search through the way an
@@ -2140,8 +2140,8 @@ clm_lua_cfg_provider_model_int(struct clm_lua_cfg *cfg,
  * NULL-terminated list of "provider/model-id" compound strings -- the
  * "models" case of clm_lua_cfg_list_names, matching the addressed spec
  * format every model-taking call site expects (see split_provider_model()
- * in src/model_spec.h). Formatted here rather than left as a bare model id
- * since a bare id doesn't uniquely address anything once nested under more
+ * in libclmfront/model_spec.h). Formatted here rather than left as a bare model
+ * id since a bare id doesn't uniquely address anything once nested under more
  * than one provider.
  */
 static char **

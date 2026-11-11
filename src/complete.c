@@ -470,8 +470,8 @@ model_live_result(char **ids, void *user)
 		const char *prefix = u->input + req->wstart;
 		size_t typed = req->match_len;
 		/* The server's ids are bare (no provider prefix); /model
-		 * expects "provider/model-id" (see src/model_spec.h), so
-		 * reprefix each with the provider this catalog was probed
+		 * expects "provider/model-id" (see libclmfront/model_spec.h),
+		 * so reprefix each with the provider this catalog was probed
 		 * against before matching/offering it -- a bare id here
 		 * wouldn't line up with what the user is typing.
 		 *
@@ -548,7 +548,7 @@ model_live_error(const char *msg, void *user)
  * After the '/' it completes "provider/model-id" specs: config.lua's
  * nested providers[*].models{} entries immediately (synchronous, no
  * network dependency; see clm_lua_cfg_list_names(cfg, "models") and
- * src/model_spec.h), then a fresh GET /v1/models against *that* provider
+ * libclmfront/model_spec.h), then a fresh GET /v1/models against *that* provider
  * (no cache -- a cached list from a since-switched provider would be
  * actively misleading, worse than a moment's wait) is kicked off to
  * extend/refine the candidates a moment later if the user pauses. The

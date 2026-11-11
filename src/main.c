@@ -1337,7 +1337,8 @@ main(int argc, char *argv[])
 
 		/* Resolve the model (agent profile, or top-level default,
 		 * unless -m gave one directly) -- a "provider/model-id" spec,
-		 * see src/model_spec.h -- down to a provider connection.
+		 * see libclmfront/model_spec.h -- down to a provider
+		 * connection.
 		 * --provider overrides which provider entry supplies the
 		 * connection (e.g. failing over to a mirror endpoint)
 		 * without changing which wire model id is requested. */

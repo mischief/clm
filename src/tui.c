@@ -3331,9 +3331,10 @@ cmd_agent(struct ui *u, const char *arg)
 			free(adir);
 			/* Resolve the agent's model (or the top-level
 			 * default, if the profile doesn't set its own) --
-			 * a "provider/model-id" spec, see src/model_spec.h --
-			 * down to a provider connection, same indirection
-			 * as the startup path in main.c. */
+			 * a "provider/model-id" spec, see
+			 * libclmfront/model_spec.h -- down to a provider
+			 * connection, same indirection as the startup path in
+			 * main.c. */
 			const char *model_name =
 			    clm_lua_cfg_get_str(u->lcfg, "model");
 			autofree char *spec_provider = NULL;
@@ -5341,9 +5342,9 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 			 * it onto -m themselves. */
 			if (u->model != NULL) {
 				/* -m takes "provider/model-id" (see
-				 * src/model_spec.h); the bare model id alone
-				 * doesn't identify a connection, so prefix it
-				 * with provider_name when known. */
+				 * libclmfront/model_spec.h); the bare model id
+				 * alone doesn't identify a connection, so
+				 * prefix it with provider_name when known. */
 				if (u->provider_name != NULL)
 					clm_dprintf(STDOUT_FILENO,
 					    "session: %s, resume it with:\n"

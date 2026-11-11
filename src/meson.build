@@ -56,36 +56,6 @@ if have_lua
   # ncurses' own macros (NCURSES_CAST) trip -Wuseless-cast; not our code.
   curses_warn = cc.get_supported_arguments('-Wno-useless-cast')
 
-  # Builtin plugin seeds: embed plugins/*.lua into the binary so a fresh
-  # XDG plugin dir gets a usable starter set on first run (see
-  # seed_plugins.h).
-  # Runs at build time on the build machine to generate a source file;
-  # under a cross build this must not resolve to the target's lua.
-  # Falls back to the lua-wrap subproject's own interpreter executable
-  # when the system has no lua CLI installed at all (omnios: lua_dep came
-  # from the wrap fallback above, but WrapDB's lua.wrap doesn't register
-  # its lua_exe target via meson.override_find_program, so find_program()
-  # alone never sees it).
-  # 'lua54' is OpenBSD's package binary name (its lang/lua54 port installs
-  # /usr/local/bin/lua54, not lua5.4 or plain lua).
-  lua_bin = find_program('lua5.4', 'lua54', 'lua', required: false, native: true)
-  if not lua_bin.found()
-    lua_bin = subproject('lua').get_variable('lua_exe')
-  endif
-  seed_plugin_files = files(
-    '../plugins/edit_file.lua',
-    '../plugins/reverse.lua',
-    '../plugins/tasks.lua',
-    '../plugins/weather.lua',
-    '../plugins/web_search.lua',
-  )
-  seed_plugins_data = custom_target('seed_plugins_data.c',
-    input: seed_plugin_files,
-    output: 'seed_plugins_data.c',
-    command: [lua_bin, files('gen_seed_plugins.lua'), '@OUTPUT@', '@INPUT@'],
-  )
-  seed_src = [files('seed_plugins.c'), seed_plugins_data]
-
   # `clm setup`'s canned config.lua/secrets.lua: embedded the same way (see
   # gen_templates.lua's comment for why -- a plain string literal blew past
   # ISO C99's mandatory-support minimum for a single string literal once
@@ -106,20 +76,6 @@ if have_lua
   #
   # emoji_dep: :shortcode: -> glyph completion/expansion for the input
   # line, see ../libemoji.
-  # Host facts for the system prompt: the portable half plus one per-OS
-  # file. Selecting the file here keeps the OS knowledge out of the C source
-  # as a link-time choice; a host with no file of its own gets the generic
-  # one, which reports uname and core count and nothing it would have to
-  # guess at.
-  host_os = host_machine.system()
-  if host_os == 'linux'
-    sysinfo_src = files('sysinfo.c', 'sysinfo_linux.c')
-  elif host_os == 'openbsd'
-    sysinfo_src = files('sysinfo.c', 'sysinfo_openbsd.c')
-  else
-    sysinfo_src = files('sysinfo.c', 'sysinfo_generic.c')
-  endif
-
   # The installed binary finds libclm in a non-system prefix; the one in
   # the build tree keeps the build tree's libclm.
   clm_rpath = get_option('prefix') == '/usr' ? '' : get_option('prefix') / get_option('libdir')
@@ -134,10 +90,10 @@ if have_lua
     clm_oauth_args += '-DCLM_OAUTH=1'
   endif
 
-  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c', 'plugin_setup.c', 'xdg.c') + sysinfo_src + seed_src + [version_h, templates_data],
+  clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c') + [version_h, templates_data],
     link_with: [md_render_lib],
     install_rpath: clm_rpath,
-    dependencies: [clmuv_dep, clmlua_dep, clmsession_dep, curses_dep, cjson_dep, emoji_dep],
+    dependencies: [clmfront_dep, clmuv_dep, clmlua_dep, clmsession_dep, curses_dep, cjson_dep, emoji_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],
     c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'] + clm_hardening_args + clm_oauth_args,
     install: true,
