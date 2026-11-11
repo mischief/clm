@@ -107,6 +107,13 @@ char *clm_front_scratch_rebind(struct clm_agent *agent, const char *session_id);
 void clm_front_sweep_old(struct clm_lua_cfg *lcfg);
 
 /*
+ * The saved session whose id contains frag. Returns 0 with the id in *id
+ * (malloc'd), -ENOENT when none matches, or -EEXIST when several do; *hits
+ * counts them either way.
+ */
+int clm_front_session_find(const char *frag, char **id, size_t *hits);
+
+/*
  * Take apart "[message from agent ID (NAME)]\nTEXT\n(hint)", the frame a
  * peer message wears in the agent's history. Returns one malloc'd buffer
  * that from, name and text point into, or NULL when content is not such a

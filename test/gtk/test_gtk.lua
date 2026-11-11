@@ -100,7 +100,7 @@ end
 
 -- The window's own config, state and cache, with two models to choose from.
 local url = mock.start():gsub("/chat/completions$", "")
-for _, d in ipairs({ "config/clm", "state", "cache" }) do
+for _, d in ipairs({ "config/clm/agents", "state", "cache" }) do
 	os.execute("mkdir -p " .. tmp .. "/" .. d)
 end
 write_file(tmp .. "/config/clm/config.lua", ([[
@@ -120,6 +120,12 @@ return {
 }
 ]]):format(url))
 
+write_file(tmp .. "/config/clm/agents/other.lua", [=[return {
+	system_prompt = "You are the other agent.",
+	model = "mock/other-model",
+}
+]=])
+
 local function run()
 	spawn(("Xvfb -displayfd 3 -nolisten tcp 3>%s/display 2>/dev/null"):format(tmp))
 	local display = until_true(function()
@@ -136,9 +142,10 @@ local function run()
 		print("# " .. tostring(err))
 		return
 	end
+	sys.mkdir(tmp .. "/runtime")
 	local pid = spawn(("env DISPLAY=:%s GDK_BACKEND=x11 XDG_CONFIG_HOME=%s/config "
-		.. "XDG_STATE_HOME=%s/state XDG_CACHE_HOME=%s/cache %s >%s/gtk.log 2>&1")
-		:format(display, tmp, tmp, tmp, BIN, tmp))
+		.. "XDG_STATE_HOME=%s/state XDG_CACHE_HOME=%s/cache XDG_RUNTIME_DIR=%s/runtime "
+		.. "%s >%s/gtk.log 2>&1"):format(display, tmp, tmp, tmp, tmp, BIN, tmp))
 	local app = conn:wait_for(function()
 		return conn:app({ pid = pid })
 	end, 20)
@@ -275,6 +282,83 @@ local function run()
 	end, 5), "the first chat's messages come back")
 	check(not conv:find({ role = "label", name = "a different chat" }),
 	    "the other chat's messages are gone")
+
+	-- Parity with the tui: peers, plugins, the shell escape, commands.
+	local function socks()
+		local n, names = 0, {}
+		for _, f in ipairs(sys.listdir(tmp .. "/runtime/clm")) do
+			if f:sub(-5) == ".sock" then
+				n = n + 1
+				names[#names + 1] = f:sub(1, -6)
+			end
+		end
+		return n, names
+	end
+	local n_socks, names = socks()
+	check(n_socks == 1, "the window announces itself on a peer socket")
+	local function tool_names(req)
+		local seen = {}
+		for _, t in ipairs(req.tools or {}) do
+			seen[(t["function"] or t).name] = true
+		end
+		return seen
+	end
+	local seen = tool_names(requests()[#requests()])
+	check(seen.agents_list and seen.agent_send, "agents_list and agent_send are offered")
+	check(seen.shell_exec, "the shell tool is offered")
+	check(seen.reverse_string or seen.weather or seen.web_search,
+	    "the seeded plugins load")
+
+	-- "! cmd" runs here and reaches the model.
+	local before = #requests()
+	entry:set_text("! echo shellmark")
+	send:act()
+	check(conn:wait_for(function()
+		return conv:find({ role = "label", match = "shellmark" })
+	end, 10), "a ! command shows its output")
+	check(conn:wait_for(function()
+		return #requests() > before
+	end, 20), "and the model is sent the output")
+	local last = requests()[#requests()]
+	local lastmsg = last.messages[#last.messages]
+	check(type(lastmsg.content) == "string" and
+	    lastmsg.content:find("[shell] $ echo shellmark", 1, true),
+	    "in the [shell] form")
+	replies = replies + 1
+
+	-- A slash command that is not the model's.
+	entry:set_text("/cd /tmp")
+	send:act()
+	check(conn:wait_for(function()
+		return conv:find({ role = "label", match = "^cwd: /tmp" })
+	end, 5), "/cd is handled by the window")
+
+	-- A new chat moves the socket to the new session id.
+	local old = names[1]
+	check(newchat:act(), "new chat again")
+	check(conn:wait_for(function()
+		local n, nn = socks()
+		return n == 1 and nn[1] ~= old
+	end, 5), "a new chat moves the peer socket to the new session")
+
+	-- /agent builds a new agent and keeps the peer tools.
+	before = #requests()
+	entry:set_text("/agent other")
+	send:act()
+	check(conn:wait_for(function()
+		return conv:find({ role = "label", name = "switched to agent: other" })
+	end, 10), "/agent switches the profile")
+	check(conn:wait_for(function()
+		local n = socks()
+		return n == 1
+	end, 5), "one socket after the switch")
+	replies = 0
+	check(ask("after the switch"), "a reply from the new agent")
+	last = requests()[#requests()]
+	seen = tool_names(last)
+	check(last.model == "other-model", "the profile's model is used")
+	check(seen.agents_list and seen.agent_send,
+	    "the new agent still has the peer tools")
 
 	-- Show-thinking toggle flips, with nothing to show.
 	check(eye:act() and eye:wait_state("pressed", true, 5), "the thinking toggle presses")

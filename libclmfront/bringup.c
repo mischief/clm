@@ -201,3 +201,31 @@ bad:
 	free(copy);
 	return NULL;
 }
+
+int
+clm_front_session_find(const char *frag, char **id, size_t *hits)
+{
+	struct clm_session_info *infos = NULL;
+	size_t n = 0, i, count = 0;
+
+	*id = NULL;
+	if (hits != NULL)
+		*hits = 0;
+	if (frag == NULL || clm_session_list(NULL, &infos, &n) != 0)
+		return -ENOENT;
+	for (i = 0; i < n; i++) {
+		if (strstr(infos[i].id, frag) == NULL)
+			continue;
+		if (++count == 1)
+			*id = strdup(infos[i].id);
+	}
+	clm_session_list_free(infos, n);
+	if (hits != NULL)
+		*hits = count;
+	if (count > 1) {
+		free(*id);
+		*id = NULL;
+		return -EEXIST;
+	}
+	return count == 1 && *id != NULL ? 0 : -ENOENT;
+}
