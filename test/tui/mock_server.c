@@ -294,6 +294,22 @@ script_tool_call(struct conn *c, const char *text)
 		cJSON_AddStringToObject(args, "command",
 		    "printf 'N\\bNA\\bAM\\bME\\bE _\\bi_\\bn_\\bt "
 		    "\\033[31mred\\033[0m\\n'");
+	} else if (has_ci(text, "imagetest")) {
+		/* "imagetest <path>": read_image of that file. */
+		const char *at = strcasestr(text, "imagetest");
+		char path[512];
+		size_t n;
+
+		at += strlen("imagetest");
+		while (*at == ' ')
+			at++;
+		n = strcspn(at, " \t\r\n");
+		if (n >= sizeof(path))
+			n = sizeof(path) - 1;
+		memcpy(path, at, n);
+		path[n] = '\0';
+		name = "read_image";
+		cJSON_AddStringToObject(args, "path", path);
 	} else if (has_ci(text, "readtest")) {
 		name = "read_file";
 		cJSON_AddStringToObject(args, "path", "/etc/passwd");
@@ -437,7 +453,8 @@ static bool
 wants_tool(const cJSON *msgs)
 {
 	static const char *const words[] = {"shelltest", "multilinetest",
-	    "manytest", "escapetest", "edittest", "readtest", "longtest"};
+	    "manytest", "escapetest", "edittest", "readtest", "longtest",
+	    "imagetest"};
 	const cJSON *m;
 	const char *last = NULL;
 	int i = 0;

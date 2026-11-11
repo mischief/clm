@@ -71,6 +71,7 @@ struct app {
 	struct clm_front_agent fa;
 	struct clm_session *session;
 	struct chat_row *cur;
+	struct chat_row *result_row; /* the tool row whose result just landed */
 	GPtrArray *tools; /* tool rows waiting for a result, oldest first */
 	bool busy;
 	bool stick;
@@ -327,8 +328,14 @@ render_message(struct app *a, const struct clm_message *m)
 		break;
 	case CLM_ROLE_TOOL:
 		if (a->tools->len > 0) {
-			chat_row_set_result(
-			    g_ptr_array_index(a->tools, 0), m->content, false);
+			struct chat_row *row = g_ptr_array_index(a->tools, 0);
+
+			chat_row_set_result(row, m->content, false);
+			for (size_t i = 0; i < m->n_attachments; i++)
+				chat_row_add_image(row,
+				    m->attachments[i].media_type,
+				    m->attachments[i].data,
+				    m->attachments[i].len);
 			g_ptr_array_remove_index(a->tools, 0);
 		}
 		break;
@@ -565,8 +572,8 @@ cb_tool_result(const char *name, const char *content,
 	(void)name;
 	if (a->tools->len == 0)
 		return;
-	chat_row_set_result(
-	    g_ptr_array_index(a->tools, 0), content, outcome != CLM_TOOL_OK);
+	a->result_row = g_ptr_array_index(a->tools, 0);
+	chat_row_set_result(a->result_row, content, outcome != CLM_TOOL_OK);
 	g_ptr_array_remove_index(a->tools, 0);
 }
 
@@ -804,6 +811,14 @@ cb_message(const struct clm_message *m, void *user)
 {
 	struct app *a = user;
 
+	/* The result's message follows its on_tool_result at once, and is the
+	 * one that carries the images. */
+	if (m->role == CLM_ROLE_TOOL && a->result_row != NULL)
+		for (size_t i = 0; i < m->n_attachments; i++)
+			chat_row_add_image(a->result_row,
+			    m->attachments[i].media_type,
+			    m->attachments[i].data, m->attachments[i].len);
+	a->result_row = NULL;
 	if (a->session != NULL && clm_session_append(a->session, m, NULL) < 0) {
 		notice(a, "session logging failed; off");
 		clm_session_free(a->session);

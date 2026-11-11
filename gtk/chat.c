@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: ISC
 #include <stdbool.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include <adwaita.h>
 #include <gtk/gtk.h>
@@ -23,6 +24,7 @@ struct chat_row {
 	guint redraw;      /* pending markdown redraw, or 0 */
 	GtkLabel *think;
 	GtkLabel *result;
+	GtkWidget *images; /* thumbnails of a tool's images; tool rows only */
 	GString *text;
 	GString *think_text;
 	GtkListBox *list;
@@ -175,6 +177,10 @@ chat_row_add(GtkListBox *list, enum chat_kind kind, const char *who,
 		gtk_widget_add_css_class(GTK_WIDGET(cr->result), "dim-label");
 		gtk_widget_set_visible(GTK_WIDGET(cr->result), FALSE);
 		gtk_box_append(GTK_BOX(col), GTK_WIDGET(cr->result));
+		cr->images = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+		gtk_widget_set_visible(cr->images, FALSE);
+		gtk_widget_set_margin_top(cr->images, 4);
+		gtk_box_append(GTK_BOX(col), cr->images);
 	}
 
 	row = gtk_list_box_row_new();
@@ -260,4 +266,118 @@ void
 chat_clear(GtkListBox *list)
 {
 	gtk_list_box_remove_all(list);
+}
+
+/* Images */
+
+#define THUMB_MAX_W 320
+#define THUMB_MAX_H 240
+
+static const char *
+image_ext(const char *media_type)
+{
+	if (media_type == NULL)
+		return "img";
+	if (strcmp(media_type, "image/png") == 0)
+		return "png";
+	if (strcmp(media_type, "image/jpeg") == 0)
+		return "jpg";
+	if (strcmp(media_type, "image/gif") == 0)
+		return "gif";
+	if (strcmp(media_type, "image/webp") == 0)
+		return "webp";
+	return "img";
+}
+
+/* Open the image in whatever the desktop uses for it. The bytes go to a
+ * file named after their hash, in the cache, so the same image is written
+ * once. */
+static void
+image_open(GtkButton *b, gpointer user)
+{
+	GBytes *bytes = g_object_get_data(G_OBJECT(b), "bytes");
+	const char *ext = g_object_get_data(G_OBJECT(b), "ext");
+	g_autofree char *sum =
+	    g_compute_checksum_for_bytes(G_CHECKSUM_SHA256, bytes);
+	g_autofree char *dir =
+	    g_build_filename(g_get_user_cache_dir(), "clm", "images", NULL);
+	g_autofree char *name = g_strdup_printf("%.16s.%s", sum, ext);
+	g_autofree char *path = g_build_filename(dir, name, NULL);
+	char *argv[] = {"xdg-open", path, NULL};
+	g_autoptr(GError) err = NULL;
+	gsize len;
+	const void *data = g_bytes_get_data(bytes, &len);
+
+	(void)user;
+	if (g_mkdir_with_parents(dir, 0700) != 0)
+		return;
+	if (!g_file_test(path, G_FILE_TEST_EXISTS) &&
+	    !g_file_set_contents(path, data, (gssize)len, &err))
+		return;
+	/* Not waited for: the viewer outlives the click. */
+	(void)g_spawn_async(NULL, argv, NULL,
+	    G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+	        G_SPAWN_STDERR_TO_DEV_NULL,
+	    NULL, NULL, NULL, &err);
+}
+
+void
+chat_row_add_image(
+    struct chat_row *cr, const char *media_type, const void *data, size_t len)
+{
+	GBytes *bytes;
+	GdkTexture *tex;
+	GtkWidget *pic, *btn;
+	g_autoptr(GError) err = NULL;
+	g_autofree char *label = NULL;
+	int w, h;
+	double scale;
+
+	if (cr == NULL || cr->images == NULL || data == NULL || len == 0)
+		return;
+	bytes = g_bytes_new(data, len);
+	tex = gdk_texture_new_from_bytes(bytes, &err);
+	if (tex == NULL) {
+		GtkWidget *note;
+
+		label = g_strdup_printf("[image: %s, %zu KiB]",
+		    media_type != NULL ? media_type : "unknown",
+		    (len + 1023) / 1024);
+		note = gtk_label_new(label);
+		gtk_widget_add_css_class(note, "dim-label");
+		gtk_box_append(GTK_BOX(cr->images), note);
+		gtk_widget_set_visible(cr->images, TRUE);
+		g_bytes_unref(bytes);
+		return;
+	}
+	w = gdk_texture_get_width(tex);
+	h = gdk_texture_get_height(tex);
+	scale = 1.0;
+	if (w > THUMB_MAX_W)
+		scale = (double)THUMB_MAX_W / w;
+	if (h * scale > THUMB_MAX_H)
+		scale = (double)THUMB_MAX_H / h;
+	pic = gtk_picture_new_for_paintable(GDK_PAINTABLE(tex));
+	gtk_picture_set_content_fit(GTK_PICTURE(pic), GTK_CONTENT_FIT_CONTAIN);
+	gtk_picture_set_can_shrink(GTK_PICTURE(pic), TRUE);
+	gtk_widget_set_size_request(pic, w * scale > 1 ? (int)(w * scale) : 1,
+	    h * scale > 1 ? (int)(h * scale) : 1);
+	/* A button, so the keyboard and a screen reader can open it too. */
+	btn = gtk_button_new();
+	gtk_button_set_child(GTK_BUTTON(btn), pic);
+	gtk_widget_add_css_class(btn, "flat");
+	gtk_widget_set_halign(btn, GTK_ALIGN_START);
+	label = g_strdup_printf(
+	    "Open image, %s %dx%d", image_ext(media_type), w, h);
+	gtk_accessible_update_property(
+	    GTK_ACCESSIBLE(btn), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+	gtk_widget_set_tooltip_text(btn, "Open image");
+	g_object_set_data_full(
+	    G_OBJECT(btn), "bytes", bytes, (GDestroyNotify)g_bytes_unref);
+	g_object_set_data(
+	    G_OBJECT(btn), "ext", (gpointer)image_ext(media_type));
+	g_signal_connect(btn, "clicked", G_CALLBACK(image_open), NULL);
+	gtk_box_append(GTK_BOX(cr->images), btn);
+	gtk_widget_set_visible(cr->images, TRUE);
+	g_object_unref(tex);
 }

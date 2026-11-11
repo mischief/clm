@@ -145,7 +145,7 @@ local function run()
 	sys.mkdir(tmp .. "/runtime")
 	local pid = spawn(("env DISPLAY=:%s GDK_BACKEND=x11 XDG_CONFIG_HOME=%s/config "
 		.. "XDG_STATE_HOME=%s/state XDG_CACHE_HOME=%s/cache XDG_RUNTIME_DIR=%s/runtime "
-		.. "%s >%s/gtk.log 2>&1"):format(display, tmp, tmp, tmp, tmp, BIN, tmp))
+		.. "PATH=%s/bin:$PATH %s --allow-all-tools >%s/gtk.log 2>&1"):format(display, tmp, tmp, tmp, tmp, tmp, BIN, tmp))
 	local app = conn:wait_for(function()
 		return conn:app({ pid = pid })
 	end, 20)
@@ -359,6 +359,31 @@ local function run()
 	check(last.model == "other-model", "the profile's model is used")
 	check(seen.agents_list and seen.agent_send,
 	    "the new agent still has the peer tools")
+
+	-- An image a tool returns is shown as a thumbnail that opens on click.
+	local png = tmp .. "/pic.png"
+	os.execute("printf %s iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg== | base64 -d > " .. png)
+	local opened = tmp .. "/opened"
+	os.execute("mkdir -p " .. tmp .. "/bin && printf '#!/bin/sh\\necho \"$1\" > " .. opened
+		.. "\\n' > " .. tmp .. "/bin/xdg-open && chmod +x " .. tmp .. "/bin/xdg-open")
+	replies = replies + 0
+	entry:set_text("imagetest " .. png)
+	send:act()
+	local thumb = conn:wait_for(function()
+		return conv:find({ match = "^Open image" })
+	end, 20)
+	check(thumb, "a tool's image shows as a thumbnail button")
+	check(thumb and thumb:name():find("png 1x1", 1, true), "named with its type and size")
+	if thumb then
+		check(thumb:act(), "click the thumbnail")
+		check(conn:wait_for(function()
+			local f = io.open(opened)
+			if not f then return nil end
+			local p = f:read("*l")
+			f:close()
+			return p and p:find("/clm/images/.*%.png$")
+		end, 10), "it is handed to xdg-open as a png file")
+	end
 
 	-- Show-thinking toggle flips, with nothing to show.
 	check(eye:act() and eye:wait_state("pressed", true, 5), "the thinking toggle presses")
