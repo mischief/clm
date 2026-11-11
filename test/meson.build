@@ -56,12 +56,12 @@ test_ratelimit = executable('test_ratelimit',
 test('ratelimit', test_ratelimit, protocol: 'tap')
 
 # Subscription OAuth crypto (PKCE / SHA-256 / base64url). Only built when
-# the oauth feature is enabled; depends on curl + cJSON like src/oauth.c.
+# the oauth feature is enabled; depends on curl + cJSON like libclmfront/oauth.c.
 if get_option('oauth').allowed()
   test_oauth = executable('test_oauth',
     files('test_oauth.c'),
     dependencies: [cjson_dep, dependency('libcurl')],
-    include_directories: [include_directories('../src'), clm_inc,
+    include_directories: [clmfront_inc, clm_inc,
       include_directories('../include')],
     c_args: test_hardening_args,
   )

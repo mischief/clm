@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: ISC
-/* Unit test for the subscription-OAuth crypto helpers (src/oauth.c).
+/* Unit test for the subscription-OAuth crypto helpers (libclmfront/oauth.c).
  * We include the .c directly to reach its static SHA-256 / base64url
  * implementations; the network token exchange is not exercised here. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "../src/oauth.c"
+#include "../libclmfront/oauth.c"
 
 static int fails;
 
