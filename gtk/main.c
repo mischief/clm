@@ -37,6 +37,7 @@ struct app {
 	GtkListBox *chat;
 	GtkEntry *entry;
 	GtkWidget *stop;
+	GtkWidget *split;
 	struct clm_lua_cfg *lcfg;
 	struct clm_cfg cfg;
 	char endpoint[256];
@@ -738,6 +739,8 @@ sidebar_page(struct app *a)
 	GtkWidget *add = gtk_button_new_from_icon_name("list-add-symbolic");
 	GtkWidget *list = gtk_list_box_new();
 
+	adw_header_bar_set_title_widget(
+	    ADW_HEADER_BAR(hb), adw_window_title_new("Chats", ""));
 	gtk_widget_set_tooltip_text(add, "New chat");
 	g_signal_connect(add, "clicked", G_CALLBACK(on_new_chat), a);
 	adw_header_bar_pack_start(ADW_HEADER_BAR(hb), add);
@@ -747,7 +750,8 @@ sidebar_page(struct app *a)
 	a->sessions = GTK_LIST_BOX(list);
 	adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), hb);
 	adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), scrolled(list));
-	return GTK_WIDGET(adw_navigation_page_new(tv, "clm"));
+	gtk_widget_set_size_request(tv, 280, -1);
+	return tv;
 }
 
 static GtkWidget *
@@ -787,6 +791,7 @@ chat_page(struct app *a)
 	GtkWidget *hb = adw_header_bar_new();
 	GtkWidget *list = gtk_list_box_new();
 	GtkWidget *sw = scrolled(list);
+	GtkWidget *side = gtk_toggle_button_new();
 	GtkAdjustment *adj =
 	    gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(sw));
 
@@ -795,6 +800,11 @@ chat_page(struct app *a)
 	adw_header_bar_set_title_widget(
 	    ADW_HEADER_BAR(hb), GTK_WIDGET(a->title));
 	adw_header_bar_pack_end(ADW_HEADER_BAR(hb), model_selector(a));
+	gtk_button_set_icon_name(GTK_BUTTON(side), "sidebar-show-symbolic");
+	gtk_widget_set_tooltip_text(side, "Chats");
+	g_object_bind_property(side, "active", a->split, "show-sidebar",
+	    G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+	adw_header_bar_pack_start(ADW_HEADER_BAR(hb), side);
 	gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
 	gtk_widget_set_valign(list, GTK_ALIGN_END);
 	a->chat = GTK_LIST_BOX(list);
@@ -803,7 +813,7 @@ chat_page(struct app *a)
 	adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), hb);
 	adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), sw);
 	adw_toolbar_view_add_bottom_bar(ADW_TOOLBAR_VIEW(tv), composer(a));
-	return GTK_WIDGET(adw_navigation_page_new(tv, "chat"));
+	return tv;
 }
 
 /* Lifecycle */
@@ -834,7 +844,6 @@ static void
 on_activate(GApplication *gapp, gpointer user)
 {
 	struct app *a = user;
-	GtkWidget *split;
 	char *err = NULL;
 	int r;
 
@@ -846,15 +855,16 @@ on_activate(GApplication *gapp, gpointer user)
 	a->win = GTK_WINDOW(adw_application_window_new(GTK_APPLICATION(gapp)));
 	gtk_window_set_title(a->win, "clm");
 	gtk_window_set_default_size(a->win, 1100, 760);
-	split = adw_navigation_split_view_new();
-	adw_navigation_split_view_set_min_sidebar_width(
-	    ADW_NAVIGATION_SPLIT_VIEW(split), 280);
-	adw_navigation_split_view_set_sidebar(ADW_NAVIGATION_SPLIT_VIEW(split),
-	    ADW_NAVIGATION_PAGE(sidebar_page(a)));
-	adw_navigation_split_view_set_content(ADW_NAVIGATION_SPLIT_VIEW(split),
-	    ADW_NAVIGATION_PAGE(chat_page(a)));
+	/* The chat list starts hidden; the header's toggle shows it. */
+	a->split = adw_overlay_split_view_new();
+	adw_overlay_split_view_set_show_sidebar(
+	    ADW_OVERLAY_SPLIT_VIEW(a->split), FALSE);
+	adw_overlay_split_view_set_sidebar(
+	    ADW_OVERLAY_SPLIT_VIEW(a->split), sidebar_page(a));
+	adw_overlay_split_view_set_content(
+	    ADW_OVERLAY_SPLIT_VIEW(a->split), chat_page(a));
 	adw_application_window_set_content(
-	    ADW_APPLICATION_WINDOW(a->win), split);
+	    ADW_APPLICATION_WINDOW(a->win), a->split);
 	if (r < 0)
 		notice(
 		    a, err != NULL ? err : "config.lua has no provider/model");
