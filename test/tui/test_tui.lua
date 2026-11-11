@@ -1459,6 +1459,83 @@ tests.peers = function(url)
 	t:close()
 end
 
+tests.agent_switch = function(url)
+	-- /agent builds a whole new agent. Its peer tools and its socket have
+	-- to come with it: the old socket pointed at the agent just freed, and
+	-- the new agent had no agents_list or agent_send at all.
+	local run = STATE_HOME .. "/run-agent"
+	local reqlog = STATE_HOME .. "/agent-requests.jsonl"
+
+	sys.mkdir(run)
+	sys.setenv("XDG_RUNTIME_DIR", run)
+	local d = run .. "/clm"
+	local function socks()
+		local n = 0
+		for _, f in ipairs(sys.listdir(d)) do
+			if f:sub(-5) == ".sock" then
+				n = n + 1
+			end
+		end
+		return n
+	end
+
+	-- The shared test config points its provider at a dead port, which is
+	-- fine until a profile switch connects there. Use one that reaches
+	-- the mock server.
+	local cfg = STATE_HOME .. "/agent-config"
+	local base = url:gsub("/chat/completions$", "")
+
+	sys.mkdir(cfg)
+	sys.mkdir(cfg .. "/clm")
+	sys.mkdir(cfg .. "/clm/agents")
+	local function put(path, text)
+		local f = assert(io.open(path, "w"))
+		f:write(text)
+		f:close()
+	end
+	put(cfg .. "/clm/config.lua", string.format([=[return {
+    agent = "test",
+    model = "mock/mock-model",
+    providers = { mock = { kind = "openai", url = %q,
+        models = { ["mock-model"] = {} } } },
+}
+]=], base))
+	put(cfg .. "/clm/agents/test.lua", [=[return {
+    system_prompt = "You are a test agent.",
+    model = "mock/mock-model",
+}
+]=])
+
+	mock.request_log(reqlog)
+	local a = driver.new(BIN, url,
+	    { rows = 30, cols = 100, env = { XDG_CONFIG_HOME = cfg } })
+	a:wait_for("online", 8)
+	check(socks() == 1, "agent_switch: the first agent has a socket")
+	a:send("/agent test\r")
+	a:pump(2.0)
+	check(has(a:text(), "[switched to agent: test]"),
+	    "agent_switch: the profile switch happened")
+	check(socks() == 1,
+	    "agent_switch: one socket after the switch, on the new session")
+
+	-- The new agent still has the peer tools: the next request offers them.
+	a:send("hello\r")
+	a:wait_for("Yellow", 15)
+	a:close()
+	mock.request_log(nil)
+	local seen = {}
+	for ln in (read_file(reqlog) or ""):gmatch("[^\n]+") do
+		for _, t in ipairs(json.decode(ln).tools or {}) do
+			local f = t["function"] or t
+			seen[f.name] = true
+		end
+	end
+	check(seen.agents_list and seen.agent_send,
+	    "agent_switch: the new agent offers agents_list and agent_send")
+	check(seen.shell_exec, "agent_switch: and the shell tool")
+	check(socks() == 0, "agent_switch: the socket goes when the agent does")
+end
+
 -- The order tests run in when none are named.
 local ORDER = { "connection", "offline", "agent", "markdown", "scrollback",
 	"scroll_stable", "end_key", "resize", "margin", "editing", "history",
@@ -1466,6 +1543,7 @@ local ORDER = { "connection", "offline", "agent", "markdown", "scrollback",
 	"cancel_tools", "tool_escapes", "shell_escape", "paste", "session",
 	"resume_collapse",
 	"session_compact", "clear_gauge", "scratch", "scratch_clear", "peers",
+	"agent_switch",
 	"allow_all",
 	"help_popup", "narrow_status", "plugin_commands",
 	"mcp_spawn_fail" }

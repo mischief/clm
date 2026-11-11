@@ -18,13 +18,12 @@
 
 #include "clm/clm.h"
 #include "clm/session.h"
+#include "bringup.h"
 
 struct clm_proc; /* libclmproc, used by the "! <cmd>" shell escape */
 
 struct clm_host;
-struct clm_lua_env;
 struct clm_lua_cfg;
-struct clm_mcp_client;
 
 /* Style buckets, mapped to curses attributes in seg_attr() (tui.c). */
 /* Tally slots: commands, files read, files written, other tools, events. */
@@ -98,14 +97,13 @@ struct steering_item {
 struct ui {
 	uv_loop_t *loop;
 	struct clm_host *host;
-	struct clm_agent *agent;
-	struct clm_lua_env *lua_env;
+	/* The agent and what hangs off it: plugins, MCP clients, the peer
+	 * socket. Started and stopped together, see bringup.h. */
+	struct clm_front_agent fa;
 	struct clm_lua_cfg *lcfg;       /* kept alive for /agent switching */
 	const char *plugin_dir;         /* NULL = use XDG default */
 	const char *const *opt_plugins; /* -P names, NULL-terminated */
-	struct clm_mcp_client **mcp_clients;
-	size_t mcp_client_count;
-	struct clm_session *session; /* NULL = session logging disabled */
+	struct clm_session *session;    /* NULL = session logging disabled */
 	/* The agent's system prompt suffix: host facts, the scratch dir and
 	 * the session id. It follows the session. */
 	char *host_block;
@@ -203,7 +201,6 @@ struct ui {
 	 * out without digging through the transcript. Empty when logging is
 	 * off. */
 	char session_short[16];
-	struct clm_peer *peer; /* this agent's socket, or NULL */
 	/* Run every tool call without asking (--allow-all-tools). For an
 	 * agent nobody is watching; the status bar says so. */
 	bool allow_all;

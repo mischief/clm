@@ -243,7 +243,7 @@ complete_command_name(struct ui *u, size_t wstart, size_t wlen)
 	/* The names live only during the walk, so they are copied. */
 	pn.name = calloc(MAX_CANDIDATES, sizeof(*pn.name));
 	if (pn.name != NULL)
-		clm_lua_commands(u->lua_env, plugin_name_cb, &pn);
+		clm_lua_commands(u->fa.lua_env, plugin_name_cb, &pn);
 	for (size_t i = 0; i < pn.n && ncandidates < MAX_CANDIDATES; i++)
 		candidates[ncandidates++] = pn.name[i];
 	if (ncandidates == 0) {
@@ -599,7 +599,7 @@ source_model_names(
 		clm_lua_cfg_free_str_list(names);
 	}
 
-	if (u->agent == NULL)
+	if (u->fa.agent == NULL)
 		return;
 
 	/* A provider name is already typed (that's how we got past the
@@ -650,8 +650,8 @@ source_model_names(
 		if (purl != NULL && u->provider_name != NULL &&
 		    strcmp(spec_provider, u->provider_name) == 0) {
 			/* active connection owns correct live endpoint */
-			if (clm_agent_list_models(u->agent, model_live_result,
-			        model_live_error, req) != 0)
+			if (clm_agent_list_models(u->fa.agent,
+			        model_live_result, model_live_error, req) != 0)
 				model_complete_req_free(req);
 		} else if (purl != NULL) {
 			enum clm_provider provider =
@@ -663,9 +663,9 @@ source_model_names(
 
 			clm_provider_build_url(
 			    url_buf, sizeof(url_buf), purl, provider);
-			if (clm_agent_probe_models(u->agent, url_buf, provider,
-			        api_key, model_live_result, model_live_error,
-			        req) != 0)
+			if (clm_agent_probe_models(u->fa.agent, url_buf,
+			        provider, api_key, model_live_result,
+			        model_live_error, req) != 0)
 				model_complete_req_free(req);
 		} else if (u->provider_name != NULL &&
 		    strcmp(spec_provider, u->provider_name) == 0) {
@@ -673,8 +673,8 @@ source_model_names(
 			 * on (e.g. a literal ad hoc connection) -- probe that
 			 * live, same as before this function learned to look
 			 * beyond the active provider. */
-			if (clm_agent_list_models(u->agent, model_live_result,
-			        model_live_error, req) != 0)
+			if (clm_agent_list_models(u->fa.agent,
+			        model_live_result, model_live_error, req) != 0)
 				model_complete_req_free(req);
 		} else {
 			/* Unknown provider name and it's not the active

@@ -64,7 +64,7 @@ if lua_dep.found()
   endif
 
   clm_front_lib = static_library('clmfront',
-    files('xdg.c', 'conn.c', 'mcp_setup.c', 'plugin_setup.c',
+    files('xdg.c', 'bringup.c', 'conn.c', 'mcp_setup.c', 'plugin_setup.c',
       'seed_plugins.c') +
       oauth_src + sysinfo_src + [seed_plugins_data],
     c_args: clm_hardening_args + oauth_args,

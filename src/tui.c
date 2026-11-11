@@ -40,6 +40,7 @@
 #include "mcp_setup.h"
 #include "plugin_setup.h"
 #include "cfg_tuning.h"
+#include "bringup.h"
 #include "conn.h"
 #include "loop_drain.h"
 #include "model_spec.h"
@@ -586,22 +587,22 @@ cb_state(enum clm_agent_state st, void *user)
 	 * ending the turn. Every state transition passes through here
 	 * though, including the THINKING transition right after a mid-chain
 	 * resume, so poll for a just-failed attempt on every callback. */
-	if (clm_agent_take_mid_chain_compact_started(u->agent)) {
+	if (clm_agent_take_mid_chain_compact_started(u->fa.agent)) {
 		ui_push(u, ST_META,
 		    "\n[context over threshold, auto-compacting...]\n");
 		/* Stale: it counts a prompt prefix compaction is discarding. */
 		u->usage[0] = '\0';
 		u->dirty = true;
 	}
-	if (clm_agent_take_mid_chain_compact_succeeded(u->agent)) {
+	if (clm_agent_take_mid_chain_compact_succeeded(u->fa.agent)) {
 		ui_push(u, ST_META, "[autocompact complete, resuming]\n");
 		session_after_compact(u);
 		u->dirty = true;
 	}
-	if (clm_agent_take_mid_chain_compact_error(u->agent)) {
+	if (clm_agent_take_mid_chain_compact_error(u->fa.agent)) {
 		ui_push(
 		    u, ST_META, "\n[autocompact failed, continuing anyway: ");
-		ui_push(u, ST_META, clm_agent_get_last_error(u->agent));
+		ui_push(u, ST_META, clm_agent_get_last_error(u->fa.agent));
 		ui_push(u, ST_META, "]\n");
 		u->dirty = true;
 	}
@@ -654,13 +655,13 @@ cb_turn_done(int status, void *user)
 	 * shrink attempt didn't work. */
 	if (status != 0 && status != -ECANCELED && !was_compacting) {
 		ui_push(u, ST_ERROR, "\nerror: ");
-		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->agent));
+		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->fa.agent));
 		/* A failed turn may mean the server went away; re-probe. */
-		clm_agent_check_connection(u->agent);
+		clm_agent_check_connection(u->fa.agent);
 	} else if (was_compacting && status != 0 && status != -ECANCELED) {
 		ui_push(
 		    u, ST_META, "\n[autocompact failed, continuing anyway: ");
-		ui_push(u, ST_META, clm_agent_get_last_error(u->agent));
+		ui_push(u, ST_META, clm_agent_get_last_error(u->fa.agent));
 		ui_push(u, ST_META, "]\n");
 	}
 	ui_push(u, ST_NORMAL, "\n");
@@ -703,8 +704,8 @@ cb_turn_done(int status, void *user)
 	 * directly on top of the failure in the same callback.
 	 */
 	if (!was_compacting && (status == 0 || status == -ECANCELED) &&
-	    clm_agent_over_autocompact_threshold(u->agent)) {
-		int rc = clm_agent_compact(u->agent);
+	    clm_agent_over_autocompact_threshold(u->fa.agent)) {
+		int rc = clm_agent_compact(u->fa.agent);
 		if (rc == 0) {
 			u->busy = true;
 			u->autocompacting = true;
@@ -936,7 +937,8 @@ cb_permission(const struct clm_permission_req *req, void *user)
 	 * one. */
 	if ((u->allow_all || u->auto_mode) &&
 	    clm_permission_req_reason(req) == NULL) {
-		clm_tool_permission_respond(u->agent, req, CLM_PERM_ALLOW_ONCE);
+		clm_tool_permission_respond(
+		    u->fa.agent, req, CLM_PERM_ALLOW_ONCE);
 		return;
 	}
 
@@ -1081,7 +1083,7 @@ session_after_compact(struct ui *u)
 
 	if (u->session == NULL)
 		return;
-	h = clm_agent_get_history(u->agent);
+	h = clm_agent_get_history(u->fa.agent);
 	if (h == NULL)
 		return;
 	if (clm_session_rewrite(u->session, h, NULL) < 0) {
@@ -1151,14 +1153,14 @@ replay_peer_message(struct ui *u, const char *content)
 static void
 peer_rebind(struct ui *u)
 {
-	if (u->peer == NULL || u->session == NULL)
+	if (u->fa.peer == NULL || u->session == NULL)
 		return;
-	clm_peer_free(u->peer);
-	u->peer = NULL;
+	clm_peer_free(u->fa.peer);
+	u->fa.peer = NULL;
 	/* The tools stay registered from startup; only the socket moves. */
-	(void)clm_peer_start(u->agent, u->loop, clm_session_id(u->session),
+	(void)clm_peer_start(u->fa.agent, u->loop, clm_session_id(u->session),
 	    u->agent_name != NULL ? u->agent_name : "clm", u->model,
-	    cb_peer_message, u, &u->peer);
+	    cb_peer_message, u, &u->fa.peer);
 }
 
 /* Move the scratch dir and the session id in the prompt onto the current
@@ -1176,7 +1178,7 @@ scratch_rebind(struct ui *u)
 	    clm_session_id(u->session), sysinfo, true, &dir);
 	if (block == NULL)
 		return;
-	(void)clm_agent_set_system_prompt_suffix(u->agent, block);
+	(void)clm_agent_set_system_prompt_suffix(u->fa.agent, block);
 	free(u->host_block);
 	u->host_block = block;
 }
@@ -1285,7 +1287,7 @@ state_label(enum clm_agent_state st)
 static void
 fmt_ctx_gauge(struct ui *u, char *buf, size_t len)
 {
-	int64_t ctx_max = clm_agent_get_ctx_max(u->agent);
+	int64_t ctx_max = clm_agent_get_ctx_max(u->fa.agent);
 	int filled, pct;
 	size_t off = 0;
 
@@ -1468,7 +1470,7 @@ help_build(struct ui *u, struct help_text *h, int w)
 		help_cmd_add(&c, cmd->name, cmd->args, right);
 	}
 	nbuiltin = c.left.n;
-	clm_lua_commands(u->lua_env, help_cmd_plugin, &c);
+	clm_lua_commands(u->fa.lua_env, help_cmd_plugin, &c);
 
 	/* The left column fits the longest key or command, plus a gap. */
 	for (size_t i = 0; i < sizeof(help_keys) / sizeof(help_keys[0]); i++)
@@ -2882,10 +2884,10 @@ do_submit(struct ui *u, const char *prompt, bool echo)
 		ui_push(u, ST_USER, "\n");
 		echo_note(u, prompt);
 	}
-	r = clm_agent_submit(u->agent, prompt);
+	r = clm_agent_submit(u->fa.agent, prompt);
 	if (r < 0) {
 		ui_push(u, ST_ERROR, "\nerror: ");
-		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->agent));
+		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->fa.agent));
 		return false;
 	}
 	u->busy = true;
@@ -2990,11 +2992,11 @@ drain_steering_one(struct ui *u)
 	 * starting a genuinely new turn -- at the third decision point
 	 * (THINKING->COMPLETE), where the agent is actually free.
 	 */
-	prev_state = clm_agent_get_state(u->agent);
-	r = clm_agent_notify(u->agent, send);
+	prev_state = clm_agent_get_state(u->fa.agent);
+	r = clm_agent_notify(u->fa.agent, send);
 	if (r < 0) {
 		ui_push(u, ST_ERROR, "\nerror: ");
-		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->agent));
+		ui_push(u, ST_ERROR, clm_agent_get_last_error(u->fa.agent));
 	} else if (prev_state != CLM_STATE_THINKING &&
 	    prev_state != CLM_STATE_CALLING_TOOL) {
 		/* Actually started a fresh turn, same bookkeeping do_submit()
@@ -3026,7 +3028,7 @@ set_current_model(struct ui *u, const char *model)
 	char *dup = model != NULL ? strdup(model) : NULL;
 	free(u->model);
 	u->model = dup;
-	clm_peer_set_model(u->peer, u->model);
+	clm_peer_set_model(u->fa.peer, u->model);
 }
 
 /*
@@ -3202,18 +3204,6 @@ resolve_effort(struct ui *u, const char *prov, const char *model)
 	return model_cfg_str(u, prov, model, "effort");
 }
 
-/* Hand the freshly built agent whatever effort applies to it. */
-static void
-apply_effort(struct ui *u, const char *prov, const char *model)
-{
-	const char *e = resolve_effort(u, prov, model);
-
-	if (e != NULL)
-		(void)clm_agent_set_effort(u->agent, e);
-	(void)clm_agent_set_compact_effort(
-	    u->agent, model_cfg_str(u, prov, model, "compact_effort"));
-}
-
 /* Where this session lives: id for addressing it, path for reading it. */
 static void
 cmd_session(struct ui *u)
@@ -3247,7 +3237,7 @@ cmd_session(struct ui *u)
 static void
 auto_check_hooks(struct ui *u)
 {
-	if (!u->auto_mode || clm_agent_pre_tool_hook_count(u->agent) > 0)
+	if (!u->auto_mode || clm_agent_pre_tool_hook_count(u->fa.agent) > 0)
 		return;
 	u->auto_mode = false;
 	ui_push(u, ST_ERROR,
@@ -3279,7 +3269,7 @@ cmd_effort(struct ui *u, const char *arg)
 	char msg[160];
 
 	if (arg == NULL || arg[0] == '\0') {
-		const char *cur = clm_agent_get_effort(u->agent);
+		const char *cur = clm_agent_get_effort(u->fa.agent);
 
 		(void)snprintf(msg, sizeof(msg), "\neffort: %s\n",
 		    cur != NULL ? cur : "(backend default)");
@@ -3288,11 +3278,11 @@ cmd_effort(struct ui *u, const char *arg)
 	}
 	if (strcmp(arg, "default") == 0) {
 		u->effort_override[0] = '\0';
-		(void)clm_agent_set_effort(u->agent, NULL);
+		(void)clm_agent_set_effort(u->fa.agent, NULL);
 		ui_push(u, ST_META, "\neffort: backend default\n");
 		return;
 	}
-	if (clm_agent_set_effort(u->agent, arg) < 0) {
+	if (clm_agent_set_effort(u->fa.agent, arg) < 0) {
 		ui_push(u, ST_ERROR, "\ncould not set effort\n");
 		return;
 	}
@@ -3305,6 +3295,33 @@ cmd_effort(struct ui *u, const char *arg)
 }
 
 static void session_rotate(struct ui *u);
+
+/*
+ * What starting an agent needs from this frontend: its callbacks, the spool,
+ * the peer socket announced on the session, and where the plugins live. The
+ * caller adds the effort and, for a profile switch, the agent's own plugins.
+ */
+static void
+front_opts(struct ui *u, const struct clm_cfg *cfg, struct clm_front_opts *fo)
+{
+	memset(fo, 0, sizeof(*fo));
+	fo->cfg = cfg;
+	fo->host = u->host;
+	fo->loop = u->loop;
+	fo->callbacks = &tui_callbacks;
+	fo->user = u;
+	fo->lcfg = u->lcfg;
+	fo->spool = cb_spool;
+	fo->spool_user = u;
+	fo->peer_id = u->session != NULL ? clm_session_id(u->session) : NULL;
+	fo->peer_name = u->agent_name;
+	fo->peer_cb = cb_peer_message;
+	fo->peer_user = u;
+	fo->plugin_dir = u->plugin_dir;
+	fo->opt_plugins = u->opt_plugins;
+	fo->status = cb_mcp_status;
+	fo->status_user = u;
+}
 
 static void
 cmd_agent(struct ui *u, const char *arg)
@@ -3354,20 +3371,15 @@ cmd_agent(struct ui *u, const char *arg)
 				return;
 			}
 
-			/* Tear down plugins + MCP clients (must happen while
+			/* Tear down plugins, MCP clients and the peer (while
 			 * the old agent is still alive: unregistering their
-			 * tools touches it) + agent. */
-			clm_lua_env_free(u->lua_env);
-			u->lua_env = NULL;
-			clm_cli_free_mcp_servers(
-			    u->mcp_clients, u->mcp_client_count);
-			u->mcp_clients = NULL;
-			u->mcp_client_count = 0;
-			clm_agent_free(u->agent);
+			 * tools touches it), then the agent. */
+			clm_front_agent_stop(&u->fa);
 
 			/* Rebuild cfg. */
 			int r;
 			struct clm_cfg newcfg = conn.cfg;
+			struct clm_front_opts fo;
 
 			newcfg.system_prompt = sprompt;
 			/* A profile switch builds a whole new agent, so the
@@ -3386,55 +3398,24 @@ cmd_agent(struct ui *u, const char *arg)
 			        u->lcfg, "volatile_tools");
 
 			/* The new agent's prompt belongs in the new log
-			 * that session_rotate() starts, not the old one. */
+			 * that session_rotate() starts, not the old one. The
+			 * peer socket moves to that session's id there. */
 			struct clm_session *old = u->session;
 
 			u->session = NULL;
-			r = clm_agent_new(
-			    &newcfg, u->host, &tui_callbacks, u, &u->agent);
+			front_opts(u, &newcfg, &fo);
+			fo.effort = resolve_effort(u, prov, spec_model);
+			fo.compact_effort = model_cfg_str(
+			    u, prov, spec_model, "compact_effort");
+			fo.agent_plugins = arg;
+			r = clm_front_agent_start(&fo, &u->fa);
 			u->session = old;
 			if (r < 0) {
 				ui_push(
 				    u, ST_ERROR, "\nfailed to create agent\n");
 			} else {
-				apply_effort(u, prov, spec_model);
-				clm_agent_set_spool(u->agent, cb_spool, u);
-				clm_tools_register_shell(u->agent);
-				clm_tools_register_bg(u->agent);
-				clm_tools_register_monitor(u->agent);
-				/* Reload plugins. */
-				if (clm_lua_env_new(u->agent, &u->lua_env) ==
-				    0) {
-					clm_lua_env_set_config_from(
-					    u->lua_env, u->lcfg);
-					char *pp = u->plugin_dir == NULL
-					    ? xdg_config_path("clm/plugins")
-					    : NULL;
-
-					clm_cli_load_plugins(u->lua_env,
-					    u->plugin_dir != NULL
-					        ? u->plugin_dir
-					        : pp,
-					    u->lcfg, u->opt_plugins,
-					    cb_mcp_status, u);
-					free(pp);
-					/* Load agent-specific plugins. */
-					char *apdir =
-					    xdg_config_path("clm/agents");
-					if (apdir != NULL) {
-						char apbuf[512];
-						(void)snprintf(apbuf,
-						    sizeof(apbuf), "%s/%s",
-						    apdir, arg);
-						clm_lua_load_plugins(
-						    u->lua_env, apbuf);
-						free(apdir);
-					}
-				}
 				auto_check_hooks(u);
-				u->mcp_clients = clm_cli_connect_mcp_servers(
-				    u->agent, u->loop, u->lcfg, cb_mcp_status,
-				    u, &u->mcp_client_count);
+				clm_front_agent_connect_mcp(&u->fa, &fo);
 				free(u->agent_name);
 				u->agent_name = strdup(arg);
 				set_current_model(u, newcfg.model);
@@ -3450,7 +3431,7 @@ cmd_agent(struct ui *u, const char *arg)
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to agent: %s]\n", arg);
 				ui_push(u, ST_META, msg);
-				clm_agent_check_connection(u->agent);
+				clm_agent_check_connection(u->fa.agent);
 			}
 		}
 	}
@@ -3469,7 +3450,7 @@ set_connection(
 	struct clm_front_conn conn;
 	int rc = clm_front_conn_resolve(u->lcfg, provider, mprov, model, &conn);
 
-	return rc < 0 ? rc : clm_agent_set_provider(u->agent, &conn.cfg);
+	return rc < 0 ? rc : clm_agent_set_provider(u->fa.agent, &conn.cfg);
 }
 
 static void
@@ -3491,8 +3472,8 @@ cmd_model(struct ui *u, const char *arg)
 	 * -m/--model on the CLI in main.c. */
 	if (arg[0] == '\0') {
 		list_config_names(u, "models", "model", "/model");
-		(void)clm_agent_list_models(
-		    u->agent, on_live_models_result, on_live_models_error, u);
+		(void)clm_agent_list_models(u->fa.agent, on_live_models_result,
+		    on_live_models_error, u);
 	} else if (u->lcfg == NULL) {
 		ui_push(u, ST_ERROR, "\nno config loaded\n");
 	} else {
@@ -3517,7 +3498,8 @@ cmd_model(struct ui *u, const char *arg)
 			/* No "/" at all -- literal wire id on the current
 			 * connection. */
 			struct clm_cfg litcfg = {0};
-			const char *cur_url = clm_agent_get_base_url(u->agent);
+			const char *cur_url =
+			    clm_agent_get_base_url(u->fa.agent);
 
 			if (cur_url == NULL) {
 				ui_push(u, ST_ERROR,
@@ -3527,13 +3509,13 @@ cmd_model(struct ui *u, const char *arg)
 
 				litcfg.base_url = cur_url;
 				litcfg.api_key =
-				    clm_agent_get_api_key(u->agent);
+				    clm_agent_get_api_key(u->fa.agent);
 				litcfg.provider =
-				    clm_agent_get_provider(u->agent);
+				    clm_agent_get_provider(u->fa.agent);
 				litcfg.model = arg;
 
-				int rc =
-				    clm_agent_set_provider(u->agent, &litcfg);
+				int rc = clm_agent_set_provider(
+				    u->fa.agent, &litcfg);
 				if (rc == 0) {
 					set_current_model(u, litcfg.model);
 					note_model_switch(u);
@@ -3542,7 +3524,7 @@ cmd_model(struct ui *u, const char *arg)
 					    "(literal, not in config.lua)]\n",
 					    arg);
 					ui_push(u, ST_META, msg);
-					clm_agent_check_connection(u->agent);
+					clm_agent_check_connection(u->fa.agent);
 				} else if (rc == -EBUSY) {
 					ui_push(u, ST_ERROR,
 					    "\nbusy; try again when idle\n");
@@ -3563,7 +3545,7 @@ cmd_model(struct ui *u, const char *arg)
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to model: %s]\n", arg);
 				ui_push(u, ST_META, msg);
-				clm_agent_check_connection(u->agent);
+				clm_agent_check_connection(u->fa.agent);
 			} else if (rc == -EBUSY) {
 				ui_push(u, ST_ERROR,
 				    "\nbusy; try again when idle\n");
@@ -3607,7 +3589,7 @@ cmd_provider(struct ui *u, const char *arg)
 				(void)snprintf(msg, sizeof(msg),
 				    "\n[switched to provider: %s]\n", arg);
 				ui_push(u, ST_META, msg);
-				clm_agent_check_connection(u->agent);
+				clm_agent_check_connection(u->fa.agent);
 			} else if (rc == -EBUSY) {
 				ui_push(u, ST_ERROR,
 				    "\nbusy; try again when idle\n");
@@ -3719,7 +3701,7 @@ session_rotate(struct ui *u)
 	if (clm_session_create(NULL, u->model, u->provider_name, u->agent_name,
 	        &u->session) != 0)
 		return;
-	sys = TAILQ_FIRST(clm_agent_get_history(u->agent));
+	sys = TAILQ_FIRST(clm_agent_get_history(u->fa.agent));
 	if (sys != NULL && sys->role == CLM_ROLE_SYSTEM)
 		(void)clm_session_append(u->session, sys, NULL);
 	set_session_short(u);
@@ -3737,7 +3719,7 @@ cmd_clear(struct ui *u, const char *arg)
 	 * mid-turn refuses (-EBUSY) and the on-screen transcript is
 	 * left alone in that case too, rather than looking cleared
 	 * while the backend history it was displaying still isn't. */
-	int rc = clm_agent_clear_history(u->agent);
+	int rc = clm_agent_clear_history(u->fa.agent);
 
 	(void)arg;
 	if (rc == -EBUSY) {
@@ -3784,7 +3766,7 @@ cmd_output(struct ui *u, const char *arg)
 static void
 cmd_compact(struct ui *u, const char *arg)
 {
-	int rc = clm_agent_compact(u->agent);
+	int rc = clm_agent_compact(u->fa.agent);
 
 	(void)arg;
 	if (rc == 0) {
@@ -3956,7 +3938,7 @@ run_command(struct ui *u, const char *line)
 		w->u = u;
 		w->gen = u->cmd_gen;
 		(void)snprintf(w->name, sizeof(w->name), "%s", name);
-		r = clm_lua_command_run(u->lua_env, name, arg, cmd_done, w);
+		r = clm_lua_command_run(u->fa.lua_env, name, arg, cmd_done, w);
 		if (r == 0) {
 			u->cmd_live++;
 			(void)snprintf(
@@ -4431,15 +4413,15 @@ answer_permission(struct ui *u, int ch)
 	ui_push(u, ST_PERM, "-> ");
 	ui_push(u, ST_PERM, label);
 	ui_push(u, ST_PERM, "\n");
-	clm_tool_permission_respond(u->agent, req, d);
+	clm_tool_permission_respond(u->fa.agent, req, d);
 
 	/* Escape also cancels the rest of the turn (drain remaining). */
 	if (ch == 27) {
 		for (size_t i = 0; i < u->perm_count; i++)
 			clm_tool_permission_respond(
-			    u->agent, u->perm_queue[i], CLM_PERM_DENY_ONCE);
+			    u->fa.agent, u->perm_queue[i], CLM_PERM_DENY_ONCE);
 		u->perm_count = 0;
-		clm_agent_cancel(u->agent);
+		clm_agent_cancel(u->fa.agent);
 	}
 
 	/* For "always" decisions, auto-resolve remaining queued requests for
@@ -4452,7 +4434,7 @@ answer_permission(struct ui *u, int ch)
 			if (answered_name != NULL && qname != NULL &&
 			    strcmp(answered_name, qname) == 0) {
 				clm_tool_permission_respond(
-				    u->agent, u->perm_queue[i], d);
+				    u->fa.agent, u->perm_queue[i], d);
 				u->perm_count--;
 				for (size_t j = i; j < u->perm_count; j++)
 					u->perm_queue[j] = u->perm_queue[j + 1];
@@ -4705,7 +4687,7 @@ handle_keys(struct ui *u)
 			break;
 		case 27: { /* Escape: cancel a running turn, else clear the
 		              input */
-			int cancel_rc = clm_agent_cancel(u->agent);
+			int cancel_rc = clm_agent_cancel(u->fa.agent);
 			if (cancel_rc == 0) {
 				ui_push(u, ST_META, "\n[cancelled]\n");
 			} else if (cancel_rc != -EALREADY &&
@@ -4862,7 +4844,7 @@ static void
 on_health(uv_timer_t *t)
 {
 	struct ui *u = t->data;
-	clm_agent_check_connection(u->agent);
+	clm_agent_check_connection(u->fa.agent);
 }
 
 /*
@@ -4954,6 +4936,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
     int repaired_tool_calls, const char *effort, bool allow_all, bool auto_mode)
 {
 	struct ui *u;
+	struct clm_front_opts fo;
 	uv_loop_t *loop;
 	bool drained;
 	int r;
@@ -5015,7 +4998,16 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		return 1;
 	}
 
-	r = clm_agent_new(cfg, u->host, &tui_callbacks, u, &u->agent);
+	/* Kept for a profile switch, which builds a new agent. */
+	if (cfg->system_prompt_suffix != NULL)
+		u->host_block = strdup(cfg->system_prompt_suffix);
+
+	front_opts(u, cfg, &fo);
+	fo.effort = resolve_effort(u, cfg->provider_name, cfg->model);
+	fo.compact_effort =
+	    model_cfg_str(u, cfg->provider_name, cfg->model, "compact_effort");
+	fo.seed_plugins = false;
+	r = clm_front_agent_start(&fo, &u->fa);
 	if (r < 0) {
 		clm_dprintf(
 		    STDERR_FILENO, "error: failed to create agent (%d)\n", r);
@@ -5023,15 +5015,10 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		free(u);
 		return 1;
 	}
-	/* Kept for a profile switch, which builds a new agent. */
-	if (cfg->system_prompt_suffix != NULL)
-		u->host_block = strdup(cfg->system_prompt_suffix);
-	apply_effort(u, cfg->provider_name, cfg->model);
-	clm_agent_set_spool(u->agent, cb_spool, u);
 
 	/* Tell the model about the "! <cmd>" escape, so it can hand a command
 	 * back to the user to run instead of running a risky one itself. */
-	(void)clm_agent_set_prompt_part(u->agent, "shell_escape",
+	(void)clm_agent_set_prompt_part(u->fa.agent, "shell_escape",
 	    "This is an interactive terminal. The user can run a shell "
 	    "command by typing \"! <command>\"; its output then comes to you "
 	    "as a message that starts with \"[shell] $ \". When you want a "
@@ -5039,33 +5026,8 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	    "that you should not run yourself, ask the user to run it with "
 	    "\"! <command>\" and read the result from that message.");
 
-	/* Peer messaging is optional: a bind failure (no runtime dir, a
-	 * hostile /tmp) costs the socket, not the session. */
-	if (u->session != NULL &&
-	    clm_peer_start(u->agent, loop, clm_session_id(u->session),
-	        u->agent_name != NULL ? u->agent_name : "clm", cfg->model,
-	        cb_peer_message, u, &u->peer) == 0)
-		(void)clm_peer_register_tools(u->agent);
-	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the
-	 * portable core). */
-	clm_tools_register_shell(u->agent);
-	clm_tools_register_bg(u->agent);
-	clm_tools_register_monitor(u->agent);
-
-	if (clm_lua_env_new(u->agent, &u->lua_env) == 0) {
-		if (lcfg != NULL)
-			clm_lua_env_set_config_from(u->lua_env, lcfg);
-		autofree char *ppath = NULL;
-
-		if (plugin_dir == NULL)
-			ppath = xdg_config_path("clm/plugins");
-		clm_cli_load_plugins(u->lua_env,
-		    plugin_dir != NULL ? plugin_dir : ppath, lcfg, opt_plugins,
-		    cb_mcp_status, u);
-	}
 	auto_check_hooks(u);
-	u->mcp_clients = clm_cli_connect_mcp_servers(
-	    u->agent, loop, lcfg, cb_mcp_status, u, &u->mcp_client_count);
+	clm_front_agent_connect_mcp(&u->fa, &fo);
 	clm_cli_wait_mcp_ready(loop, CLM_MCP_READY_WAIT_MS);
 
 	/* newterm, not initscr: it hands back the screen so the exit path can
@@ -5138,7 +5100,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	}
 
 	if (restore != NULL) {
-		r = clm_agent_restore_history(u->agent, restore);
+		r = clm_agent_restore_history(u->fa.agent, restore);
 		if (r < 0) {
 			ui_push(u, ST_ERROR,
 			    "\nfailed to restore the session; "
@@ -5205,7 +5167,7 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 	uv_run(loop, UV_RUN_DEFAULT);
 
 	/* Before curses goes away: a cancelled turn still repaints. */
-	clm_settle_turn(u->agent, loop);
+	clm_settle_turn(u->fa.agent, loop);
 
 	/* Leave the terminal as we found it, and curses with nothing of ours
 	 * still allocated: the windows first, then the screen behind them. */
@@ -5261,15 +5223,12 @@ tui_run(const struct clm_cfg *cfg, const char *plugin_dir,
 		}
 		u->session = NULL;
 	}
-	clm_lua_env_free(u->lua_env);
 	/* A "! <cmd>" still running must not call back into a freed ui. */
 	if (u->shell_proc != NULL) {
 		clm_proc_detach(u->shell_proc);
 		clm_proc_kill(u->shell_proc);
 	}
-	clm_cli_free_mcp_servers(u->mcp_clients, u->mcp_client_count);
-	clm_peer_free(u->peer);
-	clm_agent_free(u->agent);
+	clm_front_agent_stop(&u->fa);
 	clm_host_uv_free(u->host);
 	close_own_handles(u);
 	drained = clm_drain_loop(loop) == 0;

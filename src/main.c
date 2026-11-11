@@ -29,6 +29,7 @@
  * otherwise (session_keep_days = 0 keeps everything). */
 #define CLM_SESSION_KEEP_DAYS 90
 #include "cfg_tuning.h"
+#include "bringup.h"
 #include "conn.h"
 #include "loop_drain.h"
 #include "model_spec.h"
@@ -139,13 +140,9 @@ init_escapes(void)
 struct cli_state {
 	uv_loop_t *loop;
 	struct clm_host *host;
-	struct clm_agent *agent;
-	struct clm_lua_env *lua_env;
+	struct clm_front_agent fa;
 	struct clm_lua_cfg *lua_cfg;
-	struct clm_peer *peer;
 	struct clm_session *session; /* daemon -r ID only; NULL otherwise */
-	struct clm_mcp_client **mcp_clients;
-	size_t mcp_client_count;
 	uv_pipe_t stdin_pipe;
 	uv_signal_t sigint, sigterm;
 	char prompt_line[1024];
@@ -294,7 +291,7 @@ session_after_compact(struct cli_state *state)
 
 	if (state->session == NULL)
 		return;
-	h = clm_agent_get_history(state->agent);
+	h = clm_agent_get_history(state->fa.agent);
 	if (h != NULL && clm_session_rewrite(state->session, h, NULL) < 0) {
 		clm_dprintf(STDERR_FILENO,
 		    "warning: session rewrite failed; disabled\n");
@@ -310,7 +307,7 @@ cb_state(enum clm_agent_state st, void *user)
 
 	(void)st;
 	if (state->daemon &&
-	    clm_agent_take_mid_chain_compact_succeeded(state->agent))
+	    clm_agent_take_mid_chain_compact_succeeded(state->fa.agent))
 		session_after_compact(state);
 }
 
@@ -328,7 +325,7 @@ cb_turn_done(int status, void *user)
 	state->mid_reply = 0;
 	if (status != 0 && !state->stopping) {
 		clm_dprintf(STDERR_FILENO, "error: %s\n",
-		    clm_agent_get_last_error(state->agent));
+		    clm_agent_get_last_error(state->fa.agent));
 	}
 	if (state->oneshot || state->batch) {
 		state->turn_done = 1;
@@ -345,8 +342,8 @@ cb_turn_done(int status, void *user)
 				session_after_compact(state);
 		} else if ((status == 0 || status == -ECANCELED) &&
 		    !state->stopping &&
-		    clm_agent_over_autocompact_threshold(state->agent) &&
-		    clm_agent_compact(state->agent) == 0) {
+		    clm_agent_over_autocompact_threshold(state->fa.agent) &&
+		    clm_agent_compact(state->fa.agent) == 0) {
 			state->compacting = 1;
 		}
 		clm_dprintf(STDOUT_FILENO, "\n");
@@ -366,7 +363,7 @@ cb_permission(const struct clm_permission_req *req, void *user)
 	struct cli_state *state = (struct cli_state *)user;
 
 	/* Nobody is here to answer a hook that asked for a person. */
-	clm_tool_permission_respond(state->agent, req,
+	clm_tool_permission_respond(state->fa.agent, req,
 	    clm_permission_req_reason(req) != NULL ? CLM_PERM_DENY_ONCE
 	                                           : CLM_PERM_ALLOW_ONCE);
 }
@@ -469,9 +466,9 @@ run_stdin_batch(struct cli_state *state, uv_loop_t *loop)
 			break;
 
 		state->turn_done = 0;
-		if (clm_agent_submit(state->agent, state->prompt_line) < 0) {
+		if (clm_agent_submit(state->fa.agent, state->prompt_line) < 0) {
 			clm_dprintf(STDERR_FILENO, "error: %s\n",
-			    clm_agent_get_last_error(state->agent));
+			    clm_agent_get_last_error(state->fa.agent));
 			continue;
 		}
 		while (!state->turn_done)
@@ -546,12 +543,12 @@ on_stdin_read(uv_stream_t *stream, ssize_t n_read, const uv_buf_t *buf)
 				}
 
 				int r = clm_agent_submit(
-				    state->agent, state->prompt_line);
+				    state->fa.agent, state->prompt_line);
 				if (r < 0) {
 					clm_dprintf(STDERR_FILENO,
 					    "error: %s\n",
 					    clm_agent_get_last_error(
-					        state->agent));
+					        state->fa.agent));
 				}
 			}
 
@@ -1162,8 +1159,11 @@ main(int argc, char *argv[])
 	 * with disable_parallel_tool_calls = 0. */
 	struct clm_cfg cfg = {.disable_parallel_tool_calls = true};
 	struct cli_state *state;
+	struct clm_front_opts fo;
 	uv_loop_t *loop;
-	struct clm_front_conn conn;
+	/* Heap: it holds the url, provider and model names, and the frame is
+	 * kept small. Freed on every way out; cfg points into it until then. */
+	autofree struct clm_front_conn *conn = calloc(1, sizeof(*conn));
 	const char *spec_model = NULL;
 	const char *prov_name = NULL;
 	const char *endpoint;
@@ -1357,11 +1357,12 @@ main(int argc, char *argv[])
 	}
 
 	/* Provider, model and the connection they name, in one place. */
-	r = clm_front_conn_resolve(
-	    lcfg, prov_name, spec_provider, model_name, &conn);
+	r = conn == NULL ? -ENOMEM
+	                 : clm_front_conn_resolve(lcfg, prov_name,
+	                       spec_provider, model_name, conn);
 	if (r < 0) {
-		clm_dprintf(
-		    STDERR_FILENO, "error: provider or model name too long\n");
+		clm_dprintf(STDERR_FILENO,
+		    "error: cannot resolve the provider or model\n");
 		clm_lua_cfg_free(lcfg);
 		free(spec_provider);
 		return 1;
@@ -1371,18 +1372,18 @@ main(int argc, char *argv[])
 	 * for why this must be the one place that logic lives. */
 	if (api_base != NULL)
 		clm_provider_build_url(
-		    conn.url, sizeof(conn.url), api_base, conn.cfg.provider);
-	effort = conn.effort;
-	compact_effort = conn.compact_effort;
+		    conn->url, sizeof(conn->url), api_base, conn->cfg.provider);
+	effort = conn->effort;
+	compact_effort = conn->compact_effort;
 
 	/* --effort wins over config. */
 	if (cli_effort != NULL)
 		effort = cli_effort;
 
 	/* The connection resolved above, less what -u and --effort changed. */
-	cfg = conn.cfg;
-	endpoint = conn.url;
-	model_name = conn.model;
+	cfg = conn->cfg;
+	endpoint = conn->url;
+	model_name = conn->model;
 	cfg.max_iterations = 0;
 	cfg.stream = stream;
 	autofree char *sysinfo = clm_cli_sysinfo();
@@ -1569,8 +1570,27 @@ main(int argc, char *argv[])
 		return 1;
 	}
 
-	r = clm_agent_new(
-	    &cfg, state->host, &cli_callbacks, state, &state->agent);
+	memset(&fo, 0, sizeof(fo));
+	fo.cfg = &cfg;
+	fo.host = state->host;
+	fo.loop = loop;
+	fo.callbacks = &cli_callbacks;
+	fo.user = state;
+	fo.lcfg = lcfg;
+	fo.effort = effort;
+	fo.compact_effort = compact_effort;
+	fo.spool = cb_spool;
+	fo.spool_user = state;
+	/* Client-only peer messaging: a headless run can find and message the
+	 * agents that are running, but does not advertise itself -- it exits
+	 * as soon as its turn does. */
+	fo.peer_id = NULL;
+	fo.plugin_dir = plugin_dir;
+	fo.seed_plugins = true;
+	fo.opt_plugins = opt_plugins;
+	fo.status = cb_mcp_status;
+	fo.status_user = state;
+	r = clm_front_agent_start(&fo, &state->fa);
 	if (r < 0) {
 		clm_dprintf(
 		    STDERR_FILENO, "error: failed to create agent (%d)\n", r);
@@ -1579,13 +1599,8 @@ main(int argc, char *argv[])
 		free(state);
 		return 1;
 	}
-	clm_agent_set_spool(state->agent, cb_spool, state);
-	if (effort != NULL && clm_agent_set_effort(state->agent, effort) < 0)
-		clm_dprintf(STDERR_FILENO,
-		    "warning: could not set effort \"%s\"\n", effort);
-	(void)clm_agent_set_compact_effort(state->agent, compact_effort);
 	if (!TAILQ_EMPTY(&drestore)) {
-		if (clm_agent_restore_history(state->agent, &drestore) < 0)
+		if (clm_agent_restore_history(state->fa.agent, &drestore) < 0)
 			clm_dprintf(STDERR_FILENO,
 			    "warning: could not restore session %s; "
 			    "starting fresh\n",
@@ -1597,41 +1612,12 @@ main(int argc, char *argv[])
 			    resume_id, drepaired);
 	}
 	clm_history_free(&drestore);
-	/* Client-only peer messaging: a headless run can find and message the
-	 * agents that are running, but does not advertise itself -- it exits
-	 * as soon as its turn does. */
-	if (clm_peer_start(state->agent, loop, NULL, "clm", model_name, NULL,
-	        NULL, &state->peer) == 0)
-		(void)clm_peer_register_tools(state->agent);
-
-	/* Desktop uv layer: add the shell_exec/bg_exec tools (not in the
-	 * portable core). */
-	clm_tools_register_shell(state->agent);
-	clm_tools_register_bg(state->agent);
-	clm_tools_register_monitor(state->agent);
-
-	if (clm_lua_env_new(state->agent, &state->lua_env) == 0) {
-		if (lcfg != NULL)
-			clm_lua_env_set_config_from(state->lua_env, lcfg);
-		autofree char *ppath = NULL;
-
-		if (plugin_dir == NULL) {
-			ppath = xdg_config_path("clm/plugins");
-			if (ppath != NULL)
-				clm_seed_default_plugins(ppath);
-		}
-		clm_cli_load_plugins(state->lua_env,
-		    plugin_dir != NULL ? plugin_dir : ppath, lcfg, opt_plugins,
-		    cb_mcp_status, NULL);
-	}
 	/* Auto mode without a hook would be plain allow-all. */
-	if (auto_mode && clm_agent_pre_tool_hook_count(state->agent) == 0) {
+	if (auto_mode && clm_agent_pre_tool_hook_count(state->fa.agent) == 0) {
 		clm_dprintf(STDERR_FILENO,
 		    "error: auto mode needs a plugin with a pre_tool "
 		    "hook, such as jev_guard\n");
-		clm_lua_env_free(state->lua_env);
-		clm_peer_free(state->peer);
-		clm_agent_free(state->agent);
+		clm_front_agent_stop(&state->fa);
 		clm_host_uv_free(state->host);
 		(void)clm_drain_loop(loop);
 		free(state);
@@ -1642,20 +1628,15 @@ main(int argc, char *argv[])
 		free(spec_provider);
 		return 1;
 	}
-	state->mcp_clients = clm_cli_connect_mcp_servers(state->agent, loop,
-	    lcfg, cb_mcp_status, state, &state->mcp_client_count);
+	clm_front_agent_connect_mcp(&state->fa, &fo);
 	clm_cli_wait_mcp_ready(loop, CLM_MCP_READY_WAIT_MS);
 
 	if (oneshot != NULL) {
-		r = clm_agent_submit(state->agent, oneshot);
+		r = clm_agent_submit(state->fa.agent, oneshot);
 		if (r < 0) {
 			clm_dprintf(STDERR_FILENO, "error: %s\n",
-			    clm_agent_get_last_error(state->agent));
-			clm_lua_env_free(state->lua_env);
-			clm_cli_free_mcp_servers(
-			    state->mcp_clients, state->mcp_client_count);
-			clm_peer_free(state->peer);
-			clm_agent_free(state->agent);
+			    clm_agent_get_last_error(state->fa.agent));
+			clm_front_agent_stop(&state->fa);
 			clm_host_uv_free(state->host);
 			(void)clm_drain_loop(loop);
 			free(state);
@@ -1666,11 +1647,7 @@ main(int argc, char *argv[])
 			uv_run(loop, UV_RUN_ONCE);
 
 		clm_dprintf(STDOUT_FILENO, "\n");
-		clm_lua_env_free(state->lua_env);
-		clm_cli_free_mcp_servers(
-		    state->mcp_clients, state->mcp_client_count);
-		clm_peer_free(state->peer);
-		clm_agent_free(state->agent);
+		clm_front_agent_stop(&state->fa);
 		clm_host_uv_free(state->host);
 		(void)clm_drain_loop(loop);
 		r = state->turn_status;
@@ -1694,13 +1671,13 @@ main(int argc, char *argv[])
 		uv_signal_start(&state->sigint, on_stop_signal, SIGINT);
 		uv_signal_start(&state->sigterm, on_stop_signal, SIGTERM);
 
-		if (clm_agent_submit(state->agent, daemon_prompt) < 0)
+		if (clm_agent_submit(state->fa.agent, daemon_prompt) < 0)
 			clm_dprintf(STDERR_FILENO, "error: %s\n",
-			    clm_agent_get_last_error(state->agent));
+			    clm_agent_get_last_error(state->fa.agent));
 		else
 			uv_run(loop, UV_RUN_DEFAULT);
 
-		clm_settle_turn(state->agent, loop);
+		clm_settle_turn(state->fa.agent, loop);
 		uv_close((uv_handle_t *)&state->sigint, NULL);
 		uv_close((uv_handle_t *)&state->sigterm, NULL);
 	} else if (uv_guess_handle(STDIN_FILENO) == UV_FILE) {
@@ -1723,7 +1700,7 @@ main(int argc, char *argv[])
 
 		uv_run(loop, UV_RUN_DEFAULT);
 
-		clm_settle_turn(state->agent, loop);
+		clm_settle_turn(state->fa.agent, loop);
 
 		/* Ours to close: nothing else does, and it must be down
 		 * before the drain runs the loop again. */
@@ -1731,10 +1708,7 @@ main(int argc, char *argv[])
 			uv_close((uv_handle_t *)&state->stdin_pipe, NULL);
 	}
 
-	clm_lua_env_free(state->lua_env);
-	clm_cli_free_mcp_servers(state->mcp_clients, state->mcp_client_count);
-	clm_peer_free(state->peer);
-	clm_agent_free(state->agent);
+	clm_front_agent_stop(&state->fa);
 	clm_session_free(state->session);
 	clm_host_uv_free(state->host);
 	/*
