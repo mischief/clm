@@ -6,14 +6,19 @@
 #include <gtk/gtk.h>
 
 #include "chat.h"
+#include "mdview.h"
 #include "banned.h"
 
 /* A tool result shows this much; the full text stays in history. */
 #define RESULT_MAX_LINES 6
 #define RESULT_MAX_BYTES 600
+/* Streamed markdown is laid out again at most this often. */
+#define MD_REDRAW_MS 50
 
 struct chat_row {
-	GtkLabel *body;
+	GtkLabel *body;    /* plain rows */
+	GtkWidget *mdbody; /* markdown rows */
+	guint redraw;      /* pending markdown redraw, or 0 */
 	GtkLabel *think;
 	GtkLabel *result;
 	GString *text;
@@ -25,6 +30,8 @@ chat_row_free(gpointer p)
 {
 	struct chat_row *cr = p;
 
+	if (cr->redraw != 0)
+		g_source_remove(cr->redraw);
 	g_string_free(cr->text, TRUE);
 	g_string_free(cr->think_text, TRUE);
 	g_free(cr);
@@ -43,6 +50,28 @@ body_label(const char *css)
 	if (css != NULL)
 		gtk_widget_add_css_class(l, css);
 	return GTK_LABEL(l);
+}
+
+/* Show cr->text in the body. Text that is not UTF-8 yet shows as is. */
+static void
+body_update(struct chat_row *cr)
+{
+	if (cr->mdbody == NULL) {
+		gtk_label_set_text(cr->body, cr->text->str);
+		return;
+	}
+	if (g_utf8_validate_len(cr->text->str, cr->text->len, NULL))
+		md_view_set(cr->mdbody, cr->text->str, cr->text->len);
+}
+
+static gboolean
+on_redraw(gpointer user)
+{
+	struct chat_row *cr = user;
+
+	cr->redraw = 0;
+	body_update(cr);
+	return G_SOURCE_REMOVE;
 }
 
 static GtkWidget *
@@ -108,12 +137,17 @@ chat_row_add(GtkListBox *list, enum chat_kind kind, const char *who,
 	cr->text = g_string_new(text != NULL ? text : "");
 	cr->think_text = g_string_new(NULL);
 	cr->think = body_label("dim-label");
-	cr->body = body_label(kind == CHAT_TOOL ? "monospace" : NULL);
 	gtk_widget_set_visible(GTK_WIDGET(cr->think), FALSE);
-	gtk_label_set_text(cr->body, cr->text->str);
 	gtk_box_append(GTK_BOX(col), header_line(who, stamp));
 	gtk_box_append(GTK_BOX(col), GTK_WIDGET(cr->think));
-	gtk_box_append(GTK_BOX(col), GTK_WIDGET(cr->body));
+	if (kind == CHAT_MODEL) {
+		cr->mdbody = md_view_new();
+		gtk_box_append(GTK_BOX(col), cr->mdbody);
+	} else {
+		cr->body = body_label(kind == CHAT_TOOL ? "monospace" : NULL);
+		gtk_box_append(GTK_BOX(col), GTK_WIDGET(cr->body));
+	}
+	body_update(cr);
 	if (kind == CHAT_TOOL) {
 		cr->result = body_label("monospace");
 		gtk_widget_add_css_class(GTK_WIDGET(cr->result), "dim-label");
@@ -134,7 +168,10 @@ void
 chat_row_append(struct chat_row *cr, const char *text)
 {
 	g_string_append(cr->text, text);
-	gtk_label_set_text(cr->body, cr->text->str);
+	if (cr->mdbody == NULL)
+		body_update(cr);
+	else if (cr->redraw == 0)
+		cr->redraw = g_timeout_add(MD_REDRAW_MS, on_redraw, cr);
 }
 
 void

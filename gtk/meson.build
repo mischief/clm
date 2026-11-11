@@ -5,10 +5,10 @@ adw_dep = dependency('libadwaita-1', version: '>=1.6',
 
 if have_lua and gtk_dep.found() and adw_dep.found()
   executable('clm-gtk',
-    files('main.c', 'chat.c', 'uvsource.c', '../src/xdg.c') + sysinfo_src,
+    files('main.c', 'chat.c', 'mdview.c', 'uvsource.c', '../src/xdg.c') + sysinfo_src,
     install_rpath: clm_rpath,
     dependencies: [clmuv_dep, clmlua_dep, clmsession_dep, cjson_dep,
-      gtk_dep, adw_dep],
+      gtk_dep, adw_dep, md_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],
     c_args: clm_hardening_args,
     install: true,
