@@ -72,6 +72,29 @@ program:
 meson setup build -Dlua=disabled
 ```
 
+### The GTK window
+
+`clm-gtk` is a GTK4 and libadwaita window for the same agent. It builds when
+GTK 4.12 and libadwaita 1.6 are found (`-Dgtk=enabled` makes that an error
+if they are not, or if Lua is off). It takes the same connection, agent,
+plugin, MCP, session and peer features as the terminal UI, from the
+libraries in `libclmfront/`, and these options: `-a`, `-m`, `--provider`,
+`--effort`, `-p`, `-P`, `-r`, `--allow-all-tools` and `--auto`. In the
+message box, `! <cmd>` runs a shell command and shows its output to the model,
+and `/clear`, `/compact`, `/model`, `/effort`, `/agent`, `/auto`, `/cd`,
+`/session`, `/quit` and the plugins' commands work as in the TUI.
+
+Its test drives the window on a private X server through AT-SPI, using
+latspi (a separate project). Point the build at its
+source tree, built in `build/`, to run it; without that the test skips:
+
+```sh
+meson setup build -Dlatspi_dir=$HOME/code/lua/latspi
+meson test -C build gtk
+```
+
+It needs `Xvfb`, `xdotool` and `dbus-run-session`.
+
 ## Usage
 
 ```sh
