@@ -80,13 +80,11 @@ if have_lua
   # the build tree keeps the build tree's libclm.
   clm_rpath = get_option('prefix') == '/usr' ? '' : get_option('prefix') / get_option('libdir')
 
-  # Subscription OAuth (clm oauth): optional. It pulls the curl + cJSON
-  # surface into the CLI, so it is gated out of minimal/embedded builds
-  # (see meson.options). oauth.c lives under src/ so it never touches the
-  # portable libclm core.
+  # Subscription OAuth (clm oauth): optional, see meson.options. The code is
+  # libclmfront/oauth.c, which the frontends share; this only turns on the
+  # `clm oauth` subcommand.
   clm_oauth_args = []
   if get_option('oauth').allowed()
-    clm_src += files('oauth.c')
     clm_oauth_args += '-DCLM_OAUTH=1'
   endif
 

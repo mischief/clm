@@ -53,10 +53,21 @@ if lua_dep.found()
     sysinfo_src = files('sysinfo.c', 'sysinfo_generic.c')
   endif
 
+  # Subscription OAuth (a provider with oauth_store): optional, see
+  # meson.options. It pulls the curl + cJSON surface in, so minimal builds
+  # leave it out.
+  oauth_src = []
+  oauth_args = []
+  if get_option('oauth').allowed()
+    oauth_src += files('oauth.c')
+    oauth_args += '-DCLM_OAUTH=1'
+  endif
+
   clm_front_lib = static_library('clmfront',
-    files('xdg.c', 'mcp_setup.c', 'plugin_setup.c', 'seed_plugins.c') +
-      sysinfo_src + [seed_plugins_data],
-    c_args: clm_hardening_args,
+    files('xdg.c', 'conn.c', 'mcp_setup.c', 'plugin_setup.c',
+      'seed_plugins.c') +
+      oauth_src + sysinfo_src + [seed_plugins_data],
+    c_args: clm_hardening_args + oauth_args,
     dependencies: [clmuv_dep, clmlua_dep, clmsession_dep, cjson_dep],
     include_directories: [clmfront_inc, clm_inc],
   )

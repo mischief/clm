@@ -40,6 +40,7 @@
 #include "mcp_setup.h"
 #include "plugin_setup.h"
 #include "cfg_tuning.h"
+#include "conn.h"
 #include "loop_drain.h"
 #include "model_spec.h"
 #include "tui_internal.h"
@@ -3342,18 +3343,16 @@ cmd_agent(struct ui *u, const char *arg)
 			split_provider_model(
 			    model_name, &spec_provider, &spec_model);
 			const char *prov = spec_provider;
-			const char *purl = prov
-			    ? clm_lua_cfg_provider_str(u->lcfg, prov, "url")
-			    : NULL;
-			const char *pkind = prov
-			    ? clm_lua_cfg_provider_str(u->lcfg, prov, "kind")
-			    : NULL;
-			const char *pkey = prov
-			    ? clm_lua_cfg_provider_str(u->lcfg, prov, "api_key")
-			    : NULL;
-			const char *pmodel = spec_model;
+			struct clm_front_conn conn;
 			const char *sprompt =
 			    clm_lua_cfg_get_str(u->lcfg, "system_prompt");
+
+			if (clm_front_conn_resolve(
+			        u->lcfg, prov, NULL, spec_model, &conn) < 0) {
+				ui_push(u, ST_ERROR,
+				    "\nprovider or model name too long\n");
+				return;
+			}
 
 			/* Tear down plugins + MCP clients (must happen while
 			 * the old agent is still alive: unregistering their
@@ -3368,67 +3367,8 @@ cmd_agent(struct ui *u, const char *arg)
 
 			/* Rebuild cfg. */
 			int r;
-			struct clm_cfg newcfg = {
-			    .disable_parallel_tool_calls = true,
-			};
-			char url_buf[512];
-			if (purl != NULL) {
-				size_t ulen = strlen(purl);
-				while (ulen > 0 && purl[ulen - 1] == '/')
-					ulen--;
-				(void)snprintf(url_buf, sizeof(url_buf),
-				    "%.*s/chat/completions", (int)ulen, purl);
-				newcfg.base_url = url_buf;
-			} else {
-				newcfg.base_url =
-				    "http://127.0.0.1:8081/v1/chat/completions";
-			}
-			newcfg.model = pmodel ? pmodel : "local-model";
-			/* Empty string is a valid, explicit "no key needed"
-			 * (see http_async.c: Content-Type no longer depends
-			 * on a non-empty key, so there's no need for a
-			 * non-empty placeholder here either). */
-			newcfg.api_key = (pkey != NULL && pkey[0] != '\0')
-			    ? pkey
-			    : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY")
-			                             : "");
-#ifdef CLM_OAUTH
-			/* Subscription OAuth: a provider naming an oauth_store
-			 * resolves a fresh access token (refreshing as needed)
-			 * at switch time, mirroring the startup path. The
-			 * resolved token is kept alive for the agent's
-			 * lifetime (intentional process-lifetime slot). */
-			if (prov) {
-				const char *store = clm_lua_cfg_provider_str(
-				    u->lcfg, prov, "oauth_store");
-				if (store != NULL && store[0] != '\0' &&
-				    getenv("CLM_API_KEY") == NULL) {
-					static char *resolved_key;
-					char *path, *tok = NULL, *err = NULL;
-					const char *cid;
-					free(resolved_key);
-					resolved_key = NULL;
-					path = clm_oauth_expand(store);
-					cid = clm_lua_cfg_provider_str(
-					    u->lcfg, prov, "oauth_client_id");
-					if (path != NULL &&
-					    clm_oauth_resolve(
-					        path, cid, &tok, &err) == 0 &&
-					    tok != NULL) {
-						resolved_key = tok;
-						newcfg.api_key = tok;
-					} else {
-						clm_dprintf(STDERR_FILENO,
-						    "oauth: %s\n",
-						    err != NULL
-						        ? err
-						        : "resolve failed");
-						free(err);
-					}
-					free(path);
-				}
-			}
-#endif
+			struct clm_cfg newcfg = conn.cfg;
+
 			newcfg.system_prompt = sprompt;
 			/* A profile switch builds a whole new agent, so the
 			 * host block has to be handed over again. The agent
@@ -3437,20 +3377,6 @@ cmd_agent(struct ui *u, const char *arg)
 
 			newcfg.system_prompt_suffix =
 			    u->host_block != NULL ? u->host_block : sysinfo;
-			newcfg.provider = clm_provider_from_str(pkind);
-			newcfg.stream = 1;
-			clm_cfg_apply_tuning(
-			    u->lcfg, prov, spec_model, &newcfg);
-			if (prov) {
-				newcfg.rate_tokens_per_sec =
-				    clm_lua_cfg_provider_int(u->lcfg, prov,
-				        "rate_tokens_per_sec", 0);
-				newcfg.rate_burst = clm_lua_cfg_provider_int(
-				    u->lcfg, prov, "rate_burst", 0);
-				newcfg.disable_parallel_tool_calls =
-				    clm_lua_cfg_provider_int(u->lcfg, prov,
-				        "disable_parallel_tool_calls", 1) != 0;
-			}
 			/* Volatile-tool policy from the new agent profile.
 			 * Not freed on the next switch (borrowed by the
 			 * agent for its lifetime) -- same intentional
@@ -3528,6 +3454,22 @@ cmd_agent(struct ui *u, const char *arg)
 			}
 		}
 	}
+}
+
+/*
+ * Point the live agent at provider's connection for model, keeping its
+ * history and tools. mprov names the provider whose models{} entry tunes the
+ * model, NULL for provider's own. Returns what clm_agent_set_provider does,
+ * or -ENAMETOOLONG.
+ */
+static int
+set_connection(
+    struct ui *u, const char *provider, const char *mprov, const char *model)
+{
+	struct clm_front_conn conn;
+	int rc = clm_front_conn_resolve(u->lcfg, provider, mprov, model, &conn);
+
+	return rc < 0 ? rc : clm_agent_set_provider(u->agent, &conn.cfg);
 }
 
 static void
@@ -3610,40 +3552,11 @@ cmd_model(struct ui *u, const char *arg)
 				}
 			}
 		} else {
-			struct clm_cfg newcfg = {
-			    .disable_parallel_tool_calls = true,
-			};
-			char url_buf[512];
-			enum clm_provider provider =
-			    clm_provider_from_str(clm_lua_cfg_provider_str(
-			        u->lcfg, spec_provider, "kind"));
+			int rc =
+			    set_connection(u, spec_provider, NULL, spec_model);
 
-			/* clm_provider_build_url() is the one place the
-			 * base-url + endpoint-path logic lives -- see
-			 * clm/provider.h's endpoint_path for why that matters
-			 * (this call site used to hardcode "/chat/completions"
-			 * independently of main.c's CLI-startup path, and
-			 * drifted out of sync with it). */
-			clm_provider_build_url(
-			    url_buf, sizeof(url_buf), purl, provider);
-			newcfg.base_url = url_buf;
-			newcfg.api_key = clm_lua_cfg_provider_str(
-			    u->lcfg, spec_provider, "api_key");
-			newcfg.provider = provider;
-			newcfg.model = spec_model;
-			clm_cfg_apply_tuning(
-			    u->lcfg, spec_provider, spec_model, &newcfg);
-			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(
-			    u->lcfg, spec_provider, "rate_tokens_per_sec", 0);
-			newcfg.rate_burst = clm_lua_cfg_provider_int(
-			    u->lcfg, spec_provider, "rate_burst", 0);
-			newcfg.disable_parallel_tool_calls =
-			    clm_lua_cfg_provider_int(u->lcfg, spec_provider,
-			        "disable_parallel_tool_calls", 1) != 0;
-
-			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {
-				set_current_model(u, newcfg.model);
+				set_current_model(u, spec_model);
 				set_current_provider(u, spec_provider);
 				note_model_switch(u);
 				char msg[128];
@@ -3683,32 +3596,10 @@ cmd_provider(struct ui *u, const char *arg)
 			    "\nprovider '%s' not found\n", arg);
 			ui_push(u, ST_ERROR, msg);
 		} else {
-			struct clm_cfg newcfg = {
-			    .disable_parallel_tool_calls = true,
-			};
-			char url_buf[512];
-			size_t ulen = strlen(purl);
-			while (ulen > 0 && purl[ulen - 1] == '/')
-				ulen--;
-			(void)snprintf(url_buf, sizeof(url_buf),
-			    "%.*s/chat/completions", (int)ulen, purl);
-			newcfg.base_url = url_buf;
-			newcfg.api_key =
-			    clm_lua_cfg_provider_str(u->lcfg, arg, "api_key");
-			newcfg.provider = clm_provider_from_str(
-			    clm_lua_cfg_provider_str(u->lcfg, arg, "kind"));
-			newcfg.model =
-			    u->model; /* keep the currently active model */
-			clm_cfg_apply_tuning(u->lcfg, arg, u->model, &newcfg);
-			newcfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(
-			    u->lcfg, arg, "rate_tokens_per_sec", 0);
-			newcfg.rate_burst = clm_lua_cfg_provider_int(
-			    u->lcfg, arg, "rate_burst", 0);
-			newcfg.disable_parallel_tool_calls =
-			    clm_lua_cfg_provider_int(u->lcfg, arg,
-			        "disable_parallel_tool_calls", 1) != 0;
+			/* Keep the active model; the new provider's tuning
+			 * applies. */
+			int rc = set_connection(u, arg, NULL, u->model);
 
-			int rc = clm_agent_set_provider(u->agent, &newcfg);
 			if (rc == 0) {
 				set_current_provider(u, arg);
 				note_model_switch(u);

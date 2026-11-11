@@ -29,6 +29,7 @@
  * otherwise (session_keep_days = 0 keeps everything). */
 #define CLM_SESSION_KEEP_DAYS 90
 #include "cfg_tuning.h"
+#include "conn.h"
 #include "loop_drain.h"
 #include "model_spec.h"
 #include "templates.h"
@@ -1128,7 +1129,7 @@ run_send(int argc, char *argv[])
 int
 main(int argc, char *argv[])
 {
-	const char *api_base = NULL;
+	const char *api_base = NULL;   /* -u: replaces the provider's url */
 	const char *model_name = NULL; /* -m/--model: a "provider/model-id"
 	                                  spec, or a literal wire id */
 	const char *effort = NULL;
@@ -1162,7 +1163,10 @@ main(int argc, char *argv[])
 	struct clm_cfg cfg = {.disable_parallel_tool_calls = true};
 	struct cli_state *state;
 	uv_loop_t *loop;
-	char endpoint[256];
+	struct clm_front_conn conn;
+	const char *spec_model = NULL;
+	const char *prov_name = NULL;
+	const char *endpoint;
 	int opt, r;
 	struct clm_lua_cfg *lcfg = NULL;
 	autofree char *config_load_err = NULL;
@@ -1345,117 +1349,40 @@ main(int argc, char *argv[])
 		if (model_name == NULL)
 			model_name = clm_lua_cfg_get_str(lcfg, "model");
 
-		const char *spec_model = NULL;
 		split_provider_model(model_name, &spec_provider, &spec_model);
-
-		const char *prov_name =
+		prov_name =
 		    provider_name != NULL ? provider_name : spec_provider;
-
-		if (prov_name != NULL) {
-			const char *purl =
-			    clm_lua_cfg_provider_str(lcfg, prov_name, "url");
-			const char *pkey = clm_lua_cfg_provider_str(
-			    lcfg, prov_name, "api_key");
-			const char *pkind =
-			    clm_lua_cfg_provider_str(lcfg, prov_name, "kind");
-			if (api_base == NULL && purl != NULL)
-				api_base = purl;
-			if (pkey != NULL && getenv("CLM_API_KEY") == NULL)
-				cfg.api_key = pkey;
-#ifdef CLM_OAUTH
-			/* Subscription OAuth: if the provider names a token
-			 * store, resolve a fresh access token (refreshing as
-			 * needed) and use it as the bearer credential. */
-			{
-				const char *store = clm_lua_cfg_provider_str(
-				    lcfg, prov_name, "oauth_store");
-				if (store != NULL && store[0] != '\0' &&
-				    getenv("CLM_API_KEY") == NULL) {
-					char *path = clm_oauth_expand(store);
-					char *tok = NULL, *err = NULL;
-					const char *cid =
-					    clm_lua_cfg_provider_str(lcfg,
-					        prov_name, "oauth_client_id");
-					if (path != NULL &&
-					    clm_oauth_resolve(
-					        path, cid, &tok, &err) == 0 &&
-					    tok != NULL) {
-						cfg.api_key = tok;
-					} else {
-						clm_dprintf(STDERR_FILENO,
-						    "oauth: %s\n",
-						    err != NULL
-						        ? err
-						        : "resolve failed");
-						free(err);
-					}
-					free(path);
-				}
-			}
-#endif
-			cfg.provider = clm_provider_from_str(pkind);
-			cfg.provider_name = prov_name;
-			cfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(
-			    lcfg, prov_name, "rate_tokens_per_sec", 0);
-			cfg.rate_burst = clm_lua_cfg_provider_int(
-			    lcfg, prov_name, "rate_burst", 0);
-			cfg.disable_parallel_tool_calls =
-			    clm_lua_cfg_provider_int(lcfg, prov_name,
-			        "disable_parallel_tool_calls", 1) != 0;
-		}
-		clm_cfg_apply_tuning(lcfg,
-		    spec_provider != NULL ? spec_provider : prov_name,
-		    spec_model, &cfg);
 		if (spec_model != NULL)
 			model_name = spec_model;
-		/* Model entry wins over the provider-wide default. */
-		if (prov_name != NULL)
-			effort =
-			    clm_lua_cfg_provider_str(lcfg, prov_name, "effort");
-		if (prov_name != NULL)
-			compact_effort = clm_lua_cfg_provider_str(
-			    lcfg, prov_name, "compact_effort");
-		if (spec_provider != NULL && spec_model != NULL) {
-			const char *me = clm_lua_cfg_provider_model_str(
-			    lcfg, spec_provider, spec_model, "effort");
-			if (me != NULL)
-				effort = me;
-		}
-		if (spec_provider != NULL && spec_model != NULL) {
-			const char *me = clm_lua_cfg_provider_model_str(
-			    lcfg, spec_provider, spec_model, "compact_effort");
-			if (me != NULL)
-				compact_effort = me;
-		}
 	}
+
+	/* Provider, model and the connection they name, in one place. */
+	r = clm_front_conn_resolve(
+	    lcfg, prov_name, spec_provider, model_name, &conn);
+	if (r < 0) {
+		clm_dprintf(
+		    STDERR_FILENO, "error: provider or model name too long\n");
+		clm_lua_cfg_free(lcfg);
+		free(spec_provider);
+		return 1;
+	}
+	/* -u takes the base endpoint; the provider-specific path is appended
+	 * by clm_provider_build_url() -- see clm/provider.h's endpoint_path
+	 * for why this must be the one place that logic lives. */
+	if (api_base != NULL)
+		clm_provider_build_url(
+		    conn.url, sizeof(conn.url), api_base, conn.cfg.provider);
+	effort = conn.effort;
+	compact_effort = conn.compact_effort;
 
 	/* --effort wins over config. */
 	if (cli_effort != NULL)
 		effort = cli_effort;
 
-	/* Defaults for anything not set by config or CLI. */
-	if (api_base == NULL)
-		api_base = "http://127.0.0.1:8081/v1";
-	if (model_name == NULL)
-		model_name = "local-model";
-
-	/* -u takes the base endpoint; the provider-specific path is appended
-	 * by clm_provider_build_url() -- see clm/provider.h's endpoint_path
-	 * for why this must be the one place that logic lives. */
-	clm_provider_build_url(
-	    endpoint, sizeof(endpoint), api_base, cfg.provider);
-
-	/* API key: env > config > none. An empty string is a valid, explicit
-	 * "this connection needs no key" (e.g. config.lua's api_key =
-	 * clm.secrets.llm7 resolving to "" for a real free-tier provider),
-	 * not the same as unset -- checked here too, not just == NULL, so
-	 * CLM_API_KEY can still override an explicitly-empty config value. */
-	if (cfg.api_key == NULL || cfg.api_key[0] == '\0') {
-		const char *key = getenv("CLM_API_KEY");
-		cfg.api_key = (key != NULL && key[0] != '\0') ? key : "";
-	}
-	cfg.base_url = endpoint;
-	cfg.model = model_name;
+	/* The connection resolved above, less what -u and --effort changed. */
+	cfg = conn.cfg;
+	endpoint = conn.url;
+	model_name = conn.model;
 	cfg.max_iterations = 0;
 	cfg.stream = stream;
 	autofree char *sysinfo = clm_cli_sysinfo();
