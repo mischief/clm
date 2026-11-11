@@ -25,9 +25,6 @@
 #include "mcp_setup.h"
 #include "sysinfo.h"
 
-/* How long a session log outlives its last write, unless config says
- * otherwise (session_keep_days = 0 keeps everything). */
-#define CLM_SESSION_KEEP_DAYS 90
 #include "cfg_tuning.h"
 #include "bringup.h"
 #include "conn.h"
@@ -598,29 +595,6 @@ write_new_file(const char *path, const char *content, mode_t mode)
  */
 /* Drop scratch directories whose session log no longer exists, and any
  * left behind past the retention window. */
-static void
-sweep_scratch(int64_t keep_days)
-{
-	struct clm_session_info *infos = NULL;
-	const char **live = NULL;
-	size_t n = 0, i;
-
-	if (clm_session_list(NULL, &infos, &n) != 0)
-		return;
-	if (n > 0) {
-		live = calloc(n, sizeof(*live));
-		if (live == NULL) {
-			clm_session_list_free(infos, n);
-			return;
-		}
-		for (i = 0; i < n; i++)
-			live[i] = infos[i].id;
-	}
-	(void)clm_cli_scratch_gc(
-	    live, n, (unsigned)(keep_days > 0 ? keep_days : 0));
-	free(live);
-	clm_session_list_free(infos, n);
-}
 
 static char *
 resolve_session_prefix(const char *frag)
@@ -1461,15 +1435,7 @@ main(int argc, char *argv[])
 			/* Sweep stale logs before starting a new one, so the
 			 * directory does not grow forever. Config decides how
 			 * long to keep them; 0 keeps everything. */
-			int64_t keep_days = lcfg != NULL
-			    ? clm_lua_cfg_get_int(lcfg, "session_keep_days",
-			          CLM_SESSION_KEEP_DAYS)
-			    : CLM_SESSION_KEEP_DAYS;
-
-			if (keep_days > 0)
-				(void)clm_session_gc(
-				    NULL, (unsigned)keep_days, NULL);
-			sweep_scratch(keep_days);
+			clm_front_sweep_old(lcfg);
 
 			/* Session logging is best-effort: a read-only HOME
 			 * shouldn't keep the TUI from running at all. */

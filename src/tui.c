@@ -1119,32 +1119,13 @@ cb_peer_message(
 static bool
 replay_peer_message(struct ui *u, const char *content)
 {
-	static const char pre[] = "[message from agent ";
-	autofree char *copy = NULL;
-	char *head, *name, *text, *tail;
+	const char *from, *name, *text;
+	autofree char *buf =
+	    clm_front_peer_unframe(content, &from, &name, &text);
 
-	if (strncmp(content, pre, sizeof(pre) - 1) != 0)
+	if (buf == NULL)
 		return false;
-	copy = strdup(content + sizeof(pre) - 1);
-	if (copy == NULL)
-		return false;
-	text = strstr(copy, "]\n");
-	if (text == NULL)
-		return false;
-	*text = '\0';
-	text += 2;
-	head = copy;
-	name = strstr(head, " (");
-	if (name == NULL || name[strlen(name) - 1] != ')')
-		return false;
-	*name = '\0';
-	name += 2;
-	name[strlen(name) - 1] = '\0';
-	/* Drop the reply hint that deliver appends for the model. */
-	tail = strrchr(text, '\n');
-	if (tail != NULL && tail[1] == '(')
-		*tail = '\0';
-	cb_peer_message(head, name, text, u);
+	cb_peer_message(from, name, text, u);
 	return true;
 }
 
@@ -1153,14 +1134,11 @@ replay_peer_message(struct ui *u, const char *content)
 static void
 peer_rebind(struct ui *u)
 {
-	if (u->fa.peer == NULL || u->session == NULL)
+	if (u->session == NULL)
 		return;
-	clm_peer_free(u->fa.peer);
-	u->fa.peer = NULL;
-	/* The tools stay registered from startup; only the socket moves. */
-	(void)clm_peer_start(u->fa.agent, u->loop, clm_session_id(u->session),
-	    u->agent_name != NULL ? u->agent_name : "clm", u->model,
-	    cb_peer_message, u, &u->fa.peer);
+	(void)clm_front_agent_rebind_peer(&u->fa, u->loop,
+	    clm_session_id(u->session), u->agent_name, u->model,
+	    cb_peer_message, u);
 }
 
 /* Move the scratch dir and the session id in the prompt onto the current
@@ -1168,17 +1146,14 @@ peer_rebind(struct ui *u)
 static void
 scratch_rebind(struct ui *u)
 {
-	autofree char *sysinfo = clm_cli_sysinfo();
-	autofree char *dir = NULL;
 	char *block;
 
 	if (u->session == NULL)
 		return;
-	block = clm_cli_scratch_attach(
-	    clm_session_id(u->session), sysinfo, true, &dir);
+	block =
+	    clm_front_scratch_rebind(u->fa.agent, clm_session_id(u->session));
 	if (block == NULL)
 		return;
-	(void)clm_agent_set_system_prompt_suffix(u->fa.agent, block);
 	free(u->host_block);
 	u->host_block = block;
 }

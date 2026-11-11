@@ -7,9 +7,11 @@
 #include "clm/host_uv.h"
 #include "clm/lua_plugin.h"
 #include "clm/mcp.h"
+#include "clm/session.h"
 #include "bringup.h"
 #include "plugin_setup.h"
 #include "seed_plugins.h"
+#include "sysinfo.h"
 #include "xdg.h"
 #include "banned.h"
 
@@ -102,4 +104,100 @@ clm_front_agent_stop(struct clm_front_agent *a)
 	clm_peer_free(a->peer);
 	clm_agent_free(a->agent);
 	memset(a, 0, sizeof(*a));
+}
+
+int
+clm_front_agent_rebind_peer(struct clm_front_agent *a, struct uv_loop_s *loop,
+    const char *session_id, const char *name, const char *model,
+    clm_peer_msg_cb cb, void *user)
+{
+	if (a->peer == NULL || session_id == NULL)
+		return -ENOENT;
+	clm_peer_free(a->peer);
+	a->peer = NULL;
+	/* The tools stay registered from the start; only the socket moves. */
+	return clm_peer_start(a->agent, loop, session_id,
+	    name != NULL ? name : "clm", model, cb, user, &a->peer);
+}
+
+char *
+clm_front_scratch_rebind(struct clm_agent *agent, const char *session_id)
+{
+	autofree char *sysinfo = clm_cli_sysinfo();
+	autofree char *dir = NULL;
+	char *block;
+
+	if (session_id == NULL)
+		return NULL;
+	block = clm_cli_scratch_attach(session_id, sysinfo, true, &dir);
+	if (block != NULL)
+		(void)clm_agent_set_system_prompt_suffix(agent, block);
+	return block;
+}
+
+void
+clm_front_sweep_old(struct clm_lua_cfg *lcfg)
+{
+	struct clm_session_info *infos = NULL;
+	const char **live = NULL;
+	size_t n = 0, i;
+	int64_t keep_days = lcfg != NULL
+	    ? clm_lua_cfg_get_int(
+	          lcfg, "session_keep_days", CLM_SESSION_KEEP_DAYS)
+	    : CLM_SESSION_KEEP_DAYS;
+
+	if (keep_days > 0)
+		(void)clm_session_gc(NULL, (unsigned)keep_days, NULL);
+	if (clm_session_list(NULL, &infos, &n) != 0)
+		return;
+	if (n > 0) {
+		live = calloc(n, sizeof(*live));
+		if (live == NULL) {
+			clm_session_list_free(infos, n);
+			return;
+		}
+		for (i = 0; i < n; i++)
+			live[i] = infos[i].id;
+	}
+	(void)clm_cli_scratch_gc(
+	    live, n, (unsigned)(keep_days > 0 ? keep_days : 0));
+	free(live);
+	clm_session_list_free(infos, n);
+}
+
+char *
+clm_front_peer_unframe(const char *content, const char **from,
+    const char **name, const char **text)
+{
+	static const char pre[] = "[message from agent ";
+	char *copy, *head, *nm, *body, *tail;
+
+	if (content == NULL || strncmp(content, pre, sizeof(pre) - 1) != 0)
+		return NULL;
+	copy = strdup(content + sizeof(pre) - 1);
+	if (copy == NULL)
+		return NULL;
+	body = strstr(copy, "]\n");
+	if (body == NULL)
+		goto bad;
+	*body = '\0';
+	body += 2;
+	head = copy;
+	nm = strstr(head, " (");
+	if (nm == NULL || nm[strlen(nm) - 1] != ')')
+		goto bad;
+	*nm = '\0';
+	nm += 2;
+	nm[strlen(nm) - 1] = '\0';
+	/* Drop the reply hint that deliver appends for the model. */
+	tail = strrchr(body, '\n');
+	if (tail != NULL && tail[1] == '(')
+		*tail = '\0';
+	*from = head;
+	*name = nm;
+	*text = body;
+	return copy;
+bad:
+	free(copy);
+	return NULL;
 }
