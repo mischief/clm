@@ -548,8 +548,8 @@ model_live_error(const char *msg, void *user)
  * After the '/' it completes "provider/model-id" specs: config.lua's
  * nested providers[*].models{} entries immediately (synchronous, no
  * network dependency; see clm_lua_cfg_list_names(cfg, "models") and
- * libclmfront/model_spec.h), then a fresh GET /v1/models against *that* provider
- * (no cache -- a cached list from a since-switched provider would be
+ * libclmfront/model_spec.h), then a fresh GET /v1/models against *that*
+ * provider (no cache -- a cached list from a since-switched provider would be
  * actively misleading, worse than a moment's wait) is kicked off to
  * extend/refine the candidates a moment later if the user pauses. The
  * active provider's catalog is deliberately not consulted before the
