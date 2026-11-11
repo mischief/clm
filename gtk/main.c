@@ -1,0 +1,758 @@
+// SPDX-License-Identifier: ISC
+/* clm-gtk: a GTK4 chat window for a clm agent. */
+#include <errno.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include <sys/queue.h>
+
+#include <adwaita.h>
+#include <glib-unix.h>
+#include <gtk/gtk.h>
+#include <uv.h>
+
+#include "clm/clm.h"
+#include "clm/history.h"
+#include "clm/host_uv.h"
+#include "clm/lua_plugin.h"
+#include "clm/session.h"
+#include "cfg_tuning.h"
+#include "loop_drain.h"
+#include "model_spec.h"
+#include "sysinfo.h"
+#include "xdg.h"
+#include "chat.h"
+#include "uvsource.h"
+#include "banned.h"
+
+#define DEFAULT_URL "http://127.0.0.1:8081/v1"
+#define SESSIONS_MAX 200
+#define USER_NAME "Me"
+
+struct app {
+	GtkWindow *win;
+	AdwWindowTitle *title;
+	GtkListBox *sessions;
+	GtkListBox *chat;
+	GtkEntry *entry;
+	GtkWidget *stop;
+	struct clm_lua_cfg *lcfg;
+	struct clm_cfg cfg;
+	char endpoint[256];
+	char *sysinfo;
+	char *spec_provider;
+	const char *model;
+	uv_loop_t *loop;
+	guint uv_src;
+	struct clm_host *host;
+	struct clm_agent *agent;
+	struct clm_session *session;
+	struct chat_row *cur;
+	GPtrArray *tools; /* tool rows waiting for a result, oldest first */
+	bool busy;
+	bool stick;
+	bool list_stale;
+};
+
+static void sessions_refresh(struct app *a);
+
+static void
+notice(struct app *a, const char *text)
+{
+	(void)chat_row_add(a->chat, CHAT_NOTICE, "clm", text, true);
+	a->cur = NULL;
+}
+
+/* Config */
+
+static const char *
+model_or_provider_str(struct app *a, const char *wire, const char *key)
+{
+	const char *v = clm_lua_cfg_provider_model_str(
+	    a->lcfg, a->spec_provider, wire, key);
+
+	return v != NULL
+	    ? v
+	    : clm_lua_cfg_provider_str(a->lcfg, a->spec_provider, key);
+}
+
+static int
+app_config(struct app *a, char **ret_err)
+{
+	char *cpath = xdg_config_path("clm/config.lua");
+	char *adir = xdg_config_path("clm/agents");
+	const char *wire = NULL;
+	const char *url, *key;
+
+	*ret_err = NULL;
+	a->lcfg = cpath != NULL ? clm_lua_cfg_load(cpath, ret_err) : NULL;
+	free(cpath);
+	if (a->lcfg != NULL)
+		(void)clm_lua_cfg_load_agent(a->lcfg, adir, NULL);
+	free(adir);
+	if (a->lcfg == NULL)
+		return -ENOENT;
+	split_provider_model(
+	    clm_lua_cfg_get_str(a->lcfg, "model"), &a->spec_provider, &wire);
+	if (a->spec_provider == NULL || wire == NULL)
+		return -EINVAL;
+	url = clm_lua_cfg_provider_str(a->lcfg, a->spec_provider, "url");
+	key = clm_lua_cfg_provider_str(a->lcfg, a->spec_provider, "api_key");
+	a->cfg.provider = clm_provider_from_str(
+	    clm_lua_cfg_provider_str(a->lcfg, a->spec_provider, "kind"));
+	a->cfg.provider_name = a->spec_provider;
+	a->cfg.api_key = key != NULL ? key : "";
+	a->cfg.disable_parallel_tool_calls = true;
+	clm_cfg_apply_tuning(a->lcfg, a->spec_provider, wire, &a->cfg);
+	clm_provider_build_url(a->endpoint, sizeof(a->endpoint),
+	    url != NULL ? url : DEFAULT_URL, a->cfg.provider);
+	a->cfg.base_url = a->endpoint;
+	a->cfg.model = wire;
+	a->cfg.stream = 1;
+	a->sysinfo = clm_cli_sysinfo();
+	a->cfg.system_prompt = clm_lua_cfg_get_str(a->lcfg, "system_prompt");
+	a->cfg.system_prompt_suffix = a->sysinfo;
+	a->model = wire;
+	return 0;
+}
+
+/* Sessions */
+
+/* Write the agent's system prompt to the log; it skips a repeat. */
+static void
+session_log_prompt(struct app *a)
+{
+	const struct clm_message *sys =
+	    TAILQ_FIRST(clm_agent_get_history(a->agent));
+
+	if (a->session != NULL && sys != NULL && sys->role == CLM_ROLE_SYSTEM)
+		(void)clm_session_append(a->session, sys, NULL);
+}
+
+static void
+session_start(struct app *a)
+{
+	if (clm_session_create(NULL, a->model, a->cfg.provider_name,
+	        clm_lua_cfg_get_agent_name(a->lcfg), &a->session) < 0) {
+		notice(a, "session logging is off");
+		return;
+	}
+	session_log_prompt(a);
+}
+
+/* Close the log. An empty one is deleted. */
+static void
+session_close(struct app *a)
+{
+	if (a->session == NULL)
+		return;
+	if (clm_session_is_empty(a->session))
+		(void)clm_session_discard(a->session);
+	else
+		clm_session_free(a->session);
+	a->session = NULL;
+}
+
+static void
+render_message(struct app *a, const struct clm_message *m)
+{
+	const struct clm_tool_call *tc;
+	struct chat_row *cr;
+
+	switch (m->role) {
+	case CLM_ROLE_USER:
+		if (m->content != NULL &&
+		    strncmp(m->content, "[context update]", 16) != 0)
+			(void)chat_row_add(
+			    a->chat, CHAT_USER, USER_NAME, m->content, false);
+		break;
+	case CLM_ROLE_ASSISTANT:
+		if (m->content != NULL && m->content[0] != '\0')
+			(void)chat_row_add(
+			    a->chat, CHAT_MODEL, a->model, m->content, false);
+		TAILQ_FOREACH(tc, &m->tool_calls, entries)
+		{
+			cr = chat_row_add(
+			    a->chat, CHAT_TOOL, tc->name, tc->args, false);
+			g_ptr_array_add(a->tools, cr);
+		}
+		break;
+	case CLM_ROLE_TOOL:
+		if (a->tools->len > 0) {
+			chat_row_set_result(
+			    g_ptr_array_index(a->tools, 0), m->content, false);
+			g_ptr_array_remove_index(a->tools, 0);
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void
+render_history(struct app *a, const struct clm_history *h)
+{
+	const struct clm_message *m;
+
+	chat_clear(a->chat);
+	g_ptr_array_set_size(a->tools, 0);
+	a->cur = NULL;
+	TAILQ_FOREACH(m, h, entries)
+	render_message(a, m);
+	g_ptr_array_set_size(a->tools, 0);
+	a->stick = true;
+}
+
+static int
+session_resume(struct app *a, const char *id)
+{
+	struct clm_history h;
+	struct clm_session *s = NULL;
+	int r;
+
+	clm_history_init(&h);
+	r = clm_session_load(NULL, id, &h, NULL);
+	if (r == 0)
+		r = clm_session_open(NULL, id, &s);
+	if (r < 0) {
+		clm_history_free(&h);
+		return r;
+	}
+	(void)clm_history_repair_dangling_tool_calls(&h);
+	session_close(a);
+	(void)clm_agent_clear_history(a->agent);
+	r = clm_agent_restore_history(a->agent, &h);
+	a->session = s;
+	session_log_prompt(a);
+	render_history(a, &h);
+	clm_history_free(&h);
+	return r;
+}
+
+static void
+on_session_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user)
+{
+	struct app *a = user;
+	const char *id = g_object_get_data(G_OBJECT(row), "id");
+	bool was_empty;
+
+	(void)box;
+	if (id == NULL ||
+	    (a->session != NULL && strcmp(clm_session_id(a->session), id) == 0))
+		return;
+	if (a->busy) {
+		notice(a, "busy; stop the turn first");
+		return;
+	}
+	was_empty = clm_session_is_empty(a->session);
+	if (session_resume(a, id) < 0)
+		notice(a, "could not open that session");
+	if (was_empty)
+		sessions_refresh(a);
+}
+
+static void
+on_new_chat(GtkButton *b, gpointer user)
+{
+	struct app *a = user;
+
+	(void)b;
+	if (a->busy) {
+		notice(a, "busy; stop the turn first");
+		return;
+	}
+	session_close(a);
+	(void)clm_agent_clear_history(a->agent);
+	session_start(a);
+	chat_clear(a->chat);
+	a->cur = NULL;
+	sessions_refresh(a);
+}
+
+static GtkWidget *
+session_row(const struct clm_session_info *in)
+{
+	GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+	GtkWidget *title =
+	    gtk_label_new(in->first_user != NULL ? in->first_user : "(empty)");
+	g_autoptr(GDateTime) t = g_date_time_new_from_unix_local(in->created);
+	g_autofree char *when =
+	    t != NULL ? g_date_time_format(t, "%b %d %H:%M") : NULL;
+	g_autofree char *sub = g_strdup_printf("%s  %s",
+	    in->model != NULL ? in->model : "", when != NULL ? when : "");
+	GtkWidget *subl = gtk_label_new(sub);
+	GtkWidget *row = gtk_list_box_row_new();
+
+	gtk_label_set_ellipsize(GTK_LABEL(title), PANGO_ELLIPSIZE_END);
+	gtk_label_set_xalign(GTK_LABEL(title), 0);
+	gtk_label_set_ellipsize(GTK_LABEL(subl), PANGO_ELLIPSIZE_END);
+	gtk_label_set_xalign(GTK_LABEL(subl), 0);
+	gtk_widget_add_css_class(subl, "dim-label");
+	gtk_widget_add_css_class(subl, "caption");
+	gtk_widget_set_margin_top(box, 6);
+	gtk_widget_set_margin_bottom(box, 6);
+	gtk_box_append(GTK_BOX(box), title);
+	gtk_box_append(GTK_BOX(box), subl);
+	gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
+	g_object_set_data_full(G_OBJECT(row), "id", g_strdup(in->id), g_free);
+	return row;
+}
+
+static void
+sessions_refresh(struct app *a)
+{
+	struct clm_session_info *infos = NULL;
+	const char *cur = a->session != NULL ? clm_session_id(a->session) : "";
+	size_t n = 0;
+
+	a->list_stale = false;
+	gtk_list_box_remove_all(a->sessions);
+	if (clm_session_list(NULL, &infos, &n) != 0)
+		return;
+	for (size_t i = 0; i < n && i < SESSIONS_MAX; i++) {
+		GtkWidget *row;
+
+		/* A session with nothing said has nothing to show. */
+		if (infos[i].first_user == NULL)
+			continue;
+		row = session_row(&infos[i]);
+		gtk_list_box_append(a->sessions, row);
+		if (strcmp(infos[i].id, cur) == 0)
+			gtk_list_box_select_row(
+			    a->sessions, GTK_LIST_BOX_ROW(row));
+	}
+	clm_session_list_free(infos, n);
+}
+
+/* Agent callbacks */
+
+static void
+cb_text(const char *text, void *user)
+{
+	struct app *a = user;
+
+	if (a->cur == NULL)
+		a->cur =
+		    chat_row_add(a->chat, CHAT_MODEL, a->model, NULL, true);
+	chat_row_append(a->cur, text);
+}
+
+static void
+cb_reasoning(const char *text, void *user)
+{
+	struct app *a = user;
+
+	if (a->cur == NULL)
+		a->cur =
+		    chat_row_add(a->chat, CHAT_MODEL, a->model, NULL, true);
+	chat_row_append_reasoning(a->cur, text);
+}
+
+static void
+cb_tool_begin(const char *name, const char *args, void *user)
+{
+	struct app *a = user;
+
+	a->cur = NULL;
+	g_ptr_array_add(
+	    a->tools, chat_row_add(a->chat, CHAT_TOOL, name, args, true));
+}
+
+static void
+cb_tool_result(const char *name, const char *content,
+    enum clm_tool_outcome outcome, void *user)
+{
+	struct app *a = user;
+
+	(void)name;
+	if (a->tools->len == 0)
+		return;
+	chat_row_set_result(
+	    g_ptr_array_index(a->tools, 0), content, outcome != CLM_TOOL_OK);
+	g_ptr_array_remove_index(a->tools, 0);
+}
+
+struct perm {
+	struct app *a;
+	const struct clm_permission_req *req;
+};
+
+static void
+perm_response(AdwAlertDialog *d, const char *resp, gpointer user)
+{
+	struct perm *p = user;
+	enum clm_permission_decision dec = CLM_PERM_DENY_ONCE;
+
+	(void)d;
+	if (strcmp(resp, "once") == 0)
+		dec = CLM_PERM_ALLOW_ONCE;
+	else if (strcmp(resp, "always") == 0)
+		dec = CLM_PERM_ALLOW_ALWAYS;
+	(void)clm_tool_permission_respond(p->a->agent, p->req, dec);
+}
+
+static void
+cb_permission(const struct clm_permission_req *req, void *user)
+{
+	struct app *a = user;
+	struct perm *p = g_new0(struct perm, 1);
+	g_autofree char *head =
+	    g_strdup_printf("Run %s?", clm_permission_req_name(req));
+	const char *reason = clm_permission_req_reason(req);
+	g_autofree char *body =
+	    g_strdup_printf("%s%s%s", clm_permission_req_args(req),
+	        reason != NULL ? "\n\n" : "", reason != NULL ? reason : "");
+	AdwDialog *d = adw_alert_dialog_new(head, body);
+
+	p->a = a;
+	p->req = req;
+	adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(d), "deny", "_Deny",
+	    "always", "Allow _Always", "once", "_Allow", NULL);
+	adw_alert_dialog_set_response_appearance(
+	    ADW_ALERT_DIALOG(d), "once", ADW_RESPONSE_SUGGESTED);
+	adw_alert_dialog_set_default_response(ADW_ALERT_DIALOG(d), "once");
+	adw_alert_dialog_set_close_response(ADW_ALERT_DIALOG(d), "deny");
+	g_signal_connect_data(d, "response", G_CALLBACK(perm_response), p,
+	    (GClosureNotify)(void (*)(void))g_free, 0);
+	adw_dialog_present(d, GTK_WIDGET(a->win));
+}
+
+static const char *
+state_name(enum clm_agent_state s)
+{
+	switch (s) {
+	case CLM_STATE_THINKING:
+		return "thinking";
+	case CLM_STATE_CALLING_TOOL:
+		return "running a tool";
+	case CLM_STATE_RATE_LIMITED:
+		return "rate limited";
+	case CLM_STATE_ERROR:
+		return "error";
+	default:
+		return "idle";
+	}
+}
+
+static void
+cb_state(enum clm_agent_state s, void *user)
+{
+	struct app *a = user;
+
+	a->busy = s == CLM_STATE_THINKING || s == CLM_STATE_CALLING_TOOL ||
+	    s == CLM_STATE_RATE_LIMITED;
+	adw_window_title_set_subtitle(a->title, state_name(s));
+	gtk_widget_set_visible(a->stop, a->busy);
+}
+
+static void
+cb_turn_done(int status, void *user)
+{
+	struct app *a = user;
+
+	a->cur = NULL;
+	g_ptr_array_set_size(a->tools, 0);
+	if (status < 0 && status != -ECANCELED) {
+		g_autofree char *msg =
+		    g_strdup_printf("turn failed: %s", g_strerror(-status));
+		notice(a, msg);
+	}
+	if (a->list_stale)
+		sessions_refresh(a);
+}
+
+static void
+cb_notice(const char *text, void *user)
+{
+	notice(user, text);
+}
+
+static void
+cb_connection(enum clm_conn_status s, const char *detail, void *user)
+{
+	struct app *a = user;
+
+	if (s == CLM_CONN_OFFLINE)
+		adw_window_title_set_subtitle(
+		    a->title, detail != NULL ? detail : "offline");
+	else if (s == CLM_CONN_ONLINE)
+		adw_window_title_set_subtitle(a->title, "idle");
+}
+
+static void
+cb_message(const struct clm_message *m, void *user)
+{
+	struct app *a = user;
+
+	if (a->session != NULL && clm_session_append(a->session, m, NULL) < 0) {
+		notice(a, "session logging failed; off");
+		clm_session_free(a->session);
+		a->session = NULL;
+	}
+}
+
+static const struct clm_callbacks callbacks = {
+    .on_assistant_text = cb_text,
+    .on_reasoning = cb_reasoning,
+    .on_tool_begin = cb_tool_begin,
+    .on_permission = cb_permission,
+    .on_tool_result = cb_tool_result,
+    .on_connection = cb_connection,
+    .on_state = cb_state,
+    .on_turn_done = cb_turn_done,
+    .on_notice = cb_notice,
+    .on_message = cb_message,
+};
+
+/* Window */
+
+static void
+on_send(GtkWidget *w, gpointer user)
+{
+	struct app *a = user;
+	const char *text = gtk_editable_get_text(GTK_EDITABLE(a->entry));
+	int r;
+
+	(void)w;
+	if (a->agent == NULL || text[0] == '\0')
+		return;
+	if (clm_session_is_empty(a->session))
+		a->list_stale = true;
+	(void)chat_row_add(a->chat, CHAT_USER, USER_NAME, text, true);
+	a->cur = NULL;
+	a->stick = true;
+	r = a->busy ? clm_agent_notify(a->agent, text)
+	            : clm_agent_submit(a->agent, text);
+	if (r < 0)
+		notice(a, g_strerror(-r));
+	gtk_editable_set_text(GTK_EDITABLE(a->entry), "");
+}
+
+static void
+on_stop(GtkButton *b, gpointer user)
+{
+	struct app *a = user;
+
+	(void)b;
+	if (a->agent != NULL)
+		(void)clm_agent_cancel(a->agent);
+}
+
+/* Follow new rows while the view sits at the bottom. */
+static void
+on_adj_changed(GtkAdjustment *adj, gpointer user)
+{
+	struct app *a = user;
+
+	if (a->stick)
+		gtk_adjustment_set_value(adj,
+		    gtk_adjustment_get_upper(adj) -
+		        gtk_adjustment_get_page_size(adj));
+}
+
+static void
+on_adj_value(GtkAdjustment *adj, gpointer user)
+{
+	struct app *a = user;
+
+	a->stick =
+	    gtk_adjustment_get_value(adj) >= gtk_adjustment_get_upper(adj) -
+	        gtk_adjustment_get_page_size(adj) - 40;
+}
+
+static GtkWidget *
+scrolled(GtkWidget *child)
+{
+	GtkWidget *sw = gtk_scrolled_window_new();
+
+	gtk_scrolled_window_set_policy(
+	    GTK_SCROLLED_WINDOW(sw), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+	gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sw), child);
+	gtk_widget_set_vexpand(sw, TRUE);
+	return sw;
+}
+
+static GtkWidget *
+sidebar_page(struct app *a)
+{
+	GtkWidget *tv = adw_toolbar_view_new();
+	GtkWidget *hb = adw_header_bar_new();
+	GtkWidget *add = gtk_button_new_from_icon_name("list-add-symbolic");
+	GtkWidget *list = gtk_list_box_new();
+
+	gtk_widget_set_tooltip_text(add, "New chat");
+	g_signal_connect(add, "clicked", G_CALLBACK(on_new_chat), a);
+	adw_header_bar_pack_start(ADW_HEADER_BAR(hb), add);
+	gtk_widget_add_css_class(list, "navigation-sidebar");
+	g_signal_connect(
+	    list, "row-activated", G_CALLBACK(on_session_activated), a);
+	a->sessions = GTK_LIST_BOX(list);
+	adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), hb);
+	adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), scrolled(list));
+	return GTK_WIDGET(adw_navigation_page_new(tv, "clm"));
+}
+
+static GtkWidget *
+composer(struct app *a)
+{
+	GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+	GtkWidget *entry = gtk_entry_new();
+	GtkWidget *send = gtk_button_new_from_icon_name("go-up-symbolic");
+
+	a->stop = gtk_button_new_from_icon_name("media-playback-stop-symbolic");
+	gtk_widget_set_tooltip_text(a->stop, "Stop");
+	gtk_widget_set_visible(a->stop, FALSE);
+	gtk_widget_add_css_class(a->stop, "circular");
+	gtk_widget_add_css_class(a->stop, "destructive-action");
+	gtk_widget_add_css_class(send, "circular");
+	gtk_widget_add_css_class(send, "suggested-action");
+	gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Message");
+	gtk_widget_set_hexpand(entry, TRUE);
+	g_signal_connect(entry, "activate", G_CALLBACK(on_send), a);
+	g_signal_connect(send, "clicked", G_CALLBACK(on_send), a);
+	g_signal_connect(a->stop, "clicked", G_CALLBACK(on_stop), a);
+	a->entry = GTK_ENTRY(entry);
+	gtk_widget_set_margin_start(box, 12);
+	gtk_widget_set_margin_end(box, 12);
+	gtk_widget_set_margin_top(box, 6);
+	gtk_widget_set_margin_bottom(box, 12);
+	gtk_box_append(GTK_BOX(box), entry);
+	gtk_box_append(GTK_BOX(box), a->stop);
+	gtk_box_append(GTK_BOX(box), send);
+	return box;
+}
+
+static GtkWidget *
+chat_page(struct app *a)
+{
+	GtkWidget *tv = adw_toolbar_view_new();
+	GtkWidget *hb = adw_header_bar_new();
+	GtkWidget *list = gtk_list_box_new();
+	GtkWidget *sw = scrolled(list);
+	GtkAdjustment *adj =
+	    gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(sw));
+
+	a->title = ADW_WINDOW_TITLE(
+	    adw_window_title_new(a->model != NULL ? a->model : "clm", ""));
+	adw_header_bar_set_title_widget(
+	    ADW_HEADER_BAR(hb), GTK_WIDGET(a->title));
+	gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+	gtk_widget_set_valign(list, GTK_ALIGN_END);
+	a->chat = GTK_LIST_BOX(list);
+	g_signal_connect(adj, "changed", G_CALLBACK(on_adj_changed), a);
+	g_signal_connect(adj, "value-changed", G_CALLBACK(on_adj_value), a);
+	adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), hb);
+	adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tv), sw);
+	adw_toolbar_view_add_bottom_bar(ADW_TOOLBAR_VIEW(tv), composer(a));
+	return GTK_WIDGET(adw_navigation_page_new(tv, "chat"));
+}
+
+/* Lifecycle */
+
+static int
+agent_start(struct app *a)
+{
+	const char *effort;
+	int r;
+
+	a->loop = uv_default_loop();
+	r = clm_host_uv_new(a->loop, &a->host);
+	if (r < 0)
+		return r;
+	r = clm_agent_new(&a->cfg, a->host, &callbacks, a, &a->agent);
+	if (r < 0)
+		return r;
+	(void)clm_tools_register_shell(a->agent);
+	(void)clm_tools_register_bg(a->agent);
+	(void)clm_tools_register_monitor(a->agent);
+	effort = model_or_provider_str(a, a->model, "effort");
+	if (effort != NULL)
+		(void)clm_agent_set_effort(a->agent, effort);
+	a->uv_src = clm_uv_source_attach(a->loop);
+	session_start(a);
+	(void)clm_agent_check_connection(a->agent);
+	return 0;
+}
+
+static void
+on_activate(GApplication *gapp, gpointer user)
+{
+	struct app *a = user;
+	GtkWidget *split;
+	char *err = NULL;
+	int r;
+
+	if (a->win != NULL) {
+		gtk_window_present(a->win);
+		return;
+	}
+	r = app_config(a, &err);
+	a->win = GTK_WINDOW(adw_application_window_new(GTK_APPLICATION(gapp)));
+	gtk_window_set_title(a->win, "clm");
+	gtk_window_set_default_size(a->win, 1100, 760);
+	split = adw_navigation_split_view_new();
+	adw_navigation_split_view_set_min_sidebar_width(
+	    ADW_NAVIGATION_SPLIT_VIEW(split), 280);
+	adw_navigation_split_view_set_sidebar(ADW_NAVIGATION_SPLIT_VIEW(split),
+	    ADW_NAVIGATION_PAGE(sidebar_page(a)));
+	adw_navigation_split_view_set_content(ADW_NAVIGATION_SPLIT_VIEW(split),
+	    ADW_NAVIGATION_PAGE(chat_page(a)));
+	adw_application_window_set_content(
+	    ADW_APPLICATION_WINDOW(a->win), split);
+	if (r < 0)
+		notice(
+		    a, err != NULL ? err : "config.lua has no provider/model");
+	else if (agent_start(a) < 0)
+		notice(a, "could not start the agent");
+	free(err);
+	sessions_refresh(a);
+	gtk_window_present(a->win);
+}
+
+static void
+on_shutdown(GApplication *gapp, gpointer user)
+{
+	struct app *a = user;
+
+	(void)gapp;
+	session_close(a);
+	clm_agent_free(a->agent);
+	clm_host_uv_free(a->host);
+	if (a->uv_src != 0)
+		g_source_remove(a->uv_src);
+	(void)clm_drain_loop(a->loop);
+	clm_lua_cfg_free(a->lcfg);
+	free(a->sysinfo);
+	free(a->spec_provider);
+}
+
+/* SIGINT and SIGTERM quit cleanly, so an empty session log is removed. */
+static gboolean
+on_signal(gpointer user)
+{
+	g_application_quit(G_APPLICATION(user));
+	return G_SOURCE_CONTINUE;
+}
+
+int
+main(int argc, char *argv[])
+{
+	struct app a;
+	AdwApplication *gapp;
+	int status;
+
+	memset(&a, 0, sizeof(a));
+	a.tools = g_ptr_array_new();
+	a.stick = true;
+	gapp =
+	    adw_application_new("org.offblast.clm", G_APPLICATION_NON_UNIQUE);
+	g_signal_connect(gapp, "activate", G_CALLBACK(on_activate), &a);
+	g_signal_connect(gapp, "shutdown", G_CALLBACK(on_shutdown), &a);
+	(void)g_unix_signal_add(SIGINT, on_signal, gapp);
+	(void)g_unix_signal_add(SIGTERM, on_signal, gapp);
+	status = g_application_run(G_APPLICATION(gapp), argc, argv);
+	g_object_unref(gapp);
+	g_ptr_array_free(a.tools, TRUE);
+	return status;
+}

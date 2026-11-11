@@ -179,6 +179,7 @@ subdir('libclmuv')
 subdir('libclmsession')
 subdir('libemoji')
 subdir('src')
+subdir('gtk')
 subdir('lua')
 subdir('man')
 
