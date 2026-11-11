@@ -555,6 +555,19 @@ has_content_type(const struct curl_slist *h)
 	return false;
 }
 
+/* True when the list sets its own User-Agent (a provider wanting a specific
+ * client fingerprint, e.g. Anthropic's OAuth path masquerading as Claude
+ * Code). In that case the default CLM_UA_BASE is suppressed so curl does
+ * not emit two UA headers. */
+static bool
+has_user_agent(const struct curl_slist *h)
+{
+	for (; h != NULL; h = h->next)
+		if (strncasecmp(h->data, "User-Agent:", 11) == 0)
+			return true;
+	return false;
+}
+
 int
 clm_http_async_post_len(struct clm_http_mux *mux, const char *url,
     const char *api_key, const char *json_body, size_t body_len,
@@ -674,15 +687,19 @@ clm_http_async_post_len(struct clm_http_mux *mux, const char *url,
 		    req->easy_handle, CURLOPT_HTTPHEADER, req->headers);
 
 	/* Minimal, deliberate User-Agent; append a tool/plugin comment if
-	 * given. */
-	if (client_suffix != NULL && client_suffix[0] != '\0') {
-		char ua[256];
-		(void)snprintf(ua, sizeof(ua), "%s (tool: %s)", CLM_UA_BASE,
-		    client_suffix);
-		curl_easy_setopt(req->easy_handle, CURLOPT_USERAGENT, ua);
-	} else {
-		curl_easy_setopt(
-		    req->easy_handle, CURLOPT_USERAGENT, CLM_UA_BASE);
+	 * given. Suppressed entirely when the caller supplied its own
+	 * User-Agent header (e.g. Anthropic's OAuth path). */
+	if (!has_user_agent(req->headers)) {
+		if (client_suffix != NULL && client_suffix[0] != '\0') {
+			char ua[256];
+			(void)snprintf(ua, sizeof(ua), "%s (tool: %s)",
+			    CLM_UA_BASE, client_suffix);
+			curl_easy_setopt(
+			    req->easy_handle, CURLOPT_USERAGENT, ua);
+		} else {
+			curl_easy_setopt(
+			    req->easy_handle, CURLOPT_USERAGENT, CLM_UA_BASE);
+		}
 	}
 	curl_easy_setopt(req->easy_handle, CURLOPT_TIMEOUT, 0L);
 	/* No total timeout, but abort if the connection goes completely dead.

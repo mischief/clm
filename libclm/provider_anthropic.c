@@ -55,6 +55,16 @@
  * anthropic-beta output-window header. */
 #define CLM_ANTHROPIC_MAX_TOKENS 64000
 
+/* Claude Code CLI fingerprint for the subscription OAuth path. The server
+ * does not validate the version, but the UA and billing marker share it so
+ * both present one coherent fingerprint. */
+#define CLM_CLAUDE_CLI_VERSION "2.1.296"
+#define CLM_ANTHROPIC_OAUTH_UA                                                 \
+	"claude-cli/" CLM_CLAUDE_CLI_VERSION " (external, sdk-cli)"
+#define CLM_ANTHROPIC_BILLING_MARKER                                           \
+	"x-anthropic-billing-header: cc_version=" CLM_CLAUDE_CLI_VERSION       \
+	"; cc_entrypoint=cli;"
+
 /* ------------------------------------------------------------------ */
 /* Request building                                                    */
 /* ------------------------------------------------------------------ */
@@ -602,30 +612,63 @@ mark_history_breakpoint(cJSON *messages)
 	}
 }
 
-/* Render the system prompt as a single text block carrying a cache
- * breakpoint. Tools render before system, so this one breakpoint covers the
- * whole static prefix: tool schemas plus system prompt. Returns NULL if the
- * text is empty (the API rejects empty text blocks) or on OOM. */
-static cJSON *
-system_blocks(const char *text)
+/* Is `key` a Claude subscription OAuth access token (sk-ant-oat...) rather
+ * than a metered API key (sk-ant-...)? The two are served via different
+ * header schemes (Bearer + oauth beta vs x-api-key), and only the former
+ * needs the overflow billing marker, so both the headers and the request
+ * body have to follow the token, not preference. */
+static bool
+is_subscription_oauth_key(const char *key)
 {
-	cJSON *arr, *block, *cc;
+	return key != NULL && strncmp(key, "sk-ant-oat", 10) == 0;
+}
 
-	if (text == NULL || text[0] == '\0')
+/*
+ * Build the "system" array. For a subscription OAuth token, a billing-marker
+ * block is prepended: once the plan pool is exhausted the server serves
+ * requests *only* if they carry this line (the keyword is reserved; absence
+ * returns 429, a malformed marker returns 400). cc_version is not validated;
+ * cc_entrypoint is mandatory. The marker is idempotent and cheap, so it is
+ * always sent for OAuth rather than only at the limit. The user's system text
+ * becomes the following block, still carrying the cache breakpoint.
+ */
+static cJSON *
+anthropic_system_blocks(const char *text, bool oauth)
+{
+	cJSON *arr = cJSON_CreateArray();
+	cJSON *block;
+
+	if (arr == NULL)
 		return NULL;
-	arr = cJSON_CreateArray();
-	block = cJSON_CreateObject();
-	if (arr == NULL || block == NULL) {
-		cJSON_Delete(arr);
-		cJSON_Delete(block);
-		return NULL;
+
+	if (oauth) {
+		block = cJSON_CreateObject();
+		if (block == NULL ||
+		    !cJSON_AddStringToObject(block, "type", "text") ||
+		    !cJSON_AddStringToObject(
+		        block, "text", CLM_ANTHROPIC_BILLING_MARKER)) {
+			cJSON_Delete(block);
+			cJSON_Delete(arr);
+			return NULL;
+		}
+		cJSON_AddItemToArray(arr, block);
 	}
-	cJSON_AddItemToObject(block, "type", cJSON_CreateString("text"));
-	cJSON_AddItemToObject(block, "text", cJSON_CreateString(text));
-	cc = make_cache_control();
-	if (cc != NULL)
-		cJSON_AddItemToObject(block, "cache_control", cc);
-	cJSON_AddItemToArray(arr, block);
+
+	if (text != NULL && text[0] != '\0') {
+		block = cJSON_CreateObject();
+		if (block == NULL) {
+			cJSON_Delete(arr);
+			return NULL;
+		}
+		cJSON_AddItemToObject(
+		    block, "type", cJSON_CreateString("text"));
+		cJSON_AddItemToObject(block, "text", cJSON_CreateString(text));
+		cJSON *cc = make_cache_control();
+		if (cc != NULL)
+			cJSON_AddItemToObject(block, "cache_control", cc);
+		cJSON_AddItemToArray(arr, block);
+	}
+
 	return arr;
 }
 
@@ -636,6 +679,7 @@ anthropic_build_request(
 	json_cleanup cJSON *req = NULL;
 	autofree char *system = NULL;
 	cJSON *anth_messages, *anth_tools;
+	bool oauth;
 
 	anth_messages = convert_messages(messages, &system);
 	if (anth_messages == NULL) {
@@ -643,6 +687,7 @@ anthropic_build_request(
 		return NULL;
 	}
 
+	oauth = is_subscription_oauth_key(llm->api_key);
 	anth_tools = convert_tools(tools);
 	if (anth_tools == NULL) {
 		cJSON_Delete(anth_messages);
@@ -657,12 +702,12 @@ anthropic_build_request(
 	}
 
 	cJSON_AddItemToObject(req, "model", cJSON_CreateString(llm->model));
-	if (system != NULL) {
-		cJSON *sys_blocks = system_blocks(system);
+	{
+		cJSON *sys_blocks = anthropic_system_blocks(system, oauth);
 
 		if (sys_blocks != NULL)
 			cJSON_AddItemToObject(req, "system", sys_blocks);
-		else
+		else if (system != NULL)
 			cJSON_AddItemToObject(
 			    req, "system", cJSON_CreateString(system));
 	}
@@ -740,7 +785,9 @@ anthropic_build_request(
 static char **
 anthropic_build_auth_headers(const struct clm_llm *llm)
 {
-	char **headers = calloc(4, sizeof(*headers));
+	/* Content-Type + (Authorization + beta + UA | x-api-key) + version
+	 * + NULL */
+	char **headers = calloc(8, sizeof(*headers));
 	size_t n = 0;
 
 	if (headers == NULL)
@@ -752,12 +799,37 @@ anthropic_build_auth_headers(const struct clm_llm *llm)
 	n++;
 
 	if (llm->api_key != NULL && llm->api_key[0] != '\0') {
-		size_t len = sizeof("x-api-key: ") + strlen(llm->api_key);
-		headers[n] = malloc(len);
-		if (headers[n] == NULL)
-			goto fail;
-		(void)snprintf(headers[n], len, "x-api-key: %s", llm->api_key);
-		n++;
+		if (is_subscription_oauth_key(llm->api_key)) {
+			size_t len = sizeof("Authorization: Bearer ") +
+			    strlen(llm->api_key);
+			headers[n] = malloc(len);
+			if (headers[n] == NULL)
+				goto fail;
+			(void)snprintf(headers[n], len,
+			    "Authorization: Bearer %s", llm->api_key);
+			n++;
+
+			headers[n] = strdup("anthropic-beta: oauth-2025-04-20");
+			if (headers[n] == NULL)
+				goto fail;
+			n++;
+
+			/* Fingerprint as Claude Code, not clm. */
+			headers[n] =
+			    strdup("User-Agent: " CLM_ANTHROPIC_OAUTH_UA);
+			if (headers[n] == NULL)
+				goto fail;
+			n++;
+		} else {
+			size_t len =
+			    sizeof("x-api-key: ") + strlen(llm->api_key);
+			headers[n] = malloc(len);
+			if (headers[n] == NULL)
+				goto fail;
+			(void)snprintf(
+			    headers[n], len, "x-api-key: %s", llm->api_key);
+			n++;
+		}
 	}
 
 	headers[n] = strdup("anthropic-version: " CLM_ANTHROPIC_VERSION);

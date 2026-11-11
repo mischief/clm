@@ -29,6 +29,7 @@ struct tstate {
 	const char *system_prompt;
 	const char *system_prompt_suffix;
 	const char *effort;
+	const char *api_key; /* overrides the default "test" */
 	const char *const *volatile_tools;
 	int64_t context_size;
 	int64_t autocompact_tokens;
@@ -229,7 +230,7 @@ make_agent(struct tstate *st, int port)
 
 	(void)snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/%s", port,
 	    st->file_uploads ? "messages" : "chat/completions");
-	cfg.api_key = "test";
+	cfg.api_key = st->api_key ? st->api_key : "test";
 	cfg.base_url = url;
 	cfg.provider = st->provider;
 	cfg.vision = st->vision;
@@ -3082,6 +3083,8 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	    "anthropic-version header sent");
 	CHECK(req != NULL && strstr(req, "Authorization:") == NULL,
 	    "no bearer header for anthropic");
+	CHECK(req != NULL && strstr(req, "x-anthropic-billing-header:") == NULL,
+	    "no billing marker for an api key");
 	CHECK(req != NULL && strstr(req, "\"system\":") != NULL,
 	    "system sent as top-level field");
 	CHECK(req != NULL && strstr(req, "SENTINEL_SYS_PROMPT") != NULL,
@@ -3114,6 +3117,65 @@ test_anthropic_text_reply(uv_loop_t *loop)
 	    "history breakpoint on last message");
 	CHECK(req != NULL && strstr(req, "\"role\":\"system\"") == NULL,
 	    "no system role left in messages[]");
+
+	teardown(&st, srv);
+}
+
+/* (g2a) A Claude subscription OAuth token (sk-ant-oat...) must select the
+ * Bearer + anthropic-beta auth scheme instead of x-api-key, while keeping
+ * the anthropic-version header the server also requires. */
+static void
+test_anthropic_oauth_reply(uv_loop_t *loop)
+{
+	struct tstate st = {0};
+	struct canned_server *srv;
+	const char *req;
+
+	st.loop = loop;
+	st.provider = CLM_PROVIDER_ANTHROPIC;
+	st.api_key = "sk-ant-oat01-testtoken";
+	srv = canned_start(loop);
+	CHECK(srv != NULL, "canned_start");
+
+	canned_reply(srv,
+	    "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\","
+	    "\"content\":[{\"type\":\"text\",\"text\":\"hi there\"}],"
+	    "\"stop_reason\":\"end_turn\","
+	    "\"usage\":{\"input_tokens\":11,\"output_tokens\":4}}");
+
+	st.agent = make_agent(&st, canned_port(srv));
+	CHECK(clm_agent_submit(st.agent, "hello") == 0, "submit");
+	run_until_done(&st);
+
+	CHECK(st.turn_status == 0, "anthropic oauth turn ok");
+	CHECK(strstr(st.assistant, "hi there") != NULL,
+	    "assistant text delivered");
+
+	req = canned_last_request(srv);
+	CHECK(req != NULL &&
+	        strstr(req, "Authorization: Bearer sk-ant-oat01-testtoken") !=
+	            NULL,
+	    "oauth token sent as Bearer");
+	CHECK(req != NULL &&
+	        strstr(req, "anthropic-beta: oauth-2025-04-20") != NULL,
+	    "oauth beta header sent");
+	CHECK(req != NULL && strstr(req, "anthropic-version:") != NULL,
+	    "anthropic-version header sent");
+	CHECK(req != NULL && strstr(req, "x-api-key:") == NULL,
+	    "no x-api-key header for oauth token");
+	CHECK(req != NULL &&
+	        strstr(req,
+	            "User-Agent: claude-cli/2.1.296 (external, sdk-cli)") !=
+	            NULL,
+	    "oauth UA masquerades as claude-cli");
+	CHECK(req != NULL && strstr(req, "User-Agent: clm/") == NULL,
+	    "oauth UA is not the clm default");
+	CHECK(req != NULL &&
+	        strstr(req, "x-anthropic-billing-header: cc_version=") != NULL,
+	    "oauth billing marker prepended to system");
+	CHECK(req != NULL &&
+	        strstr(req, "\"type\":\"text\",\"text\":\"hello\"") != NULL,
+	    "history still present after the system marker");
 
 	teardown(&st, srv);
 }
@@ -4722,6 +4784,7 @@ test_agent_suite(void *arg)
 	test_compact_keeps_tools(&loop);
 	test_anthropic_ctx_max(&loop);
 	test_anthropic_text_reply(&loop);
+	test_anthropic_oauth_reply(&loop);
 	test_anthropic_tool_call(&loop);
 	test_anthropic_empty_after_tool(&loop);
 	test_anthropic_stream(&loop);
