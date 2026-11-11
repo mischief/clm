@@ -42,7 +42,10 @@ struct app {
 	char endpoint[256];
 	char *sysinfo;
 	char *spec_provider;
-	const char *model;
+	char *model;
+	GtkDropDown *models;
+	guint model_idx;  /* the row showing the model in use */
+	bool model_quiet; /* the selection is being set by code */
 	uv_loop_t *loop;
 	guint uv_src;
 	struct clm_host *host;
@@ -77,6 +80,16 @@ model_or_provider_str(struct app *a, const char *wire, const char *key)
 	    : clm_lua_cfg_provider_str(a->lcfg, a->spec_provider, key);
 }
 
+/* Effort for the model in use, from config.lua. */
+static void
+apply_effort(struct app *a)
+{
+	if (a->agent == NULL)
+		return;
+	(void)clm_agent_set_effort(
+	    a->agent, model_or_provider_str(a, a->model, "effort"));
+}
+
 static int
 app_config(struct app *a, char **ret_err)
 {
@@ -108,12 +121,14 @@ app_config(struct app *a, char **ret_err)
 	clm_provider_build_url(a->endpoint, sizeof(a->endpoint),
 	    url != NULL ? url : DEFAULT_URL, a->cfg.provider);
 	a->cfg.base_url = a->endpoint;
-	a->cfg.model = wire;
+	a->model = strdup(wire);
+	if (a->model == NULL)
+		return -ENOMEM;
+	a->cfg.model = a->model;
 	a->cfg.stream = 1;
 	a->sysinfo = clm_cli_sysinfo();
 	a->cfg.system_prompt = clm_lua_cfg_get_str(a->lcfg, "system_prompt");
 	a->cfg.system_prompt_suffix = a->sysinfo;
-	a->model = wire;
 	return 0;
 }
 
@@ -539,6 +554,148 @@ on_stop(GtkButton *b, gpointer user)
 		(void)clm_agent_cancel(a->agent);
 }
 
+/* Model selector */
+
+/*
+ * Point the live agent at a "provider/model-id" from config.lua. History,
+ * tools and the session stay as they are.
+ */
+static int
+model_switch(struct app *a, const char *spec)
+{
+	struct clm_cfg nc = {0};
+	char url_buf[sizeof(a->endpoint)];
+	char *prov = NULL, *model;
+	const char *wire = NULL, *url;
+	int r;
+
+	split_provider_model(spec, &prov, &wire);
+	url = prov != NULL ? clm_lua_cfg_provider_str(a->lcfg, prov, "url")
+	                   : NULL;
+	model = wire != NULL ? strdup(wire) : NULL;
+	if (url == NULL || model == NULL) {
+		free(prov);
+		free(model);
+		return url == NULL ? -ENOENT : -ENOMEM;
+	}
+	nc.provider = clm_provider_from_str(
+	    clm_lua_cfg_provider_str(a->lcfg, prov, "kind"));
+	clm_provider_build_url(url_buf, sizeof(url_buf), url, nc.provider);
+	nc.base_url = url_buf;
+	nc.api_key = clm_lua_cfg_provider_str(a->lcfg, prov, "api_key");
+	nc.model = model;
+	clm_cfg_apply_tuning(a->lcfg, prov, model, &nc);
+	nc.rate_tokens_per_sec =
+	    clm_lua_cfg_provider_int(a->lcfg, prov, "rate_tokens_per_sec", 0);
+	nc.rate_burst =
+	    clm_lua_cfg_provider_int(a->lcfg, prov, "rate_burst", 0);
+	r = clm_agent_set_provider(a->agent, &nc);
+	if (r < 0) {
+		free(prov);
+		free(model);
+		return r;
+	}
+	free(a->spec_provider);
+	free(a->model);
+	a->spec_provider = prov;
+	a->model = model;
+	a->cfg.provider_name = prov;
+	a->cfg.model = model;
+	apply_effort(a);
+	(void)clm_agent_set_compact_effort(
+	    a->agent, model_or_provider_str(a, model, "compact_effort"));
+	if (a->session != NULL)
+		(void)clm_session_log_model(a->session, model, prov);
+	adw_window_title_set_title(a->title, model);
+	(void)clm_agent_check_connection(a->agent);
+	return 0;
+}
+
+static void
+on_model_selected(GObject *obj, GParamSpec *ps, gpointer user)
+{
+	struct app *a = user;
+	GtkDropDown *dd = GTK_DROP_DOWN(obj);
+	GtkStringObject *so = gtk_drop_down_get_selected_item(dd);
+	guint idx = gtk_drop_down_get_selected(dd);
+	const char *why = NULL;
+	int r;
+
+	(void)ps;
+	if (a->model_quiet || so == NULL || idx == a->model_idx)
+		return;
+	if (a->agent == NULL)
+		why = "no agent is running";
+	else if (a->busy)
+		why = "busy; stop the turn first";
+	else if ((r = model_switch(a, gtk_string_object_get_string(so))) < 0)
+		why = r == -EBUSY ? "busy; stop the turn first"
+		                  : "could not switch model";
+	if (why == NULL) {
+		g_autofree char *msg = g_strdup_printf(
+		    "switched to %s", gtk_string_object_get_string(so));
+
+		a->model_idx = idx;
+		notice(a, msg);
+		return;
+	}
+	notice(a, why);
+	a->model_quiet = true;
+	gtk_drop_down_set_selected(dd, a->model_idx);
+	a->model_quiet = false;
+}
+
+static int
+strp_cmp(const void *x, const void *y)
+{
+	return strcmp(*(char *const *)x, *(char *const *)y);
+}
+
+/* A dropdown of config.lua's models, the one in use selected. */
+static GtkWidget *
+model_selector(struct app *a)
+{
+	GtkStringList *sl = gtk_string_list_new(NULL);
+	GtkWidget *dd = gtk_drop_down_new(G_LIST_MODEL(sl), NULL);
+	char **names =
+	    a->lcfg != NULL ? clm_lua_cfg_list_names(a->lcfg, "models") : NULL;
+	g_autofree char *cur = a->spec_provider != NULL && a->model != NULL
+	    ? g_strdup_printf("%s/%s", a->spec_provider, a->model)
+	    : NULL;
+	size_t n = 0;
+	bool found = false;
+
+	while (names != NULL && names[n] != NULL)
+		n++;
+	if (n > 0)
+		qsort(names, n, sizeof(names[0]), strp_cmp);
+	for (size_t i = 0; i < n; i++) {
+		gtk_string_list_append(sl, names[i]);
+		if (cur != NULL && strcmp(names[i], cur) == 0) {
+			a->model_idx = (guint)i;
+			found = true;
+		}
+	}
+	clm_lua_cfg_free_str_list(names);
+	/* The startup model need not have a models{} entry. */
+	if (!found && cur != NULL) {
+		gtk_string_list_append(sl, cur);
+		a->model_idx = (guint)n;
+	}
+	gtk_drop_down_set_enable_search(GTK_DROP_DOWN(dd), TRUE);
+	gtk_drop_down_set_expression(GTK_DROP_DOWN(dd),
+	    gtk_property_expression_new(
+	        GTK_TYPE_STRING_OBJECT, NULL, "string"));
+	gtk_widget_set_tooltip_text(dd, "Model");
+	gtk_widget_set_sensitive(dd, cur != NULL);
+	if (cur != NULL)
+		gtk_drop_down_set_selected(GTK_DROP_DOWN(dd), a->model_idx);
+	g_signal_connect(
+	    dd, "notify::selected", G_CALLBACK(on_model_selected), a);
+	a->models = GTK_DROP_DOWN(dd);
+	return dd;
+}
+
 /* Follow new rows while the view sits at the bottom. */
 static void
 on_adj_changed(GtkAdjustment *adj, gpointer user)
@@ -637,6 +794,7 @@ chat_page(struct app *a)
 	    adw_window_title_new(a->model != NULL ? a->model : "clm", ""));
 	adw_header_bar_set_title_widget(
 	    ADW_HEADER_BAR(hb), GTK_WIDGET(a->title));
+	adw_header_bar_pack_end(ADW_HEADER_BAR(hb), model_selector(a));
 	gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
 	gtk_widget_set_valign(list, GTK_ALIGN_END);
 	a->chat = GTK_LIST_BOX(list);
@@ -653,7 +811,6 @@ chat_page(struct app *a)
 static int
 agent_start(struct app *a)
 {
-	const char *effort;
 	int r;
 
 	a->loop = uv_default_loop();
@@ -666,9 +823,7 @@ agent_start(struct app *a)
 	(void)clm_tools_register_shell(a->agent);
 	(void)clm_tools_register_bg(a->agent);
 	(void)clm_tools_register_monitor(a->agent);
-	effort = model_or_provider_str(a, a->model, "effort");
-	if (effort != NULL)
-		(void)clm_agent_set_effort(a->agent, effort);
+	apply_effort(a);
 	a->uv_src = clm_uv_source_attach(a->loop);
 	session_start(a);
 	(void)clm_agent_check_connection(a->agent);
@@ -725,6 +880,7 @@ on_shutdown(GApplication *gapp, gpointer user)
 	clm_lua_cfg_free(a->lcfg);
 	free(a->sysinfo);
 	free(a->spec_provider);
+	free(a->model);
 }
 
 /* SIGINT and SIGTERM quit cleanly, so an empty session log is removed. */
