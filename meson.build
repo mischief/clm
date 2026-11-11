@@ -1,5 +1,5 @@
 project('clm', 'c',
-  version: '0.2.0',
+  version: '0.3.0',
   license: 'ISC',
   meson_version: '>=1.1',
   default_options: [
