@@ -248,6 +248,29 @@ if have_lua
       timeout: 120,
     )
   endforeach
+  # clm-gtk on Xvfb, driven through AT-SPI by latspi (a separate project:
+  # point LATSPI_DIR at its source tree, built in build/). Skipped, exit 77,
+  # without latspi, and not registered without clm-gtk or the tools.
+  if is_variable('clm_gtk_exe')
+    gtk_tools = [find_program('dbus-run-session', required: false),
+      find_program('Xvfb', required: false),
+      find_program('xdotool', required: false)]
+    if gtk_tools[0].found() and gtk_tools[1].found() and gtk_tools[2].found()
+      test('gtk',
+        find_program('sh'),
+        args: [files('gtk/run.sh'), tui_harness, files('gtk/test_gtk.lua')],
+        env: {
+          'CLM_GTK_BIN': clm_gtk_exe.full_path(),
+          'LATSPI_DIR': get_option('latspi_dir'),
+        },
+        depends: [clm_gtk_exe, tui_harness],
+        suite: 'gtk',
+        timeout: 180,
+      )
+    else
+      message('clm-gtk test needs dbus-run-session, Xvfb and xdotool')
+    endif
+  endif
 else
   message('lua disabled; skipping TUI test (needs the clm desktop binary)')
 endif

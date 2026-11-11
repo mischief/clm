@@ -16,3 +16,6 @@ option('oauth', type: 'feature', value: 'auto',
     'extra libcurl/cJSON surface in the CLI.')
 option('gtk', type: 'feature', value: 'auto',
   description: 'clm-gtk, a GTK4 and libadwaita chat window')
+option('latspi_dir', type: 'string', value: '',
+  description: 'latspi source tree (built in build/); runs the clm-gtk ' +
+    'test, which skips without it')
