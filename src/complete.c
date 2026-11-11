@@ -543,14 +543,20 @@ model_live_error(const char *msg, void *user)
 }
 
 /*
- * /model's argument: config.lua's nested providers[*].models{} entries
- * complete immediately as "provider/model-id" compound strings
- * (synchronous, always correct -- no network dependency; see
- * clm_lua_cfg_list_names(cfg, "models") and src/model_spec.h), then a
- * fresh GET /v1/models against whatever connection is currently active is
- * kicked off every time (no cache -- a cached list from a since-switched
- * provider would be actively misleading, worse than a moment's wait) to
- * extend/refine the candidates a moment later if the user pauses.
+ * /model's argument. Until a '/' is typed it completes provider names
+ * from config.lua's providers{} table (synchronous, always correct).
+ * After the '/' it completes "provider/model-id" specs: config.lua's
+ * nested providers[*].models{} entries immediately (synchronous, no
+ * network dependency; see clm_lua_cfg_list_names(cfg, "models") and
+ * src/model_spec.h), then a fresh GET /v1/models against *that* provider
+ * (no cache -- a cached list from a since-switched provider would be
+ * actively misleading, worse than a moment's wait) is kicked off to
+ * extend/refine the candidates a moment later if the user pauses. The
+ * active provider's catalog is deliberately not consulted before the
+ * '/' -- mixing model specs into a provider-name completion would both
+ * bias it toward the currently-connected provider and clash with an
+ * unambiguous provider match (e.g. claude_sub would get overwritten by
+ * the shared claude- prefix of the live model list).
  */
 static void
 source_model_names(
@@ -579,24 +585,6 @@ source_model_names(
 			apply_insert(
 			    u, wstart, wlen, 0, matches, pn, typed, '/');
 			clm_lua_cfg_free_str_list(names);
-		}
-		/* bare model ids use active connection catalog */
-		if (u->agent != NULL && u->provider_name != NULL) {
-			req = calloc(1, sizeof(*req));
-			if (req != NULL) {
-				req->u = u;
-				req->generation = generation;
-				req->wstart = wstart;
-				req->wlen = u->input_pos - wstart;
-				req->match_len = wlen;
-				req->provider_name = strdup(u->provider_name);
-				if (req->provider_name != NULL &&
-				    clm_agent_list_models(u->agent,
-				        model_live_result, model_live_error,
-				        req) == 0)
-					return;
-				model_complete_req_free(req);
-			}
 		}
 		return;
 	}
