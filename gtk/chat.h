@@ -26,6 +26,9 @@ void chat_row_append_reasoning(struct chat_row *cr, const char *text);
 /* Set the dim line under a tool row's arguments to its result. */
 void chat_row_set_result(struct chat_row *cr, const char *text, bool failed);
 
+/* Show or hide the reasoning line of every row, present and future. */
+void chat_show_thinking(GtkListBox *list, bool show);
+
 /* Remove every row. */
 void chat_clear(GtkListBox *list);
 

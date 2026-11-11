@@ -14,6 +14,8 @@
 #define RESULT_MAX_BYTES 600
 /* Streamed markdown is laid out again at most this often. */
 #define MD_REDRAW_MS 50
+/* Set on a list whose rows show their reasoning. */
+#define SHOW_THINK_KEY "show-thinking"
 
 struct chat_row {
 	GtkLabel *body;    /* plain rows */
@@ -23,6 +25,7 @@ struct chat_row {
 	GtkLabel *result;
 	GString *text;
 	GString *think_text;
+	GtkListBox *list;
 };
 
 static void
@@ -72,6 +75,17 @@ on_redraw(gpointer user)
 	cr->redraw = 0;
 	body_update(cr);
 	return G_SOURCE_REMOVE;
+}
+
+/* The reasoning line shows when the list says so and there is any. */
+static void
+think_update(struct chat_row *cr)
+{
+	bool show =
+	    g_object_get_data(G_OBJECT(cr->list), SHOW_THINK_KEY) != NULL;
+
+	gtk_widget_set_visible(
+	    GTK_WIDGET(cr->think), show && cr->think_text->len > 0);
 }
 
 static GtkWidget *
@@ -133,11 +147,19 @@ chat_row_add(GtkListBox *list, enum chat_kind kind, const char *who,
 	struct chat_row *cr = g_new0(struct chat_row, 1);
 	GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
 	GtkWidget *row;
+	PangoAttrList *italic;
 
 	cr->text = g_string_new(text != NULL ? text : "");
 	cr->think_text = g_string_new(NULL);
 	cr->think = body_label("dim-label");
+	italic = pango_attr_list_new();
+	pango_attr_list_insert(
+	    italic, pango_attr_style_new(PANGO_STYLE_ITALIC));
+	gtk_label_set_attributes(cr->think, italic);
+	pango_attr_list_unref(italic);
 	gtk_widget_set_visible(GTK_WIDGET(cr->think), FALSE);
+	gtk_widget_set_margin_bottom(GTK_WIDGET(cr->think), 6);
+	cr->list = list;
 	gtk_box_append(GTK_BOX(col), header_line(who, stamp));
 	gtk_box_append(GTK_BOX(col), GTK_WIDGET(cr->think));
 	if (kind == CHAT_MODEL) {
@@ -179,7 +201,7 @@ chat_row_append_reasoning(struct chat_row *cr, const char *text)
 {
 	g_string_append(cr->think_text, text);
 	gtk_label_set_text(cr->think, cr->think_text->str);
-	gtk_widget_set_visible(GTK_WIDGET(cr->think), TRUE);
+	think_update(cr);
 }
 
 /* The first few lines of s, at most RESULT_MAX_BYTES of them. */
@@ -216,6 +238,22 @@ chat_row_set_result(struct chat_row *cr, const char *text, bool failed)
 	if (failed)
 		gtk_widget_add_css_class(GTK_WIDGET(cr->result), "error");
 	gtk_widget_set_visible(GTK_WIDGET(cr->result), TRUE);
+}
+
+void
+chat_show_thinking(GtkListBox *list, bool show)
+{
+	GtkWidget *row;
+
+	g_object_set_data(G_OBJECT(list), SHOW_THINK_KEY, show ? list : NULL);
+	for (row = gtk_widget_get_first_child(GTK_WIDGET(list)); row != NULL;
+	    row = gtk_widget_get_next_sibling(row)) {
+		struct chat_row *cr =
+		    g_object_get_data(G_OBJECT(row), "chat-row");
+
+		if (cr != NULL)
+			think_update(cr);
+	}
 }
 
 void

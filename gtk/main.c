@@ -57,6 +57,7 @@ struct app {
 	bool busy;
 	bool stick;
 	bool list_stale;
+	const char *effort; /* the header's choice; NULL takes config.lua's */
 };
 
 static void sessions_refresh(struct app *a);
@@ -81,14 +82,15 @@ model_or_provider_str(struct app *a, const char *wire, const char *key)
 	    : clm_lua_cfg_provider_str(a->lcfg, a->spec_provider, key);
 }
 
-/* Effort for the model in use, from config.lua. */
+/* Effort for the model in use: the header's choice, else config.lua's. */
 static void
 apply_effort(struct app *a)
 {
 	if (a->agent == NULL)
 		return;
-	(void)clm_agent_set_effort(
-	    a->agent, model_or_provider_str(a, a->model, "effort"));
+	(void)clm_agent_set_effort(a->agent,
+	    a->effort != NULL ? a->effort
+	                      : model_or_provider_str(a, a->model, "effort"));
 }
 
 static int
@@ -697,6 +699,51 @@ model_selector(struct app *a)
 	return dd;
 }
 
+/* Thinking: how much the model does, and whether it is shown. */
+
+/* The first entry takes config.lua's effort; the rest are sent as named. */
+static const char *const efforts[] = {
+    "default", "none", "low", "medium", "high", "xhigh", "max", NULL};
+
+static void
+on_effort_selected(GObject *obj, GParamSpec *ps, gpointer user)
+{
+	struct app *a = user;
+	guint idx = gtk_drop_down_get_selected(GTK_DROP_DOWN(obj));
+
+	(void)ps;
+	a->effort =
+	    idx > 0 && idx < G_N_ELEMENTS(efforts) - 1 ? efforts[idx] : NULL;
+	apply_effort(a);
+}
+
+/* A dim "Effort" caption and the dropdown beside it. */
+static GtkWidget *
+effort_selector(struct app *a)
+{
+	GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+	GtkWidget *cap = gtk_label_new("Effort");
+	GtkWidget *dd = gtk_drop_down_new_from_strings(efforts);
+
+	gtk_widget_add_css_class(cap, "dim-label");
+	gtk_widget_set_tooltip_text(dd,
+	    "Reasoning effort; default takes config.lua's. "
+	    "A server rejects a level its model does not take.");
+	g_signal_connect(
+	    dd, "notify::selected", G_CALLBACK(on_effort_selected), a);
+	gtk_box_append(GTK_BOX(box), cap);
+	gtk_box_append(GTK_BOX(box), dd);
+	return box;
+}
+
+static void
+on_reveal_toggled(GtkToggleButton *b, gpointer user)
+{
+	struct app *a = user;
+
+	chat_show_thinking(a->chat, gtk_toggle_button_get_active(b));
+}
+
 /* Follow new rows while the view sits at the bottom. */
 static void
 on_adj_changed(GtkAdjustment *adj, gpointer user)
@@ -792,6 +839,7 @@ chat_page(struct app *a)
 	GtkWidget *list = gtk_list_box_new();
 	GtkWidget *sw = scrolled(list);
 	GtkWidget *side = gtk_toggle_button_new();
+	GtkWidget *reveal = gtk_toggle_button_new();
 	GtkAdjustment *adj =
 	    gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(sw));
 
@@ -800,6 +848,11 @@ chat_page(struct app *a)
 	adw_header_bar_set_title_widget(
 	    ADW_HEADER_BAR(hb), GTK_WIDGET(a->title));
 	adw_header_bar_pack_end(ADW_HEADER_BAR(hb), model_selector(a));
+	adw_header_bar_pack_end(ADW_HEADER_BAR(hb), effort_selector(a));
+	gtk_button_set_icon_name(GTK_BUTTON(reveal), "view-reveal-symbolic");
+	gtk_widget_set_tooltip_text(reveal, "Show thinking");
+	g_signal_connect(reveal, "toggled", G_CALLBACK(on_reveal_toggled), a);
+	adw_header_bar_pack_end(ADW_HEADER_BAR(hb), reveal);
 	gtk_button_set_icon_name(GTK_BUTTON(side), "sidebar-show-symbolic");
 	gtk_widget_set_tooltip_text(side, "Chats");
 	g_object_bind_property(side, "active", a->split, "show-sidebar",
@@ -808,6 +861,11 @@ chat_page(struct app *a)
 	gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
 	gtk_widget_set_valign(list, GTK_ALIGN_END);
 	a->chat = GTK_LIST_BOX(list);
+	/* Hidden unless config.lua says otherwise, as in the TUI. */
+	if (a->lcfg != NULL &&
+	    g_strcmp0(clm_lua_cfg_get_str(a->lcfg, "show_thinking"), "true") ==
+	        0)
+		gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(reveal), TRUE);
 	g_signal_connect(adj, "changed", G_CALLBACK(on_adj_changed), a);
 	g_signal_connect(adj, "value-changed", G_CALLBACK(on_adj_value), a);
 	adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tv), hb);
