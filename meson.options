@@ -9,3 +9,8 @@ option('static', type: 'boolean', value: false,
     'subproject (e.g. curl\'s own internal dependency(\'threads\')) -- ' +
     'also pass --default-library=static --prefer-static on the meson ' +
     'setup command line for a genuinely fully-static third-party build.')
+option('oauth', type: 'feature', value: 'auto',
+  description: 'Subscription OAuth (Claude Code-style PKCE) login for the ' +
+    'clm binary: the `clm oauth` subcommand and the Anthropic provider\'s ' +
+    'token refresh. Off in minimal/embedded builds that do not want the ' +
+    'extra libcurl/cJSON surface in the CLI.')

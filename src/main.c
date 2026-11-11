@@ -35,6 +35,9 @@
 #include "xdg.h"
 #include "fileio.h"
 #include "banned.h"
+#ifdef CLM_OAUTH
+#include "oauth.h"
+#endif
 
 static void
 usage(const char *prog)
@@ -759,6 +762,176 @@ resume_resolve(const char **resume_id, char **ret_picked)
 	return 0;
 }
 
+#ifdef CLM_OAUTH
+/* URL-encode a string (RFC 3986 unreserved chars only). */
+static int
+oauth_urlenc(const char *in, char *out, size_t outlen)
+{
+	static const char hex[] = "0123456789abcdef";
+	size_t o = 0;
+
+	for (; *in != '\0' && o + 3 < outlen; in++) {
+		unsigned char c = (unsigned char)*in;
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		    (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+		    c == '.' || c == '~') {
+			out[o++] = (char)c;
+		} else {
+			out[o++] = '%';
+			out[o++] = hex[c >> 4];
+			out[o++] = hex[c & 15];
+		}
+	}
+	out[o] = '\0';
+	return 0;
+}
+
+/* Read the whole of stdin, trim surrounding whitespace. Returns a malloc'd
+ * NUL-terminated string, or NULL on error/empty. */
+static char *
+oauth_read_stdin(void)
+{
+	char buf[512];
+	size_t len = 0;
+	size_t cap = 0;
+	char *all = NULL;
+	ssize_t r;
+
+	for (;;) {
+		r = read(STDIN_FILENO, buf, sizeof(buf));
+		if (r < 0)
+			break;
+		if (r == 0)
+			break;
+		if (len + (size_t)r + 1 > cap) {
+			size_t ncap = cap ? cap * 2 : 8192;
+			char *np = realloc(all, ncap);
+			if (np == NULL) {
+				free(all);
+				return NULL;
+			}
+			all = np;
+			cap = ncap;
+		}
+		memcpy(all + len, buf, (size_t)r);
+		len += (size_t)r;
+		all[len] = '\0';
+	}
+	if (all == NULL)
+		return NULL;
+	/* trim leading space */
+	{
+		char *p = all;
+		while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+			p++;
+		if (p != all)
+			memmove(all, p, strlen(p) + 1);
+	}
+	/* trim trailing space */
+	{
+		size_t l = strlen(all);
+		while (l > 0 &&
+		    (all[l - 1] == ' ' || all[l - 1] == '\t' ||
+		        all[l - 1] == '\r' || all[l - 1] == '\n'))
+			all[--l] = '\0';
+	}
+	if (all[0] == '\0') {
+		free(all);
+		return NULL;
+	}
+	return all;
+}
+
+/* Atomically write the clm-owned OAuth store. */
+static int
+oauth_save_store(const char *path, const char *client_id, const char *access,
+    const char *refresh, long expires_in, long refresh_expires_in,
+    const char *scope)
+{
+	return clm_oauth_store_save(path, client_id, access, refresh,
+	    expires_in, refresh_expires_in, scope);
+}
+
+/* `clm oauth login`: print the authorize URL, read the pasted code, and
+ * exchange it for tokens stored in clm's own store. */
+static int
+run_oauth_login(void)
+{
+	char verifier[128], challenge[64], state[128];
+	char encscope[512];
+	autofree char *scope = NULL;
+	autofree char *access = NULL;
+	autofree char *refresh = NULL;
+	autofree char *err = NULL;
+	autofree char *code = NULL;
+	autofree char *path = NULL;
+	long ei = 0, rtei = 0;
+	int rc;
+
+	if (clm_oauth_pkce(verifier, sizeof(verifier), challenge,
+	        sizeof(challenge)) != 0 ||
+	    clm_oauth_pkce(state, sizeof(state), NULL, 0) != 0) {
+		clm_dprintf(STDERR_FILENO, "oauth: failed to generate PKCE\n");
+		return 1;
+	}
+
+	oauth_urlenc(CLM_ANTHROPIC_OAUTH_SCOPE, encscope, sizeof(encscope));
+
+	clm_dprintf(STDOUT_FILENO,
+	    "\n"
+	    "  Claude subscription login\n"
+	    "\n"
+	    "  Open the URL below in your browser and sign in. After you\n"
+	    "  authorize, the page shows a code -- paste it here.\n"
+	    "\n"
+	    "  https://claude.com/cai/oauth/authorize?code=true"
+	    "&client_id=%s"
+	    "&response_type=code"
+	    "&redirect_uri=%s"
+	    "&scope=%s"
+	    "&code_challenge=%s"
+	    "&code_challenge_method=S256"
+	    "&state=%s\n"
+	    "\n"
+	    "  Paste code here: ",
+	    CLM_ANTHROPIC_OAUTH_CLIENT_ID,
+	    "https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback",
+	    encscope, challenge, state);
+
+	code = oauth_read_stdin();
+	if (code == NULL) {
+		clm_dprintf(STDERR_FILENO, "\noauth: no code received\n");
+		return 1;
+	}
+
+	rc = clm_oauth_exchange_code(CLM_ANTHROPIC_OAUTH_CLIENT_ID, code, NULL,
+	    verifier, &access, &refresh, &ei, &rtei, &scope, &err);
+	if (rc != 0) {
+		clm_dprintf(STDERR_FILENO,
+		    "\noauth: token exchange failed (%s)\n",
+		    err != NULL ? err : "network/HTTP error");
+		return 1;
+	}
+
+	path = xdg_config_path("clm/oauth-anthropic.json");
+	if (path == NULL ||
+	    oauth_save_store(path, CLM_ANTHROPIC_OAUTH_CLIENT_ID, access,
+	        refresh, ei, rtei, scope) != 0) {
+		clm_dprintf(STDERR_FILENO,
+		    "\noauth: could not write token store (%s)\n",
+		    path != NULL ? path : "no config dir");
+		return 1;
+	}
+
+	clm_dprintf(STDOUT_FILENO,
+	    "\n"
+	    "  Stored subscription tokens in %s\n"
+	    "  access token valid for ~%lds; refresh token ~%lds\n",
+	    path, ei, rtei);
+	return 0;
+}
+#endif /* CLM_OAUTH */
+
 /* `clm setup`: writes a starter config.lua and secrets.lua, and seeds the
  * builtin plugins, without silently doing any of that on a normal run.
  * Safe to re-run: never overwrites a config, secrets, or plugin file
@@ -996,6 +1169,17 @@ main(int argc, char *argv[])
 
 	init_escapes();
 
+	if (argc >= 3 && strcmp(argv[1], "oauth") == 0 &&
+	    strcmp(argv[2], "login") == 0) {
+#ifdef CLM_OAUTH
+		return run_oauth_login();
+#else
+		clm_dprintf(STDERR_FILENO,
+		    "clm: built without OAuth support (reconfigure with "
+		    "-Doauth=enabled)\n");
+		return 1;
+#endif
+	}
 	if (argc >= 2 && strcmp(argv[1], "setup") == 0)
 		return run_setup();
 	if (argc >= 2 && strcmp(argv[1], "peers") == 0)
@@ -1177,6 +1361,37 @@ main(int argc, char *argv[])
 				api_base = purl;
 			if (pkey != NULL && getenv("CLM_API_KEY") == NULL)
 				cfg.api_key = pkey;
+#ifdef CLM_OAUTH
+			/* Subscription OAuth: if the provider names a token
+			 * store, resolve a fresh access token (refreshing as
+			 * needed) and use it as the bearer credential. */
+			{
+				const char *store = clm_lua_cfg_provider_str(
+				    lcfg, prov_name, "oauth_store");
+				if (store != NULL && store[0] != '\0' &&
+				    getenv("CLM_API_KEY") == NULL) {
+					char *path = clm_oauth_expand(store);
+					char *tok = NULL, *err = NULL;
+					const char *cid =
+					    clm_lua_cfg_provider_str(lcfg,
+					        prov_name, "oauth_client_id");
+					if (path != NULL &&
+					    clm_oauth_resolve(
+					        path, cid, &tok, &err) == 0 &&
+					    tok != NULL) {
+						cfg.api_key = tok;
+					} else {
+						clm_dprintf(STDERR_FILENO,
+						    "oauth: %s\n",
+						    err != NULL
+						        ? err
+						        : "resolve failed");
+						free(err);
+					}
+					free(path);
+				}
+			}
+#endif
 			cfg.provider = clm_provider_from_str(pkind);
 			cfg.provider_name = prov_name;
 			cfg.rate_tokens_per_sec = clm_lua_cfg_provider_int(

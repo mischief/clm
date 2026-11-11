@@ -123,12 +123,23 @@ if have_lua
   # The installed binary finds libclm in a non-system prefix; the one in
   # the build tree keeps the build tree's libclm.
   clm_rpath = get_option('prefix') == '/usr' ? '' : get_option('prefix') / get_option('libdir')
+
+  # Subscription OAuth (clm oauth): optional. It pulls the curl + cJSON
+  # surface into the CLI, so it is gated out of minimal/embedded builds
+  # (see meson.options). oauth.c lives under src/ so it never touches the
+  # portable libclm core.
+  clm_oauth_args = []
+  if get_option('oauth').allowed()
+    clm_src += files('oauth.c')
+    clm_oauth_args += '-DCLM_OAUTH=1'
+  endif
+
   clm_exe = executable('clm', clm_src + files('tui.c', 'complete.c', 'mcp_setup.c', 'plugin_setup.c', 'xdg.c') + sysinfo_src + seed_src + [version_h, templates_data],
     link_with: [md_render_lib],
     install_rpath: clm_rpath,
     dependencies: [clmuv_dep, clmlua_dep, clmsession_dep, curses_dep, cjson_dep, emoji_dep],
     include_directories: [clm_bin_inc, md_render_inc, clm_inc],
-    c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'] + clm_hardening_args,
+    c_args: curses_warn + ['-D_XOPEN_SOURCE_EXTENDED'] + clm_hardening_args + clm_oauth_args,
     install: true,
   )
 endif

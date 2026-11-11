@@ -48,6 +48,9 @@
 #include "fileio.h"
 #include "proc.h"
 #include "banned.h"
+#ifdef CLM_OAUTH
+#include "oauth.h"
+#endif
 
 /*
  * Custom key codes for bracketed paste (xterm/most terminal emulators,
@@ -3388,6 +3391,43 @@ cmd_agent(struct ui *u, const char *arg)
 			    ? pkey
 			    : (getenv("CLM_API_KEY") ? getenv("CLM_API_KEY")
 			                             : "");
+#ifdef CLM_OAUTH
+			/* Subscription OAuth: a provider naming an oauth_store
+			 * resolves a fresh access token (refreshing as needed)
+			 * at switch time, mirroring the startup path. The
+			 * resolved token is kept alive for the agent's
+			 * lifetime (intentional process-lifetime slot). */
+			if (prov) {
+				const char *store = clm_lua_cfg_provider_str(
+				    u->lcfg, prov, "oauth_store");
+				if (store != NULL && store[0] != '\0' &&
+				    getenv("CLM_API_KEY") == NULL) {
+					static char *resolved_key;
+					char *path, *tok = NULL, *err = NULL;
+					const char *cid;
+					free(resolved_key);
+					resolved_key = NULL;
+					path = clm_oauth_expand(store);
+					cid = clm_lua_cfg_provider_str(
+					    u->lcfg, prov, "oauth_client_id");
+					if (path != NULL &&
+					    clm_oauth_resolve(
+					        path, cid, &tok, &err) == 0 &&
+					    tok != NULL) {
+						resolved_key = tok;
+						newcfg.api_key = tok;
+					} else {
+						clm_dprintf(STDERR_FILENO,
+						    "oauth: %s\n",
+						    err != NULL
+						        ? err
+						        : "resolve failed");
+						free(err);
+					}
+					free(path);
+				}
+			}
+#endif
 			newcfg.system_prompt = sprompt;
 			/* A profile switch builds a whole new agent, so the
 			 * host block has to be handed over again. The agent
