@@ -17,8 +17,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/queue.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <wchar.h>
 
@@ -3770,6 +3774,296 @@ cmd_quit(struct ui *u, const char *arg)
 	u->quit = true;
 }
 
+#ifdef CLM_OAUTH
+/* URL-encode a string (RFC 3986 unreserved chars only). */
+static size_t
+oauth_urlenc_o(const char *in, char *out, size_t outlen)
+{
+	static const char hex[] = "0123456789abcdef";
+	size_t o = 0;
+
+	for (; *in != '\0' && o + 3 < outlen; in++) {
+		unsigned char c = (unsigned char)*in;
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		    (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+		    c == '.' || c == '~') {
+			out[o++] = (char)c;
+		} else {
+			out[o++] = '%';
+			out[o++] = hex[c >> 4];
+			out[o++] = hex[c & 15];
+		}
+	}
+	out[o] = '\0';
+	return o;
+}
+
+/* Write the authorize URL to ~/.cache/clm/oauth-login.txt so an exact copy
+ * always exists (the transcript wraps long URLs mid-token). Returns a
+ * malloc'd path, or NULL. */
+static char *
+oauth_save_url(const char *url)
+{
+	char *cache = xdg_cache_path("clm");
+	char *path;
+	size_t n;
+	int fd;
+
+	if (cache == NULL)
+		return NULL;
+	(void)mkdir(cache, 0700);
+	n = strlen(cache) + 16;
+	path = malloc(n);
+	if (path == NULL) {
+		free(cache);
+		return NULL;
+	}
+	(void)snprintf(path, n, "%s/oauth-login.txt", cache);
+	free(cache);
+
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0) {
+		free(path);
+		return NULL;
+	}
+	{
+		ssize_t wr = write(fd, url, strlen(url));
+		(void)wr;
+	}
+	{
+		ssize_t wr = write(fd, "\n", 1);
+		(void)wr;
+	}
+	close(fd);
+	return path;
+}
+
+/* Best-effort: open `url` in the desktop browser (xdg-open); if there's no
+ * browser opener, copy it to the X clipboard via xclip. Fire-and-forget:
+ * double-fork so the grandchild is reparented to init and no zombie lingers. */
+static void
+oauth_open_url(const char *url)
+{
+	pid_t pid = fork();
+	char *cmd;
+
+	if (pid < 0)
+		return;
+	if (pid != 0) {
+		int st;
+		(void)waitpid(pid, &st, 0);
+		return;
+	}
+	pid = fork();
+	if (pid < 0)
+		_exit(1);
+	if (pid != 0)
+		_exit(0);
+	(void)setsid();
+	execlp("xdg-open", "xdg-open", url, (char *)0);
+	/* xdg-open not present: fall back to the clipboard. The URL is ASCII
+	 * (no single quotes), so embedding it in a sh -c string is safe. */
+	cmd = malloc(2048);
+	if (cmd != NULL) {
+		(void)snprintf(cmd, 2048,
+		    "printf '%%s' '%s' | xclip -selection clipboard", url);
+		execlp("sh", "sh", "-c", cmd, (char *)0);
+	}
+	_exit(127);
+}
+
+/* /oauth <provider> login / finish <token>: subscription OAuth login split
+ * into two explicit steps so the pasted code is a command argument, never
+ * an intercepted chat line. `login` generates a PKCE pair, prints the
+ * authorize URL, and stashes the verifier; `finish <token>` exchanges the
+ * code and writes the provider's oauth_store. */
+static void
+cmd_oauth(struct ui *u, const char *arg)
+{
+	char provider[64], verb[16];
+	autofree char *codeval = malloc(4096);
+	const char *p = arg;
+	char verifier[128], challenge[64], state[128];
+	autofree char *encscope = malloc(1024);
+	autofree char *url = malloc(2048);
+	autofree char *path = NULL;
+	autofree char *err = NULL;
+	size_t i;
+
+	/* Parse "<verb> <provider> [token]" (login|finish). */
+	for (i = 0; i < sizeof(verb) - 1 && *p && *p != ' '; i++)
+		verb[i] = *p++;
+	verb[i] = '\0';
+	while (*p == ' ')
+		p++;
+	for (i = 0; i < sizeof(provider) - 1 && *p && *p != ' '; i++)
+		provider[i] = *p++;
+	provider[i] = '\0';
+	while (*p == ' ')
+		p++;
+	if (codeval != NULL)
+		codeval[0] = '\0';
+	if (codeval != NULL && *p != '\0') {
+		size_t n = strlen(p);
+
+		if (n >= 4096)
+			n = 4095;
+		memcpy(codeval, p, n);
+		codeval[n] = '\0';
+	}
+
+	if (encscope == NULL || url == NULL || codeval == NULL ||
+	    verb[0] == '\0' || provider[0] == '\0') {
+		ui_push(u, ST_ERROR,
+		    "\nusage: /oauth login <provider> | /oauth finish "
+		    "<provider> <token>\n");
+		return;
+	}
+
+	/* The provider must exist and name an oauth_store. */
+	if (u->lcfg == NULL ||
+	    clm_lua_cfg_provider_str(u->lcfg, provider, "url") == NULL) {
+		ui_push(u, ST_ERROR, "\nprovider '");
+		ui_push(u, ST_ERROR, provider);
+		ui_push(u, ST_ERROR, "' not found\n");
+		return;
+	}
+	if (clm_lua_cfg_provider_str(u->lcfg, provider, "oauth_store") ==
+	    NULL) {
+		ui_push(u, ST_ERROR, "\nprovider '");
+		ui_push(u, ST_ERROR, provider);
+		ui_push(u, ST_ERROR,
+		    "' has no oauth_store (add one to config.lua)\n");
+		return;
+	}
+
+	if (strcmp(verb, "login") == 0) {
+		if (clm_oauth_pkce(verifier, sizeof(verifier), challenge,
+		        sizeof(challenge)) != 0 ||
+		    clm_oauth_pkce(state, sizeof(state), NULL, 0) != 0) {
+			ui_push(
+			    u, ST_ERROR, "\noauth: could not generate PKCE\n");
+			return;
+		}
+		oauth_urlenc_o(CLM_ANTHROPIC_OAUTH_SCOPE, encscope, 1024);
+		(void)snprintf(url, 2048,
+		    "https://claude.com/cai/oauth/authorize?code=true"
+		    "&client_id=%s&response_type=code"
+		    "&redirect_uri=%s&scope=%s"
+		    "&code_challenge=%s&code_challenge_method=S256&state=%s",
+		    CLM_ANTHROPIC_OAUTH_CLIENT_ID,
+		    "https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode"
+		    "%2Fcallback",
+		    encscope, challenge, state);
+
+		(void)snprintf(u->oauth_provider, sizeof(u->oauth_provider),
+		    "%s", provider);
+		memcpy(u->oauth_verifier, verifier, sizeof(u->oauth_verifier));
+		(void)snprintf(
+		    u->oauth_state, sizeof(u->oauth_state), "%s", state);
+		u->oauth_pending = true;
+
+		ui_push(u, ST_META,
+		    "\noauth: open this URL, authorize, then "
+		    "run /oauth finish ");
+		ui_push(u, ST_META, provider);
+		ui_push(u, ST_META, " <token>\n");
+		ui_push(u, ST_META, url);
+		ui_push(u, ST_META, "\n");
+
+		/* Save the exact URL to a file -- the one guaranteed-correct
+		 * copy on any system (headless, Wayland, X, or a different
+		 * machine entirely). The transcript wraps long URLs mid-token,
+		 * which corrupts manual copies. If a display is present, also
+		 * try to open the browser (xdg-open) / copy to the clipboard
+		 * (xclip) as a convenience; on headless systems those simply
+		 * don't run. */
+		{
+			autofree char *urlpath = oauth_save_url(url);
+
+			if (urlpath != NULL) {
+				ui_push(u, ST_META, "authorize URL saved to ");
+				ui_push(u, ST_META, urlpath);
+				ui_push(u, ST_META, "\n");
+			}
+			if (getenv("DISPLAY") != NULL ||
+			    getenv("WAYLAND_DISPLAY") != NULL)
+				oauth_open_url(url);
+		}
+		u->dirty = true;
+	} else if (strcmp(verb, "finish") == 0) {
+		if (!u->oauth_pending) {
+			ui_push(u, ST_ERROR,
+			    "\noauth: no pending login; run "
+			    "/oauth login ");
+			ui_push(u, ST_ERROR, provider);
+			ui_push(u, ST_ERROR, " first\n");
+			return;
+		}
+		if (strcmp(u->oauth_provider, provider) != 0) {
+			ui_push(u, ST_ERROR,
+			    "\noauth: pending login is for "
+			    "provider '");
+			ui_push(u, ST_ERROR, u->oauth_provider);
+			ui_push(u, ST_ERROR, "', not '");
+			ui_push(u, ST_ERROR, provider);
+			ui_push(u, ST_ERROR, "'\n");
+			return;
+		}
+		if (codeval[0] == '\0') {
+			ui_push(u, ST_ERROR,
+			    "\noauth: no token given; "
+			    "usage: /oauth finish ");
+			ui_push(u, ST_ERROR, provider);
+			ui_push(u, ST_ERROR, " <token>\n");
+			return;
+		}
+		/* The site presents "code#state". Split on the first '#': the
+		 * part before it is the authorization code; the part after is
+		 * the OAuth state, which must match the state we generated in
+		 * `login` (CSRF check). */
+		{
+			char *frag = strchr(codeval, '#');
+
+			if (frag != NULL) {
+				*frag = '\0';
+				frag++;
+				if (*frag != '\0' &&
+				    strcmp(frag, u->oauth_state) != 0) {
+					ui_push(u, ST_ERROR,
+					    "\noauth: state mismatch (stale or "
+					    "wrong login); run /oauth login ");
+					ui_push(u, ST_ERROR, provider);
+					ui_push(u, ST_ERROR, "\n");
+					return;
+				}
+			}
+		}
+		path = clm_oauth_expand(
+		    clm_lua_cfg_provider_str(u->lcfg, provider, "oauth_store"));
+		if (path == NULL ||
+		    clm_oauth_exchange_and_save(path, codeval,
+		        u->oauth_verifier, u->oauth_state, &err) != 0) {
+			ui_push(u, ST_ERROR, "\noauth: login failed: ");
+			ui_push(u, ST_ERROR, err != NULL ? err : "unknown");
+			ui_push(u, ST_ERROR, "\n(can retry with /oauth login ");
+			ui_push(u, ST_ERROR, provider);
+			ui_push(u, ST_ERROR, ")\n");
+		} else {
+			ui_push(u, ST_META,
+			    "\noauth: stored subscription "
+			    "tokens for '");
+			ui_push(u, ST_META, provider);
+			ui_push(u, ST_META,
+			    "'; clm will refresh them automatically\n");
+		}
+		u->oauth_pending = false;
+	} else {
+		ui_push(u, ST_ERROR, "\noauth: unknown verb (login|finish)\n");
+	}
+}
+#endif /* CLM_OAUTH */
+
 /*
  * The slash commands. Dispatch, TAB completion and the help popup all
  * read this table, so a command added here shows up in all three.
@@ -3801,6 +4095,9 @@ const struct ui_command ui_commands[] = {
     {"output", NULL, "[full|short]", "tool output/command detail (^O)",
         cmd_output},
     {"compact", NULL, "", "summarize old turns to free context", cmd_compact},
+#ifdef CLM_OAUTH
+    {"oauth", NULL, "login|finish <p>", "subscription OAuth login", cmd_oauth},
+#endif
     {"quit", "exit q", "", "exit", cmd_quit},
 };
 const size_t ui_ncommands = sizeof(ui_commands) / sizeof(ui_commands[0]);

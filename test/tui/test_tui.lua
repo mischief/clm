@@ -479,7 +479,7 @@ tests.commands = function(url)
 	t:pump(0.4)
 	t:send("\27[6~") -- PageDown to the commands
 	t:pump(0.4)
-	check(has(t:text(), "/clear") and has(t:text(), "/reasoning"),
+	check(has(t:text(), "/clear") and has(t:text(), "/provider"),
 	    "commands: /help lists commands")
 	t:send("show me fruit\r")
 	must(t:wait_for("Yellow", 15), "no reply before clear")
@@ -1129,7 +1129,7 @@ tests.help_popup = function(url)
 	    "help: ^G opens the popup with the keys")
 	t:send("\27[6~") -- PageDown
 	t:pump(0.4)
-	check(has(t:text(), "/compact") and has(t:text(), "/quit"),
+	check(has(t:text(), "/reasoning") and has(t:text(), "/compact"),
 	    "help: PageDown scrolls to the slash commands")
 	t:send("\7")
 	t:pump(0.4)

@@ -384,10 +384,44 @@ token_post(const char *url, const char *body, char **access_out,
 		return -1;
 
 	if (code != 200) {
-		if (err_body != NULL)
+		if (err_body != NULL) {
+			/* Prefer a parsed, readable error over the raw JSON. */
+			cJSON *eo = cJSON_Parse(resp);
+			const char *et = NULL, *ed = NULL;
+
+			if (eo != NULL) {
+				et = cJSON_GetStringValue(
+				    cJSON_GetObjectItem(eo, "error"));
+				ed = cJSON_GetStringValue(cJSON_GetObjectItem(
+				    eo, "error_description"));
+				if (et == NULL)
+					et = cJSON_GetStringValue(
+					    cJSON_GetObjectItem(
+					        eo, "error_type"));
+			}
+			if (et != NULL && et[0] != '\0') {
+				size_t n =
+				    strlen(et) + (ed ? strlen(ed) + 3 : 0) + 16;
+				char *msg = malloc(n);
+
+				if (msg != NULL) {
+					if (ed != NULL && ed[0] != '\0')
+						(void)snprintf(
+						    msg, n, "%s (%s)", et, ed);
+					else
+						(void)snprintf(
+						    msg, n, "%s", et);
+					cJSON_Delete(eo);
+					free(resp);
+					*err_body = msg;
+					return -2;
+				}
+			}
+			cJSON_Delete(eo);
 			*err_body = resp;
-		else
+		} else {
 			free(resp);
+		}
 		return -2;
 	}
 
@@ -429,9 +463,9 @@ token_post(const char *url, const char *body, char **access_out,
 
 int
 clm_oauth_exchange_code(const char *client_id, const char *code,
-    const char *redirect_uri, const char *verifier, char **access_out,
-    char **refresh_out, long *expires_in, long *refresh_expires_in,
-    char **scope_out, char **err_body)
+    const char *redirect_uri, const char *verifier, const char *state,
+    char **access_out, char **refresh_out, long *expires_in,
+    long *refresh_expires_in, char **scope_out, char **err_body)
 {
 	cJSON *obj = cJSON_CreateObject();
 	char *body;
@@ -446,6 +480,10 @@ clm_oauth_exchange_code(const char *client_id, const char *code,
 	    redirect_uri ? redirect_uri : CLM_ANTHROPIC_OAUTH_REDIRECT);
 	cJSON_AddStringToObject(obj, "client_id", cid);
 	cJSON_AddStringToObject(obj, "code_verifier", verifier);
+	/* The exchange echoes the OAuth state (CSRF); the CLI's own request
+	 * omits scope here. */
+	if (state != NULL && state[0] != '\0')
+		cJSON_AddStringToObject(obj, "state", state);
 	body = cJSON_PrintUnformatted(obj);
 	cJSON_Delete(obj);
 	if (body == NULL)
@@ -722,12 +760,33 @@ clm_oauth_resolve(
 	rc = clm_oauth_refresh(cid, st.refresh_token, scope, &na, &nr, &ei,
 	    &rtei, &nscope, &errbody);
 	if (rc != 0) {
-		if (err != NULL)
-			*err = errbody
-			    ? errbody
-			    : strdup("token refresh failed (network/HTTP)");
-		else
+		/* A rejected refresh token means the pair was rotated or
+		 * revoked out from under us (another tool using the same
+		 * subscription). Re-authorizing with `clm oauth login` is the
+		 * only way to get a fresh, independent pair. */
+		if (err != NULL) {
+			size_t n;
+			char *msg;
+
+			if (errbody == NULL)
+				errbody = strdup("token refresh failed "
+				                 "(network/HTTP)");
+			n = strlen(errbody) + 80;
+			msg = malloc(n);
+			if (msg != NULL) {
+				(void)snprintf(msg, n,
+				    "%s -- run `clm oauth "
+				    "login` to re-authorize",
+				    errbody);
+				*err = msg;
+			} else {
+				*err = errbody;
+				errbody = NULL;
+			}
 			free(errbody);
+		} else {
+			free(errbody);
+		}
 		clm_oauth_store_free(&st);
 		return -1;
 	}
@@ -764,4 +823,46 @@ clm_oauth_expand(const char *p)
 		}
 	}
 	return p != NULL ? strdup(p) : NULL;
+}
+
+int
+clm_oauth_exchange_and_save(const char *path, const char *code,
+    const char *verifier, const char *state, char **err)
+{
+	char *access = NULL, *refresh = NULL, *scope = NULL, *eb = NULL;
+	const char *cid = CLM_ANTHROPIC_OAUTH_CLIENT_ID;
+	long ei = 0, rtei = 0;
+	int rc;
+
+	if (err != NULL)
+		*err = NULL;
+
+	rc = clm_oauth_exchange_code(cid, code, NULL, verifier, state, &access,
+	    &refresh, &ei, &rtei, &scope, &eb);
+	if (rc != 0) {
+		if (err != NULL)
+			*err = eb ? eb
+			          : strdup("token exchange failed "
+			                   "(network/HTTP)");
+		else
+			free(eb);
+		free(access);
+		free(refresh);
+		free(scope);
+		return -1;
+	}
+
+	if (clm_oauth_store_save(path, cid, access, refresh, ei, rtei, scope) !=
+	    0) {
+		if (err != NULL)
+			*err = strdup("could not write token store");
+		free(access);
+		free(refresh);
+		free(scope);
+		return -1;
+	}
+	free(access);
+	free(refresh);
+	free(scope);
+	return 0;
 }

@@ -258,6 +258,17 @@ struct ui {
 	/* The "! <cmd>" shell escape: one command may be in flight. shell_cmd
 	 * keeps the command text for the done callback. */
 	struct clm_proc *shell_proc;
+
+	/* One-shot subscription-OAuth login (/oauth <provider> login + finish):
+	 * `login` generates PKCE and prints the authorize URL, storing the
+	 * verifier + provider here; `finish <token>` exchanges the pasted
+	 * code using it. In-memory, so login and finish must happen in the
+	 * same session. */
+	bool oauth_pending;
+	char oauth_provider[64];
+	char oauth_verifier[128];
+	char oauth_state[128]; /* OAuth state for the pending login (CSRF check)
+	                        */
 	char *shell_cmd;
 
 	/* Prompts the transcript already shows as "you>", so cb_message

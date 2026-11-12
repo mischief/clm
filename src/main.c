@@ -814,16 +814,6 @@ oauth_read_stdin(void)
 	return all;
 }
 
-/* Atomically write the clm-owned OAuth store. */
-static int
-oauth_save_store(const char *path, const char *client_id, const char *access,
-    const char *refresh, long expires_in, long refresh_expires_in,
-    const char *scope)
-{
-	return clm_oauth_store_save(path, client_id, access, refresh,
-	    expires_in, refresh_expires_in, scope);
-}
-
 /* `clm oauth login`: print the authorize URL, read the pasted code, and
  * exchange it for tokens stored in clm's own store. */
 static int
@@ -831,13 +821,9 @@ run_oauth_login(void)
 {
 	char verifier[128], challenge[64], state[128];
 	char encscope[512];
-	autofree char *scope = NULL;
-	autofree char *access = NULL;
-	autofree char *refresh = NULL;
 	autofree char *err = NULL;
 	autofree char *code = NULL;
 	autofree char *path = NULL;
-	long ei = 0, rtei = 0;
 	int rc;
 
 	if (clm_oauth_pkce(verifier, sizeof(verifier), challenge,
@@ -876,30 +862,44 @@ run_oauth_login(void)
 		return 1;
 	}
 
-	rc = clm_oauth_exchange_code(CLM_ANTHROPIC_OAUTH_CLIENT_ID, code, NULL,
-	    verifier, &access, &refresh, &ei, &rtei, &scope, &err);
-	if (rc != 0) {
-		clm_dprintf(STDERR_FILENO,
-		    "\noauth: token exchange failed (%s)\n",
-		    err != NULL ? err : "network/HTTP error");
-		return 1;
+	/* The site presents "code#state". Split on the first '#': the part
+	 * before it is the authorization code; the part after is the OAuth
+	 * state, which must match what we put in the authorize URL. */
+	{
+		char *frag = strchr(code, '#');
+
+		if (frag != NULL) {
+			*frag = '\0';
+			frag++;
+			if (*frag != '\0' && strcmp(frag, state) != 0) {
+				clm_dprintf(STDERR_FILENO,
+				    "\noauth: state mismatch; re-run "
+				    "`clm oauth login`\n");
+				return 1;
+			}
+		}
 	}
 
 	path = xdg_config_path("clm/oauth-anthropic.json");
-	if (path == NULL ||
-	    oauth_save_store(path, CLM_ANTHROPIC_OAUTH_CLIENT_ID, access,
-	        refresh, ei, rtei, scope) != 0) {
+	if (path == NULL) {
 		clm_dprintf(STDERR_FILENO,
-		    "\noauth: could not write token store (%s)\n",
-		    path != NULL ? path : "no config dir");
+		    "\noauth: no config dir ($XDG_CONFIG_HOME or $HOME)\n");
+		return 1;
+	}
+
+	rc = clm_oauth_exchange_and_save(path, code, verifier, state, &err);
+	if (rc != 0) {
+		clm_dprintf(STDERR_FILENO,
+		    "\noauth: token exchange failed (%s)\n",
+		    err != NULL ? err : "unknown error");
 		return 1;
 	}
 
 	clm_dprintf(STDOUT_FILENO,
 	    "\n"
 	    "  Stored subscription tokens in %s\n"
-	    "  access token valid for ~%lds; refresh token ~%lds\n",
-	    path, ei, rtei);
+	    "  (access + refresh token saved; clm will refresh them)\n",
+	    path);
 	return 0;
 }
 #endif /* CLM_OAUTH */

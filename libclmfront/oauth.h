@@ -25,7 +25,9 @@
 #define CLM_ANTHROPIC_OAUTH_REDIRECT                                           \
 	"https://platform.claude.com/oauth/code/callback"
 
-/* The token endpoint that serves this credential family (verified live). */
+/* Token endpoint for refresh_token grants -- verified live against the
+ * API gateway. The gateway's oauth_server also handles the authorization_code
+ * exchange (same endpoint, no federation beta header). */
 #define CLM_ANTHROPIC_OAUTH_TOKEN_URL "https://api.anthropic.com/v1/oauth/token"
 
 /* Default scope set for a Claude Code-style login. */
@@ -51,9 +53,9 @@ int clm_oauth_pkce(char *verifier, size_t vlen, char *challenge, size_t clen);
  * error, -2 on a non-200 response (with *err_body set if non-NULL).
  */
 int clm_oauth_exchange_code(const char *client_id, const char *code,
-    const char *redirect_uri, const char *verifier, char **access_out,
-    char **refresh_out, long *expires_in, long *refresh_expires_in,
-    char **scope_out, char **err_body);
+    const char *redirect_uri, const char *verifier, const char *state,
+    char **access_out, char **refresh_out, long *expires_in,
+    long *refresh_expires_in, char **scope_out, char **err_body);
 
 /*
  * Refresh an access token. Same interface as clm_oauth_exchange_code but
@@ -102,6 +104,16 @@ int clm_oauth_store_save(const char *path, const char *client_id,
  */
 int clm_oauth_resolve(
     const char *path, const char *client_id, char **access_out, char **err);
+
+/*
+ * Complete a fresh authorization: exchange `code` (with `verifier`) for
+ * tokens and atomically write them to the store at `path`. This is the
+ * shared body of `clm oauth login` and the TUI /clm-oauth-login command.
+ * On success returns 0; on failure -1 with *err (malloc'd) set. The store
+ * is left untouched on failure.
+ */
+int clm_oauth_exchange_and_save(const char *path, const char *code,
+    const char *verifier, const char *state, char **err);
 
 /* Expand a leading "~/" in a config-supplied path to $HOME. Returns a
  * malloc'd string. */

@@ -385,6 +385,64 @@ source_provider_names(
 	clm_lua_cfg_free_str_list(names);
 }
 
+/*
+ * /oauth <verb> <provider>: complete the subcommand verb (login|finish)
+ * first, then the provider name from config.lua's providers{} table. The
+ * word we're completing is the first (verb) or second (provider) argument;
+ * later arguments (the finish token) have no candidates.
+ */
+#ifdef CLM_OAUTH
+static void
+source_oauth_args(struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
+{
+	static const char *const verbs[] = {"login", "finish"};
+	const char *prefix = u->input + wstart;
+	size_t typed = wlen;
+	size_t words = 0;
+	bool inword = false;
+
+	(void)generation;
+
+	/* Count space-delimited words before the word being completed (skip
+	 * the leading '/'). "oauth" itself is word 0, so words==1 means the
+	 * verb slot, words==2 the provider slot. */
+	for (size_t i = 1; i < wstart; i++) {
+		if (u->input[i] == ' ') {
+			inword = false;
+		} else if (!inword) {
+			words++;
+			inword = true;
+		}
+	}
+
+	if (words == 1) {
+		const char *matches[MAX_CANDIDATES];
+		size_t n = 0;
+
+		for (size_t i = 0; i < 2; i++)
+			if (strncmp(verbs[i], prefix, typed) == 0)
+				matches[n++] = verbs[i];
+		if (n == 0)
+			return;
+		if (n > 1)
+			list_plain(u, NULL, matches, n);
+		apply_insert(u, wstart, wlen, 0, matches, n, typed, ' ');
+	} else if (words == 2) {
+		const char *matches[MAX_CANDIDATES];
+		char **names = NULL;
+		size_t n = match_config_names(
+		    u->lcfg, "providers", prefix, typed, matches, &names);
+
+		if (n == 0)
+			return;
+		if (n > 1)
+			list_plain(u, NULL, matches, n);
+		apply_insert(u, wstart, wlen, 0, matches, n, typed, '\0');
+		clm_lua_cfg_free_str_list(names);
+	}
+}
+#endif /* CLM_OAUTH */
+
 static void
 source_agent_names(
     struct ui *u, uint64_t generation, size_t wstart, size_t wlen)
@@ -693,31 +751,36 @@ source_model_names(
 			 * paths -- otherwise the probe sends no auth and 401s.
 			 */
 			char *oauth_tok = NULL;
+			char *oauth_err = NULL;
 			if (api_key == NULL) {
 				const char *store = clm_lua_cfg_provider_str(
 				    u->lcfg, spec_provider, "oauth_store");
 				if (store != NULL && store[0] != '\0') {
 					char *path = clm_oauth_expand(store);
-					char *err = NULL;
 					const char *cid =
 					    clm_lua_cfg_provider_str(u->lcfg,
 					        spec_provider,
 					        "oauth_client_id");
 					if (clm_oauth_resolve(path, cid,
-					        &oauth_tok, &err) == 0)
+					        &oauth_tok, &oauth_err) == 0)
 						api_key = oauth_tok;
 					else
 						oauth_failed = true;
 					free(path);
-					free(err);
 				}
 			}
 #endif
 			if (oauth_failed) {
-				model_complete_req_free(req);
 #ifdef CLM_OAUTH
+				ui_push(u, ST_ERROR, "\noauth: ");
+				ui_push(u, ST_ERROR,
+				    oauth_err != NULL ? oauth_err
+				                      : "token resolve failed");
+				ui_push(u, ST_ERROR, "\n");
 				free(oauth_tok);
+				free(oauth_err);
 #endif
+				model_complete_req_free(req);
 				return;
 			}
 
@@ -793,6 +856,9 @@ static const struct arg_source arg_sources[] = {
     {"provider", source_provider_names},
     {"model", source_model_names},
     {"effort", source_effort_levels},
+#ifdef CLM_OAUTH
+    {"oauth", source_oauth_args},
+#endif
 };
 #define N_ARG_SOURCES (sizeof(arg_sources) / sizeof(arg_sources[0]))
 
