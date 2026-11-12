@@ -22,6 +22,7 @@
 #include "clm/history.h"
 #include "clm/session.h"
 #include "session_internal.h"
+#include "libclm/sha256_internal.h"
 #include "tap.h"
 
 #define CHECK(cond, msg) TAP_CHECK(cond, msg)
@@ -860,18 +861,18 @@ test_sha256(void)
 {
 	char out[65];
 
-	session_sha256_hex((const uint8_t *)"", 0, out);
+	clm_sha256_hex((const uint8_t *)"", 0, out);
 	CHECK(strcmp(out,
 	          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934c"
 	          "a495991b7852b855") == 0,
 	    "sha256: empty");
-	session_sha256_hex((const uint8_t *)"abc", 3, out);
+	clm_sha256_hex((const uint8_t *)"abc", 3, out);
 	CHECK(strcmp(out,
 	          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9c"
 	          "b410ff61f20015ad") == 0,
 	    "sha256: abc");
-	session_sha256_hex((const uint8_t *)"abcdbcdecdefdefgefghfghighijhijki"
-	                                    "jkljklmklmnlmnomnopnopq",
+	clm_sha256_hex((const uint8_t *)"abcdbcdecdefdefgefghfghighijhijki"
+	                                "jkljklmklmnlmnomnopnopq",
 	    56, out);
 	CHECK(strcmp(out,
 	          "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167"
@@ -906,7 +907,7 @@ test_session_blobs(const char *dir)
 	CHECK(clm_session_create(dir, NULL, NULL, NULL, &s) == 0,
 	    "blobs: create");
 	(void)snprintf(id, sizeof(id), "%s", clm_session_id(s));
-	session_sha256_hex(img, sizeof(img) - 1, sha);
+	clm_sha256_hex(img, sizeof(img) - 1, sha);
 	(void)snprintf(bdir, sizeof(bdir), "%s/%s.blobs", dir, id);
 	(void)snprintf(blob, sizeof(blob), "%s/%s.png", bdir, sha);
 	TAILQ_FOREACH(m, &h, entries)

@@ -18,6 +18,7 @@
 #include "useful.h"
 #include "session_internal.h"
 #include "banned.h"
+#include "libclm/sha256_internal.h"
 
 #define SESSION_FMT_VERSION 1
 #define SESSION_ID_MAX 64
@@ -471,7 +472,7 @@ store_attachments(const char *log_path, const struct clm_message *m, cJSON *obj)
 		if (e == NULL)
 			return -ENOMEM;
 		cJSON_AddItemToArray(arr, e);
-		session_sha256_hex(a->data, a->len, sha);
+		clm_sha256_hex(a->data, a->len, sha);
 		if (asprintf(&path, "%s/%s.%s", bdir, sha,
 		        blob_ext(a->media_type)) < 0)
 			return -ENOMEM;

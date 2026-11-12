@@ -13,18 +13,18 @@ static int fails;
 static void
 check_sha256(void)
 {
-	struct sha256 sh;
-	unsigned char d[32];
+	struct clm_sha256 sh;
+	unsigned char d[CLM_SHA256_DIGEST];
 	const char *want = "ba7816bf8f01cfea414140de5dae2223"
 	                   "b00361a396177a9cb410ff61f20015ad";
 	char got[80];
 	int i;
 	size_t o = 0;
 
-	sha256_init(&sh);
-	sha256_update(&sh, "abc", 3);
-	sha256_final(&sh, d);
-	for (i = 0; i < 32; i++)
+	clm_sha256_init(&sh);
+	clm_sha256_update(&sh, "abc", 3);
+	clm_sha256_final(&sh, d);
+	for (i = 0; i < CLM_SHA256_DIGEST; i++)
 		o += (size_t)snprintf(got + o, sizeof(got) - o, "%02x", d[i]);
 	if (strcmp(got, want) != 0) {
 		printf("  FAIL sha256(abc): %s\n", got);
@@ -52,8 +52,8 @@ static void
 check_pkce(void)
 {
 	char v[128], c[64], c2[64];
-	struct sha256 sh;
-	unsigned char d[32];
+	struct clm_sha256 sh;
+	unsigned char d[CLM_SHA256_DIGEST];
 	size_t i;
 
 	if (clm_oauth_pkce(v, sizeof(v), c, sizeof(c)) != 0) {
@@ -78,10 +78,10 @@ check_pkce(void)
 			break;
 		}
 	}
-	sha256_init(&sh);
-	sha256_update(&sh, v, strlen(v));
-	sha256_final(&sh, d);
-	b64url_encode(d, 32, c2);
+	clm_sha256_init(&sh);
+	clm_sha256_update(&sh, v, strlen(v));
+	clm_sha256_final(&sh, d);
+	b64url_encode(d, CLM_SHA256_DIGEST, c2);
 	if (strcmp(c, c2) != 0) {
 		printf("  FAIL challenge != b64url(sha256(verifier))\n");
 		fails++;
