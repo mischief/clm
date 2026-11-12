@@ -1706,7 +1706,9 @@ draw_status(struct ui *u)
 	static const char spin[] = "|/-\\";
 	struct stat_piece p[SP_N];
 	const char *info;
-	char sp = u->busy || u->cmd_live > 0 ? spin[u->spinner & 3] : ' ';
+	char sp = u->busy || u->cmd_live > 0 || u->shell_proc != NULL
+	    ? spin[u->spinner & 3]
+	    : ' ';
 	int w = getmaxx(u->stat);
 
 	werase(u->stat);
@@ -1729,7 +1731,15 @@ draw_status(struct ui *u)
 		info = dots[((unsigned)u->spinner / 4) % 3];
 	} else if (u->batch[0] != '\0')
 		info = u->batch;
-	else if (!u->busy && u->cmd_live > 0)
+	else if (u->shell_proc != NULL) {
+		/* A blocking "! <cmd>" is running: show it, spinning, so the
+		 * wait reads as activity rather than idle. */
+		static char shell_info[24];
+
+		(void)snprintf(shell_info, sizeof(shell_info), "! %s",
+		    u->shell_cmd != NULL ? u->shell_cmd : "");
+		info = shell_info;
+	} else if (!u->busy && u->cmd_live > 0)
 		info = u->cmd_name;
 	else if (!u->busy && u->usage[0] != '\0')
 		info = u->usage;
@@ -2808,10 +2818,10 @@ on_repaint(uv_timer_t *t)
 	 * further keystroke arrives to trigger the stdin poll. */
 	handle_keys(u);
 
-	if (u->busy || u->cmd_live > 0)
+	if (u->busy || u->cmd_live > 0 || u->shell_proc != NULL)
 		u->spinner++;
 
-	if (!u->dirty && !u->busy && u->cmd_live == 0)
+	if (!u->dirty && !u->busy && u->cmd_live == 0 && u->shell_proc == NULL)
 		return;
 
 	/* Grow/shrink the input box to fit what's typed before drawing. */
