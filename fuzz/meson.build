@@ -13,7 +13,7 @@ fuzz_lib_src = files(
   '../libclm/http.c', '../libclm/props.c', '../libclm/provider.c',
   '../libclm/provider_anthropic.c', '../libclm/provider_openai.c',
   '../libclm/provider_responses.c', '../libclm/models_list.c',
-  '../libclm/text_clean.c', '../libclm/image.c',
+  '../libclm/text_clean.c', '../libclm/image.c', '../libclm/files.c',
 )
 
 # fuzz_tool_dispatch: fuzz clm_tools_dispatch() with adversarial JSON tool-calls.
