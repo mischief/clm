@@ -32,6 +32,14 @@
  * practice (the largest today, freellmapi's live catalog, is ~65). */
 #define MAX_CANDIDATES 128
 
+/* Live /v1/models catalogs are larger than any config-local name list, but
+ * the matched set (after the typed prefix is applied) is what matters, not
+ * the raw server-order count. 512 comfortably covers OpenRouter (~430 ids,
+ * today's worst case); the filter-then-cap order in model_live_result means
+ * this is only ever a ceiling on *matching* candidates, never a reason a
+ * narrowed prefix can't find its models. */
+#define MAX_LIVE_MODELS 512
+
 static int
 strp_cmp(const void *a, const void *b)
 {
@@ -131,28 +139,31 @@ apply_insert(struct ui *u, size_t wstart, size_t wlen, size_t replace_off,
 
 /* Show a plain, one-per-line candidate list, with an optional header
  * ("from config:", "from server:", ...). Heap-allocated, not a stack
- * buffer -- a live catalog can run to 60+ entries. */
+ * buffer -- a live catalog can run to several hundred entries (OpenRouter
+ * reports ~430), so the buffer is sized to the actual listing rather than
+ * a fixed cap that would silently drop the tail. */
 static void
 list_plain(struct ui *u, const char *header, const char *const *items, size_t n)
 {
-	autofree char *buf = malloc(4096);
+	size_t cap = (header != NULL ? strlen(header) + 3 : 1);
+	size_t off = 0;
 	int wrote;
-	size_t off;
 
+	for (size_t i = 0; i < n; i++)
+		cap += strlen(items[i]) + 3; /* "  <item>\n" */
+	autofree char *buf = malloc(cap);
 	if (buf == NULL)
 		return;
 
-	wrote = header != NULL ? snprintf(buf, 4096, "\n%s\n", header)
-	                       : snprintf(buf, 4096, "\n");
+	wrote = header != NULL ? snprintf(buf, cap, "\n%s\n", header)
+	                       : snprintf(buf, cap, "\n");
 	off = wrote > 0 ? (size_t)wrote : 0;
-	if (off > 4096)
-		off = 4096;
 
-	for (size_t i = 0; i < n && off < 4096; i++) {
-		wrote = snprintf(buf + off, 4096 - off, "  %s\n", items[i]);
+	for (size_t i = 0; i < n; i++) {
+		wrote = snprintf(buf + off, cap - off, "  %s\n", items[i]);
 		off += wrote > 0 ? (size_t)wrote : 0;
-		if (off > 4096)
-			off = 4096;
+		if (off > cap)
+			off = cap;
 	}
 	ui_push(u, ST_META, buf);
 }
@@ -478,52 +489,63 @@ model_live_result(char **ids, void *user)
 		 * against before matching/offering it -- a bare id here
 		 * wouldn't line up with what the user is typing.
 		 *
-		 * Heap, not two more MAX_CANDIDATES stack arrays alongside
-		 * everything else already declared here: that combination
-		 * trips -Wframe-larger-than, and this callback isn't a hot
-		 * path worth a bigger stack budget for. */
-		char **prefixed = malloc(MAX_CANDIDATES * sizeof(*prefixed));
-		const char **matches =
-		    malloc(MAX_CANDIDATES * sizeof(*matches));
-		size_t nprefixed = 0, n = 0;
+		 * Filter BEFORE capping: the server-order cap that used to
+		 * come first dropped every model past position MAX_CANDIDATES
+		 * no matter how precisely the user had narrowed the prefix (a
+		 * 430-model router like OpenRouter hides half its free tier
+		 * past that point). Now an id only counts toward the
+		 * MAX_LIVE_MODELS ceiling if it matches the typed prefix, so
+		 * `openrouter/google/gemma<TAB>` finds its models regardless
+		 * of where they sit in the response. Heap, not two more
+		 * MAX_CANDIDATES stack arrays alongside everything else here:
+		 * that combination trips -Wframe-larger-than, and this
+		 * callback isn't a hot path worth a bigger stack budget for. */
+		char **prefixed = malloc(MAX_LIVE_MODELS * sizeof(*prefixed));
+		size_t nprefixed = 0;
+		bool has_slash = memchr(prefix, '/', typed) != NULL;
 
-		if (prefixed != NULL && matches != NULL) {
+		if (prefixed != NULL) {
 			for (size_t i = 0;
-			    ids[i] != NULL && nprefixed < MAX_CANDIDATES; i++) {
-				size_t need = memchr(prefix, '/', typed) != NULL
-				    ? strlen(req->provider_name) + 1 +
-				        strlen(ids[i]) + 1
-				    : strlen(ids[i]) + 1;
-				char *spec = malloc(need);
-				if (spec == NULL)
-					continue;
-				if (memchr(prefix, '/', typed) != NULL)
+			    ids[i] != NULL && nprefixed < MAX_LIVE_MODELS;
+			    i++) {
+				char *spec;
+
+				if (has_slash) {
+					size_t need =
+					    strlen(req->provider_name) + 1 +
+					    strlen(ids[i]) + 1;
+					spec = malloc(need);
+					if (spec == NULL)
+						break;
 					(void)snprintf(spec, need, "%s/%s",
 					    req->provider_name, ids[i]);
-				else
-					(void)snprintf(
-					    spec, need, "%s", ids[i]);
+				} else {
+					spec = strdup(ids[i]);
+					if (spec == NULL)
+						break;
+				}
+				if (strncmp(spec, prefix, typed) != 0) {
+					free(spec);
+					continue;
+				}
 				prefixed[nprefixed++] = spec;
 			}
 
-			for (size_t i = 0; i < nprefixed && n < MAX_CANDIDATES;
-			    i++) {
-				if (strncmp(prefixed[i], prefix, typed) == 0)
-					matches[n++] = prefixed[i];
-			}
-			if (n > 0) {
-				qsort(matches, n, sizeof(*matches), strp_cmp);
-				if (n > 1)
-					list_plain(
-					    u, "from server:", matches, n);
+			if (nprefixed > 0) {
+				qsort(prefixed, nprefixed, sizeof(*prefixed),
+				    strp_cmp);
+				if (nprefixed > 1)
+					list_plain(u, "from server:",
+					    (const char *const *)prefixed,
+					    nprefixed);
 				apply_insert(u, req->wstart, req->wlen, 0,
-				    matches, n, typed, '\0');
+				    (const char *const *)prefixed, nprefixed,
+				    typed, '\0');
 			}
+			for (size_t i = 0; i < nprefixed; i++)
+				free(prefixed[i]);
+			free(prefixed);
 		}
-		for (size_t i = 0; i < nprefixed; i++)
-			free(prefixed[i]);
-		free(prefixed);
-		free(matches);
 	}
 	model_complete_req_free(req);
 }
