@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: ISC
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #include <curl/curl.h>
@@ -159,6 +161,22 @@ http_post_json(const char *url, const char *json, int *code, char **resp)
 	return 0;
 }
 
+/* HTTP transport indirection. Production always uses http_post_json; tests
+ * (which #include this file and build with -DCLM_OAUTH_TEST) can substitute
+ * a fake transport so resolve/refresh are exercised without the live
+ * endpoint. The setter is only compiled under the test macro, so no symbol
+ * leaks into production builds. */
+static int (*oauth_http_post)(
+    const char *, const char *, int *, char **) = http_post_json;
+#ifdef CLM_OAUTH_TEST
+void
+clm_oauth_test_set_transport(
+    int (*fn)(const char *, const char *, int *, char **))
+{
+	oauth_http_post = fn ? fn : http_post_json;
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Token endpoint call                                                 */
 /* ------------------------------------------------------------------ */
@@ -174,7 +192,7 @@ token_post(const char *url, const char *body, char **access_out,
 	const char *at, *rt, *scope;
 	int rc = 0;
 
-	if (http_post_json(url, body, &code, &resp) != 0)
+	if (oauth_http_post(url, body, &code, &resp) != 0)
 		return -1;
 
 	if (code != 200) {
@@ -512,52 +530,126 @@ clm_oauth_store_save(const char *path, const char *client_id,
 	return 0;
 }
 
+/* Take an exclusive advisory lock on the token store's lock file, so
+ * concurrent clm sessions serialise the read-refresh-write cycle. Returns 0
+ * with *fd_out set (call store_unlock when done), or -1. */
+static int
+store_lock(const char *path, int *fd_out)
+{
+	char lk[1024];
+	int fd;
+
+	(void)snprintf(lk, sizeof(lk), "%s.lock", path);
+	fd = open(lk, O_RDWR | O_CREAT, 0600);
+	if (fd < 0)
+		return -1;
+	if (flock(fd, LOCK_EX) != 0) {
+		close(fd);
+		return -1;
+	}
+	*fd_out = fd;
+	return 0;
+}
+
+static void
+store_unlock(int fd)
+{
+	if (fd >= 0) {
+		(void)flock(fd, LOCK_UN);
+		close(fd);
+	}
+}
+
 int
 clm_oauth_resolve(
     const char *path, const char *client_id, char **access_out, char **err)
 {
-	struct clm_oauth_store st;
 	const char *cid = client_id ? client_id : CLM_ANTHROPIC_OAUTH_CLIENT_ID;
+	int lk = -1;
 	char *na = NULL, *nr = NULL, *nscope = NULL, *errbody = NULL;
 	long ei = 0, rtei = 0;
-	const char *scope;
-	int rc;
+	bool retried = false;
+	int rc = -1;
 
 	*access_out = NULL;
 	if (err != NULL)
 		*err = NULL;
 
-	if (clm_oauth_store_load(path, &st) != 0) {
+	/* Serialise the read-refresh-write cycle across concurrent clm
+	 * sessions. Anthropic rotates refresh tokens on use; without a lock two
+	 * racers would hand the server the same refresh token and invalidate
+	 * each other's pair. flock blocks the second session until the first
+	 * has written its refreshed pair, so the second just finds a fresh
+	 * access token and never refreshes. */
+	if (store_lock(path, &lk) != 0) {
 		if (err != NULL)
-			*err = strdup("cannot load token store (run `clm "
-			              "oauth login` first)");
+			*err = strdup("cannot lock token store");
 		return -1;
 	}
 
-	if (st.access_token != NULL && st.refresh_token != NULL &&
-	    st.access_token[0] != '\0' &&
-	    st.expires_at > (long)time(NULL) * 1000 + 60000) {
-		*access_out = strdup(st.access_token);
-		clm_oauth_store_free(&st);
-		return 0;
-	}
+	for (;;) {
+		struct clm_oauth_store st;
+		const char *scope;
 
-	if (st.refresh_token == NULL || st.refresh_token[0] == '\0') {
-		if (err != NULL)
-			*err = strdup("token store has no refresh token; "
-			              "run `clm oauth login` again");
-		clm_oauth_store_free(&st);
-		return -1;
-	}
+		if (clm_oauth_store_load(path, &st) != 0) {
+			if (err != NULL)
+				*err = strdup("cannot load token store (run "
+				              "`clm oauth login` first)");
+			break;
+		}
 
-	scope = st.scope;
-	rc = clm_oauth_refresh(cid, st.refresh_token, scope, &na, &nr, &ei,
-	    &rtei, &nscope, &errbody);
-	if (rc != 0) {
-		/* A rejected refresh token means the pair was rotated or
-		 * revoked out from under us (another tool using the same
-		 * subscription). Re-authorizing with `clm oauth login` is the
-		 * only way to get a fresh, independent pair. */
+		if (st.access_token != NULL && st.refresh_token != NULL &&
+		    st.access_token[0] != '\0' &&
+		    st.expires_at > (long)time(NULL) * 1000 + 60000) {
+			*access_out = strdup(st.access_token);
+			clm_oauth_store_free(&st);
+			rc = 0;
+			break;
+		}
+
+		if (st.refresh_token == NULL || st.refresh_token[0] == '\0') {
+			if (err != NULL)
+				*err = strdup("token store has no refresh "
+				              "token; run `clm oauth login` "
+				              "again");
+			clm_oauth_store_free(&st);
+			break;
+		}
+
+		scope = st.scope;
+		rc = clm_oauth_refresh(cid, st.refresh_token, scope, &na, &nr,
+		    &ei, &rtei, &nscope, &errbody);
+		clm_oauth_store_free(&st);
+
+		if (rc == 0) {
+			if (clm_oauth_store_save(path, cid, na, nr, ei, rtei,
+			        nscope ? nscope : scope) != 0) {
+				free(na);
+				free(nr);
+				free(nscope);
+				if (err != NULL)
+					*err = strdup("could not write "
+					              "refreshed token store");
+				rc = -1;
+			} else {
+				*access_out = na;
+				na = NULL;
+				rc = 0;
+			}
+			break;
+		}
+
+		/* Refresh failed. Another actor may have rotated the pair out
+		 * from under us (a sibling tool sharing the subscription).
+		 * Reload once: if a fresh valid access token now exists, the
+		 * loop's fast path uses it; otherwise we report the error. */
+		if (!retried) {
+			retried = true;
+			free(errbody);
+			errbody = NULL;
+			continue;
+		}
+
 		if (err != NULL) {
 			size_t n;
 			char *msg;
@@ -577,29 +669,16 @@ clm_oauth_resolve(
 				*err = errbody;
 				errbody = NULL;
 			}
-			free(errbody);
-		} else {
-			free(errbody);
 		}
-		clm_oauth_store_free(&st);
-		return -1;
+		break;
 	}
 
-	if (clm_oauth_store_save(
-	        path, cid, na, nr, ei, rtei, nscope ? nscope : scope) != 0) {
-		free(na);
-		free(nr);
-		free(nscope);
-		if (err != NULL)
-			*err = strdup("could not write refreshed token store");
-		clm_oauth_store_free(&st);
-		return -1;
-	}
+	store_unlock(lk);
+	free(na);
 	free(nr);
 	free(nscope);
-	clm_oauth_store_free(&st);
-	*access_out = na;
-	return 0;
+	free(errbody);
+	return rc;
 }
 
 char *
@@ -626,10 +705,19 @@ clm_oauth_exchange_and_save(const char *path, const char *code,
 	char *access = NULL, *refresh = NULL, *scope = NULL, *eb = NULL;
 	const char *cid = CLM_ANTHROPIC_OAUTH_CLIENT_ID;
 	long ei = 0, rtei = 0;
+	int lk = -1;
 	int rc;
 
 	if (err != NULL)
 		*err = NULL;
+
+	/* Serialise against a concurrent resolve so a login can't race a
+	 * refresh writing the same store. */
+	if (store_lock(path, &lk) != 0) {
+		if (err != NULL)
+			*err = strdup("cannot lock token store");
+		return -1;
+	}
 
 	rc = clm_oauth_exchange_code(cid, code, NULL, verifier, state, &access,
 	    &refresh, &ei, &rtei, &scope, &eb);
@@ -643,6 +731,7 @@ clm_oauth_exchange_and_save(const char *path, const char *code,
 		free(access);
 		free(refresh);
 		free(scope);
+		store_unlock(lk);
 		return -1;
 	}
 
@@ -653,10 +742,12 @@ clm_oauth_exchange_and_save(const char *path, const char *code,
 		free(access);
 		free(refresh);
 		free(scope);
+		store_unlock(lk);
 		return -1;
 	}
 	free(access);
 	free(refresh);
 	free(scope);
+	store_unlock(lk);
 	return 0;
 }
