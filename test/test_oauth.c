@@ -9,9 +9,6 @@
 #include <string.h>
 #include <pthread.h>
 
-#define CLM_OAUTH_TEST 1
-void clm_oauth_test_set_transport(
-    int (*fn)(const char *, const char *, int *, char **));
 #include "../libclmfront/oauth.c"
 
 static int fails;
@@ -398,7 +395,7 @@ check_concurrent_resolve(void)
 int
 main(void)
 {
-	clm_oauth_test_set_transport(fake_http_post);
+	oauth_http_post = fake_http_post;
 	check_sha256();
 	check_b64url();
 	check_pkce();

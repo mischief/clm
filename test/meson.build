@@ -63,7 +63,7 @@ if get_option('oauth').allowed()
     dependencies: [cjson_dep, dependency('libcurl'), dependency('threads')],
     include_directories: [clmfront_inc, clm_inc,
       include_directories('../include')],
-    c_args: test_hardening_args + ['-DCLM_OAUTH_TEST'],
+    c_args: test_hardening_args,
   )
   test('oauth', test_oauth)
 endif

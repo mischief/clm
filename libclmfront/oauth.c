@@ -161,21 +161,11 @@ http_post_json(const char *url, const char *json, int *code, char **resp)
 	return 0;
 }
 
-/* HTTP transport indirection. Production always uses http_post_json; tests
- * (which #include this file and build with -DCLM_OAUTH_TEST) can substitute
- * a fake transport so resolve/refresh are exercised without the live
- * endpoint. The setter is only compiled under the test macro, so no symbol
- * leaks into production builds. */
+/* HTTP transport indirection. Production always uses http_post_json; the
+ * test (which #include this file) redirects this static pointer to a fake
+ * so resolve/refresh are exercised without the live endpoint. */
 static int (*oauth_http_post)(
-    const char *, const char *, int *, char **) = http_post_json;
-#ifdef CLM_OAUTH_TEST
-void
-clm_oauth_test_set_transport(
-    int (*fn)(const char *, const char *, int *, char **))
-{
-	oauth_http_post = fn ? fn : http_post_json;
-}
-#endif
+    const char *, const char *, int *, char **) = NULL;
 
 /* ------------------------------------------------------------------ */
 /* Token endpoint call                                                 */
@@ -192,8 +182,13 @@ token_post(const char *url, const char *body, char **access_out,
 	const char *at, *rt, *scope;
 	int rc = 0;
 
-	if (oauth_http_post(url, body, &code, &resp) != 0)
-		return -1;
+	{
+		int (*post)(const char *, const char *, int *, char **) =
+		    oauth_http_post ? oauth_http_post : http_post_json;
+
+		if (post(url, body, &code, &resp) != 0)
+			return -1;
+	}
 
 	if (code != 200) {
 		if (err_body != NULL) {
